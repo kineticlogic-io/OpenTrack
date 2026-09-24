@@ -822,7 +822,8 @@ mod tests {
                          "Message": {"PositionReport": {"Latitude": 1.5, "Name": "USS@X@@@"}}});
         let body = json!({"path": "Message", "key": "MessageType"});
         assert_eq!(spec(body).eval(&rec)["Latitude"], json!(1.5));
-        let name = json!({"path": "Message.PositionReport.Name", "transforms": ["replace:@: ", "trim"]});
+        let name =
+            json!({"path": "Message.PositionReport.Name", "transforms": ["replace:@: ", "trim"]});
         assert_eq!(spec(name).eval(&rec), json!("USS X"));
         assert!(Transform::parse("replace::x").is_err());
     }
