@@ -12,7 +12,15 @@ rust-version = "1.90"
 ot-core = { path = "crates/ot-core" }
 ot-store = { path = "crates/ot-store" }
 ot-peat = { path = "crates/ot-peat" }
+ot-source = { path = "crates/ot-source" }
 anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+quick-xml = "0.42"
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+socket2 = "0.6"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -24,7 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net", "io-util"] }
 tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"

@@ -1,0 +1,74 @@
+# Worked examples
+
+Two complete source configurations, each entered through the API exactly as an admin would. Nothing about
+either feed is built into OpenTrack; both are reproduced from these files alone.
+
+| Example | Transport | Codec | What it teaches |
+|---------|-----------|-------|-----------------|
+| [`aisstream.json`](aisstream.json) | WebSocket client with a subscribe message | JSON | Subscribe-on-connect with a secret from the environment, record rejection (MMSI rules), a per-message-type body (`let` + dynamic `key`), the static join (AIS types 5, 19 and 24 onto position reports), registry lookup and grading by MMSI, country-based affiliation, a military-only filter, throttling |
+| [`adsb-lol.json`](adsb-lol.json) | HTTP poll every 5 s | JSON with a record path (`ac`) and frame context (`now`) | Polling, splitting one response into many records, unit transforms (knots, feet, ft/min), time arithmetic, lookup tables, ICAO address blocks to countries (`ranges`), tiered values (`cases`) |
+
+## Using them
+
+```sh
+# aisstream needs its API key in the server's environment; the spec only references it.
+export AISSTREAM_API_KEY=...
+
+curl -X POST -H 'content-type: application/json' --data @docs/examples/adsb-lol.json \
+     http://127.0.0.1:8090/api/v1/sources
+curl -X POST http://127.0.0.1:8090/api/v1/sources/adsb-lol/enable
+curl http://127.0.0.1:8090/api/v1/sources/adsb-lol          # config + live status
+curl http://127.0.0.1:8090/api/v1/sources/adsb-lol/metrics  # per-minute counters
+```
+
+Dry-run a spec against sample frames before saving it (nothing is stored or published):
+
+```sh
+curl -X POST -H 'content-type: application/json' \
+     --data '{"spec": <spec>, "samples": ["<frame 1>", "<frame 2>"]}' \
+     http://127.0.0.1:8090/api/v1/sources/validate
+```
+
+## The pipeline, in order
+
+1. **Transport** delivers frames (`websocket`, `http_poll`, `tcp_client`, `tcp_server`, `udp`), with framing for
+   stream transports (`lines`, `length_prefix`, `delimiter`, `end_tag`). String settings may reference
+   `${env:NAME}`; secrets are never stored.
+2. **Codec** turns a frame into records (`json`, `cot_xml`, `xml`).
+3. **Reject** rules drop records before mapping, counted per reason (`rejected:<reason>`).
+4. **Mapping** rules map records to the track schema. Every matching rule applies; `static` rules feed the static
+   join, `observation` rules yield track reports.
+5. **Static join** fills identity fields missing from a report from the latest static record with the same key.
+6. **Registry** resolves one identifier scheme, grades the match (`exact`, `hull`, `name`, `generic`, `stale`),
+   applies entity fields at corroborated grades, and records `ext.registry`.
+7. **Affiliation** maps a country code to friend / hostile / neutral / otherwise.
+8. **Filter** keeps or drops reports (`keep_if`, `drop_if`).
+9. **Throttle** limits writes per source track (minimum interval, heartbeat, minimum movement).
+
+Value specs, conditions and transforms are documented in `crates/ot-source/src/expr.rs`; mapping targets in
+`crates/ot-source/src/mapping.rs`.
+
+## Where the tables came from
+
+The lookup tables in these files (AIS ship type to CoT, aircraft designators and emitter categories, ICAO address
+blocks, allied and adversary country lists, registry token lists) were exported from the data-services modules
+they replace, so the examples reproduce that behaviour exactly. They are data: edit them here, not in code.
+
+## Known differences from data-services
+
+- Throttling uses each report's own timestamp; data-services used the receive clock (AIS) or snapshot time
+  (adsb.lol). Throttled reports are not counted towards a track's observation count.
+- data-services copied every raw feed field into `attributes_json`; the examples map a chosen set of extension
+  fields (`ext.*`) instead.
+- Track ids become `tms-<UID>` system ids, one per source track until correlation arrives (phase 3).
+
+## Moving the registry
+
+`scripts/export-data-services-registry.py` exports data-services' Redis registry (`reg:*`) in the import format:
+
+```sh
+docker exec -i ds-aisstream python - < scripts/export-data-services-registry.py > registry.json
+curl -X POST -H 'content-type: application/json' --data @registry.json http://127.0.0.1:8090/api/v1/registry/import
+```
+
+An import never moves an identifier from one entity to another; such cases are reported as conflicts.

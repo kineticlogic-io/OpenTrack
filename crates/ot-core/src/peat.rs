@@ -95,11 +95,11 @@ pub fn to_document(track: &SystemTrack, ctx: &PublishContext) -> Value {
             }),
         );
     }
-    if let (Some(heading), Some(speed)) = (finite(k.heading_deg), finite(k.speed_mps)) {
+    if let Some(heading) = finite(k.heading_deg) {
         doc.insert(
             "kinematics".into(),
             json!({
-                "velocity": speed,
+                "velocity": finite(k.speed_mps).unwrap_or(0.0),
                 "heading": heading,
                 "acceleration": 0.0,
                 "vertical_speed": finite(k.vertical_rate_mps).unwrap_or(0.0),
@@ -261,11 +261,21 @@ mod tests {
         obs.kinematics.speed_mps = Some(3.0);
         obs.uncertainty = None;
         let uid: Uid = "OTK000000002".parse().unwrap();
-        let doc = to_document(&SystemTrack::from_first_observation(uid, obs), &ctx());
+        let doc = to_document(
+            &SystemTrack::from_first_observation(uid, obs.clone()),
+            &ctx(),
+        );
         for k in ["velocity", "kinematics", "position_error"] {
             assert!(doc.get(k).is_none(), "{k} should be omitted");
         }
         assert_eq!(doc["position"]["cep_m"], 0.0);
+
+        // Heading alone still publishes kinematics, with speed 0 if unknown.
+        obs.kinematics = Default::default();
+        obs.kinematics.heading_deg = Some(90.0);
+        let doc = to_document(&SystemTrack::from_first_observation(uid, obs), &ctx());
+        assert_eq!(doc["kinematics"]["velocity"], 0.0);
+        assert!(doc.get("velocity").is_none());
         // Serialises without NaN.
         serde_json::to_string(&doc).unwrap();
     }

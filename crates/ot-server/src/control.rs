@@ -1,8 +1,7 @@
 //! The control plane: REST API and the React UI.
 //!
-//! Phase 0 exposes health, a status summary of every dependency, and read
-//! access to system tracks and their graph history. Source, schema and track
-//! management routes arrive with their phases.
+//! Health, a status summary of every dependency, system tracks and their
+//! graph history here; sources, registry and metrics in [`crate::api`].
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -33,7 +32,7 @@ pub struct AppState {
 
 impl AppState {
     /// Run a SQLite call off the async runtime.
-    async fn with_db<T: Send + 'static>(
+    pub(crate) async fn with_db<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Db) -> ot_store::sqlite::Result<T> + Send + 'static,
     ) -> Result<T, ApiError> {
@@ -53,7 +52,8 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     let api = Router::new()
         .route("/status", get(status))
         .route("/tracks/{uid}", get(track))
-        .route("/tracks/{uid}/explain", get(explain));
+        .route("/tracks/{uid}/explain", get(explain))
+        .merge(crate::api::routes());
 
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -142,19 +142,31 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn internal(m: impl Into<String>) -> Self {
+    pub(crate) fn internal(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: m.into(),
         }
     }
-    fn not_found(m: impl Into<String>) -> Self {
+    pub(crate) fn not_found(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             message: m.into(),
         }
     }
-    fn bad_request(m: impl Into<String>) -> Self {
+    pub(crate) fn unprocessable(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: m.into(),
+        }
+    }
+    pub(crate) fn conflict(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: m.into(),
+        }
+    }
+    pub(crate) fn bad_request(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: m.into(),

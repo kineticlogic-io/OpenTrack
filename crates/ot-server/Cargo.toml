@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 ot-core.workspace = true
 ot-peat.workspace = true
+ot-source.workspace = true
 ot-store.workspace = true
 anyhow.workspace = true
 axum.workspace = true

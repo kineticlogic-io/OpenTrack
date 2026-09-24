@@ -200,11 +200,21 @@ impl Classification {
         })
     }
 
-    /// The CoT type to publish. An explicit type wins; otherwise one is built
-    /// from domain and affiliation (`a-<affiliation>-<domain>`).
+    /// The CoT type to publish. An explicit type wins, with its affiliation
+    /// atom replaced when an affiliation is set explicitly (affiliation policy
+    /// outranks a feed's default `u`); otherwise one is built from domain and
+    /// affiliation (`a-<affiliation>-<domain>`).
     pub fn cot_type_or_derived(&self) -> String {
         if let Some(t) = self.cot_type.as_deref().filter(|t| !t.is_empty()) {
-            return t.to_owned();
+            let mut parts: Vec<&str> = t.split('-').collect();
+            return match self.affiliation {
+                Some(aff) if parts.len() >= 2 && parts[0] == "a" => {
+                    let atom = aff.cot_atom().to_string();
+                    parts[1] = &atom;
+                    parts.join("-")
+                }
+                _ => t.to_owned(),
+            };
         }
         let aff = self.effective_affiliation().unwrap_or(Affiliation::Unknown);
         match self.effective_domain() {
@@ -537,6 +547,13 @@ pub(crate) mod tests {
         assert_eq!(c.effective_domain(), Some(Domain::Air));
         assert_eq!(c.effective_affiliation(), Some(Affiliation::Friend));
         assert_eq!(c.cot_type_or_derived(), "a-f-A-M-F");
+
+        let c = Classification {
+            cot_type: Some("a-u-S-C".into()),
+            affiliation: Some(Affiliation::Hostile),
+            ..Default::default()
+        };
+        assert_eq!(c.cot_type_or_derived(), "a-h-S-C");
 
         let c = Classification {
             cot_type: Some("b-m-p-s-p-i".into()),

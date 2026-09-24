@@ -1,0 +1,516 @@
+//! Declarative mapping: records to the authoritative track schema.
+//!
+//! A mapping is JSON. `reject` rules drop records before mapping (counted per
+//! reason). Every `rule` whose `when` holds is applied, so one record can feed
+//! both the static cache and a position report (AIS message 19 does). An
+//! `observation` rule yields a track report; a `static` rule yields identity
+//! fields that the static join attaches to later reports with the same key.
+//!
+//! ```json
+//! {
+//!   "reject": [ { "reason": "placeholder id", "when": { "path": "mmsi", "in": ["000000000"] } } ],
+//!   "rules": [ {
+//!     "name": "position",
+//!     "when": { "path": "MessageType", "eq": "PositionReport" },
+//!     "key": "MetaData.MMSI",
+//!     "identifiers": [ { "scheme": "mmsi", "value": "MetaData.MMSI" } ],
+//!     "fields": {
+//!       "position.latitude": "Message.PositionReport.Latitude",
+//!       "position.longitude": "Message.PositionReport.Longitude",
+//!       "kinematics.speed_mps": { "path": "Message.PositionReport.Sog", "transforms": ["knots_to_mps"] }
+//!     }
+//!   } ]
+//! }
+//! ```
+
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
+use ot_core::{Affiliation, Domain, Identifier, Observation, TrackState};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::expr::{Condition, ValueSpec, as_f64, as_string};
+use crate::path::Path;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MappingSpec {
+    /// Extension schema version this mapping targets.
+    #[serde(default = "one")]
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reject: Vec<RejectRule>,
+    pub rules: Vec<Rule>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RejectRule {
+    pub reason: String,
+    pub when: Condition,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleKind {
+    #[default]
+    Observation,
+    Static,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Condition>,
+    #[serde(default)]
+    pub kind: RuleKind,
+    /// The source's key for the object; becomes `source_track_key`.
+    pub key: ValueSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identifiers: Vec<IdentifierSpec>,
+    /// Values computed first and added to the record under these names
+    /// (use a `_` prefix to avoid clashing with record fields), e.g. `_body`.
+    #[serde(default, rename = "let", skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, ValueSpec>,
+    /// Track-schema field path to value spec.
+    pub fields: BTreeMap<String, ValueSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentifierSpec {
+    pub scheme: String,
+    pub value: ValueSpec,
+}
+
+/// What a target field holds, for coercion and validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldType {
+    Text,
+    Number,
+    Time,
+    Domain,
+    Affiliation,
+    State,
+}
+
+/// Every core field a mapping may write. Extension fields are `ext.<key>`.
+const TARGETS: &[(&str, FieldType)] = &[
+    ("name", FieldType::Text),
+    ("callsign", FieldType::Text),
+    ("observed_at", FieldType::Time),
+    ("position.latitude", FieldType::Number),
+    ("position.longitude", FieldType::Number),
+    ("position.altitude_hae_m", FieldType::Number),
+    ("uncertainty.circular_error_m", FieldType::Number),
+    ("uncertainty.vertical_error_m", FieldType::Number),
+    ("uncertainty.ellipse.semi_major_m", FieldType::Number),
+    ("uncertainty.ellipse.semi_minor_m", FieldType::Number),
+    ("uncertainty.ellipse.orientation_deg", FieldType::Number),
+    ("kinematics.course_deg", FieldType::Number),
+    ("kinematics.speed_mps", FieldType::Number),
+    ("kinematics.heading_deg", FieldType::Number),
+    ("kinematics.vertical_rate_mps", FieldType::Number),
+    ("classification.cot_type", FieldType::Text),
+    ("classification.domain", FieldType::Domain),
+    ("classification.affiliation", FieldType::Affiliation),
+    ("platform.type_code", FieldType::Text),
+    ("platform.class", FieldType::Text),
+    ("platform.name", FieldType::Text),
+    ("platform.flag", FieldType::Text),
+    ("platform.hull", FieldType::Text),
+    ("provenance.sensor_code", FieldType::Text),
+    ("provenance.source_code", FieldType::Text),
+    ("provenance.confidence", FieldType::Number),
+    ("state", FieldType::State),
+];
+
+fn target_type(field: &str) -> Option<FieldType> {
+    if let Some(key) = field.strip_prefix("ext.") {
+        return (!key.is_empty() && !key.contains('.')).then_some(FieldType::Text);
+    }
+    TARGETS.iter().find(|(f, _)| *f == field).map(|(_, t)| *t)
+}
+
+/// Names of every mappable core field, for the UI.
+pub fn target_fields() -> impl Iterator<Item = &'static str> {
+    TARGETS.iter().map(|(f, _)| *f)
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum MappingError {
+    #[error("rule {rule:?}: unknown target field {field:?}")]
+    UnknownField { rule: String, field: String },
+    #[error("rule {0:?}: an observation rule must map position.latitude and position.longitude")]
+    NoPosition(String),
+    #[error("mapping has no rules")]
+    NoRules,
+    #[error("rule names must be unique: {0:?}")]
+    DuplicateRule(String),
+}
+
+/// One mapped output of a record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mapped {
+    pub rule: String,
+    pub kind: RuleKind,
+    pub key: String,
+    pub identifiers: Vec<Identifier>,
+    /// Target fields as a nested object (`position.latitude` → `{"position":{"latitude":..}}`).
+    pub fields: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapOutcome {
+    Rejected(String),
+    /// No rule matched, or every matching rule lacked a key.
+    Unmatched,
+    Mapped(Vec<Mapped>),
+}
+
+impl MappingSpec {
+    pub fn validate(&self) -> Result<(), MappingError> {
+        if self.rules.is_empty() {
+            return Err(MappingError::NoRules);
+        }
+        let mut names = std::collections::HashSet::new();
+        for rule in &self.rules {
+            if !names.insert(rule.name.as_str()) {
+                return Err(MappingError::DuplicateRule(rule.name.clone()));
+            }
+            for field in rule.fields.keys() {
+                if target_type(field).is_none() {
+                    return Err(MappingError::UnknownField {
+                        rule: rule.name.clone(),
+                        field: field.clone(),
+                    });
+                }
+            }
+            if rule.kind == RuleKind::Observation
+                && !(rule.fields.contains_key("position.latitude")
+                    && rule.fields.contains_key("position.longitude"))
+            {
+                return Err(MappingError::NoPosition(rule.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn apply(&self, record: &Value) -> MapOutcome {
+        if let Some(r) = self.reject.iter().find(|r| r.when.eval(record)) {
+            return MapOutcome::Rejected(r.reason.clone());
+        }
+        let mut out = Vec::new();
+        for rule in &self.rules {
+            if rule.when.as_ref().is_some_and(|c| !c.eval(record)) {
+                continue;
+            }
+            let bound;
+            let record = if rule.bindings.is_empty() {
+                record
+            } else {
+                let mut r = record.clone();
+                for (name, spec) in &rule.bindings {
+                    let v = spec.eval(&r);
+                    if let Value::Object(m) = &mut r {
+                        m.insert(name.clone(), v);
+                    }
+                }
+                bound = r;
+                &bound
+            };
+            let key = rule.key.eval(record);
+            if key.is_null() || as_string(&key).trim().is_empty() {
+                continue;
+            }
+            let identifiers = rule
+                .identifiers
+                .iter()
+                .filter_map(|i| {
+                    let v = i.value.eval(record);
+                    let s = as_string(&v);
+                    (!v.is_null() && !s.trim().is_empty())
+                        .then(|| Identifier::new(i.scheme.clone(), s.trim()))
+                })
+                .collect();
+            let mut fields = Value::Object(Map::new());
+            for (target, spec) in &rule.fields {
+                let v = coerce(target, spec.eval(record));
+                if !v.is_null() {
+                    let path: Path = target.parse().expect("validated target");
+                    path.set(&mut fields, v);
+                }
+            }
+            out.push(Mapped {
+                rule: rule.name.clone(),
+                kind: rule.kind,
+                key: as_string(&key).trim().to_owned(),
+                identifiers,
+                fields,
+            });
+        }
+        if out.is_empty() {
+            MapOutcome::Unmatched
+        } else {
+            MapOutcome::Mapped(out)
+        }
+    }
+}
+
+/// Coerce a value to its target's type; values that cannot be coerced become
+/// null (the field is then simply absent).
+fn coerce(target: &str, v: Value) -> Value {
+    if v.is_null() {
+        return v;
+    }
+    match target_type(target) {
+        Some(FieldType::Number) => as_f64(&v).map_or(Value::Null, |x| {
+            serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number)
+        }),
+        Some(FieldType::Text) if target.starts_with("ext.") => v,
+        Some(FieldType::Text) => {
+            let s = as_string(&v);
+            if s.trim().is_empty() {
+                Value::Null
+            } else {
+                Value::String(s.trim().to_owned())
+            }
+        }
+        Some(FieldType::Time) => crate::expr::parse_time_value(&v),
+        Some(FieldType::Domain) => parse_domain(&as_string(&v))
+            .and_then(|d| serde_json::to_value(d).ok())
+            .unwrap_or(Value::Null),
+        Some(FieldType::Affiliation) => parse_affiliation(&as_string(&v))
+            .and_then(|a| serde_json::to_value(a).ok())
+            .unwrap_or(Value::Null),
+        Some(FieldType::State) => {
+            serde_json::from_value::<TrackState>(Value::String(as_string(&v).trim().to_lowercase()))
+                .ok()
+                .and_then(|s| serde_json::to_value(s).ok())
+                .unwrap_or(Value::Null)
+        }
+        None => Value::Null,
+    }
+}
+
+/// Accepts enum names (`surface`) or CoT battle-dimension atoms (`S`).
+fn parse_domain(s: &str) -> Option<Domain> {
+    let s = s.trim();
+    serde_json::from_value(Value::String(s.to_lowercase()))
+        .ok()
+        .or_else(|| Domain::from_cot_atom(s))
+        .or_else(|| match s.to_lowercase().as_str() {
+            "sea" | "maritime" => Some(Domain::Surface),
+            "subsea" | "underwater" => Some(Domain::Subsurface),
+            "land" => Some(Domain::Ground),
+            _ => None,
+        })
+}
+
+/// Accepts enum names (`friend`, `assumed_friend`) or CoT atoms (`f`).
+fn parse_affiliation(s: &str) -> Option<Affiliation> {
+    let s = s.trim();
+    serde_json::from_value(Value::String(s.to_lowercase().replace([' ', '-'], "_")))
+        .ok()
+        .or_else(|| Affiliation::from_cot_atom(&s.to_lowercase()))
+}
+
+/// Merge `extra` into `base` wherever `base` has no value (static join).
+pub fn fill_missing(base: &mut Value, extra: &Value) {
+    let (Value::Object(b), Value::Object(e)) = (base, extra) else {
+        return;
+    };
+    for (k, v) in e {
+        match b.get_mut(k) {
+            None | Some(Value::Null) => {
+                b.insert(k.clone(), v.clone());
+            }
+            Some(existing @ Value::Object(_)) => fill_missing(existing, v),
+            Some(_) => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum FinalizeError {
+    #[error("no position")]
+    NoPosition,
+    #[error("invalid observation: {0}")]
+    Invalid(String),
+}
+
+/// Build the typed observation from mapped fields plus pipeline context.
+pub fn finalize(
+    source_id: &str,
+    schema_version: u32,
+    mapped: &Mapped,
+    received_at: DateTime<Utc>,
+) -> Result<Observation, FinalizeError> {
+    let f = &mapped.fields;
+    if f.pointer("/position/latitude").is_none() || f.pointer("/position/longitude").is_none() {
+        return Err(FinalizeError::NoPosition);
+    }
+    let mut obj = match f {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    obj.insert("schema_version".into(), schema_version.into());
+    obj.insert("source_id".into(), source_id.into());
+    obj.insert("source_track_key".into(), mapped.key.clone().into());
+    obj.insert(
+        "identifiers".into(),
+        serde_json::to_value(&mapped.identifiers).expect("identifiers serialise"),
+    );
+    let received = received_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    obj.insert("received_at".into(), received.clone().into());
+    obj.entry("observed_at").or_insert_with(|| received.into());
+    let obs: Observation = serde_json::from_value(Value::Object(obj))
+        .map_err(|e| FinalizeError::Invalid(e.to_string()))?;
+    obs.validate()
+        .map_err(|e| FinalizeError::Invalid(e.to_string()))?;
+    Ok(obs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn spec(v: Value) -> MappingSpec {
+        let s: MappingSpec = serde_json::from_value(v).unwrap();
+        s.validate().unwrap();
+        s
+    }
+
+    fn ais() -> MappingSpec {
+        spec(json!({
+            "reject": [ { "reason": "placeholder MMSI", "when": { "path": "MetaData.MMSI", "in": [123456789] } } ],
+            "rules": [
+                { "name": "static", "kind": "static",
+                  "when": { "path": "MessageType", "eq": "ShipStaticData" },
+                  "key": "MetaData.MMSI",
+                  "fields": { "name": { "path": "Message.ShipStaticData.Name", "transforms": ["trim", "nonempty"] },
+                              "callsign": "Message.ShipStaticData.CallSign" } },
+                { "name": "position",
+                  "when": { "path": "MessageType", "eq": "PositionReport" },
+                  "key": "MetaData.MMSI",
+                  "identifiers": [ { "scheme": "mmsi", "value": "MetaData.MMSI" } ],
+                  "fields": {
+                      "position.latitude": "Message.PositionReport.Latitude",
+                      "position.longitude": "Message.PositionReport.Longitude",
+                      "kinematics.speed_mps": { "path": "Message.PositionReport.Sog", "null_if": [102.3], "transforms": ["knots_to_mps"] },
+                      "kinematics.heading_deg": { "path": "Message.PositionReport.TrueHeading", "null_if": [511] },
+                      "observed_at": { "path": "MetaData.time_utc", "transforms": ["time"] },
+                      "classification.domain": { "const": "S" },
+                      "provenance.confidence": "Message.PositionReport.Conf"
+                  } }
+            ]
+        }))
+    }
+
+    #[test]
+    fn maps_a_position_report_end_to_end() {
+        let rec = json!({
+            "MessageType": "PositionReport",
+            "MetaData": { "MMSI": 338924210, "time_utc": "2026-09-24 12:00:00.5 +0000 UTC" },
+            "Message": { "PositionReport": { "Latitude": 32.68, "Longitude": -117.23, "Sog": 10.0,
+                                             "TrueHeading": 511, "Conf": "0.9" } }
+        });
+        let MapOutcome::Mapped(out) = ais().apply(&rec) else {
+            panic!("not mapped")
+        };
+        assert_eq!(out.len(), 1);
+        let m = &out[0];
+        assert_eq!(m.key, "338924210");
+        assert_eq!(m.identifiers, vec![Identifier::new("mmsi", "338924210")]);
+        let obs = finalize("ais", 1, m, Utc::now()).unwrap();
+        assert_eq!(obs.position.latitude, 32.68);
+        assert!((obs.kinematics.speed_mps.unwrap() - 5.14444).abs() < 1e-9);
+        assert_eq!(obs.kinematics.heading_deg, None);
+        assert_eq!(obs.classification.domain, Some(Domain::Surface));
+        assert_eq!(obs.provenance.confidence, Some(0.9));
+        assert_eq!(
+            obs.observed_at.to_rfc3339(),
+            "2026-09-24T12:00:00.500+00:00"
+        );
+    }
+
+    #[test]
+    fn static_rules_reject_rules_and_the_join() {
+        let spec = ais();
+        let rec = json!({"MessageType": "ShipStaticData", "MetaData": {"MMSI": 1},
+                         "Message": {"ShipStaticData": {"Name": "TED STEVENS  ", "CallSign": "NTED"}}});
+        let MapOutcome::Mapped(out) = spec.apply(&rec) else {
+            panic!()
+        };
+        assert_eq!(out[0].kind, RuleKind::Static);
+        assert_eq!(
+            out[0].fields,
+            json!({"name": "TED STEVENS", "callsign": "NTED"})
+        );
+
+        let mut base = json!({"name": null, "position": {"latitude": 1.0}});
+        fill_missing(&mut base, &out[0].fields);
+        assert_eq!(base["name"], "TED STEVENS");
+
+        let bad = json!({"MessageType": "PositionReport", "MetaData": {"MMSI": 123456789}});
+        assert_eq!(
+            spec.apply(&bad),
+            MapOutcome::Rejected("placeholder MMSI".into())
+        );
+        assert_eq!(
+            spec.apply(&json!({"MessageType": "Other"})),
+            MapOutcome::Unmatched
+        );
+    }
+
+    #[test]
+    fn validation_catches_typos_and_missing_position() {
+        let typo = json!({"rules": [{"name": "p", "key": "id", "fields": {
+            "position.latitude": "a", "position.longitude": "b", "kinematic.speed_mps": "c"}}]});
+        let s: MappingSpec = serde_json::from_value(typo).unwrap();
+        assert!(matches!(
+            s.validate(),
+            Err(MappingError::UnknownField { .. })
+        ));
+        let nopos = json!({"rules": [{"name": "p", "key": "id", "fields": {"name": "n"}}]});
+        let s: MappingSpec = serde_json::from_value(nopos).unwrap();
+        assert_eq!(s.validate(), Err(MappingError::NoPosition("p".into())));
+        let ext = json!({"rules": [{"name": "p", "key": "id", "fields": {
+            "position.latitude": "a", "position.longitude": "b", "ext.squawk": "sq"}}]});
+        serde_json::from_value::<MappingSpec>(ext)
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_values_fail_finalize_or_drop_quietly() {
+        let s = spec(json!({"rules": [{"name": "p", "key": "id", "fields": {
+            "position.latitude": "lat", "position.longitude": "lon",
+            "classification.affiliation": "aff", "kinematics.speed_mps": "spd"}}]}));
+        let MapOutcome::Mapped(out) =
+            s.apply(&json!({"id": 7, "lat": 91, "lon": 0, "aff": "zz", "spd": "fast"}))
+        else {
+            panic!()
+        };
+        assert!(
+            out[0]
+                .fields
+                .pointer("/classification/affiliation")
+                .is_none()
+        );
+        assert!(out[0].fields.pointer("/kinematics/speed_mps").is_none());
+        assert!(matches!(
+            finalize("s", 1, &out[0], Utc::now()),
+            Err(FinalizeError::Invalid(_))
+        ));
+    }
+}

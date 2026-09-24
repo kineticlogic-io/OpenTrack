@@ -9,8 +9,11 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use ot_peat::PeatClient;
 
+mod api;
 mod config;
 mod control;
+mod engine;
+mod sources;
 mod synthetic;
 mod writer;
 
@@ -37,12 +40,18 @@ enum Command {
     Serve(ServeArgs),
     /// Run the peat writer (Redis outbox to peat-node).
     Writer(WriterArgs),
-    /// Run the control plane and peat writer in one process.
+    /// Run every enabled source (transports and pipelines).
+    Sources,
+    /// Run the engine (source tracks to system tracks, lifecycle).
+    Engine(EngineArgs),
+    /// Run every role in one process: control plane, sources, engine, writer.
     All {
         #[command(flatten)]
         serve: ServeArgs,
         #[command(flatten)]
         writer: WriterArgs,
+        #[command(flatten)]
+        engine: EngineArgs,
     },
     /// Push synthetic tracks through the pipeline.
     Synthetic(synthetic::SyntheticArgs),
@@ -77,6 +86,30 @@ struct WriterArgs {
     min_interval_secs: f64,
 }
 
+#[derive(Debug, Clone, Args)]
+struct EngineArgs {
+    /// Consumer name within the engine group.
+    #[arg(long, env = "OT_ENGINE_CONSUMER", default_value = "engine-1")]
+    engine_consumer: String,
+    /// Observations before a tentative system track is confirmed.
+    #[arg(long, env = "OT_CONFIRM_AFTER", default_value_t = 3)]
+    confirm_after: u64,
+    /// Hours without a report before a system track is dropped.
+    #[arg(long, env = "OT_DROP_AFTER_HOURS", default_value_t = 6.0)]
+    drop_after_hours: f64,
+}
+
+impl EngineArgs {
+    fn settings(&self) -> engine::EngineSettings {
+        engine::EngineSettings {
+            consumer: self.engine_consumer.clone(),
+            confirm_after: self.confirm_after.max(1),
+            drop_after: Duration::from_secs_f64(self.drop_after_hours.max(0.01) * 3600.0),
+            ..Default::default()
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
@@ -94,11 +127,24 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Serve(args) => serve(common, args).await,
         Command::Writer(args) => run_writer(common, args).await,
+        Command::Sources => {
+            common.open_db()?;
+            sources::run(common, shutdown_signal()).await
+        }
+        Command::Engine(args) => run_engine(common, args).await,
         Command::All {
             serve: s,
             writer: w,
+            engine: e,
         } => {
-            tokio::try_join!(serve(common.clone(), s), run_writer(common, w))?;
+            // Migrate once before the roles open the database concurrently.
+            common.open_db()?;
+            tokio::try_join!(
+                serve(common.clone(), s),
+                run_writer(common.clone(), w),
+                sources::run(common.clone(), shutdown_signal()),
+                run_engine(common, e),
+            )?;
             Ok(())
         }
         Command::Synthetic(args) => synthetic::run(&common, args).await,
@@ -163,6 +209,14 @@ async fn run_writer(common: Common, args: WriterArgs) -> anyhow::Result<()> {
     );
     w.run(shutdown_signal()).await?;
     Ok(())
+}
+
+async fn run_engine(common: Common, args: EngineArgs) -> anyhow::Result<()> {
+    common.open_db()?;
+    engine::Engine::new(common, args.settings())
+        .await?
+        .run(shutdown_signal())
+        .await
 }
 
 async fn shutdown_signal() {

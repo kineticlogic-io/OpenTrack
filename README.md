@@ -11,7 +11,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | Phase | Scope | State |
 |-------|-------|-------|
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, peat writer, UI shell | **done** |
-| 1. Source framework | Transports, JSON / CoT codecs, mapping, workers | next |
+| 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **in progress** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | |
 | 3. Correlation engine | Source vs system tracks, pairing approaches, best source | |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
@@ -25,7 +25,9 @@ crates/
   ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, peat-node wire format
   ot-store    SQLite (decisions, config, temporal track graph) and Redis (streams, live state)
   ot-peat     peat-node sidecar gRPC client (proto compiled with protox; no protoc needed)
-  ot-server   the `opentrack` binary: serve | writer | all | migrate | synthetic
+  ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, throttle
+  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
+docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
 proto/        peat_sidecar.proto
 ui/           React + TypeScript (Vite) on openstare's stareSDK components
 ```
@@ -45,8 +47,12 @@ Requires Rust (stable), Node 22, Redis and a reachable peat-node sidecar.
 cargo build --release
 (cd ui && npm ci && npm run build)
 
-# control plane (API + UI on :8090) and peat writer in one process
+# every role in one process: control plane (API + UI on :8090), sources, engine, peat writer
 ./target/release/opentrack all
+
+# add a source through the API, then enable it
+curl -X POST -H 'content-type: application/json' --data @docs/examples/adsb-lol.json localhost:8090/api/v1/sources
+curl -X POST localhost:8090/api/v1/sources/adsb-lol/enable
 
 # phase 0 exit check: push a synthetic track through, verify it on peat-node, then retire it
 ./target/release/opentrack synthetic --verify --retire

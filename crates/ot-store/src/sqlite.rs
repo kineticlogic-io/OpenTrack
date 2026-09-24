@@ -10,7 +10,10 @@ use serde_json::Value;
 use crate::graph::{self, EdgeKind, NodeKind};
 
 /// Ordered migrations. Append only; never edit a released one.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_registry.sql"),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -195,6 +198,22 @@ impl Db {
         })
     }
 
+    /// Every live source-track → system-track link, as
+    /// (`<source>/<key>`, UID). The engine warms its map from this.
+    pub fn live_reports(&self) -> Result<Vec<(String, Uid)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.key, d.key FROM edges e
+             JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst
+             WHERE e.kind = 'REPORTS_FOR' AND e.valid_to_ms IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.map(|r| {
+            let (src, uid) = r?;
+            Ok((src, uid.parse()?))
+        })
+        .collect()
+    }
+
     /// Every edge that ever touched a system track, with the decisions that
     /// opened and closed it: the answer to "why is this one track?".
     pub fn explain(&self, uid: Uid) -> Result<Vec<graph::EdgeRecord>> {
@@ -261,9 +280,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 1);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 2);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 1);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 2);
     }
 
     #[test]

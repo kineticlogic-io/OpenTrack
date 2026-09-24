@@ -54,6 +54,21 @@ impl Keys {
         format!("{}:out", self.ns)
     }
 
+    /// Cached static (identity) fields of a source track, for the static join.
+    pub fn static_cache(&self, source: &str, key: &str) -> String {
+        format!("{}:cache:{source}:{key}", self.ns)
+    }
+
+    /// Pattern for all of a source's static cache entries.
+    pub fn static_cache_all(&self, source: &str) -> String {
+        format!("{}:cache:{source}:*", self.ns)
+    }
+
+    /// Live status of a source worker (link state, last error), with a TTL.
+    pub fn source_status(&self, source: &str) -> String {
+        format!("{}:status:{source}", self.ns)
+    }
+
     /// `minute` is Unix minutes (epoch seconds / 60).
     pub fn metrics(&self, source: &str, minute: i64) -> String {
         format!("{}:metrics:{source}:{minute}", self.ns)
