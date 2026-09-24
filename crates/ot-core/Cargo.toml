@@ -1,0 +1,15 @@
+[package]
+name = "ot-core"
+description = "OpenTrack core types: the authoritative track schema, system track UIDs and the peat-node wire format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

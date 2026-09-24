@@ -1,0 +1,22 @@
+# Runs OpenTrack beside an existing peat-node sidecar and Redis on the host
+# network (as data-services does today). Adjust OT_* to your deployment.
+services:
+  opentrack:
+    build: .
+    image: opentrack:dev
+    container_name: opentrack
+    network_mode: host
+    restart: unless-stopped
+    command: ["all"]
+    environment:
+      OT_BIND: ${OT_BIND:-0.0.0.0:8090}
+      OT_REDIS_URL: ${OT_REDIS_URL:-redis://127.0.0.1:6379}
+      OT_PEAT_ADDR: ${OT_PEAT_ADDR:-http://127.0.0.1:50051}
+      OT_SITE_CODE: ${OT_SITE_CODE:-OTK}
+      OT_TRACKS_COLLECTION: ${OT_TRACKS_COLLECTION:-tracks}
+      OT_LOG: ${OT_LOG:-info}
+    volumes:
+      - opentrack-data:/data
+
+volumes:
+  opentrack-data:

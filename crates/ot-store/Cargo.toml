@@ -1,0 +1,23 @@
+[package]
+name = "ot-store"
+description = "OpenTrack storage: SQLite (decisions, configuration, track graph) and Redis (live state, streams)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ot-core.workspace = true
+chrono.workspace = true
+redis.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
