@@ -340,23 +340,56 @@ pub async fn run(
             let interval = Duration::from_secs_f64(interval_secs.max(0.1));
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Extra wait while the server is rate limiting or overloaded.
+            let mut backoff = Duration::ZERO;
             loop {
                 ticker.tick().await;
+                if !backoff.is_zero() {
+                    tokio::time::sleep(backoff).await;
+                }
                 let mut req = client.request(method.clone(), &url).headers(hdrs.clone());
                 if let Some(b) = &body {
                     req = req.body(b.clone());
                 }
                 let res = async {
-                    let resp = req.send().await?.error_for_status()?;
-                    anyhow::Ok(resp.bytes().await?)
+                    let resp = req.send().await?;
+                    let code = resp.status();
+                    if code == reqwest::StatusCode::TOO_MANY_REQUESTS
+                        || code == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    {
+                        let retry_after = resp
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.trim().parse::<f64>().ok());
+                        return Ok(Err((code, retry_after)));
+                    }
+                    let resp = resp.error_for_status()?;
+                    anyhow::Ok(Ok(resp.bytes().await?))
                 }
                 .await;
                 match res {
-                    Ok(bytes) => {
+                    Ok(Ok(bytes)) => {
+                        backoff = Duration::ZERO;
                         connected(&status);
                         let mut frame = Frame::new(bytes);
                         frame.origin = Some(url.clone());
                         emit(&tx, &status, frame).await?;
+                    }
+                    Ok(Err((code, retry_after))) => {
+                        // Rate limited: honour Retry-After, else back off
+                        // exponentially (to five minutes) so the limit can clear.
+                        backoff = match retry_after {
+                            Some(secs) => Duration::from_secs_f64(secs.clamp(0.0, 3600.0)),
+                            None => (backoff * 2).max(interval).min(Duration::from_secs(300)),
+                        };
+                        tracing::warn!(%url, %code, ?backoff, "poll rate limited; backing off");
+                        set(&status, |s| {
+                            s.connected = false;
+                            s.errors += 1;
+                            s.last_error =
+                                Some(format!("{code}; next poll in {}s", backoff.as_secs()));
+                        });
                     }
                     Err(e) => {
                         // A failed poll is not fatal; count it and poll again.

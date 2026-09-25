@@ -16,6 +16,7 @@ ot-source.workspace = true
 ot-store.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
+rustls.workspace = true
 axum.workspace = true
 chrono.workspace = true
 clap.workspace = true

@@ -11,7 +11,6 @@ RUN npm run build
 FROM rust:1-bookworm AS server
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY proto ./proto
 COPY crates ./crates
 RUN cargo build --release --locked --bin opentrack
 

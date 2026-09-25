@@ -1,6 +1,6 @@
 # Runs OpenTrack beside Redis on the host network, publishing system tracks to
-# the NATS server OpenStare runs. Adjust OT_* to your deployment; see the
-# README for NATS auth (OT_NATS_CREDS, OT_NATS_TOKEN or OT_NATS_USER/PASSWORD).
+# the NATS server OpenStare runs. Settings and secrets come from `.env` next
+# to this file (never committed); see the README for every OT_* variable.
 services:
   opentrack:
     build: .
@@ -9,6 +9,7 @@ services:
     network_mode: host
     restart: unless-stopped
     command: ["all"]
+    env_file: .env
     environment:
       OT_BIND: ${OT_BIND:-0.0.0.0:8090}
       OT_REDIS_URL: ${OT_REDIS_URL:-redis://127.0.0.1:6379}
@@ -18,7 +19,8 @@ services:
       OT_SITE_CODE: ${OT_SITE_CODE:-OTK}
       OT_LOG: ${OT_LOG:-info}
     volumes:
-      - opentrack-data:/data
+      # SQLite: sources, schema, registry, cards, decisions and the track graph.
+      - ${OT_DATA_DIR:-./data}:/data
 
   # A local NATS with JetStream, for development only (`--profile dev-nats`).
   # In deployment OpenTrack connects to OpenStare's server instead.
@@ -31,5 +33,4 @@ services:
       - nats-data:/data
 
 volumes:
-  opentrack-data:
   nats-data:

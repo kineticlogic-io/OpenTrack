@@ -113,6 +113,7 @@ impl EngineArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    install_crypto();
     init_tracing();
     let cli = Cli::parse();
     let common = cli.common;
@@ -232,6 +233,14 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
+/// Pick the TLS crypto provider for the whole process. Several dependencies
+/// (WebSocket, HTTP, MQTT) use rustls and together enable more than one
+/// provider, so rustls cannot choose one itself and would panic on the first
+/// TLS connection.
+fn install_crypto() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_env("OT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
@@ -240,5 +249,17 @@ fn init_tracing() {
         builder.json().init();
     } else {
         builder.init();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tls_clients_can_be_built_after_install() {
+        super::install_crypto();
+        // What wss://, https:// and mqtts:// connections do first.
+        let _ = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
     }
 }

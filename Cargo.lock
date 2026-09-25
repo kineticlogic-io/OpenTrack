@@ -1401,6 +1401,7 @@ dependencies = [
  "ot-source",
  "ot-store",
  "rumqttc",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
