@@ -164,7 +164,7 @@ pub fn coerce(field: &ExtensionField, v: &Value) -> Option<Value> {
         },
         ExtType::Enum => {
             let s = as_string(v);
-            field.enum_values.contains(&s).then(|| Value::String(s))
+            field.enum_values.contains(&s).then_some(Value::String(s))
         }
         ExtType::Timestamp => Some(parse_time_value(v)).filter(|t| !t.is_null()),
         ExtType::Position => {
