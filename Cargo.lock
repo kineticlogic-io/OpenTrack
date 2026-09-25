@@ -1529,6 +1529,7 @@ dependencies = [
  "ot-nats",
  "ot-source",
  "ot-store",
+ "reqwest",
  "rumqttc",
  "rust_xlsxwriter",
  "rustls",

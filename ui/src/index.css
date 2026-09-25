@@ -571,3 +571,35 @@ body {
 .num-row > * {
   flex: 0 0 auto;
 }
+
+/* Classification banner (Settings), drawn as OpenStare draws it: fixed bars
+   top and bottom above everything. The colours are the operator's marking. */
+.classification-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 19px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  user-select: none;
+  pointer-events: none;
+}
+.classification-bar.top { top: 0; }
+.classification-bar.bottom { bottom: 0; }
+.page.with-banner { padding-top: 19px; padding-bottom: 19px; }
+.classification-preview {
+  display: inline-block;
+  padding: 2px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}

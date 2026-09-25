@@ -19,6 +19,7 @@ mod metrics;
 mod probe;
 mod registry_api;
 mod registry_sheet;
+mod settings_api;
 mod sources;
 mod synthetic;
 mod writer;

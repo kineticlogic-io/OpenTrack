@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { TbMoon, TbSun } from 'react-icons/tb'
 import { Badge, Button, DockProvider, PageHeader, Tabs, useTheme } from 'staresdk'
-import { api, type ServerStatus } from './api/client'
+import { api, type Banner, type ServerStatus } from './api/client'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
 
@@ -11,6 +11,7 @@ const SchemaPage = lazy(() => import('./pages/schema/SchemaPage'))
 const TrackDbPage = lazy(() => import('./pages/trackdb/TrackDbPage'))
 const CorrelationPage = lazy(() => import('./pages/correlation/CorrelationPage'))
 const RegistryPage = lazy(() => import('./pages/registry/RegistryPage'))
+const SettingsPage = lazy(() => import('./pages/settings/SettingsPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview' },
@@ -19,6 +20,7 @@ const VIEWS = [
   { id: 'tracks', label: 'Track Database' },
   { id: 'registry', label: 'Registry' },
   { id: 'schema', label: 'Schema' },
+  { id: 'settings', label: 'Settings' },
 ]
 
 export default function App() {
@@ -34,12 +36,38 @@ export default function App() {
   useEffect(() => {
     api.status().then(setStatus, () => setStatus(null))
   }, [])
+  // Site name and classification banner (Settings); the banner follows OpenStare's when set to.
+  const [siteName, setSiteName] = useState('')
+  const [banner, setBanner] = useState<Banner | null>(null)
+  const [settingsRev, setSettingsRev] = useState(0)
+  useEffect(() => {
+    const load = () => {
+      api.appSettings().then((r) => setSiteName(r.settings.site_name), () => {})
+      api.banner().then((r) => setBanner(r.banner.enabled ? r.banner : null), () => {})
+    }
+    load()
+    const t = setInterval(load, 60_000)
+    return () => clearInterval(t)
+  }, [settingsRev])
+  useEffect(() => {
+    document.title = siteName ? `OpenTrack · ${siteName}` : 'OpenTrack'
+  }, [siteName])
 
   return (
     <DockProvider>
-      <div className="page">
+      {banner && (
+        <>
+          <div className="classification-bar top" style={{ background: banner.background, color: banner.color }}>
+            {banner.text}
+          </div>
+          <div className="classification-bar bottom" style={{ background: banner.background, color: banner.color }}>
+            {banner.text}
+          </div>
+        </>
+      )}
+      <div className={banner ? 'page with-banner' : 'page'}>
         <PageHeader
-          title="OpenTrack"
+          title={siteName ? `OpenTrack · ${siteName}` : 'OpenTrack'}
           appName="OpenTrack"
           actions={
             <Button
@@ -67,6 +95,7 @@ export default function App() {
             {active === 'tracks' && <TrackDbPage selected={sub} onSelect={(id) => go('tracks', id)} />}
             {active === 'registry' && <RegistryPage />}
             {active === 'schema' && <SchemaPage />}
+            {active === 'settings' && <SettingsPage onSaved={() => setSettingsRev((n) => n + 1)} />}
           </Suspense>
         </main>
       </div>

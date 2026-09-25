@@ -119,10 +119,16 @@ async fn list_suggestions(
 }
 
 /// Queue a command for the engine and wait for its answer.
-async fn command(
+async fn command(s: &AppState, headers: &HeaderMap, cmd: Value) -> Result<Json<Value>, ApiError> {
+    command_waiting(s, headers, cmd, Duration::from_secs(10)).await
+}
+
+/// Queue a command for the engine and wait up to `wait` for its answer.
+pub(crate) async fn command_waiting(
     s: &AppState,
     headers: &HeaderMap,
     mut cmd: Value,
+    wait: Duration,
 ) -> Result<Json<Value>, ApiError> {
     let id = format!(
         "{}-{}",
@@ -135,7 +141,7 @@ async fn command(
         .push_command(&cmd)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    for _ in 0..100 {
+    for _ in 0..(wait.as_millis() / 100).max(1) {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Some(answer) = s
             .redis
@@ -152,9 +158,10 @@ async fn command(
             };
         }
     }
-    Err(ApiError::internal(
-        "the engine did not answer within 10 s (is it running?)",
-    ))
+    Err(ApiError::internal(format!(
+        "the engine did not answer within {} s (is it running?)",
+        wait.as_secs()
+    )))
 }
 
 async fn decide_suggestion(

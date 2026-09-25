@@ -286,6 +286,25 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const get = <T,>(path: string) => request<T>('GET', path)
 
+/** The classification banner as OpenStare shapes it. */
+export interface Banner {
+  enabled: boolean
+  text: string
+  background: string
+  color: string
+}
+
+export interface AppSettings {
+  site_name: string
+  banner: { mode: 'off' | 'manual' | 'openstare'; text: string; background: string; color: string; openstare_url: string }
+}
+
+export interface AppSettingsResponse {
+  settings: AppSettings
+  site_code: string
+  node_id: string
+}
+
 /** An entity as the registry list shows it, with its card values. */
 export interface RegistryListEntity {
   id: string
@@ -581,6 +600,14 @@ export const api = {
     request<SchemaVersion>('PUT', '/schema/draft', { fields, notes }),
   publishDraft: () => request<SchemaVersion>('POST', '/schema/draft/publish'),
   discardDraft: () => request<unknown>('DELETE', '/schema/draft'),
+
+  appSettings: () => get<AppSettingsResponse>('/settings'),
+  saveAppSettings: (settings: AppSettings) => request<AppSettingsResponse>('PUT', '/settings', settings),
+  banner: () => get<{ source: string; error?: string; banner: Banner }>('/public/banner'),
+  exportUrl: (what: 'tracks.geojson' | 'tracks.csv' | 'config') =>
+    what === 'config' ? '/api/v1/export/config' : `/api/v1/export/tracks?format=${what === 'tracks.csv' ? 'csv' : 'geojson'}`,
+  purge: (confirm: string, history: boolean) =>
+    request<{ retired: number; history?: { nodes: number; edges: number } | null }>('POST', '/admin/purge', { confirm, history }),
 
   registryEntities: (q: string, limit = 100, offset = 0) =>
     get<{ entities: RegistryListEntity[]; total: number }>(`/registry/entities?q=${enc(q)}&limit=${limit}&offset=${offset}`),

@@ -6,6 +6,7 @@
 //! and system track state, history and metrics. SQLite writes stay at human
 //! speed while Redis absorbs thousands of observations per second.
 
+mod app_settings;
 pub mod cards;
 pub mod correlation;
 pub mod graph;

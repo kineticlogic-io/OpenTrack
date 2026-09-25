@@ -36,7 +36,8 @@ ui/           React + TypeScript (Vite) on openstare's stareSDK components: Over
               system metrics), Sources (topology, list, add-source wizard, mapping studio with live
               preview), Correlation (suggestions, settings, decisions), Track Database (map,
               baseball card with provenance, card editor, tracks table), Registry (entities,
-              identifiers and cards; spreadsheet export and import), Schema workspace
+              identifiers and cards; spreadsheet export and import), Schema workspace, Settings
+              (site name, classification banner, data export, purge)
 ```
 
 Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
@@ -119,6 +120,17 @@ card, and opens its card. The whole registry exports as a spreadsheet (XLSX or C
 (`POST /api/v1/registry/import-sheet`): a dry run shows each row's change first, a row updates
 the entity its id or identifiers name or creates one, blank cells change nothing, an identifier is
 never taken from another entity, and nothing is written while any row has an error.
+
+The **Settings** tab sets the instance's display name (track UIDs keep the deployment's site code)
+and the **classification banner**, drawn top and bottom of every page as OpenStare draws it: off,
+set here (with the standard markings as presets), or following OpenStare's own banner
+(`<OpenStare>/api/public/banner`, read every minute; the marking set here stays up if OpenStare
+cannot be read). OpenTrack serves its banner the same way, at `GET /api/v1/public/banner`. It also
+exports the live tracks (GeoJSON or CSV, as published, with state, confidence and sources) and
+the configuration (sources, schema versions, correlation and instance settings, as one JSON file),
+and **purges** the tracks: every live track is retired (published ones are deleted downstream),
+optionally with the track graph's history; configuration, registry, cards and the decision log
+stay. A purge asks for the site code to be typed.
 
 ## Running
 

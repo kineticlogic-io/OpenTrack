@@ -1446,6 +1446,48 @@ impl Engine {
                     .await?;
                 Ok(json!({ "merged_into": into.doc_id() }))
             }
+            // Retire every live track (published ones are tombstoned), and
+            // with `history` delete the track graph too.
+            "purge" => {
+                let all = self.redis.list_system_tracks().await?;
+                let published: HashMap<Uid, bool> =
+                    all.iter().map(|t| (t.uid, t.is_published())).collect();
+                let uids: Vec<Uid> = published.keys().copied().collect();
+                let history = cmd["history"].as_bool().unwrap_or(false);
+                let (c, who, ids) = (self.common.clone(), actor.clone(), uids.clone());
+                let purged = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                    let mut db = c.open_db()?;
+                    for uid in ids {
+                        let d =
+                            Decision::new(&who, "purge").reason("the operator purged every track");
+                        match db.retire_system_track(uid, d) {
+                            Ok(_) | Err(ot_store::StoreError::NotFound(_)) => {}
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                    Ok(if history {
+                        Some(db.purge_track_history(Decision::new(&who, "purge_track_history"))?)
+                    } else {
+                        None
+                    })
+                })
+                .await??;
+                for uid in &uids {
+                    let was_published = if self.tracks.contains_key(uid) {
+                        self.forget(*uid)
+                    } else {
+                        published[uid]
+                    };
+                    self.retire_in_redis(*uid, was_published, "purged by an operator")
+                        .await?;
+                }
+                self.candidates.clear();
+                self.misses.clear();
+                Ok(json!({
+                    "retired": uids.len(),
+                    "history": purged.map(|(nodes, edges)| json!({"nodes": nodes, "edges": edges})),
+                }))
+            }
             "do_not_pair" => {
                 let (a, b) = (uid("a")?, uid("b")?);
                 let reason = cmd["reason"]
@@ -2332,6 +2374,48 @@ mod tests {
         entries
             .iter()
             .any(|x| matches!(&x.op, ot_store::OutboxOp::Tombstone { uid, .. } if *uid == who))
+    }
+
+    #[tokio::test]
+    async fn purge_retires_every_track_and_its_history() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[report("ais", "366", s, 32.0, -117.0, Some("366"))],
+            )
+            .await;
+            feed(
+                &mut e,
+                &[report("ais", "367", s, 33.0, -117.0, Some("367"))],
+            )
+            .await;
+        }
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(e.redis.list_system_tracks().await.unwrap().len(), 2);
+        let r = e
+            .command(&json!({"op": "purge", "history": true, "actor": "op:test"}))
+            .await
+            .unwrap();
+        assert_eq!(r["retired"], 2);
+        assert!(e.tracks.is_empty());
+        assert!(e.redis.list_system_tracks().await.unwrap().is_empty());
+        let c = e.common.clone();
+        let edges =
+            tokio::task::spawn_blocking(move || c.open_db().unwrap().explain(ship).unwrap())
+                .await
+                .unwrap();
+        assert!(edges.is_empty(), "history purged");
+        // The feed goes on: a new track, with a new UID.
+        feed(
+            &mut e,
+            &[report("ais", "366", 10, 32.0, -117.0, Some("366"))],
+        )
+        .await;
+        assert_ne!(track_of(&e, "ais", "366"), ship);
     }
 
     #[tokio::test]
