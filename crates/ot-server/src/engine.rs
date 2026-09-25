@@ -1,10 +1,17 @@
-//! The engine role.
+//! The engine role: source tracks in, system tracks out.
 //!
-//! Phase 1 engine: every source track becomes its own system track (1:1), so
-//! the pipeline is proven before correlation arrives in phase 3. It already
-//! owns what correlation will build on: system track creation through the
-//! track graph, the lifecycle (tentative → confirmed → lost → dropped) with
-//! per-domain stale times, and publishing through the outbox.
+//! Each new source track is correlated before it gets a system track of its
+//! own: when it shares an identifier (or a trusted registry entity) with a
+//! live system track from another source, and passes the kinematic sanity
+//! gate, it reports for that track instead. A source track that already has
+//! a system track of its own merges into a matching one when its identity
+//! appears later (a static report, a registry match). Every pairing and
+//! merge is a decision in the track graph with its evidence. A system track
+//! with several contributors shows the best of them, field group by field
+//! group (see [`crate::correlate::best_view`]).
+//!
+//! The engine also owns the lifecycle (tentative → confirmed → lost →
+//! dropped) with per-domain stale times, and publishing through the outbox.
 //!
 //! It also resolves each track's published `attributes` against the latest
 //! published output schema: the entity's card first (with a notice where a
@@ -15,12 +22,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use ot_core::{Domain, Observation, SystemTrack, TrackState, Uid};
+use ot_core::{Contributor, Domain, Observation, PairingType, SystemTrack, TrackState, Uid};
 use ot_source::schema::{ExtensionSchema, resolve_attributes};
 use ot_store::{Decision, RedisStore};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::config::Common;
+use crate::correlate::{self, Contribution, GateSettings};
 
 pub const GROUP: &str = "engine";
 
@@ -35,6 +43,11 @@ pub struct EngineSettings {
     pub stale_other: Duration,
     /// Time after the last report at which a track is dropped and tombstoned.
     pub drop_after: Duration,
+    /// Reports this close to a system track's newest one compete on quality
+    /// for its position (best-source selection).
+    pub freshness_secs: f64,
+    /// Sanity gate on identifier matches.
+    pub gate: GateSettings,
 }
 
 impl Default for EngineSettings {
@@ -47,6 +60,8 @@ impl Default for EngineSettings {
             stale_subsurface: Duration::from_secs(30 * 60),
             stale_other: Duration::from_secs(15 * 60),
             drop_after: Duration::from_secs(6 * 3600),
+            freshness_secs: 60.0,
+            gate: GateSettings::default(),
         }
     }
 }
@@ -72,7 +87,7 @@ pub enum Applied {
     OutOfOrder,
 }
 
-/// Apply an observation to a system track (1:1: the track's only source).
+/// Apply an observation to a system track whose only contributor reported it.
 pub fn apply(track: &mut SystemTrack, obs: Observation, confirm_after: u64) -> Applied {
     track.observation_count += 1;
     if let Some(c) = track.contributors.first_mut() {
@@ -81,14 +96,20 @@ pub fn apply(track: &mut SystemTrack, obs: Observation, confirm_after: u64) -> A
     if obs.observed_at < track.last_seen {
         return Applied::OutOfOrder;
     }
+    apply_view(track, obs, confirm_after)
+}
+
+/// Show a new view on a system track (one contributor's report, or the best
+/// of several) and update its state.
+pub fn apply_view(track: &mut SystemTrack, view: Observation, confirm_after: u64) -> Applied {
     let before_state = track.state;
-    let identity_changed = track.view.name != obs.name
-        || track.view.callsign != obs.callsign
-        || track.view.identifiers != obs.identifiers
+    let identity_changed = track.view.name != view.name
+        || track.view.callsign != view.callsign
+        || track.view.identifiers != view.identifiers
         || track.view.classification.cot_type_or_derived()
-            != obs.classification.cot_type_or_derived();
-    track.last_seen = obs.observed_at;
-    track.view = obs;
+            != view.classification.cot_type_or_derived();
+    track.last_seen = track.last_seen.max(view.observed_at);
+    track.view = view;
     track.state = if track.observation_count >= confirm_after {
         TrackState::Confirmed
     } else {
@@ -134,23 +155,7 @@ struct Attributes {
 /// The entity a track's registry match points to, when it was corroborated
 /// and unambiguous (so its card may speak for the track).
 fn entity_of(t: &SystemTrack) -> Option<String> {
-    let r = t.view.ext.get("registry")?;
-    let corroborated = r
-        .get("corroborated")
-        .or_else(|| r.get("applied"))
-        .and_then(Value::as_bool)
-        == Some(true);
-    let conflicted = r
-        .get("conflicts")
-        .and_then(Value::as_array)
-        .is_some_and(|c| !c.is_empty());
-    (corroborated && !conflicted)
-        .then(|| {
-            r.get("entity_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .flatten()
+    crate::correlate::trusted_entity(&t.view)
 }
 
 /// Re-resolve a track's entity, attributes and notices. True if any changed.
@@ -178,6 +183,10 @@ struct EngineCounts {
     observations: u64,
     /// System tracks created for new source tracks.
     created: u64,
+    /// New source tracks paired onto an existing system track.
+    paired: u64,
+    /// System tracks merged into another.
+    merged: u64,
     /// Changes published at once rather than throttled.
     urgent: u64,
     out_of_order: u64,
@@ -191,6 +200,8 @@ impl EngineCounts {
         [
             ("observations", self.observations),
             ("created", self.created),
+            ("paired", self.paired),
+            ("merged", self.merged),
             ("urgent", self.urgent),
             ("out_of_order", self.out_of_order),
             ("unreadable", self.unreadable),
@@ -211,8 +222,21 @@ pub struct Engine {
     /// `<source>/<key>` → system track.
     reports: HashMap<String, Uid>,
     tracks: HashMap<Uid, SystemTrack>,
+    /// `<source>/<key>` → its latest report, for best-source selection.
+    latest: HashMap<String, Observation>,
+    /// Identity key (see [`correlate::identity_keys`]) → the system track
+    /// that carries it. Checked on use, so a stale entry is harmless.
+    index: HashMap<String, Uid>,
     sources: Vec<String>,
+    /// Source id → priority (higher wins best-source selection).
+    priorities: HashMap<String, i64>,
     attrs: Attributes,
+}
+
+const DEFAULT_PRIORITY: i64 = 100;
+
+fn contributor_key(c: &Contributor) -> String {
+    format!("{}/{}", c.source_id, c.source_track_key)
 }
 
 impl Engine {
@@ -234,15 +258,23 @@ impl Engine {
             tracks = tracks.len(),
             "engine state loaded"
         );
-        Ok(Self {
+        let mut engine = Self {
             common,
             settings,
             redis,
             reports: reports.into_iter().collect(),
             tracks,
+            latest: HashMap::new(),
+            index: HashMap::new(),
             sources: Vec::new(),
+            priorities: HashMap::new(),
             attrs: Attributes::default(),
-        })
+        };
+        let uids: Vec<Uid> = engine.tracks.keys().copied().collect();
+        for uid in uids {
+            engine.index_track(uid);
+        }
+        Ok(engine)
     }
 
     pub async fn run(
@@ -286,15 +318,17 @@ impl Engine {
 
     async fn refresh_sources(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let mut ids: Vec<String> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let rows: Vec<(String, i64)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             Ok(c.open_db()?
                 .list_sources()?
                 .into_iter()
                 .filter(|s| s.enabled)
-                .map(|s| s.id)
+                .map(|s| (s.id, s.priority))
                 .collect())
         })
         .await??;
+        self.priorities = rows.iter().cloned().collect();
+        let mut ids: Vec<String> = rows.into_iter().map(|(id, _)| id).collect();
         ids.sort();
         if ids != self.sources {
             self.redis.ensure_obs_groups(&ids, GROUP).await?;
@@ -360,36 +394,6 @@ impl Engine {
         if batch.is_empty() {
             return Ok(());
         }
-        // Create system tracks for new source tracks in one transaction batch.
-        let new_keys: Vec<(String, String)> = batch
-            .iter()
-            .filter_map(|(_, _, obs)| obs.as_ref().ok())
-            .map(|o| (o.source_id.clone(), o.source_track_key.clone()))
-            .filter(|(s, k)| !self.reports.contains_key(&format!("{s}/{k}")))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        if !new_keys.is_empty() {
-            let c = self.common.clone();
-            let created = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(String, Uid)>> {
-                let mut db = c.open_db()?;
-                let mut out = Vec::new();
-                for (source, key) in new_keys {
-                    let (uid, _) = db.create_system_track(
-                        c.site,
-                        &source,
-                        &key,
-                        Decision::new("engine", "create_system_track")
-                            .reason("new source track; one system track per source track until correlation (phase 3)"),
-                    )?;
-                    out.push((format!("{source}/{key}"), uid));
-                }
-                Ok(out)
-            })
-            .await??;
-            self.reports.extend(created);
-        }
-
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
         for (source, id, obs) in batch {
@@ -402,37 +406,25 @@ impl Engine {
                     continue;
                 }
             };
-            let key = format!("{}/{}", obs.source_id, obs.source_track_key);
-            let Some(&uid) = self.reports.get(&key) else {
-                continue;
-            };
             self.redis
                 .put_source_track(&obs, Duration::from_secs(24 * 3600))
                 .await?;
-            let (track, urgent) = match self.tracks.get_mut(&uid) {
-                Some(t) => {
-                    let outcome = apply(t, obs, self.settings.confirm_after);
-                    if outcome == Applied::OutOfOrder {
-                        counts.out_of_order += 1;
-                        continue;
-                    }
-                    let before = t.entity_id.clone();
-                    resolve(&self.attrs, t);
-                    // A track gaining or losing its card is worth publishing now.
-                    let urgent = outcome == Applied::Significant || before != t.entity_id;
-                    (t.clone(), urgent)
-                }
-                None => {
-                    let mut t = SystemTrack::from_first_observation(uid, obs);
-                    resolve(&self.attrs, &mut t);
-                    self.tracks.insert(uid, t.clone());
-                    counts.created += 1;
-                    (t, true)
-                }
+            let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+            let uid = match self.reports.get(&key).copied() {
+                Some(uid) => self
+                    .maybe_merge(uid, &obs, &mut counts)
+                    .await?
+                    .unwrap_or(uid),
+                None => self.place(&obs, &mut counts).await?,
             };
-            counts.observations += 1;
-            counts.urgent += u64::from(urgent);
-            self.redis.put_system_track(&track, urgent).await?;
+            match self.observe(uid, obs).await? {
+                Some((track, urgent)) => {
+                    counts.observations += 1;
+                    counts.urgent += u64::from(urgent);
+                    self.redis.put_system_track(&track, urgent).await?;
+                }
+                None => counts.out_of_order += 1,
+            }
         }
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
@@ -441,6 +433,272 @@ impl Engine {
             .incr_metrics(crate::metrics::ENGINE, &counts.pairs())
             .await?;
         Ok(())
+    }
+
+    /// Record the identity keys a track's view carries, unless another live
+    /// track already holds them (that conflict is what pairing resolves).
+    fn index_track(&mut self, uid: Uid) {
+        let Some(t) = self.tracks.get(&uid) else {
+            return;
+        };
+        for k in correlate::identity_keys(&t.view) {
+            match self.index.get(&k) {
+                Some(u) if *u != uid && self.tracks.contains_key(u) => {}
+                _ => {
+                    self.index.insert(k, uid);
+                }
+            }
+        }
+    }
+
+    /// A live system track (other than `exclude`) that `obs` shares an
+    /// identity with, has no report from the same source, and passes the
+    /// sanity gate; with the evidence for the decision.
+    fn find_match(&self, obs: &Observation, exclude: Option<Uid>) -> Option<(Uid, Value)> {
+        for k in correlate::identity_keys(obs) {
+            let Some(&uid) = self.index.get(&k) else {
+                continue;
+            };
+            if Some(uid) == exclude {
+                continue;
+            }
+            let Some(t) = self.tracks.get(&uid) else {
+                continue;
+            };
+            // The index can lag a track's view; trust only what it still carries.
+            if !correlate::identity_keys(&t.view).contains(&k) {
+                continue;
+            }
+            // A feed reports distinct objects under distinct keys.
+            if t.contributors.iter().any(|c| c.source_id == obs.source_id) {
+                continue;
+            }
+            let gate = correlate::sanity_gate(obs, &t.view, &self.settings.gate);
+            if !gate.pass {
+                tracing::debug!(identity = %k, track = %uid.doc_id(), ?gate, "identity match outside the sanity gate");
+                continue;
+            }
+            return Some((
+                uid,
+                json!({ "rule": "identifier", "identity": k, "gate": gate }),
+            ));
+        }
+        None
+    }
+
+    /// Where a new source track goes: onto a matching system track, or a new one.
+    async fn place(&mut self, obs: &Observation, counts: &mut EngineCounts) -> anyhow::Result<Uid> {
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let (source, track_key) = (obs.source_id.clone(), obs.source_track_key.clone());
+        let c = self.common.clone();
+        if let Some((uid, evidence)) = self.find_match(obs, None) {
+            let attrs = json!({ "pairing": "auto", "confidence": 1.0, "evidence": evidence });
+            let decision = Decision::new("engine", "pair")
+                .reason(format!(
+                    "{key} shares {} with {}",
+                    evidence["identity"].as_str().unwrap_or("an identity"),
+                    uid.doc_id()
+                ))
+                .evidence(evidence);
+            tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+                Ok(c.open_db()?
+                    .pair_source_track(&source, &track_key, uid, &attrs, decision)?)
+            })
+            .await??;
+            if let Some(t) = self.tracks.get_mut(&uid) {
+                t.contributors.push(Contributor {
+                    source_id: obs.source_id.clone(),
+                    source_track_key: obs.source_track_key.clone(),
+                    pairing: PairingType::Auto,
+                    confidence: 1.0,
+                    last_report: obs.observed_at,
+                });
+            }
+            self.reports.insert(key, uid);
+            counts.paired += 1;
+            return Ok(uid);
+        }
+        let site = c.site;
+        let (uid, _) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok(c.open_db()?.create_system_track(
+                site,
+                &source,
+                &track_key,
+                Decision::new("engine", "create_system_track")
+                    .reason("new source track with no identity match"),
+            )?)
+        })
+        .await??;
+        self.reports.insert(key, uid);
+        counts.created += 1;
+        Ok(uid)
+    }
+
+    /// A source track alone on its system track whose identity now matches
+    /// another system track merges with it (into the older of the two when
+    /// both are single-source). Returns the surviving track.
+    async fn maybe_merge(
+        &mut self,
+        uid: Uid,
+        obs: &Observation,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<Option<Uid>> {
+        let Some(t) = self.tracks.get(&uid) else {
+            return Ok(None);
+        };
+        if t.contributors.len() != 1 {
+            return Ok(None);
+        }
+        let Some((other, evidence)) = self.find_match(obs, Some(uid)) else {
+            return Ok(None);
+        };
+        let o = &self.tracks[&other];
+        let (from, into) = if o.contributors.len() == 1 && o.first_seen > t.first_seen {
+            (other, uid)
+        } else {
+            (uid, other)
+        };
+        let decision = Decision::new("engine", "merge")
+            .reason(format!(
+                "{} and {} share {}",
+                from.doc_id(),
+                into.doc_id(),
+                evidence["identity"].as_str().unwrap_or("an identity")
+            ))
+            .evidence(evidence);
+        let c = self.common.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
+        })
+        .await??;
+        self.absorb(from, into).await?;
+        counts.merged += 1;
+        Ok(Some(into))
+    }
+
+    /// Move `from`'s contributors onto `into` in memory and retire `from`
+    /// (its tombstone is published; it stays resolvable as an alias).
+    async fn absorb(&mut self, from: Uid, into: Uid) -> anyhow::Result<()> {
+        let Some(gone) = self.tracks.remove(&from) else {
+            return Ok(());
+        };
+        for c in &gone.contributors {
+            self.reports.insert(contributor_key(c), into);
+        }
+        for v in self.index.values_mut() {
+            if *v == from {
+                *v = into;
+            }
+        }
+        if let Some(t) = self.tracks.get_mut(&into) {
+            for c in gone.contributors {
+                if !t
+                    .contributors
+                    .iter()
+                    .any(|x| contributor_key(x) == contributor_key(&c))
+                {
+                    t.contributors.push(c);
+                }
+            }
+            t.aliases.push(from);
+            t.aliases.extend(gone.aliases);
+            t.observation_count += gone.observation_count;
+            t.first_seen = t.first_seen.min(gone.first_seen);
+        }
+        self.redis
+            .retire_system_track(from, &format!("merged into {}", into.doc_id()))
+            .await?;
+        Ok(())
+    }
+
+    /// Load contributors' latest reports that are not in memory (after a restart).
+    async fn load_missing(&mut self, uid: Uid) -> anyhow::Result<()> {
+        let missing: Vec<(String, String)> = self.tracks[&uid]
+            .contributors
+            .iter()
+            .filter(|c| !self.latest.contains_key(&contributor_key(c)))
+            .map(|c| (c.source_id.clone(), c.source_track_key.clone()))
+            .collect();
+        for (source, key) in missing {
+            if let Some(o) = self.redis.get_source_track(&source, &key).await? {
+                self.latest.insert(format!("{source}/{key}"), o);
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply a report to the system track its source track reports for.
+    /// Returns the track to publish and whether it is urgent, or None when
+    /// the report is older than that source track's latest.
+    async fn observe(
+        &mut self,
+        uid: Uid,
+        obs: Observation,
+    ) -> anyhow::Result<Option<(SystemTrack, bool)>> {
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        if self
+            .latest
+            .get(&key)
+            .is_some_and(|prev| obs.observed_at < prev.observed_at)
+        {
+            return Ok(None);
+        }
+        self.latest.insert(key.clone(), obs.clone());
+        if !self.tracks.contains_key(&uid) {
+            let mut t = SystemTrack::from_first_observation(uid, obs);
+            resolve(&self.attrs, &mut t);
+            self.tracks.insert(uid, t.clone());
+            self.index_track(uid);
+            return Ok(Some((t, true)));
+        }
+        let multi = self.tracks[&uid].contributors.len() > 1;
+        if multi {
+            self.load_missing(uid).await?;
+        }
+        let best = multi.then(|| {
+            let t = &self.tracks[&uid];
+            let contribs: Vec<Contribution<'_>> = t
+                .contributors
+                .iter()
+                .filter_map(|c| {
+                    self.latest.get(&contributor_key(c)).map(|o| Contribution {
+                        obs: o,
+                        priority: self
+                            .priorities
+                            .get(&c.source_id)
+                            .copied()
+                            .unwrap_or(DEFAULT_PRIORITY),
+                    })
+                })
+                .collect();
+            correlate::best_view(&contribs, self.settings.freshness_secs)
+        });
+        let confirm = self.settings.confirm_after;
+        let t = self.tracks.get_mut(&uid).expect("checked above");
+        let before = t.entity_id.clone();
+        let outcome = match best {
+            Some((view, provenance)) => {
+                t.observation_count += 1;
+                if let Some(c) = t
+                    .contributors
+                    .iter_mut()
+                    .find(|c| contributor_key(c) == key)
+                {
+                    c.last_report = c.last_report.max(obs.observed_at);
+                }
+                t.provenance = provenance;
+                apply_view(t, view, confirm)
+            }
+            None => apply(t, obs, confirm),
+        };
+        if outcome == Applied::OutOfOrder {
+            return Ok(None);
+        }
+        resolve(&self.attrs, t);
+        let urgent = outcome == Applied::Significant || before != t.entity_id;
+        let out = t.clone();
+        self.index_track(uid);
+        Ok(Some((out, urgent)))
     }
 
     async fn reap(&mut self) -> anyhow::Result<()> {
@@ -489,7 +747,11 @@ impl Engine {
         let reason = format!("no report for {}s", drop_after.as_secs());
         for uid in dropped {
             self.redis.retire_system_track(uid, &reason).await?;
-            self.tracks.remove(&uid);
+            if let Some(t) = self.tracks.remove(&uid) {
+                for c in &t.contributors {
+                    self.latest.remove(&contributor_key(c));
+                }
+            }
             self.reports.retain(|_, u| *u != uid);
         }
         Ok(())
@@ -605,5 +867,214 @@ mod tests {
         assert_eq!(stale.entity_id, None);
         assert_eq!(stale.attributes["destination"], "SAN DIEGO");
         assert!(stale.notices.is_empty());
+    }
+
+    // --- Replay: scripted reports through a real engine (Redis + SQLite) ---
+
+    /// An engine on a throwaway Redis namespace and database; None (test
+    /// skipped) without OT_TEST_REDIS_URL.
+    async fn engine(sources: &[&str]) -> Option<(Engine, tempfile::TempDir)> {
+        let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
+        let dir = tempfile::tempdir().unwrap();
+        let common = Common {
+            sqlite: dir.path().join("ot.db"),
+            redis: url,
+            redis_namespace: format!(
+                "ot-engine-test-{}-{}",
+                std::process::id(),
+                Utc::now().timestamp_micros()
+            ),
+            site: ot_core::SiteCode::new("TST").unwrap(),
+            nats: crate::config::NatsArgs {
+                url: "nats://127.0.0.1:9".into(),
+                creds: None,
+                token: None,
+                user: None,
+                password: None,
+                stream: "TRACKS".into(),
+                tracks_subject: "tracks".into(),
+                max_age_hours: 24.0,
+            },
+        };
+        common.open_db().unwrap();
+        let mut e = Engine::new(common, EngineSettings::default())
+            .await
+            .unwrap();
+        e.sources = sources.iter().map(|s| s.to_string()).collect();
+        e.redis.ensure_obs_groups(&e.sources, GROUP).await.unwrap();
+        Some((e, dir))
+    }
+
+    /// A report from `source`/`key` at `t0 + secs`, at (lat, lon).
+    fn report(
+        source: &str,
+        key: &str,
+        secs: i64,
+        lat: f64,
+        lon: f64,
+        mmsi: Option<&str>,
+    ) -> Observation {
+        let at = t0() + chrono::Duration::seconds(secs);
+        let ids: Vec<Value> = mmsi
+            .map(|m| json!({"scheme": "mmsi", "value": m}))
+            .into_iter()
+            .collect();
+        serde_json::from_value(json!({
+            "schema_version": 1, "source_id": source, "source_track_key": key,
+            "observed_at": at, "received_at": at, "identifiers": ids,
+            "position": {"latitude": lat, "longitude": lon},
+            "classification": {"domain": "surface"}
+        }))
+        .unwrap()
+    }
+
+    async fn feed(e: &mut Engine, reports: &[Observation]) {
+        for r in reports {
+            e.redis
+                .append_observations(&r.source_id, std::slice::from_ref(r))
+                .await
+                .unwrap();
+        }
+        e.pump(false).await.unwrap();
+    }
+
+    fn track_of(e: &Engine, source: &str, key: &str) -> Uid {
+        e.reports[&format!("{source}/{key}")]
+    }
+
+    #[tokio::test]
+    async fn replay_identifier_pairing_and_non_pairing() {
+        let Some((mut e, _dir)) = engine(&["ais", "tak", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        feed(
+            &mut e,
+            &[report("ais", "366", 0, 32.0, -117.0, Some("366"))],
+        )
+        .await;
+        // TAK reports the same MMSI 1 km away 5 s later: the same ship.
+        feed(
+            &mut e,
+            &[report("tak", "uid-1", 5, 32.009, -117.0, Some("366"))],
+        )
+        .await;
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(track_of(&e, "tak", "uid-1"), ship);
+        assert_eq!(e.tracks[&ship].contributors.len(), 2);
+        // Radar claims the same MMSI 300 km away at the same time: not the same ship.
+        feed(
+            &mut e,
+            &[report("radar", "r1", 5, 34.7, -117.0, Some("366"))],
+        )
+        .await;
+        assert_ne!(track_of(&e, "radar", "r1"), ship);
+        // A second AIS key with the same MMSI: a feed's keys are distinct objects.
+        feed(
+            &mut e,
+            &[report("ais", "999", 6, 32.0, -117.0, Some("366"))],
+        )
+        .await;
+        assert_ne!(track_of(&e, "ais", "999"), ship);
+        assert_eq!(e.tracks.len(), 3);
+
+        // The pairing is a decision with its evidence, in the track's history.
+        let c = e.common.clone();
+        let edges =
+            tokio::task::spawn_blocking(move || c.open_db().unwrap().explain(ship).unwrap())
+                .await
+                .unwrap();
+        let pair = edges
+            .iter()
+            .find(|x| x.src_key == "tak/uid-1")
+            .expect("tak reports for the ship");
+        assert_eq!(pair.decision_op, "pair");
+        assert_eq!(pair.attrs["evidence"]["identity"], "mmsi:366");
+        assert!(pair.attrs["evidence"]["gate"]["pass"].as_bool().unwrap());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_late_identity_merges_tracks() {
+        let Some((mut e, _dir)) = engine(&["ais", "tak"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        feed(&mut e, &[report("ais", "777", 0, 10.0, 20.0, Some("777"))]).await;
+        // TAK sees something nearby with no identifier yet: its own track.
+        feed(&mut e, &[report("tak", "u9", 2, 10.001, 20.0, None)]).await;
+        let (older, newer) = (track_of(&e, "ais", "777"), track_of(&e, "tak", "u9"));
+        assert_ne!(older, newer);
+        // Its next report carries the MMSI: the two merge, into the older track.
+        feed(
+            &mut e,
+            &[report("tak", "u9", 10, 10.002, 20.0, Some("777"))],
+        )
+        .await;
+        assert_eq!(track_of(&e, "tak", "u9"), older);
+        assert!(!e.tracks.contains_key(&newer));
+        assert_eq!(e.tracks[&older].aliases, vec![newer]);
+        // The merged-away track is tombstoned for consumers.
+        e.redis.ensure_outbox_group("check").await.unwrap();
+        let entries = e
+            .redis
+            .read_outbox("check", "c", 1000, Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        let entries = if entries.is_empty() {
+            e.redis
+                .read_outbox("check", "c", 1000, Duration::from_millis(10), false)
+                .await
+                .unwrap()
+        } else {
+            entries
+        };
+        assert!(
+            entries.iter().any(
+                |x| matches!(&x.op, ot_store::OutboxOp::Tombstone { uid, reason }
+                if *uid == newer && reason.as_deref().is_some_and(|r| r.starts_with("merged into")))
+            ),
+            "{entries:?}"
+        );
+        let c = e.common.clone();
+        let edges =
+            tokio::task::spawn_blocking(move || c.open_db().unwrap().explain(older).unwrap())
+                .await
+                .unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|x| x.kind.as_str() == "MERGED_INTO" && x.decision_op == "merge")
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_best_source_view() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let mut ais = report("ais", "366", 0, 32.0, -117.0, Some("366"));
+        ais.name = Some("TED STEVENS".into());
+        ais.uncertainty = Some(ot_core::Uncertainty {
+            circular_error_m: Some(10.0),
+            ..Default::default()
+        });
+        let mut radar = report("radar", "t7", 3, 32.001, -117.0, Some("366"));
+        radar.uncertainty = Some(ot_core::Uncertainty {
+            circular_error_m: Some(200.0),
+            ..Default::default()
+        });
+        radar.classification.cot_type = Some("a-f-S-C-L-D-D".into());
+        feed(&mut e, &[ais, radar]).await;
+        let t = &e.tracks[&track_of(&e, "ais", "366")];
+        assert_eq!(t.contributors.len(), 2);
+        // Newer radar, but AIS is more precise: AIS supplies position.
+        assert_eq!(t.provenance["position"], "ais/366");
+        assert_eq!(t.view.position.latitude, 32.0);
+        assert_eq!(t.provenance["classification"], "radar/t7");
+        assert_eq!(t.view.name.as_deref(), Some("TED STEVENS"));
+        e.redis.purge_namespace().await.unwrap();
     }
 }

@@ -373,6 +373,18 @@ impl RedisStore {
         Ok(())
     }
 
+    /// A source track's latest observation, if it has reported within its TTL.
+    pub async fn get_source_track(&self, source: &str, key: &str) -> Result<Option<Observation>> {
+        let raw: Option<String> = redis::cmd("GET")
+            .arg(self.keys.source_track(source, key))
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(match raw {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        })
+    }
+
     /// Every live system track (for the engine's warm start and the API).
     pub async fn list_system_tracks(&self) -> Result<Vec<SystemTrack>> {
         let keys = self

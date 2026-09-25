@@ -214,6 +214,94 @@ impl Db {
         })
     }
 
+    /// Link a source track to an existing live system track (ending any link
+    /// it had), recording the decision; `attrs` carries the pairing type,
+    /// confidence and evidence. Returns the decision id.
+    pub fn pair_source_track(
+        &mut self,
+        source_id: &str,
+        source_track_key: &str,
+        uid: Uid,
+        attrs: &Value,
+        decision: Decision,
+    ) -> Result<i64> {
+        self.write(|tx| {
+            let now = now_ms();
+            let sys = live_system_node(tx, uid)?;
+            let decision_id = record_decision(tx, &decision, now)?;
+            let src = graph::upsert_node(
+                tx,
+                NodeKind::SourceTrack,
+                &graph::source_track_key(source_id, source_track_key),
+                now,
+            )?;
+            tx.execute(
+                "UPDATE edges SET valid_to_ms = max(?2, valid_from_ms), ended_by = ?3
+                 WHERE src = ?1 AND kind = 'REPORTS_FOR' AND valid_to_ms IS NULL",
+                params![src, now, decision_id],
+            )?;
+            graph::add_edge(tx, EdgeKind::ReportsFor, src, sys, decision_id, attrs, now)?;
+            Ok(decision_id)
+        })
+    }
+
+    /// Merge system track `from` into `into`: every source track reporting
+    /// for `from` now reports for `into`, `from` is retired and a live
+    /// `MERGED_INTO` edge keeps it resolvable as an alias. One transaction;
+    /// returns the decision id.
+    pub fn merge_system_tracks(&mut self, from: Uid, into: Uid, decision: Decision) -> Result<i64> {
+        if from == into {
+            return Err(StoreError::Conflict(format!(
+                "cannot merge {from} into itself"
+            )));
+        }
+        self.write(|tx| {
+            let now = now_ms();
+            let from_node = live_system_node(tx, from)?;
+            let into_node = live_system_node(tx, into)?;
+            let decision_id = record_decision(tx, &decision, now)?;
+            let moved: Vec<(i64, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT src, attrs FROM edges
+                     WHERE dst = ?1 AND kind = 'REPORTS_FOR' AND valid_to_ms IS NULL",
+                )?;
+                stmt.query_map([from_node], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            tx.execute(
+                "UPDATE edges SET valid_to_ms = max(?2, valid_from_ms), ended_by = ?3
+                 WHERE (src = ?1 OR dst = ?1) AND valid_to_ms IS NULL",
+                params![from_node, now, decision_id],
+            )?;
+            for (src, attrs) in moved {
+                let attrs: Value = serde_json::from_str(&attrs).unwrap_or(Value::Null);
+                graph::add_edge(
+                    tx,
+                    EdgeKind::ReportsFor,
+                    src,
+                    into_node,
+                    decision_id,
+                    &attrs,
+                    now,
+                )?;
+            }
+            graph::add_edge(
+                tx,
+                EdgeKind::MergedInto,
+                from_node,
+                into_node,
+                decision_id,
+                &serde_json::json!({}),
+                now,
+            )?;
+            tx.execute(
+                "UPDATE nodes SET retired_at_ms = ?2 WHERE id = ?1",
+                params![from_node, now],
+            )?;
+            Ok(decision_id)
+        })
+    }
+
     /// Every live source-track → system-track link, as
     /// (`<source>/<key>`, UID). The engine warms its map from this.
     pub fn live_reports(&self) -> Result<Vec<(String, Uid)>> {
@@ -252,6 +340,17 @@ impl Db {
 }
 
 /// Allocate the next UID for `site`.
+/// The node id of a live system track.
+fn live_system_node(tx: &Transaction<'_>, uid: Uid) -> Result<i64> {
+    tx.query_row(
+        "SELECT id FROM nodes WHERE kind = 'system_track' AND key = ?1 AND retired_at_ms IS NULL",
+        [uid.to_string()],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| StoreError::NotFound(format!("live system track {uid}")))
+}
+
 pub fn allocate_uid(tx: &Transaction<'_>, site: SiteCode) -> Result<Uid> {
     let seq: i64 = tx.query_row(
         "INSERT INTO uid_sequences (site, next_sequence) VALUES (?1, 2)
@@ -428,5 +527,80 @@ mod tests {
             [],
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn pairing_and_merging_keep_the_graph_explainable() {
+        let mut db = Db::open_in_memory().unwrap();
+        let site = SiteCode::new("OTK").unwrap();
+        let (a, _) = db
+            .create_system_track(
+                site,
+                "ais",
+                "366",
+                Decision::new("engine", "create_system_track"),
+            )
+            .unwrap();
+        let (b, _) = db
+            .create_system_track(
+                site,
+                "tak",
+                "uid-1",
+                Decision::new("engine", "create_system_track"),
+            )
+            .unwrap();
+        // A third source pairs straight onto A.
+        db.pair_source_track(
+            "radar",
+            "t7",
+            a,
+            &serde_json::json!({"pairing": "auto", "confidence": 1.0}),
+            Decision::new("engine", "pair").evidence(serde_json::json!({"rule": "identifier"})),
+        )
+        .unwrap();
+        // B turns out to be the same ship: merge it into A.
+        db.merge_system_tracks(b, a, Decision::new("engine", "merge"))
+            .unwrap();
+
+        let mut live = db.live_reports().unwrap();
+        live.sort();
+        assert_eq!(
+            live,
+            vec![
+                ("ais/366".to_string(), a),
+                ("radar/t7".to_string(), a),
+                ("tak/uid-1".to_string(), a)
+            ]
+        );
+        // A's history includes B's, through the merge.
+        let kinds: Vec<(String, String, bool)> = db
+            .explain(a)
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                (
+                    e.kind.as_str().to_owned(),
+                    e.src_key,
+                    e.valid_to_ms.is_none(),
+                )
+            })
+            .collect();
+        assert!(kinds.contains(&("MERGED_INTO".into(), b.to_string(), true)));
+        assert!(kinds.contains(&("REPORTS_FOR".into(), "tak/uid-1".into(), false)));
+        // B is retired: nothing more can pair to it or merge it.
+        assert!(
+            db.merge_system_tracks(b, a, Decision::new("engine", "merge"))
+                .is_err()
+        );
+        assert!(
+            db.pair_source_track(
+                "x",
+                "y",
+                b,
+                &serde_json::json!({}),
+                Decision::new("engine", "pair")
+            )
+            .is_err()
+        );
     }
 }

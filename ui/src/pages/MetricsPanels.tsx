@@ -119,6 +119,7 @@ export default function MetricsPanels() {
               series={[
                 { label: 'applied', values: count(pts, (p) => p.engine.observations) },
                 { label: 'new tracks', values: count(pts, (p) => p.engine.created), tone: 'info' },
+                { label: 'paired', values: count(pts, (p) => (p.engine.paired ?? 0) + (p.engine.merged ?? 0)), tone: 'success' },
                 { label: 'lost', values: count(pts, (p) => p.engine.lost), tone: 'warning' },
                 { label: 'dropped', values: count(pts, (p) => p.engine.dropped), tone: 'neutral' },
               ]}

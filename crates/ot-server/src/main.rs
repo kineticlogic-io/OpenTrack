@@ -12,6 +12,7 @@ mod api;
 mod cards;
 mod config;
 mod control;
+mod correlate;
 mod engine;
 mod metrics;
 mod probe;
