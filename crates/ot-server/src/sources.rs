@@ -30,6 +30,7 @@ use crate::config::Common;
 const CONFIG_POLL: Duration = Duration::from_secs(2);
 const REGISTRY_POLL: Duration = Duration::from_secs(15);
 const FLUSH_EVERY: Duration = Duration::from_secs(5);
+const TRACKER_HOLD_POLL: Duration = Duration::from_millis(250);
 const STATUS_TTL: Duration = Duration::from_secs(30);
 
 /// Registry snapshot shared by every source's pipeline.
@@ -345,31 +346,15 @@ async fn pipeline_loop(
     let mut last_error: Option<String> = None;
     let mut totals: HashMap<String, u64> = HashMap::new();
     let (mut raw_published, mut raw_errors) = (0u64, 0u64);
+    // Scans a tracker holds for late plots are run when their hold passes.
+    let mut hold = tokio::time::interval(TRACKER_HOLD_POLL);
     loop {
-        tokio::select! {
+        let out = tokio::select! {
             frame = rx.recv() => {
                 let Some(frame) = frame else { return Ok(()) };
-                let out = pipeline.process(&frame, registry.as_ref());
-                redis.append_observations(id, &out.observations).await?;
-                if let Some(raw) = raw {
-                    for obs in &out.observations {
-                        let body = serde_json::to_vec(obs)?;
-                        match raw.client.publish(raw.subject.clone(), body.into()).await {
-                            Ok(()) => raw_published += 1,
-                            Err(e) => {
-                                raw_errors += 1;
-                                last_error = Some(format!("raw output: {e}"));
-                            }
-                        }
-                    }
-                }
-                for (key, entry) in &out.statics {
-                    redis.put_static(id, key, &serde_json::to_string(entry)?, static_ttl).await?;
-                }
-                if out.last_error.is_some() {
-                    last_error = out.last_error;
-                }
+                pipeline.process(&frame, registry.as_ref())
             }
+            _ = hold.tick(), if spec.pipeline.tracker.is_some() => pipeline.flush(Utc::now(), false),
             _ = flush.tick() => {
                 let mut counts = pipeline.take_counts().pairs();
                 for (k, n) in [("raw_published", &mut raw_published), ("raw_error", &mut raw_errors)] {
@@ -393,7 +378,29 @@ async fn pipeline_loop(
                     "updated_at": Utc::now(),
                 });
                 redis.put_source_status(id, &status.to_string(), STATUS_TTL).await?;
+                continue;
             }
+        };
+        redis.append_observations(id, &out.observations).await?;
+        if let Some(raw) = raw {
+            for obs in &out.observations {
+                let body = serde_json::to_vec(obs)?;
+                match raw.client.publish(raw.subject.clone(), body.into()).await {
+                    Ok(()) => raw_published += 1,
+                    Err(e) => {
+                        raw_errors += 1;
+                        last_error = Some(format!("raw output: {e}"));
+                    }
+                }
+            }
+        }
+        for (key, entry) in &out.statics {
+            redis
+                .put_static(id, key, &serde_json::to_string(entry)?, static_ttl)
+                .await?;
+        }
+        if out.last_error.is_some() {
+            last_error = out.last_error;
         }
     }
 }

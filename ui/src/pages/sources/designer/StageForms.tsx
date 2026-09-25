@@ -198,6 +198,89 @@ export function FilterForm({ value, onChange }: Props) {
   )
 }
 
+const ALGORITHMS = [{ name: 'gnn' }, { name: 'mht' }]
+const DOMAINS = ['surface', 'ground', 'air', 'subsurface']
+
+/** Turn detections into tracks. Tracks leave with no identity and unknown affiliation. */
+export function TrackerForm({ value, onChange }: Props) {
+  const mht = (value.mht as Obj | undefined) ?? {}
+  const field = (key: string, label: string, fallback: number, obj: Obj = value, set = (v: Obj) => onChange(v)) => (
+    <Row label={label}>
+      <Input style={{ ...INPUT, width: 120 }} type="number" aria-label={label} value={String(obj[key] ?? fallback)} onChange={(e) => set({ ...obj, [key]: num(e.target.value) })} />
+    </Row>
+  )
+  const setMht = (m: Obj) => onChange({ ...value, mht: m })
+  return (
+    <div className="stack">
+      <span className="muted">Tracks get unknown affiliation and at most a domain, never an identity or type.</span>
+      <Row label="Algorithm" hint={value.algorithm === 'mht' ? 'Multiple hypotheses: fewer false tracks in clutter, more work.' : 'Global nearest neighbour: the best plot-to-track assignment each scan.'}>
+        <FieldSelect
+          ariaLabel="Tracker algorithm"
+          fields={ALGORITHMS}
+          value={String(value.algorithm ?? 'gnn')}
+          onChange={(a) => onChange({ ...value, algorithm: a ?? 'gnn' })}
+          style={{ width: 160 }}
+        />
+      </Row>
+      <Row label="Domain" hint="Everything this sensor sees. Empty: what most of a track's plots report, if any.">
+        <FieldSelect ariaLabel="Tracker domain" allowNone fields={DOMAINS.map((name) => ({ name }))} value={(value.domain as string) ?? null} onChange={(d) => onChange({ ...value, domain: d ?? undefined })} style={{ width: 160 }} />
+      </Row>
+      {field('measurement_sigma_m', 'Plot error σ (m)', 10)}
+      {field('process_noise_mps2', 'Manoeuvre (m/s²)', 0.5)}
+      {field('cluster_m', 'Merge plots within (m)', 0)}
+      {field('confirm_hits', 'Confirm after plots', 3)}
+      {field('confirm_within_secs', '…within (s)', 5)}
+      {field('drop_confirmed_secs', 'Drop after (s)', 8)}
+      <Row label="Scans" hint="A scan is one frame, or the plots with the same time.">
+        <FieldSelect
+          ariaLabel="Scan grouping"
+          fields={[{ name: 'frame' }, { name: 'time' }]}
+          value={String(value.scans ?? 'frame')}
+          onChange={(v) => onChange({ ...value, scans: v === 'time' ? 'time' : undefined })}
+          style={{ width: 160 }}
+        />
+      </Row>
+      <Row label="Track keys">
+        <Input style={{ ...INPUT, width: 120 }} aria-label="Track key prefix" value={String(value.key_prefix ?? 'T')} onChange={(e) => onChange({ ...value, key_prefix: e.target.value || undefined })} spellCheck={false} />
+      </Row>
+      {value.algorithm === 'mht' && (
+        <>
+          <h4 className="subhead">Hypotheses</h4>
+          {field('detection_probability', 'Detection probability', 0.9, mht, setMht)}
+          {field('clutter_density', 'False plots per m²', 1e-6, mht, setMht)}
+          {field('birth_density', 'New targets per m²', 1e-7, mht, setMht)}
+          {field('n_scan', 'Final after scans', 3, mht, setMht)}
+          {field('max_branches', 'Hypotheses per target', 20, mht, setMht)}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** What the source's observations are, which decides how correlation takes them. */
+export function PublishForm({ reports, tracker, onChange }: { reports?: string; tracker: boolean; onChange: (r: 'detections' | undefined) => void }) {
+  return (
+    <div className="stack">
+      <Row label="The feed reports">
+        <FieldSelect
+          ariaLabel="The feed reports"
+          fields={[{ name: 'tracks' }, { name: 'detections' }]}
+          value={reports ?? 'tracks'}
+          onChange={(v) => onChange(v === 'detections' ? 'detections' : undefined)}
+          style={{ width: 160 }}
+        />
+      </Row>
+      <span className="muted">
+        {tracker
+          ? 'The tracker stage turns the plots into tracks; correlation pairs them with other sources.'
+          : reports === 'detections'
+            ? 'Each plot updates the nearest system track another source keeps; plots near none are dropped. Add a Tracker stage to form tracks instead.'
+            : 'Every observation that passes reaches correlation and is published on the TRACKS stream.'}
+      </span>
+    </div>
+  )
+}
+
 export function ThrottleForm({ value, onChange }: Props) {
   const field = (key: string, label: string, hint: string, fallback: number) => (
     <Row label={label} hint={hint}>

@@ -13,7 +13,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
 | 1. Source framework | Transports (TCP, UDP, HTTP poll, WebSocket, MQTT), JSON / CoT / XML codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
-| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | in progress: identifier pairing, merges and best source done |
+| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | in progress: identifier and kinematic pairing, detection association, GNN/MHT tracker stage, merges and best source done |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
 | 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | |
 | 6. Migration and cutover | aisstream / adsb.lol examples, parallel run | |
@@ -25,7 +25,7 @@ crates/
   ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, OTH-GOLD minimum and the published message (opentrack.track.v2)
   ot-store    SQLite (decisions, config, temporal track graph) and Redis (streams, live state)
   ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
-  ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, throttle
+  ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, tracker (GNN/MHT), throttle
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
 docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
 docs/nats-output.md  the published track contract, for consumers
@@ -40,6 +40,15 @@ Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_po
 message's topic is `_frame.topic`, and `_frame.topic_levels[1]` is its second level, so an id
 carried in the topic (`ais/366123456/pos`) can be the track key or an identifier. Secrets are
 written as `${env:NAME}` and resolved when the source starts.
+
+A source reports either **tracks** (a key per object: AIS, ADS-B, TAK, a radar's own tracks) or
+**detections** (`"reports": "detections"`: anonymous plots). Detections either update the nearest
+system track another source keeps, or, with a **tracker** stage in the pipeline, become tracks
+first: `"tracker": {"algorithm": "gnn"}` (global nearest neighbour) or `"mht"` (multiple hypothesis
+tracking, fewer false tracks in clutter). A tracker's tracks carry no identity: their
+classification is unknown affiliation and at most a domain (ground, air, surface, subsurface), from
+the stage's `domain` or the plots' own. Correlation then pairs them with other sources' tracks on
+kinematic agreement.
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
 mappings, entity cards, the audit log, the track graph); **Redis** holds everything feeds produce

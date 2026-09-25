@@ -58,6 +58,8 @@ pub enum SourceError {
     Mapping(#[from] crate::mapping::MappingError),
     #[error("framing: {0}")]
     Framing(#[from] crate::frame::FrameError),
+    #[error("{0}")]
+    Tracker(String),
     #[error("mapping targets schema version {wanted}, but it is {found}")]
     SchemaVersion { wanted: u32, found: String },
     #[error("rule {rule:?} maps ext.{key}, which schema version {version} does not define")]
@@ -83,6 +85,9 @@ impl SourceSpec {
             return Err(SourceError::NoName);
         }
         self.pipeline.mapping.validate()?;
+        if let Some(t) = &self.pipeline.tracker {
+            t.validate().map_err(SourceError::Tracker)?;
+        }
         self.transport.check().map_err(SourceError::Transport)?;
         if let TransportConfig::TcpClient { framing, .. }
         | TransportConfig::TcpServer { framing, .. } = &self.transport

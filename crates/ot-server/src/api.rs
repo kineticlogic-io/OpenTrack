@@ -399,6 +399,11 @@ async fn validate_source(
             errors.push(e);
         }
     }
+    // Scans still held by a tracker stage.
+    let last = frames
+        .last()
+        .map_or_else(chrono::Utc::now, |f| f.received_at);
+    observations.extend(pipeline.flush(last, true).observations);
     let counts: BTreeMap<String, u64> = pipeline.take_counts().pairs().into_iter().collect();
     Ok(Json(json!({
         "valid": true,

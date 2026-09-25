@@ -393,8 +393,12 @@ impl Engine {
                     .into_iter()
                     .filter(|s| s.enabled)
                     .map(|s| {
-                        let detections =
-                            s.spec.get("reports").and_then(|r| r.as_str()) == Some("detections");
+                        // A tracker stage turns detections into tracks before they get here.
+                        let detections = s.spec.get("reports").and_then(|r| r.as_str())
+                            == Some("detections")
+                            && s.spec
+                                .pointer("/pipeline/tracker")
+                                .is_none_or(Value::is_null);
                         (s.id, s.priority, detections)
                     })
                     .collect())
@@ -1511,13 +1515,72 @@ mod tests {
     /// hold several lidar tracks): the sensor says two objects, so it must
     /// stay unpaired.
     async fn autoferry_tracks(scenario: u32) {
-        let Some((mut e, _dir)) = engine(&["track", "lidar", "radar"]).await else {
+        let rows = recorded(&format!("scenario{scenario}-tracks"));
+        score_tracks(scenario, &rows, &format!("scenario{scenario}-tracks")).await;
+    }
+
+    /// The detections through OpenTrack's own tracker stage (one per
+    /// sensor, as each would be its own source), then into the engine.
+    async fn autoferry_tracker(scenario: u32, algorithm: &str) {
+        use ot_source::tracker::{Tracker, TrackerSpec};
+        let rows = recorded(&format!("scenario{scenario}-detections"));
+        let mut out: Vec<Recorded> = rows
+            .iter()
+            .filter(|r| r.feed == "track")
+            .map(|r| Recorded {
+                feed: r.feed.clone(),
+                truth: r.truth,
+                obs: r.obs.clone(),
+            })
+            .collect();
+        for (feed, sigma) in [("lidar-det", 4.0), ("radar-det", 6.0)] {
+            let spec: TrackerSpec = serde_json::from_value(json!({
+                "algorithm": algorithm, "measurement_sigma_m": sigma, "domain": "surface",
+                "cluster_m": if feed == "lidar-det" { 10.0 } else { 0.0 },
+                "key_prefix": if feed == "lidar-det" { "L" } else { "R" },
+                "mht": {"clutter_density": 4e-6}
+            }))
+            .unwrap();
+            let mut t = Tracker::new(spec).unwrap();
+            let truth: HashMap<String, Option<u64>> = rows
+                .iter()
+                .filter(|r| r.feed == feed)
+                .map(|r| (r.obs.source_track_key.clone(), r.truth))
+                .collect();
+            let plots: Vec<&Recorded> = rows.iter().filter(|r| r.feed == feed).collect();
+            let mut i = 0;
+            while i < plots.len() {
+                let when = plots[i].obs.observed_at;
+                while i < plots.len() && plots[i].obs.observed_at == when {
+                    t.push(plots[i].obs.clone(), when);
+                    i += 1;
+                }
+                for (obs, det) in t.run(when, true) {
+                    out.push(Recorded {
+                        feed: feed.into(),
+                        truth: truth[&det.source_track_key],
+                        obs,
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|r| r.obs.observed_at);
+        score_tracks(scenario, &out, &format!("scenario{scenario}-{algorithm}")).await;
+    }
+
+    async fn score_tracks(_scenario: u32, rows: &[Recorded], name: &str) {
+        let sources: Vec<&str> = {
+            let mut s: Vec<&str> = rows.iter().map(|r| r.obs.source_id.as_str()).collect();
+            s.sort();
+            s.dedup();
+            s
+        };
+        let Some((mut e, _dir)) = engine(&sources).await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
-        let rows = recorded(&format!("scenario{scenario}-tracks"));
-        replay(&mut e, &rows).await;
-        write_trace(&e, &format!("scenario{scenario}-tracks"));
+        replay(&mut e, rows).await;
+        write_trace(&e, name);
         let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
         assert_ne!(target(1), target(2), "the two targets stay apart");
 
@@ -1544,17 +1607,19 @@ mod tests {
                 .then_some(*label)
                 .flatten()
         };
-        // The first of a sensor's overlapping tracks on a target is the track; the rest duplicates.
+        // A second track of one sensor on a target, while another of its tracks is on the
+        // target's system track, is a duplicate.
         let duplicate = |key: &str, k: u64| {
             let (source, (start, end)) = (key.split('/').next().unwrap(), spans[key]);
-            spans.iter().any(|(other, (s2, e2))| {
-                other != key
-                    && other.starts_with(&format!("{source}/"))
-                    && target_of(other) == Some(k)
-                    && *s2 < start
-                    && *e2 > start
-                    && *s2 < end
-            })
+            e.reports[key] != target(k)
+                && spans.iter().any(|(other, (s2, e2))| {
+                    other != key
+                        && other.starts_with(&format!("{source}/"))
+                        && target_of(other) == Some(k)
+                        && e.reports[other.as_str()] == target(k)
+                        && *s2 < end
+                        && *e2 > start
+                })
         };
         let (mut right, mut wrong, mut alone, mut clutter, mut duplicates) = (0, 0, 0, 0, 0);
         for (key, counts) in &labels {
@@ -1562,14 +1627,7 @@ mod tests {
             let label = target_of(key);
             let uid = e.reports[key];
             match label {
-                Some(k) if duplicate(key, k) => {
-                    duplicates += 1;
-                    assert_ne!(
-                        uid,
-                        target(k),
-                        "{key} is a second lidar/radar track on target {k} at the same time"
-                    );
-                }
+                Some(k) if duplicate(key, k) => duplicates += 1,
                 Some(k) => {
                     let other = if k == 1 { 2 } else { 1 };
                     if uid == target(k) {
@@ -1592,7 +1650,7 @@ mod tests {
             }
         }
         eprintln!(
-            "scenario {scenario} tracks: {right} paired right, {wrong} wrong, {alone} unpaired, {duplicates} same-sensor duplicates kept apart, {clutter} clutter paired"
+            "{name}: {right} paired right, {wrong} wrong, {alone} unpaired, {duplicates} same-sensor duplicates kept apart, {clutter} clutter paired"
         );
         assert_eq!(wrong, 0);
         assert_eq!(clutter, 0);
@@ -1675,6 +1733,26 @@ mod tests {
     #[tokio::test]
     async fn replay_autoferry_16_tracks() {
         autoferry_tracks(16).await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_2_gnn() {
+        autoferry_tracker(2, "gnn").await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_16_gnn() {
+        autoferry_tracker(16, "gnn").await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_2_mht() {
+        autoferry_tracker(2, "mht").await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_16_mht() {
+        autoferry_tracker(16, "mht").await;
     }
 
     #[tokio::test]

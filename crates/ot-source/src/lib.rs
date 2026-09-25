@@ -14,4 +14,5 @@ pub mod probe;
 pub mod registry;
 pub mod schema;
 pub mod source;
+pub mod tracker;
 pub mod transport;

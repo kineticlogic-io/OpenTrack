@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SchemaOverview, SourceSpec } from '../api/client'
-import { describeCondition, describeValue, destinations, fieldMap, valueSources } from './pipeline'
+import { describeCondition, describeValue, destinations, fieldMap, pipelineStages, valueSources } from './pipeline'
 
 const schema = {
   published_core: [],
@@ -78,5 +78,29 @@ describe('destinations', () => {
     const rows = fieldMap(spec, schema)
     expect(rows.map((r) => r.target)).toEqual(['track key', 'identifier icao', 'callsign', 'platform.type_code', 'platform.name'])
     expect(rows.find((r) => r.target === 'platform.name')!.stage).toBe('registry')
+  })
+})
+
+describe('pipelineStages', () => {
+  it('shows a tracker stage before publishing, with the classification it may give', () => {
+    const spec = {
+      id: 'radar',
+      name: 'Radar',
+      transport: { type: 'udp' },
+      reports: 'detections',
+      pipeline: {
+        codec: { type: 'json' },
+        mapping: { rules: [{ name: 'plot', key: 'id', fields: {} }] },
+        tracker: { algorithm: 'mht', domain: 'surface' },
+      },
+    } as unknown as SourceSpec
+    const stages = pipelineStages(spec)
+    const ids = stages.map((s) => s.id)
+    expect(ids.indexOf('tracker')).toBe(ids.length - 2)
+    const tracker = stages.find((s) => s.id === 'tracker')!
+    expect(tracker.title).toBe('tracker · MHT')
+    expect(tracker.facts.find((f) => f.label === 'Classification')!.value).toBe('unknown affiliation, surface; no identity')
+    // With a tracker the feed's plots arrive as tracks.
+    expect(stages.at(-1)!.summary).toBe('system track, published to NATS')
   })
 })

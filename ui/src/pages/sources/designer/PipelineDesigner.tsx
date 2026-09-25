@@ -7,7 +7,7 @@ import { pipelineStages } from '../../../lib/pipeline'
 import { usePreview } from '../../../lib/usePreview'
 import { PreviewResults } from '../PreviewResults'
 import { MapEditor } from './MapEditor'
-import { AffiliationForm, DecodeForm, FilterForm, JoinForm, RegistryForm, RejectForm, ThrottleForm } from './StageForms'
+import { AffiliationForm, DecodeForm, FilterForm, JoinForm, PublishForm, RegistryForm, RejectForm, ThrottleForm, TrackerForm } from './StageForms'
 
 const PipelineFlow = lazy(() => import('../PipelineFlow'))
 
@@ -39,6 +39,12 @@ const OPTIONAL: { id: string; label: string; add: (p: Pipeline) => Pipeline; rem
     label: 'Filter',
     add: (p) => ({ ...p, filter: {} }),
     remove: (p) => ({ ...p, filter: undefined }),
+  },
+  {
+    id: 'tracker',
+    label: 'Tracker',
+    add: (p) => ({ ...p, tracker: { algorithm: 'gnn' } }),
+    remove: (p) => ({ ...p, tracker: undefined }),
   },
   {
     id: 'throttle',
@@ -160,11 +166,14 @@ export function PipelineDesigner({
     case 'filter':
       editor = <FilterForm value={p.filter as Obj} onChange={(filter) => setPipeline({ ...p, filter })} />
       break
+    case 'tracker':
+      editor = <TrackerForm value={p.tracker as Obj} onChange={(tracker) => setPipeline({ ...p, tracker })} />
+      break
     case 'throttle':
       editor = <ThrottleForm value={p.throttle as Obj} onChange={(throttle) => setPipeline({ ...p, throttle })} />
       break
     case 'publish':
-      editor = <span className="muted">Every observation that passes reaches correlation and is published on the TRACKS stream.</span>
+      editor = <PublishForm reports={spec.reports} tracker={p.tracker !== undefined} onChange={(reports) => setSpec({ ...spec, reports })} />
       break
   }
 

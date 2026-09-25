@@ -219,6 +219,8 @@ export interface SourceSpec {
     [k: string]: unknown
   }
   priority?: number
+  /** Tracks (a key per object) or detections (anonymous plots). */
+  reports?: 'tracks' | 'detections'
 }
 
 export interface LinkStatus {

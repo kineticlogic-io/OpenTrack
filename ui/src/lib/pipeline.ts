@@ -208,6 +208,23 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
     if (filter.drop_if) facts.push({ label: 'Drop if', value: describeCondition(filter.drop_if) })
     out.push({ id: 'filter', title: 'filter', summary: filter.keep_if ? 'keep only matching' : 'drop matching', facts })
   }
+  const tr = p.tracker as Obj | undefined
+  if (tr) {
+    const mht = (tr.mht as Obj | undefined) ?? {}
+    const alg = tr.algorithm === 'mht' ? 'MHT' : 'GNN'
+    out.push({
+      id: 'tracker',
+      title: `tracker · ${alg}`,
+      summary: `plots → tracks · ${tr.domain ? `${String(tr.domain)}, ` : ''}unknown affiliation`,
+      facts: [
+        { label: 'Association', value: alg === 'MHT' ? `multiple hypotheses, final after ${Number(mht.n_scan ?? 3)} scans` : 'global nearest neighbour' },
+        { label: 'Classification', value: `unknown affiliation${tr.domain ? `, ${String(tr.domain)}` : ', domain from the plots if they report one'}; no identity` },
+        { label: 'Confirmed after', value: `${Number(tr.confirm_hits ?? 3)} plots within ${secs(Number(tr.confirm_within_secs ?? 5))}` },
+        { label: 'Dropped after', value: `${secs(Number(tr.drop_confirmed_secs ?? 8))} without a plot` },
+        { label: 'Track keys', value: `${String(tr.key_prefix ?? 'T')}1, ${String(tr.key_prefix ?? 'T')}2…` },
+      ],
+    })
+  }
   const th = p.throttle as Obj | undefined
   if (th) {
     const min = Number(th.min_interval_secs ?? 0)
@@ -224,12 +241,18 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
       ],
     })
   }
+  const plots = spec.reports === 'detections' && !tr
   out.push({
     id: 'publish',
     title: 'correlation → TRACKS',
-    summary: 'system track, published to NATS',
+    summary: plots ? 'plots associated with system tracks' : 'system track, published to NATS',
     facts: [
-      { label: 'Correlation', value: 'Each source track reports for one system track (pairing across sources comes with Phase 3).' },
+      {
+        label: 'Correlation',
+        value: plots
+          ? 'Each plot updates the nearest system track inside the gate; plots with none are dropped.'
+          : 'Each source track reports for one system track, paired with other sources’ tracks on a shared identifier or kinematic agreement.',
+      },
       { label: 'Published', value: 'The GOLD fields, plus the output schema’s attributes; see the field map on the Map stage.' },
     ],
   })

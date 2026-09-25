@@ -1,7 +1,10 @@
 //! The per-source processing pipeline, free of I/O:
 //!
 //! frame → codec → records → reject → mapping → static join → registry →
-//! affiliation → filter → throttle → observation.
+//! affiliation → filter → tracker → throttle → observation.
+//!
+//! The tracker stage is optional: it turns a detection feed's plots into
+//! source tracks (see [`crate::tracker`]).
 //!
 //! The worker feeds frames in and ships observations out; everything here is
 //! deterministic given its inputs, so it can be replayed in tests and probes.
@@ -37,8 +40,19 @@ pub struct PipelineSpec {
     pub affiliation: Option<AffiliationStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<FilterSpec>,
+    /// Form tracks from detections (GNN or MHT) before they leave the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<crate::tracker::TrackerSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub throttle: Option<ThrottleSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum PipelineError {
+    #[error(transparent)]
+    Mapping(#[from] mapping::MappingError),
+    #[error("{0}")]
+    Tracker(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +206,9 @@ pub struct Counts {
     pub statics: u64,
     pub invalid: u64,
     pub filtered: u64,
+    /// Detections handed to the tracker, and those too late for their scan.
+    pub plots: u64,
+    pub late_plots: u64,
     pub throttled: u64,
     pub emitted: u64,
     pub grades: HashMap<&'static str, u64>,
@@ -208,6 +225,8 @@ impl Counts {
             ("static", self.statics),
             ("invalid", self.invalid),
             ("filtered", self.filtered),
+            ("plots", self.plots),
+            ("late_plots", self.late_plots),
             ("throttled", self.throttled),
             ("emitted", self.emitted),
         ]
@@ -250,15 +269,20 @@ pub struct Pipeline {
     pub counts: Counts,
     /// Used when the spec configures no registry stage.
     default_registry: RegistryStage,
+    tracker: Option<crate::tracker::Tracker>,
 }
 
 impl Pipeline {
-    pub fn new(
-        source_id: impl Into<String>,
-        spec: PipelineSpec,
-    ) -> Result<Self, mapping::MappingError> {
+    pub fn new(source_id: impl Into<String>, spec: PipelineSpec) -> Result<Self, PipelineError> {
         spec.mapping.validate()?;
+        let tracker = spec
+            .tracker
+            .clone()
+            .map(crate::tracker::Tracker::new)
+            .transpose()
+            .map_err(PipelineError::Tracker)?;
         Ok(Self {
+            tracker,
             source_id: source_id.into(),
             codec: Codec::new(spec.codec.clone()),
             spec,
@@ -319,7 +343,50 @@ impl Pipeline {
         for record in records {
             self.process_record(&record, frame.received_at, registry, &mut out);
         }
+        self.run_tracker(frame.received_at, false, &mut out);
         out
+    }
+
+    /// Run the tracker on scans still waiting (plots grouped by time wait
+    /// `scan_hold_secs` for more; `force` runs them regardless). The worker
+    /// calls this on a timer; a dry run calls it with `force` at the end.
+    pub fn flush(&mut self, now: DateTime<Utc>, force: bool) -> Output {
+        let mut out = Output::default();
+        self.run_tracker(now, force, &mut out);
+        out
+    }
+
+    fn run_tracker(&mut self, now: DateTime<Utc>, force: bool, out: &mut Output) {
+        let Some(t) = self.tracker.as_mut() else {
+            return;
+        };
+        let force = force || t.spec().scans == crate::tracker::ScanGrouping::Frame;
+        let reports = t.run(now, force);
+        self.counts.late_plots += std::mem::take(&mut t.late);
+        for (obs, _) in reports {
+            self.emit(obs, out);
+        }
+    }
+
+    /// Throttle, then ship.
+    fn emit(&mut self, obs: Observation, out: &mut Output) {
+        if let Some(t) = &self.spec.throttle {
+            let key = obs.source_track_key.clone();
+            if !t.due(self.throttle.get(&key), &obs) {
+                self.counts.throttled += 1;
+                return;
+            }
+            self.throttle.insert(
+                key,
+                LastWrite {
+                    at: obs.observed_at,
+                    lat: obs.position.latitude,
+                    lon: obs.position.longitude,
+                },
+            );
+        }
+        self.counts.emitted += 1;
+        out.observations.push(obs);
     }
 
     fn process_record(
@@ -433,23 +500,12 @@ impl Pipeline {
                     continue;
                 }
             };
-            if let Some(t) = &self.spec.throttle {
-                let key = obs.source_track_key.clone();
-                if !t.due(self.throttle.get(&key), &obs) {
-                    self.counts.throttled += 1;
-                    continue;
-                }
-                self.throttle.insert(
-                    key,
-                    LastWrite {
-                        at: obs.observed_at,
-                        lat: obs.position.latitude,
-                        lon: obs.position.longitude,
-                    },
-                );
+            if let Some(t) = self.tracker.as_mut() {
+                self.counts.plots += 1;
+                t.push(obs, received_at);
+                continue;
             }
-            self.counts.emitted += 1;
-            out.observations.push(obs);
+            self.emit(obs, out);
         }
     }
 }
@@ -598,5 +654,44 @@ mod tests {
         feed(&mut p, &reg, json!({"t": "other"}));
         let c = p.take_counts();
         assert_eq!((c.decode_errors, c.invalid, c.unmatched), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_tracker_stage_turns_plots_into_anonymous_tracks() {
+        let spec: PipelineSpec = serde_json::from_value(json!({
+            "codec": { "type": "json", "records": "plots" },
+            "mapping": { "rules": [
+                { "name": "plot", "key": "n",
+                  "identifiers": [ { "scheme": "mmsi", "value": "mmsi" } ],
+                  "fields": { "position.latitude": "lat", "position.longitude": "lon", "name": "label",
+                              "observed_at": { "path": "t", "transforms": ["time"] } } }
+            ] },
+            "tracker": { "algorithm": "gnn", "confirm_hits": 2, "domain": "surface" }
+        }))
+        .unwrap();
+        let mut p = Pipeline::new("radar", spec).unwrap();
+        let mut out = Vec::new();
+        for s in 0..4 {
+            // Two boats 1 km apart, each scan one frame.
+            let t = format!("2026-09-25T10:00:0{s}Z");
+            let body = json!({"plots": [
+                {"n": 1, "lat": 63.44, "lon": 10.40 + s as f64 * 1e-4, "t": t, "mmsi": "366", "label": "KNOWN"},
+                {"n": 2, "lat": 63.45, "lon": 10.40, "t": t}
+            ]});
+            let frame = Frame::new(serde_json::to_vec(&body).unwrap());
+            out.extend(p.process(&frame, &Reg::new()).observations);
+        }
+        // Confirmed on the second scan: two tracks, three reports each.
+        let keys: BTreeSet<&str> = out.iter().map(|o| o.source_track_key.as_str()).collect();
+        assert_eq!(keys, BTreeSet::from(["T1", "T2"]));
+        assert_eq!(out.len(), 6);
+        for o in &out {
+            assert!(o.identifiers.is_empty() && o.name.is_none(), "{o:?}");
+            assert_eq!(o.classification.cot_type_or_derived(), "a-u-S");
+        }
+        assert_eq!(p.counts.plots, 8);
+        assert_eq!(p.counts.emitted, 6);
+        // Nothing waits: frames are scans.
+        assert!(p.flush(Utc::now(), true).observations.is_empty());
     }
 }
