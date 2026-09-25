@@ -189,7 +189,17 @@ export function SourceDetail({
               onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
             />
           )}
-          {tab === 'pipeline' && <PipelineView spec={draft} onChange={setDraft} sourceId={source.id} />}
+          {tab === 'pipeline' && (
+            <PipelineView
+              spec={draft}
+              onChange={setDraft}
+              sourceId={source.id}
+              onSaved={(s) => {
+                setDraft(s)
+                onChanged()
+              }}
+            />
+          )}
           {tab === 'history' && <HistoryTab id={source.id} revision={source.revision} />}
         </TabPanel>
       </div>

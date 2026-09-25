@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
-import { api, type PreviewResult, type Proposal, type SourceSpec } from '../../api/client'
-import { errorMessage } from '../../lib/format'
+import type { Proposal, SourceSpec } from '../../api/client'
+import { usePreview } from '../../lib/usePreview'
 import { PreviewResults } from './PreviewResults'
-
-const PREVIEW_DELAY_MS = 600
 
 interface Props {
   spec: SourceSpec
@@ -25,10 +23,6 @@ interface Props {
 export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missing, showMap = true }: Props) {
   const [text, setText] = useState(() => JSON.stringify(spec.pipeline, null, 2))
   const [parseError, setParseError] = useState(false)
-  const [preview, setPreview] = useState<PreviewResult | null>(null)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
-  const seq = useRef(0)
 
   // Adopt external spec changes (e.g. a new probe) without clobbering typing.
   const external = useMemo(() => JSON.stringify(spec.pipeline, null, 2), [spec.pipeline])
@@ -53,26 +47,7 @@ export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missi
     }
   }
 
-  // Re-run the dry run shortly after the spec settles.
-  useEffect(() => {
-    const id = ++seq.current
-    const t = setTimeout(() => {
-      setRunning(true)
-      api
-        .preview(spec, sampleSourceId)
-        .then((r) => {
-          if (id !== seq.current) return
-          setPreview(r)
-          setPreviewError(null)
-        })
-        .catch((e) => {
-          if (id !== seq.current) return
-          setPreviewError(errorMessage(e))
-        })
-        .finally(() => id === seq.current && setRunning(false))
-    }, PREVIEW_DELAY_MS)
-    return () => clearTimeout(t)
-  }, [spec, sampleSourceId])
+  const { preview, error: previewError, running } = usePreview(spec, sampleSourceId)
 
   return (
     <div className="grid-2">

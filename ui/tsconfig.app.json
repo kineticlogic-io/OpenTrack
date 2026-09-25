@@ -22,5 +22,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests run under Vitest; they read docs/examples, which the image build does not copy.
+  "exclude": ["src/**/*.test.ts"]
 }

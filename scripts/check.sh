@@ -9,5 +9,5 @@ cd "$(dirname "$0")/.."
 cargo fmt --all --check
 cargo clippy --quiet --all-targets --locked -- -D warnings
 cargo test --quiet --locked
-(cd ui && npm run --silent lint && npm run --silent build >/dev/null)
+(cd ui && npm run --silent lint && npm run --silent test && npm run --silent build >/dev/null)
 echo "all checks passed"

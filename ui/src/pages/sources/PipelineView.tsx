@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { TbAlertTriangle } from 'react-icons/tb'
-import { Badge, DataTable, TabPanel, Tabs, type DataTableColumn } from 'staresdk'
+import { TbAlertTriangle, TbPencil } from 'react-icons/tb'
+import { Badge, Button, DataTable, TabPanel, Tabs, type DataTableColumn } from 'staresdk'
 import { api, type SchemaOverview, type SourceSpec } from '../../api/client'
 import { errorMessage } from '../../lib/format'
 import { fieldMap, pipelineStages, ruleNotes, type FieldRow } from '../../lib/pipeline'
 import { MappingStudio } from './MappingStudio'
+import { PipelineDesigner } from './designer/PipelineDesigner'
 
 // React Flow loads only when the flowchart is shown.
 const PipelineFlow = lazy(() => import('./PipelineFlow'))
@@ -116,7 +117,19 @@ function MapDetail({ spec, schema }: { spec: SourceSpec; schema: SchemaOverview 
  * (the Map stage traces every field from the feed to the published message), or the raw JSON
  * with a live preview.
  */
-export function PipelineView({ spec, onChange, sourceId }: { spec: SourceSpec; onChange: (s: SourceSpec) => void; sourceId: string }) {
+export function PipelineView({
+  spec,
+  onChange,
+  onSaved,
+  sourceId,
+}: {
+  spec: SourceSpec
+  onChange: (s: SourceSpec) => void
+  /** The designer saved a new revision with this spec. */
+  onSaved: (s: SourceSpec) => void
+  sourceId: string
+}) {
+  const [designing, setDesigning] = useState(false)
   const [view, setView] = useState('flow')
   const [stageId, setStageId] = useState('map')
   const [schema, setSchema] = useState<SchemaOverview | null>(null)
@@ -131,7 +144,24 @@ export function PipelineView({ spec, onChange, sourceId }: { spec: SourceSpec; o
 
   return (
     <div className="stack">
-      <Tabs aria-label="Pipeline views" idPrefix="pipe" size="sm" value={view} onChange={setView} tabs={VIEWS} />
+      <div className="value-row">
+        <Tabs aria-label="Pipeline views" idPrefix="pipe" size="sm" value={view} onChange={setView} tabs={VIEWS} />
+        <span className="spacer" />
+        <Button size="sm" variant="secondary" icon={<TbPencil />} onClick={() => setDesigning(true)}>
+          Edit
+        </Button>
+      </div>
+      {designing && (
+        <PipelineDesigner
+          initial={spec}
+          sourceId={sourceId}
+          onClose={() => setDesigning(false)}
+          onSaved={(s) => {
+            onSaved(s)
+            setDesigning(false)
+          }}
+        />
+      )}
       <TabPanel id={view} idPrefix="pipe">
         {view === 'json' ? (
           <MappingStudio spec={spec} onChange={onChange} sampleSourceId={sourceId} showMap={false} />

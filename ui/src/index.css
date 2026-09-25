@@ -454,3 +454,69 @@ body {
   padding-left: 2px;
   font-size: 11px;
 }
+
+/* Pipeline designer (a modal): stage flowchart, the stage's form, the live preview. */
+.designer {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) minmax(320px, 420px);
+  gap: var(--space-lg);
+  align-items: start;
+  min-height: 60vh;
+}
+
+@media (max-width: 1300px) {
+  .designer {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  .designer-preview {
+    grid-column: 1 / -1;
+  }
+}
+
+.value-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.value-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.value-row > input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.value-row.three {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+}
+
+.map-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.map-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
+}
+
+.stage-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: start;
+}
