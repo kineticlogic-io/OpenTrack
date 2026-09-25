@@ -206,12 +206,20 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
           <span className="mono muted">{m.track_id}</span>
         </div>
         <span className="spacer" />
-        {t.published === false && (
-          <span title="Kept inside OpenTrack: only sensors that may not stand alone report for it, or it is not confirmed yet.">
-            <Badge color="grey" size="sm" uppercase>
-              not published
+        {t.filtered ? (
+          <span title={`Held back by the output filter: ${t.filtered}`}>
+            <Badge color="warning" size="sm" uppercase>
+              filtered
             </Badge>
           </span>
+        ) : (
+          t.published === false && (
+            <span title="Kept inside OpenTrack: only sensors that may not stand alone report for it, or it is not confirmed yet.">
+              <Badge color="grey" size="sm" uppercase>
+                not published
+              </Badge>
+            </span>
+          )
         )}
         <Badge color={STATE_COLOR[t.state] ?? 'grey'} size="sm" uppercase>
           {t.state}

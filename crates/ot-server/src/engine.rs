@@ -1516,12 +1516,20 @@ impl Engine {
         let Some(t) = self.tracks.get(&uid) else {
             return Ok(());
         };
-        let publish = t.is_published() || self.authoritative(t);
+        let held = self.settings.correlation.output.rejects(t);
+        let was = t.is_published();
+        let publish = held.is_none() && (was || self.authoritative(t));
         let t = self.tracks.get_mut(&uid).expect("checked above");
+        t.filtered = held.clone();
         if publish {
-            let first = !t.is_published();
             t.published = Some(true);
-            self.redis.put_system_track(t, urgent || first).await?;
+            self.redis.put_system_track(t, urgent || !was).await?;
+        } else if was && let Some(why) = held {
+            // Published, and now filtered out: withdrawn downstream.
+            t.published = Some(false);
+            self.redis
+                .withdraw_system_track(t, &format!("output filter: {why}"))
+                .await?;
         } else {
             self.redis.put_system_track_quietly(t).await?;
         }
@@ -2374,6 +2382,59 @@ mod tests {
         entries
             .iter()
             .any(|x| matches!(&x.op, ot_store::OutboxOp::Tombstone { uid, .. } if *uid == who))
+    }
+
+    #[tokio::test]
+    async fn the_output_filter_holds_back_and_withdraws_tracks() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.redis.ensure_outbox_group("check").await.unwrap();
+        e.settings.correlation.output = serde_json::from_value(json!({
+            "areas": [{"name": "harbour", "min_lat": 31.5, "min_lon": -117.5, "max_lat": 32.5, "max_lon": -116.5}]
+        }))
+        .unwrap();
+        // Outside the harbour: kept, not published, and it says why.
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[report("ais", "367", s, 33.0, -117.0, Some("367"))],
+            )
+            .await;
+        }
+        let out = track_of(&e, "ais", "367");
+        assert_eq!(e.tracks[&out].published, Some(false));
+        assert_eq!(
+            e.tracks[&out].filtered.as_deref(),
+            Some("outside every included area")
+        );
+        assert!(!published(&outbox(&e).await, out));
+        // Inside: published; then it leaves and is withdrawn downstream.
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[report("ais", "366", s, 32.0, -117.0, Some("366"))],
+            )
+            .await;
+        }
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(e.tracks[&ship].published, Some(true));
+        feed(
+            &mut e,
+            &[report("ais", "366", 5, 33.0, -117.0, Some("366"))],
+        )
+        .await;
+        assert_eq!(e.tracks[&ship].published, Some(false));
+        assert!(tombstoned(&outbox(&e).await, ship));
+        // Back in: published again.
+        feed(
+            &mut e,
+            &[report("ais", "366", 9, 32.0, -117.0, Some("366"))],
+        )
+        .await;
+        assert_eq!(e.tracks[&ship].published, Some(true));
+        assert_eq!(e.tracks[&ship].filtered, None);
     }
 
     #[tokio::test]

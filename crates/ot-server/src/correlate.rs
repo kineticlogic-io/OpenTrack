@@ -300,6 +300,148 @@ impl Default for SplitSettings {
     }
 }
 
+/// What OpenTrack publishes: a track that fails the filter stays inside
+/// OpenTrack (marked filtered), and a published track that stops passing is
+/// withdrawn (deleted downstream) until it passes again. Empty: everything.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutputFilter {
+    /// Bounding boxes: with any `include` area a track must be inside one,
+    /// and it must be outside every `exclude` area.
+    pub areas: Vec<Area>,
+    /// Allowed values, each list empty for any: affiliation (`hostile`,
+    /// `unknown`...), domain (`air`, `surface`...), track type
+    /// (`tactical`, `live_training`...).
+    pub affiliations: Vec<String>,
+    pub domains: Vec<String>,
+    pub track_types: Vec<String>,
+    /// Lowest track confidence (0 to 1) to publish.
+    pub min_confidence: f64,
+    /// Anything else, as a rule over the track's view (the observation
+    /// fields) plus `confidence` and `state`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<ot_source::expr::Condition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Area {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub exclude: bool,
+    pub min_lat: f64,
+    pub min_lon: f64,
+    pub max_lat: f64,
+    pub max_lon: f64,
+}
+
+impl Area {
+    fn contains(&self, lat: f64, lon: f64) -> bool {
+        let lon_in = if self.min_lon <= self.max_lon {
+            (self.min_lon..=self.max_lon).contains(&lon)
+        } else {
+            // Across the antimeridian.
+            lon >= self.min_lon || lon <= self.max_lon
+        };
+        (self.min_lat..=self.max_lat).contains(&lat) && lon_in
+    }
+}
+
+impl OutputFilter {
+    /// Why a track may not be published, or None when it may.
+    pub fn rejects(&self, t: &ot_core::SystemTrack) -> Option<String> {
+        let v = &t.view;
+        let (lat, lon) = (v.position.latitude, v.position.longitude);
+        let label = |a: &Area| {
+            if a.name.is_empty() {
+                "an area".to_owned()
+            } else {
+                format!("area {}", a.name)
+            }
+        };
+        if let Some(a) = self
+            .areas
+            .iter()
+            .find(|a| a.exclude && a.contains(lat, lon))
+        {
+            return Some(format!("inside excluded {}", label(a)));
+        }
+        let includes: Vec<&Area> = self.areas.iter().filter(|a| !a.exclude).collect();
+        if !includes.is_empty() && !includes.iter().any(|a| a.contains(lat, lon)) {
+            return Some("outside every included area".into());
+        }
+        // As published: no affiliation or domain is "unknown".
+        let text = |x: Option<String>| x.unwrap_or_else(|| "unknown".into());
+        let affiliation = text(
+            v.classification
+                .effective_affiliation()
+                .and_then(|a| serde_json::to_value(a).ok())
+                .and_then(|a| a.as_str().map(str::to_owned)),
+        );
+        let domain = text(
+            v.classification
+                .effective_domain()
+                .and_then(|d| serde_json::to_value(d).ok())
+                .and_then(|d| d.as_str().map(str::to_owned)),
+        );
+        let track_type = text(
+            serde_json::to_value(v.track_type.unwrap_or_default())
+                .ok()
+                .and_then(|x| x.as_str().map(str::to_owned)),
+        );
+        for (what, allowed, value) in [
+            ("affiliation", &self.affiliations, &affiliation),
+            ("domain", &self.domains, &domain),
+            ("track type", &self.track_types, &track_type),
+        ] {
+            if !allowed.is_empty() && !allowed.iter().any(|a| a.eq_ignore_ascii_case(value)) {
+                return Some(format!("{what} {value} is not published"));
+            }
+        }
+        let confidence = t.confidence();
+        if confidence < self.min_confidence {
+            return Some(format!(
+                "confidence {confidence:.2} below {:.2}",
+                self.min_confidence
+            ));
+        }
+        if let Some(rule) = &self.rule {
+            let mut doc = serde_json::to_value(v).unwrap_or_default();
+            if let Some(o) = doc.as_object_mut() {
+                o.insert("confidence".into(), serde_json::json!(confidence));
+                o.insert("state".into(), serde_json::json!(t.state));
+            }
+            if !rule.eval(&doc) {
+                return Some("the output rule does not hold".into());
+            }
+        }
+        None
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for a in &self.areas {
+            let ok = [a.min_lat, a.max_lat]
+                .iter()
+                .all(|x| (-90.0..=90.0).contains(x))
+                && [a.min_lon, a.max_lon]
+                    .iter()
+                    .all(|x| (-180.0..=180.0).contains(x))
+                && a.min_lat <= a.max_lat;
+            if !ok {
+                return Err(format!(
+                    "output area {:?}: latitudes -90 to 90 (min ≤ max), longitudes -180 to 180",
+                    a.name
+                ));
+            }
+        }
+        if !(0.0..=1.0).contains(&self.min_confidence) {
+            return Err("output.min_confidence must be between 0 and 1".into());
+        }
+        Ok(())
+    }
+}
+
 /// Everything about correlation an operator can change while it runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -313,6 +455,8 @@ pub struct CorrelationSettings {
     /// for its position (best-source selection).
     pub freshness_secs: f64,
     pub split: SplitSettings,
+    /// What gets published.
+    pub output: OutputFilter,
 }
 
 impl Default for CorrelationSettings {
@@ -324,6 +468,7 @@ impl Default for CorrelationSettings {
             gate: GateSettings::default(),
             freshness_secs: 60.0,
             split: SplitSettings::default(),
+            output: OutputFilter::default(),
         }
     }
 }
@@ -366,6 +511,7 @@ impl CorrelationSettings {
         if self.split.split_probability >= k.pair_probability {
             return Err("split.split_probability must be below kinematic.pair_probability".into());
         }
+        self.output.validate()?;
         if !(k.min_interval_secs.is_finite() && k.min_interval_secs >= 0.0) {
             return Err("kinematic.min_interval_secs must not be negative".into());
         }
@@ -1224,6 +1370,47 @@ mod tests {
         );
         assert!((posterior(0.5, 0.0) - 0.5).abs() < 1e-12);
         assert!(posterior(0.01, 10.0) > 0.99);
+    }
+
+    #[test]
+    fn the_output_filter_checks_areas_attributes_confidence_and_a_rule() {
+        let mut o = obs("ais", "1", 0, 10.0, 179.5);
+        o.classification.domain = Some(Domain::Surface);
+        let t = ot_core::SystemTrack::from_first_observation("OTK000000001".parse().unwrap(), o);
+        let f = |v: serde_json::Value| -> OutputFilter { serde_json::from_value(v).unwrap() };
+        assert_eq!(OutputFilter::default().rejects(&t), None);
+        // An area across the antimeridian holds it; an excluded one refuses it.
+        let pacific = json!({"min_lat": 0, "min_lon": 170, "max_lat": 20, "max_lon": -170});
+        assert_eq!(f(json!({"areas": [pacific]})).rejects(&t), None);
+        let mut ex = pacific.clone();
+        ex["exclude"] = json!(true);
+        ex["name"] = json!("range");
+        assert_eq!(
+            f(json!({"areas": [ex]})).rejects(&t).as_deref(),
+            Some("inside excluded area range")
+        );
+        assert!(
+            f(json!({"domains": ["air"]}))
+                .rejects(&t)
+                .unwrap()
+                .contains("domain surface")
+        );
+        assert_eq!(
+            f(json!({"domains": ["Surface"], "affiliations": ["unknown"]})).rejects(&t),
+            None
+        );
+        // A lone track feed report is taken as real: confidence 1.
+        assert_eq!(f(json!({"min_confidence": 0.9})).rejects(&t), None);
+        let rule = f(json!({"rule": {"path": "confidence", "lt": 0.5}}));
+        assert_eq!(
+            rule.rejects(&t).as_deref(),
+            Some("the output rule does not hold")
+        );
+        assert!(
+            f(json!({"areas": [{"min_lat": 5, "min_lon": 0, "max_lat": 1, "max_lon": 1}]}))
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

@@ -83,6 +83,9 @@ pub struct SystemTrack {
     /// Absent on tracks stored before the rule, which were all published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<bool>,
+    /// Why the output filter holds it back from publishing, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filtered: Option<String>,
 }
 
 impl SystemTrack {
@@ -135,6 +138,7 @@ impl SystemTrack {
             attributes: Default::default(),
             notices: Vec::new(),
             published: Some(false),
+            filtered: None,
         }
     }
 }

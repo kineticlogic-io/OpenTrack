@@ -526,6 +526,7 @@ async fn list_tracks(
                 "observation_count": t.observation_count,
                 "published": t.is_published(),
                 "confidence": t.confidence(),
+                "filtered": t.filtered,
                 "sources": t.contributors.iter().map(|c| format!("{}/{}", c.source_id, c.source_track_key)).collect::<Vec<_>>(),
                 "registry": t.view.ext.get("registry"),
             })

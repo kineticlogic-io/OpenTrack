@@ -71,6 +71,8 @@ export interface SystemTrack {
   observation_count: number
   /** False while the track is kept inside OpenTrack (not yet authoritative). */
   published?: boolean
+  /** Why the output filter holds it back, when it does. */
+  filtered?: string | null
 }
 
 export interface TrackResponse {
@@ -140,6 +142,7 @@ export interface CorrelationSettings {
   gate: { base_m: number; max_extrapolation_secs: number }
   freshness_secs: number
   split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number }
+  output: OutputFilter
 }
 
 export interface CorrelationSettingsResponse {
@@ -285,6 +288,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const get = <T,>(path: string) => request<T>('GET', path)
+
+/** What OpenTrack publishes (correlation settings `output`). */
+export interface OutputFilter {
+  areas: { name: string; exclude: boolean; min_lat: number; min_lon: number; max_lat: number; max_lon: number }[]
+  affiliations: string[]
+  domains: string[]
+  track_types: string[]
+  min_confidence: number
+  rule?: unknown
+}
 
 /** The classification banner as OpenStare shapes it. */
 export interface Banner {

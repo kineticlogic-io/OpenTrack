@@ -1,5 +1,7 @@
-import { FieldSelect, Input, Label } from 'staresdk'
-import type { CorrelationSettings } from '../../api/client'
+import { Button, FieldSelect, Input, Label } from 'staresdk'
+import { TbPlus, TbTrash } from 'react-icons/tb'
+import { JsonField } from '../sources/designer/JsonField'
+import type { CorrelationSettings, OutputFilter } from '../../api/client'
 import { INPUT } from '../../lib/valueSpec'
 
 const APPROACHES = [{ name: 'kinematics_metadata' }, { name: 'kinematics' }, { name: 'identifiers' }]
@@ -37,6 +39,15 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
   const sp = value.split
   const setK = (patch: Partial<CorrelationSettings['kinematic']>) => onChange({ ...value, kinematic: { ...k, ...patch } })
   const setS = (patch: Partial<CorrelationSettings['split']>) => onChange({ ...value, split: { ...sp, ...patch } })
+  const out: OutputFilter = value.output ?? { areas: [], affiliations: [], domains: [], track_types: [], min_confidence: 0 }
+  const setO = (patch: Partial<OutputFilter>) => onChange({ ...value, output: { ...out, ...patch } })
+  const list = (v: string) =>
+    v
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+  const setArea = (i: number, patch: Partial<OutputFilter['areas'][number]>) =>
+    setO({ areas: out.areas.map((a, j) => (j === i ? { ...a, ...patch } : a)) })
   return (
     <div className="stack">
       <Row label="Pair on" hint="Shared identifiers always pair. Kinematics: agreeing motion too; with metadata, vetoed by conflicting identifiers or domains.">
@@ -132,6 +143,58 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <span className="muted">outside</span>
           <Num width={70} label="Split gate probability" value={sp.gate_probability} onChange={(gate_probability) => setS({ gate_probability })} />
         </div>
+      </Row>
+      <h4 className="subhead">Output filter</h4>
+      <span className="muted">
+        What OpenTrack publishes. A track that fails stays inside OpenTrack, marked filtered; a published track that stops passing is deleted
+        downstream until it passes again. Empty: everything.
+      </span>
+      <Row label="Areas" hint="With any included area, a track must be inside one; it must be outside every excluded area. Degrees; a box may cross the antimeridian (min longitude above max).">
+        <div className="stack" style={{ gap: 4 }}>
+          {out.areas.map((a, i) => (
+            <div key={i} className="num-row">
+              <Input style={{ ...INPUT, width: 110 }} aria-label="Area name" placeholder="name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} />
+              <FieldSelect
+                ariaLabel="Include or exclude"
+                fields={[{ name: 'include' }, { name: 'exclude' }]}
+                value={a.exclude ? 'exclude' : 'include'}
+                onChange={(v) => setArea(i, { exclude: v === 'exclude' })}
+                style={{ width: 100 }}
+              />
+              <Num width={70} label="South latitude" value={a.min_lat} onChange={(min_lat) => setArea(i, { min_lat })} />
+              <Num width={70} label="West longitude" value={a.min_lon} onChange={(min_lon) => setArea(i, { min_lon })} />
+              <span className="muted">to</span>
+              <Num width={70} label="North latitude" value={a.max_lat} onChange={(max_lat) => setArea(i, { max_lat })} />
+              <Num width={70} label="East longitude" value={a.max_lon} onChange={(max_lon) => setArea(i, { max_lon })} />
+              <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label="Remove area" onClick={() => setO({ areas: out.areas.filter((_, j) => j !== i) })} />
+            </div>
+          ))}
+          <div>
+            <Button
+              size="xs"
+              variant="ghost"
+              icon={<TbPlus />}
+              onClick={() => setO({ areas: [...out.areas, { name: '', exclude: false, min_lat: 0, min_lon: 0, max_lat: 0, max_lon: 0 }] })}
+            >
+              Add area
+            </Button>
+          </div>
+        </div>
+      </Row>
+      <Row label="Affiliations" hint="Comma separated, empty for any: pending, unknown, assumed_friend, friend, neutral, suspect, hostile, joker, faker, none.">
+        <Input style={{ ...INPUT, width: 320 }} aria-label="Affiliations" defaultValue={out.affiliations.join(', ')} onBlur={(e) => setO({ affiliations: list(e.target.value) })} />
+      </Row>
+      <Row label="Domains" hint="air, surface, subsurface, ground, space, unknown.">
+        <Input style={{ ...INPUT, width: 320 }} aria-label="Domains" defaultValue={out.domains.join(', ')} onBlur={(e) => setO({ domains: list(e.target.value) })} />
+      </Row>
+      <Row label="Track types" hint="tactical, live_training, simulated_training, demand_entry.">
+        <Input style={{ ...INPUT, width: 320 }} aria-label="Track types" defaultValue={out.track_types.join(', ')} onBlur={(e) => setO({ track_types: list(e.target.value) })} />
+      </Row>
+      <Row label="Confidence at least" hint="The track's confidence, 0 to 1 (0: off).">
+        <Num label="Minimum confidence" value={out.min_confidence} onChange={(min_confidence) => setO({ min_confidence })} />
+      </Row>
+      <Row label="Rule" hint="Anything else, as a condition over the track's fields plus confidence and state.">
+        <JsonField label="Output rule" optional value={out.rule} onChange={(v) => setO({ rule: v })} />
       </Row>
     </div>
   )

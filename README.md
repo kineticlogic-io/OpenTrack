@@ -74,6 +74,13 @@ ground tracks with the GNN tracker, times the tracker by the revisit rate it mea
 (`auto_timing`), and publishes the sensor platform itself as a friendly track (`publish_platform`,
 symbol from the mission's platform type). A mapping rule of kind `track` bypasses the tracker.
 
+An **output filter** (Correlation settings) decides what is published: include and exclude
+bounding boxes, allowed affiliations, domains and track types, a minimum confidence, and an
+optional rule over the track's fields. A track that fails stays inside OpenTrack, marked
+filtered with the reason; a published track that stops passing (it leaves the area, say) is
+deleted downstream until it passes again. Per source, the pipeline's filter stage drops reports
+on the same kinds of rules before they reach correlation.
+
 Only authoritative system tracks are published: confirmed, and reported for by a source that may
 stand alone (`publish_alone`; by default track feeds may, detection feeds may not). A track only
 sensors report for, even several agreeing with each other, stays inside OpenTrack (the track card

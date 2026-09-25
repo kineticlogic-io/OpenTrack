@@ -132,6 +132,33 @@ impl RedisStore {
         Ok(())
     }
 
+    /// Withdraw a published track: keep it (now unpublished) and tell
+    /// consumers to delete it.
+    pub async fn withdraw_system_track(&self, track: &SystemTrack, reason: &str) -> Result<()> {
+        redis::pipe()
+            .atomic()
+            .cmd("SET")
+            .arg(self.keys.system_track(&track.uid.to_string()))
+            .arg(serde_json::to_string(track)?)
+            .ignore()
+            .cmd("XADD")
+            .arg(self.keys.outbox())
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.outbox_maxlen)
+            .arg("*")
+            .arg("op")
+            .arg("tombstone")
+            .arg("uid")
+            .arg(track.uid.to_string())
+            .arg("reason")
+            .arg(reason)
+            .ignore()
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
     /// Queue a command for the engine.
     pub async fn push_command(&self, command: &serde_json::Value) -> Result<()> {
         redis::cmd("LPUSH")
