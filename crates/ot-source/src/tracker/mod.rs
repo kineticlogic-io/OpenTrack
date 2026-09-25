@@ -65,7 +65,7 @@ pub struct TrackerSpec {
     /// return several points off one large object (lidar on a ship). 0: off.
     #[serde(default)]
     pub cluster_m: f64,
-    /// Track keys are this prefix and a number (`T12`).
+    /// Track keys are this prefix, a tag for the tracker's run and a number (`T3f2a-12`).
     #[serde(default = "d_prefix")]
     pub key_prefix: String,
     #[serde(default)]
@@ -344,6 +344,9 @@ pub struct Tracker {
     last_scan: Option<DateTime<Utc>>,
     /// Plots older than the last processed scan, dropped.
     pub late: u64,
+    /// Tags this tracker's keys (`R3f2a-7`): a restarted tracker numbers from
+    /// 1 again and must not continue another run's tracks.
+    run: String,
 }
 
 impl Tracker {
@@ -359,6 +362,7 @@ impl Tracker {
             buffer: Vec::new(),
             last_scan: None,
             late: 0,
+            run: format!("{:04x}", Utc::now().timestamp() & 0xffff),
         })
     }
 
@@ -488,7 +492,7 @@ impl Tracker {
         Observation {
             schema_version: det.schema_version,
             source_id: det.source_id.clone(),
-            source_track_key: format!("{}{}", self.spec.key_prefix, r.id),
+            source_track_key: format!("{}{}-{}", self.spec.key_prefix, self.run, r.id),
             identifiers: Vec::new(),
             name: None,
             callsign: None,

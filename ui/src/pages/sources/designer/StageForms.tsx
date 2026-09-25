@@ -290,7 +290,7 @@ export function PublishForm({
             ? 'Each plot updates the nearest system track another source keeps; plots near none are dropped. Add a Tracker stage to form tracks instead.'
             : 'Every observation that passes reaches correlation.'}
       </span>
-      <Row label="Publish its lone tracks" hint="A track only this source reports for. No: it stays inside OpenTrack until another source corroborates it.">
+      <Row label="Publish its lone tracks" hint="No: its tracks stay inside OpenTrack until a source that may stand alone reports for them too.">
         <FieldSelect
           ariaLabel="Publish lone tracks"
           fields={[{ name: 'yes' }, { name: 'no' }]}

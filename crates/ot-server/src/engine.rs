@@ -20,9 +20,10 @@
 //! The engine also owns the lifecycle (tentative → confirmed → lost →
 //! dropped) with per-domain stale times, and publishing through the outbox.
 //! Only authoritative tracks leave OpenTrack: a system track is published
-//! once it is confirmed and either a source that may stand alone reports for
-//! it (track feeds, by default) or two or more sources do; lone sensor
-//! tracks (a radar's clutter, a lidar fragment) stay internal. Once
+//! once it is confirmed and a source that may stand alone reports for it
+//! (track feeds, by default). Tracks only sensors report for (a radar's
+//! clutter, a lidar fragment, or radar and lidar agreeing on something no
+//! track feed reports) stay internal. Once
 //! published, a track's updates and its tombstone always follow. A source
 //! can end a source track (a tracker dropping it): the link ends, and a
 //! system track left with no reporting source is retired at once.
@@ -793,20 +794,13 @@ impl Engine {
     }
 
     /// Whether a track is authoritative enough to publish: confirmed, and
-    /// reported for by a source that may stand alone or by two or more.
+    /// reported for by a source that may stand alone. Sensors agreeing with
+    /// each other are not enough.
     fn authoritative(&self, t: &SystemTrack) -> bool {
-        if t.state != TrackState::Confirmed {
-            return false;
-        }
-        let sources: HashSet<&str> = t
-            .contributors
-            .iter()
-            .map(|c| c.source_id.as_str())
-            .collect();
-        sources.len() >= 2
-            || sources
+        t.state == TrackState::Confirmed
+            && t.contributors
                 .iter()
-                .any(|s| self.alone.get(*s).copied().unwrap_or(true))
+                .any(|c| self.alone.get(&c.source_id).copied().unwrap_or(true))
     }
 
     /// Store a track's state; publish it if it is (or once was) authoritative.
@@ -1612,12 +1606,12 @@ mod tests {
 
     #[tokio::test]
     async fn replay_only_authoritative_tracks_are_published() {
-        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+        let Some((mut e, _dir)) = engine(&["ais", "radar", "lidar"]).await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
-        // Radar tracks may not stand alone (a detection source's default).
-        e.alone = [("radar".to_string(), false)].into();
+        // Radar and lidar tracks may not stand alone (a detection source's default).
+        e.alone = [("radar".to_string(), false), ("lidar".to_string(), false)].into();
         e.redis.ensure_outbox_group("check").await.unwrap();
         let ended = |mut o: Observation| {
             o.state = Some(TrackState::Dropped);
@@ -1666,6 +1660,24 @@ mod tests {
         .await;
         assert!(!e.tracks.contains_key(&ship));
         assert!(tombstoned(&outbox(&e).await, ship));
+
+        // Radar and lidar agreeing on something no track feed reports: paired,
+        // but still not published.
+        for s in 0..6 {
+            feed(
+                &mut e,
+                &[
+                    report("radar", "r3", 40 + s * 2, 34.0, -117.0, None),
+                    report("lidar", "l3", 40 + s * 2, 34.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        let dark = track_of(&e, "radar", "r3");
+        assert_eq!(track_of(&e, "lidar", "l3"), dark);
+        assert_eq!(e.tracks[&dark].state, TrackState::Confirmed);
+        assert_eq!(e.tracks[&dark].published, Some(false));
+        assert!(!published(&outbox(&e).await, dark));
 
         // A lone radar track that ends before anyone saw it is simply forgotten.
         let clutter: Vec<_> = (0..4)

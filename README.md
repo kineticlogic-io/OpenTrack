@@ -50,6 +50,12 @@ classification is unknown affiliation and at most a domain (ground, air, surface
 the stage's `domain` or the plots' own. Correlation then pairs them with other sources' tracks on
 kinematic agreement.
 
+Only authoritative system tracks are published: confirmed, and reported for by a source that may
+stand alone (`publish_alone`; by default track feeds may, detection feeds may not). A track only
+sensors report for, even several agreeing with each other, stays inside OpenTrack (the track card
+marks it "not published") until a track feed reports for it too. A source ends a track with
+`state: dropped`; a system track no source reports for any more is retired at once.
+
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
 mappings, entity cards, the audit log, the track graph); **Redis** holds everything feeds produce
 (`tms:obs:*` streams, `tms:src:*` / `tms:sys:*` live state, the `tms:out` outbox, metrics).

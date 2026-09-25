@@ -221,7 +221,7 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
         { label: 'Classification', value: `unknown affiliation${tr.domain ? `, ${String(tr.domain)}` : ', domain from the plots if they report one'}; no identity` },
         { label: 'Confirmed after', value: `${Number(tr.confirm_hits ?? 3)} plots within ${secs(Number(tr.confirm_within_secs ?? 5))}` },
         { label: 'Dropped after', value: `${secs(Number(tr.drop_confirmed_secs ?? 8))} without a plot` },
-        { label: 'Track keys', value: `${String(tr.key_prefix ?? 'T')}1, ${String(tr.key_prefix ?? 'T')}2…` },
+        { label: 'Track keys', value: `${String(tr.key_prefix ?? 'T')}<run>-1, -2…` },
       ],
     })
   }
@@ -255,7 +255,7 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
       },
       {
         label: 'Published',
-        value: 'Confirmed tracks that a feed allowed to stand alone reports for, or that two or more sources back: the GOLD fields plus the output schema’s attributes.',
+        value: 'Confirmed tracks that a source allowed to stand alone reports for: the GOLD fields plus the output schema’s attributes.',
       },
     ],
   })

@@ -685,7 +685,12 @@ mod tests {
         }
         // Confirmed on the second scan: two tracks, three reports each.
         let keys: BTreeSet<&str> = out.iter().map(|o| o.source_track_key.as_str()).collect();
-        assert_eq!(keys, BTreeSet::from(["T1", "T2"]));
+        assert_eq!(keys.len(), 2);
+        assert!(
+            keys.iter()
+                .all(|k| k.starts_with('T') && (k.ends_with("-1") || k.ends_with("-2"))),
+            "{keys:?}"
+        );
         assert_eq!(out.len(), 6);
         for o in &out {
             assert!(o.identifiers.is_empty() && o.name.is_none(), "{o:?}");

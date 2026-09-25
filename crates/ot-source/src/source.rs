@@ -23,9 +23,9 @@ pub struct SourceSpec {
     /// (anonymous plots, associated with system tracks by the engine).
     #[serde(default, skip_serializing_if = "Reports::is_tracks")]
     pub reports: Reports,
-    /// Whether a system track this source alone reports for is published.
-    /// Unset: yes for track feeds, no for detections (a lone radar or lidar
-    /// track is kept inside OpenTrack until another source corroborates it).
+    /// Whether this source can make a system track authoritative (published)
+    /// on its own. Unset: yes for track feeds, no for detections (a radar or
+    /// lidar track stays inside OpenTrack until such a source reports for it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_alone: Option<bool>,
 }
