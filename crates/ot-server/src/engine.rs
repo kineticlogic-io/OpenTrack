@@ -264,6 +264,12 @@ pub struct Engine {
     /// Where each detection went, for scoring replays.
     #[cfg(test)]
     associations: Vec<(String, Option<Uid>)>,
+    /// Every report, association and merge in order, for replay videos.
+    #[cfg(test)]
+    trace: Vec<Value>,
+    /// The time of the report being processed (for traced merges).
+    #[cfg(test)]
+    clock: Option<DateTime<Utc>>,
 }
 
 const DEFAULT_PRIORITY: i64 = 100;
@@ -325,6 +331,10 @@ impl Engine {
             attrs: Attributes::default(),
             #[cfg(test)]
             associations: Vec::new(),
+            #[cfg(test)]
+            trace: Vec::new(),
+            #[cfg(test)]
+            clock: None,
         };
         let uids: Vec<Uid> = engine.tracks.keys().copied().collect();
         for uid in uids {
@@ -475,6 +485,10 @@ impl Engine {
         reports.sort_by_key(|o| o.observed_at);
         let mut reports = reports.into_iter().peekable();
         while let Some(obs) = reports.next() {
+            #[cfg(test)]
+            {
+                self.clock = Some(obs.observed_at);
+            }
             if self.detection_sources.contains(&obs.source_id) {
                 // One scan: every plot of this source at this instant.
                 let mut scan = vec![obs];
@@ -506,6 +520,13 @@ impl Engine {
                 }
                 None => counts.out_of_order += 1,
             }
+            #[cfg(test)]
+            self.trace.push(json!({
+                "t": obs.observed_at, "kind": "report", "source": obs.source_id,
+                "key": obs.source_track_key, "lat": obs.position.latitude,
+                "lon": obs.position.longitude,
+                "uid": self.reports.get(&key).map(|u| u.doc_id()),
+            }));
         }
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
@@ -663,6 +684,10 @@ impl Engine {
         let Some(gone) = self.tracks.remove(&from) else {
             return Ok(());
         };
+        #[cfg(test)]
+        self.trace.push(json!({
+            "t": self.clock, "kind": "merge", "from": from.doc_id(), "into": into.doc_id(),
+        }));
         self.grid.remove(from);
         self.candidates.retain(|(a, b), _| *a != from && *b != from);
         let has_detections_from = |t: &SystemTrack, source: &str| {
@@ -999,6 +1024,12 @@ impl Engine {
             let Some(&uid) = taken.get(&i) else {
                 counts.unassociated += 1;
                 #[cfg(test)]
+                self.trace.push(json!({
+                    "t": det.observed_at, "kind": "detection", "source": det.source_id,
+                    "key": det.source_track_key, "lat": det.position.latitude,
+                    "lon": det.position.longitude, "uid": null,
+                }));
+                #[cfg(test)]
                 self.associations
                     .push((format!("{}/{}", det.source_id, det.source_track_key), None));
                 continue;
@@ -1008,6 +1039,12 @@ impl Engine {
                 format!("{}/{}", det.source_id, det.source_track_key),
                 Some(uid),
             ));
+            #[cfg(test)]
+            self.trace.push(json!({
+                "t": det.observed_at, "kind": "detection", "source": det.source_id,
+                "key": det.source_track_key, "lat": det.position.latitude,
+                "lon": det.position.longitude, "uid": uid.doc_id(),
+            }));
             det.source_track_key = DETECTIONS.into();
             if let Some(t) = self.tracks.get_mut(&uid)
                 && !t
@@ -1457,6 +1494,16 @@ mod tests {
         }
     }
 
+    /// With OT_REPLAY_TRACE=<dir>, write the engine's trace of a replay there
+    /// (scripts/replay-video.py renders it).
+    fn write_trace(e: &Engine, name: &str) {
+        let Ok(dir) = std::env::var("OT_REPLAY_TRACE") else {
+            return;
+        };
+        let lines: Vec<String> = e.trace.iter().map(|v| v.to_string()).collect();
+        std::fs::write(format!("{dir}/{name}.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
     /// Where each labelled source track ended: on its target's track, on
     /// the other target's, or alone; and clutter tracks that ended on a
     /// target's track. A track reported while another track of the same
@@ -1470,6 +1517,7 @@ mod tests {
         };
         let rows = recorded(&format!("scenario{scenario}-tracks"));
         replay(&mut e, &rows).await;
+        write_trace(&e, &format!("scenario{scenario}-tracks"));
         let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
         assert_ne!(target(1), target(2), "the two targets stay apart");
 
@@ -1572,6 +1620,7 @@ mod tests {
         e.detection_sources = ["lidar-det", "radar-det"].map(String::from).into();
         let rows = recorded(&format!("scenario{scenario}-detections"));
         replay(&mut e, &rows).await;
+        write_trace(&e, &format!("scenario{scenario}-detections"));
         let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
         let went: HashMap<&str, Option<Uid>> = e
             .associations
