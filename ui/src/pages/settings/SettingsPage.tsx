@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { TbDownload, TbTrash } from 'react-icons/tb'
-import { Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
+import { TbDownload, TbInfoCircle, TbTrash } from 'react-icons/tb'
+import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, Tooltip, useToast } from 'staresdk'
 import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
@@ -13,6 +13,26 @@ const PRESETS = [
   { label: 'Secret', background: '#c8102e', color: '#ffffff' },
   { label: 'Top Secret', background: '#ff8300', color: '#000000' },
 ]
+
+/** A small ⓘ that shows `text` on hover or focus. */
+function InfoTip({ label, text }: { label: string; text: string }) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const show = (e: React.MouseEvent | React.FocusEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setAt({ x: r.right + 6, y: r.top })
+  }
+  return (
+    <span className="info-tip" tabIndex={0} role="img" aria-label={`${label}: ${text}`} onMouseEnter={show} onMouseLeave={() => setAt(null)} onFocus={show} onBlur={() => setAt(null)}>
+      <TbInfoCircle aria-hidden />
+      {at && <Tooltip x={at.x} y={at.y} content={text} />}
+    </span>
+  )
+}
+
+const SITE_CODE_INFO =
+  'Site code: the 3 characters (A–Z, 0–9) that begin every track number this instance issues, e.g. OTK000000042 — ' +
+  "OTH-GOLD's track UID form, a site code then a 9-digit sequence. It keeps track numbers unique between the sites feeding one " +
+  'picture, so every OpenTrack needs its own. It is set at deployment (OT_SITE_CODE) and cannot change here: published track numbers would change with it.'
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -89,8 +109,15 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   return (
     <div className="stack">
       <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
-        <Row label="Site name" hint={`Shown in the header. Track UIDs keep the site code ${loaded.site_code} (set at deployment).`}>
-          <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
+        <Row label="Site name">
+          <div className="num-row">
+            <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
+            <span className="muted">site code</span>
+            <Badge color="grey" size="sm">
+              {loaded.site_code}
+            </Badge>
+            <InfoTip label="Site code" text={SITE_CODE_INFO} />
+          </div>
         </Row>
       </CollapsiblePanel>
 
