@@ -375,6 +375,7 @@ async fn pipeline_loop(
                     "link": link,
                     "last_error": last_error,
                     "totals_since_start": totals,
+                    "tracker_timing": pipeline.tracker_timing(),
                     "updated_at": Utc::now(),
                 });
                 redis.put_source_status(id, &status.to_string(), STATUS_TTL).await?;

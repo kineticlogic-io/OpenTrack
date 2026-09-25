@@ -1,5 +1,5 @@
 import { TbPlus, TbTrash } from 'react-icons/tb'
-import { Button, FieldSelect, Input, Label } from 'staresdk'
+import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { describeCondition, describeValue, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
@@ -210,6 +210,8 @@ export function TrackerForm({ value, onChange }: Props) {
     </Row>
   )
   const setMht = (m: Obj) => onChange({ ...value, mht: m })
+  const auto = (value.auto_timing as Obj | undefined) ?? {}
+  const setAuto = (a: Obj) => onChange({ ...value, auto_timing: a })
   return (
     <div className="stack">
       <span className="muted">Tracks get unknown affiliation and at most a domain, never an identity or type.</span>
@@ -228,9 +230,39 @@ export function TrackerForm({ value, onChange }: Props) {
       {field('measurement_sigma_m', 'Plot error σ (m)', 10)}
       {field('process_noise_mps2', 'Manoeuvre (m/s²)', 0.5)}
       {field('cluster_m', 'Merge plots within (m)', 0)}
-      {field('confirm_hits', 'Confirm after plots', 3)}
-      {field('confirm_within_secs', '…within (s)', 5)}
-      {field('drop_confirmed_secs', 'Drop after (s)', 8)}
+      <h4 className="subhead">Existence</h4>
+      <span className="muted">
+        Each track carries the probability that it is a real target: plots raise it by how well they fit against clutter, looks without one lower it.
+        It is published as the track&apos;s confidence.
+      </span>
+      {field('detection_probability', 'Detection probability', 0.9)}
+      {field('clutter_density', 'False plots per m²', 1e-6)}
+      {field('birth_density', 'New targets per m²', 1e-7)}
+      {field('confirm_probability', 'Confirm at probability', 0.95)}
+      {field('drop_probability', 'Drop at probability', 0.02)}
+      {field('target_lifetime_secs', 'Target lifetime (s)', 600)}
+      {field('confirm_hits', 'Confirm after at least (plots)', 3)}
+      <Row label="Auto timing" hint="Size the drop windows to the sensor's revisit rate, as the codec measures it (STANAG 4607), and count a miss once per revisit instead of once per scan.">
+        <Toggle
+          size="sm"
+          aria-label="Auto timing"
+          value={value.auto_timing != null}
+          onChange={(on) => onChange({ ...value, auto_timing: on ? {} : undefined })}
+        />
+      </Row>
+      {value.auto_timing != null ? (
+        <>
+          {field('drop_tentative_revisits', 'Drop unconfirmed after (revisits)', 1.3, auto, setAuto)}
+          {field('drop_confirmed_revisits', 'Drop after (revisits)', 2.5, auto, setAuto)}
+          {field('min_drop_tentative_secs', '…drop unconfirmed after at least (s)', 8, auto, setAuto)}
+          {field('min_drop_confirmed_secs', '…drop after at least (s)', 30, auto, setAuto)}
+        </>
+      ) : (
+        <>
+          {field('drop_tentative_secs', 'Drop unconfirmed after (s) without a plot', 3)}
+          {field('drop_confirmed_secs', 'Drop after (s) without a plot', 8)}
+        </>
+      )}
       <Row label="Scans" hint="A scan is one frame, or the plots with the same time.">
         <FieldSelect
           ariaLabel="Scan grouping"
@@ -246,9 +278,6 @@ export function TrackerForm({ value, onChange }: Props) {
       {value.algorithm === 'mht' && (
         <>
           <h4 className="subhead">Hypotheses</h4>
-          {field('detection_probability', 'Detection probability', 0.9, mht, setMht)}
-          {field('clutter_density', 'False plots per m²', 1e-6, mht, setMht)}
-          {field('birth_density', 'New targets per m²', 1e-7, mht, setMht)}
           {field('n_scan', 'Final after scans', 3, mht, setMht)}
           {field('max_branches', 'Hypotheses per target', 20, mht, setMht)}
         </>

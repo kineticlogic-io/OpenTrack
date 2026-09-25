@@ -40,10 +40,8 @@
       "measurement_sigma_m": 6.0,
       "domain": "surface",
       "key_prefix": "R",
-      "mht": {
-        "clutter_density": 4e-06
-      },
-      "cluster_m": 12.0
+      "cluster_m": 12.0,
+      "clutter_density": 4e-06
     }
   }
 }

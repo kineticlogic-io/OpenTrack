@@ -34,6 +34,10 @@ impl Gnn {
 const OUT_OF_GATE: f64 = 1e12;
 
 impl Associate for Gnn {
+    fn spec_mut(&mut self) -> &mut TrackerSpec {
+        &mut self.spec
+    }
+
     fn scan(&mut self, t: DateTime<Utc>, plots: &[Plot]) -> Vec<Report> {
         let q = self.spec.process_noise_mps2;
         let preds: Vec<Kf> = self.tracks.iter().map(|tr| tr.kf.predict(t, q)).collect();
@@ -43,7 +47,7 @@ impl Associate for Gnn {
             .map(|p| {
                 let row: Vec<_> = plots
                     .iter()
-                    .map(|z| p.innovation(z.lat, z.lon, z.sigma))
+                    .map(|z| p.innovation(z.lat, z.lon, z.r))
                     .collect();
                 let c = row
                     .iter()
@@ -67,7 +71,7 @@ impl Associate for Gnn {
                 Some(j) => {
                     taken[j] = true;
                     tr.kf = preds[i].update(&inns[i][j]);
-                    tr.life.hit(t, &plots[j], &self.spec);
+                    tr.life.hit(t, &plots[j], &inns[i][j], &self.spec);
                     if tr.life.confirmed {
                         reports.push(Report {
                             id: tr.id,
@@ -75,10 +79,14 @@ impl Associate for Gnn {
                             domain: tr.life.domain(&self.spec),
                             plot: j,
                             dropped: false,
+                            existence: tr.life.existence,
                         });
                     }
                 }
-                None => tr.kf = preds[i].clone(),
+                None => {
+                    tr.kf = preds[i].clone();
+                    tr.life.miss(t, &self.spec);
+                }
             }
         }
         let spec = &self.spec;
@@ -91,6 +99,7 @@ impl Associate for Gnn {
                     domain: tr.life.domain(spec),
                     plot: 0,
                     dropped: true,
+                    existence: tr.life.existence,
                 });
             }
             alive
@@ -102,7 +111,7 @@ impl Associate for Gnn {
             let life = Life::new(t, z, spec);
             let id = self.next;
             self.next += 1;
-            let kf = Kf::birth(z.lat, z.lon, z.sigma, spec.initial_speed_sigma_mps, t);
+            let kf = Kf::birth(z.lat, z.lon, z.r, spec.initial_speed_sigma_mps, t);
             if life.confirmed {
                 reports.push(Report {
                     id,
@@ -110,6 +119,7 @@ impl Associate for Gnn {
                     domain: life.domain(spec),
                     plot: j,
                     dropped: false,
+                    existence: life.existence,
                 });
             }
             self.tracks.push(Track { id, kf, life });

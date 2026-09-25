@@ -70,11 +70,14 @@ impl Innovation {
 }
 
 impl Kf {
-    /// A new track at a plot, not moving as far as anyone knows yet.
-    pub fn birth(lat: f64, lon: f64, sigma_m: f64, v0_mps: f64, t: DateTime<Utc>) -> Self {
+    /// A new track at a plot with position covariance `r` (`[nn, ne, ee]`,
+    /// m²), not moving as far as anyone knows yet.
+    pub fn birth(lat: f64, lon: f64, r: [f64; 3], v0_mps: f64, t: DateTime<Utc>) -> Self {
         let mut p = [[0.0; 4]; 4];
-        p[0][0] = sigma_m * sigma_m;
-        p[1][1] = sigma_m * sigma_m;
+        p[0][0] = r[0];
+        p[0][1] = r[1];
+        p[1][0] = r[1];
+        p[1][1] = r[2];
         p[2][2] = v0_mps * v0_mps;
         p[3][3] = v0_mps * v0_mps;
         Self {
@@ -120,13 +123,12 @@ impl Kf {
         }
     }
 
-    /// Compare a plot (with per-axis standard deviation `sigma_m`) with this state.
-    pub fn innovation(&self, lat: f64, lon: f64, sigma_m: f64) -> Innovation {
+    /// Compare a plot (position covariance `r`, `[nn, ne, ee]` m²) with this state.
+    pub fn innovation(&self, lat: f64, lon: f64, r: [f64; 3]) -> Innovation {
         let (dn, de) = offset_m(self.lat, self.lon, lat, lon);
-        let r = sigma_m * sigma_m;
         let s = [
-            [self.p[0][0] + r, self.p[0][1]],
-            [self.p[1][0], self.p[1][1] + r],
+            [self.p[0][0] + r[0], self.p[0][1] + r[1]],
+            [self.p[1][0] + r[1], self.p[1][1] + r[2]],
         ];
         let det = (s[0][0] * s[1][1] - s[0][1] * s[1][0]).max(1e-9);
         let si = [
@@ -193,6 +195,21 @@ impl Kf {
     pub fn cep_m(&self) -> f64 {
         1.1774 * ((self.p[0][0] + self.p[1][1]) / 2.0).max(0.0).sqrt()
     }
+
+    /// Position covariance `[nn, ne, ee]` (m²).
+    pub fn position_cov(&self) -> [f64; 3] {
+        [self.p[0][0], self.p[0][1], self.p[1][1]]
+    }
+
+    /// The whole state covariance, for consumers that propagate it.
+    pub fn covariance(&self) -> ot_core::Covariance {
+        let p = &self.p;
+        ot_core::Covariance {
+            position: [p[0][0], p[0][1], p[1][1]],
+            velocity: Some([p[2][2], p[2][3], p[3][3]]),
+            cross: Some([p[0][2], p[0][3], p[1][2], p[1][3]]),
+        }
+    }
 }
 
 fn identity() -> M4 {
@@ -246,11 +263,11 @@ mod tests {
     #[test]
     fn a_track_learns_its_velocity() {
         // A target moving 5 m/s east, seen every second with 3 m noise-free plots.
-        let mut kf = Kf::birth(63.44, 10.40, 3.0, 5.0, at(0));
+        let mut kf = Kf::birth(63.44, 10.40, [9.0, 0.0, 9.0], 5.0, at(0));
         for s in 1..=20 {
             let (lat, lon) = moved(63.44, 10.40, 0.0, 5.0 * s as f64);
             let pred = kf.predict(at(s), 0.5);
-            let inn = pred.innovation(lat, lon, 3.0);
+            let inn = pred.innovation(lat, lon, [9.0, 0.0, 9.0]);
             assert!(inn.d2 < 13.8, "second {s}: d2 {}", inn.d2);
             kf = pred.update(&inn);
         }

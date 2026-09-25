@@ -109,6 +109,26 @@ pub enum TransportConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_file: Option<String>,
     },
+    /// Replay recorded data: a file, or every file in a directory (by name,
+    /// optionally only those with `extension`), split by `framing`. The file
+    /// name is available to mappings as `_frame.file`.
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extension: Option<String>,
+        #[serde(default = "message")]
+        framing: Framing,
+        /// Pace the replay (frames per second); unset: as fast as the pipeline takes them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frames_per_second: Option<f64>,
+        /// Start again from the first file after the last.
+        #[serde(default)]
+        repeat: bool,
+    },
+}
+
+fn message() -> Framing {
+    Framing::Message
 }
 
 fn lines() -> Framing {
@@ -144,11 +164,25 @@ impl TransportConfig {
             TransportConfig::HttpPoll { .. } => "http_poll",
             TransportConfig::Websocket { .. } => "websocket",
             TransportConfig::Mqtt { .. } => "mqtt",
+            TransportConfig::File { .. } => "file",
         }
     }
 
     /// Settings that cannot be caught by the type alone.
     pub fn check(&self) -> Result<(), String> {
+        if let TransportConfig::File {
+            path,
+            frames_per_second,
+            ..
+        } = self
+        {
+            if path.trim().is_empty() {
+                return Err("a file transport needs a path".into());
+            }
+            if frames_per_second.is_some_and(|f| !(f.is_finite() && f > 0.0)) {
+                return Err("frames_per_second must be a positive number".into());
+            }
+        }
         if let TransportConfig::Mqtt {
             url,
             topics,
@@ -191,6 +225,7 @@ impl TransportConfig {
             TransportConfig::HttpPoll { url, .. }
             | TransportConfig::Websocket { url, .. }
             | TransportConfig::Mqtt { url, .. } => url.clone(),
+            TransportConfig::File { path, .. } => path.clone(),
         }
     }
 }
@@ -456,6 +491,69 @@ pub async fn run(
             }
         }
         TransportConfig::Mqtt { .. } => run_mqtt(config, &tx, &status).await,
+        TransportConfig::File {
+            path,
+            extension,
+            framing,
+            frames_per_second,
+            repeat,
+        } => {
+            let files = replay_files(&resolve_env(path)?, extension.as_deref())?;
+            connected(&status);
+            let pause = frames_per_second.map(|f| Duration::from_secs_f64(1.0 / f));
+            loop {
+                for file in &files {
+                    let f = file.clone();
+                    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&f))
+                        .await?
+                        .with_context(|| format!("reading {}", file.display()))?;
+                    let name = file
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let mut framer = Framer::new(framing.clone())?;
+                    let mut buf = BytesMut::from(&bytes[..]);
+                    loop {
+                        match framer.next(&mut buf) {
+                            Ok(Some(bytes)) => {
+                                let mut frame = Frame::new(bytes);
+                                frame.origin = Some(file.display().to_string());
+                                frame
+                                    .meta
+                                    .insert("file".into(), serde_json::Value::String(name.clone()));
+                                emit(&tx, &status, frame).await?;
+                                if let Some(p) = pause {
+                                    tokio::time::sleep(p).await;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                tracing::warn!(file = %file.display(), error = %e, "framing error; rest of file skipped");
+                                set(&status, |s| {
+                                    s.errors += 1;
+                                    s.last_error = Some(format!("{}: {e}", file.display()));
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    if !buf.is_empty() {
+                        set(&status, |s| {
+                            s.errors += 1;
+                            s.last_error = Some(format!(
+                                "{}: {} trailing bytes are not a whole frame",
+                                file.display(),
+                                buf.len()
+                            ));
+                        });
+                    }
+                }
+                if !repeat {
+                    // Done: stay "connected" so the supervisor does not replay it again.
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
     }
 }
 
@@ -612,6 +710,34 @@ fn redact(url: &str) -> String {
         Some((base, _)) => format!("{base}?…"),
         None => url.to_owned(),
     }
+}
+
+/// The files a file transport replays: `path` itself, or the files in it
+/// (sorted by name, optionally by extension).
+fn replay_files(path: &str, extension: Option<&str>) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let p = std::path::Path::new(path);
+    let mut files = if p.is_dir() {
+        std::fs::read_dir(p)
+            .with_context(|| format!("listing {path}"))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|f| f.is_file())
+            .filter(|f| {
+                extension.is_none_or(|x| {
+                    f.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case(x.trim_start_matches('.')))
+                })
+            })
+            .collect::<Vec<_>>()
+    } else if p.is_file() {
+        vec![p.to_path_buf()]
+    } else {
+        anyhow::bail!("{path} is not a file or directory");
+    };
+    files.sort();
+    if files.is_empty() {
+        anyhow::bail!("no files to replay in {path}");
+    }
+    Ok(files)
 }
 
 async fn read_stream(

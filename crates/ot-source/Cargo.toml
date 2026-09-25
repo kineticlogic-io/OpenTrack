@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 ot-core.workspace = true
+ot-codec-stanag4607.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 chrono.workspace = true

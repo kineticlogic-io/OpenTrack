@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
-import type { SourceSpec } from '../../api/client'
+import { api, type CodecPlugin, type SourceSpec } from '../../api/client'
 
 type Transport = SourceSpec['transport']
 type Codec = SourceSpec['pipeline']['codec']
@@ -25,12 +25,14 @@ const FRAMINGS: Record<string, { label: string; initial: Record<string, unknown>
   end_tag: { label: 'End tag (e.g. </event>)', initial: { type: 'end_tag', tag: '</event>' } },
   delimiter: { label: 'Delimiter', initial: { type: 'delimiter', delimiter: '\\n' } },
   length_prefix: { label: 'Length prefix', initial: { type: 'length_prefix', width: 'u32', endian: 'big' } },
+  length_field: { label: 'Length field in header', initial: { type: 'length_field', offset: 0, width: 'u32', endian: 'big' } },
 }
 
 const CODECS: Record<string, { label: string; initial: Codec }> = {
   json: { label: 'JSON', initial: { type: 'json' } },
   cot_xml: { label: 'Cursor-on-Target XML', initial: { type: 'cot_xml' } },
   xml: { label: 'XML (generic)', initial: { type: 'xml', record_element: 'record' } },
+  plugin: { label: 'Plugin', initial: { type: 'plugin', plugin: '', options: {} } },
 }
 
 /** FieldSelect works on names; map labels ↔ ids. */
@@ -63,6 +65,7 @@ function Text({
   placeholder,
   wide,
   type = 'text',
+  help,
 }: {
   label: string
   value: unknown
@@ -70,10 +73,11 @@ function Text({
   placeholder?: string
   wide?: boolean
   type?: string
+  help?: string
 }) {
   const id = `f-${label.replace(/\W+/g, '-').toLowerCase()}`
   return (
-    <div className={wide ? 'field wide' : 'field'}>
+    <div className={wide ? 'field wide' : 'field'} title={help}>
       <Label htmlFor={id} size="sm">
         {label}
       </Label>
@@ -167,6 +171,27 @@ export function TransportForm({
     if (v === undefined || v === '') delete next[k]
     onTransport(next)
   }
+  const [plugins, setPlugins] = useState<CodecPlugin[]>([])
+  useEffect(() => {
+    if (codec.type !== 'plugin') return
+    api.plugins().then(setPlugins, () => setPlugins([]))
+  }, [codec.type])
+  const plugin = plugins.find((p) => p.name === codec.plugin)
+  const pluginOptions = (codec.options as Record<string, unknown> | undefined) ?? {}
+  const setOption = (k: string, v: unknown) => {
+    const options = { ...pluginOptions, [k]: v }
+    if (v === undefined) delete options[k]
+    onCodec({ ...codec, options })
+  }
+  const choosePlugin = (name: string) => {
+    const p = plugins.find((x) => x.name === name)
+    if (!p) return
+    onCodec({ type: 'plugin', plugin: p.name, options: structuredClone(p.default_options) })
+    // A stream of the plugin's format is framed its way.
+    if (p.framing && (transport.type === 'tcp_client' || transport.type === 'tcp_server')) {
+      onTransport({ ...transport, framing: structuredClone(p.framing) })
+    }
+  }
   const framing = (transport.framing as Record<string, unknown> | undefined) ?? { type: 'lines' }
   const setFraming = (k: string, v: unknown) => set('framing', { ...framing, [k]: v })
 
@@ -196,6 +221,47 @@ export function TransportForm({
             onCodec(next)
           }}
         />
+      )}
+      {codec.type === 'plugin' && (
+        <>
+          <div className="field">
+            <Label size="sm">Plugin</Label>
+            <Select
+              ariaLabel="Plugin"
+              options={Object.fromEntries(plugins.map((p) => [p.name, { label: `${p.name} (${p.version})` }]))}
+              value={String(codec.plugin ?? '')}
+              onChange={choosePlugin}
+            />
+          </div>
+          {plugin?.options.map((o) =>
+            o.type === 'bool' ? (
+              <label key={o.name} className="field" title={o.help}>
+                <Label size="sm">{o.label}</Label>
+                <Toggle size="sm" value={pluginOptions[o.name] === true} onChange={(v) => setOption(o.name, v)} aria-label={o.label} />
+              </label>
+            ) : o.type === 'number' ? (
+              <Text
+                key={o.name}
+                label={o.label}
+                help={o.help}
+                type="number"
+                value={pluginOptions[o.name]}
+                placeholder="not set"
+                onChange={(v) => setOption(o.name, num(v))}
+              />
+            ) : (
+              <div key={o.name} className="field" title={o.help}>
+                <Label size="sm">{o.label}</Label>
+                <Select
+                  ariaLabel={o.label}
+                  options={Object.fromEntries(o.choices.map((c) => [c, { label: c }]))}
+                  value={String(pluginOptions[o.name] ?? o.default)}
+                  onChange={(v) => setOption(o.name, v)}
+                />
+              </div>
+            ),
+          )}
+        </>
       )}
       {codec.type === 'xml' && (
         <Text label="Record element" value={codec.record_element} onChange={(v) => onCodec({ ...codec, record_element: v })} />
@@ -284,6 +350,12 @@ export function TransportForm({
           {framing.type === 'end_tag' && <Text label="End tag" value={framing.tag} onChange={(v) => setFraming('tag', v)} />}
           {framing.type === 'delimiter' && (
             <Text label="Delimiter" value={framing.delimiter} onChange={(v) => setFraming('delimiter', v)} placeholder="\\n, \\x03 …" />
+          )}
+          {framing.type === 'length_field' && (
+            <>
+              <Text label="Length offset (bytes)" type="number" value={framing.offset} onChange={(v) => setFraming('offset', num(v))} />
+              <Text label="Length width" value={framing.width} onChange={(v) => setFraming('width', v)} placeholder="u8, u16, u32" />
+            </>
           )}
           {framing.type === 'length_prefix' && (
             <Text label="Prefix width" value={framing.width} onChange={(v) => setFraming('width', v)} placeholder="u8, u16, u32, varint" />

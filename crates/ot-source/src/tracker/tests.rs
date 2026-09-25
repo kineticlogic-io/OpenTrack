@@ -112,6 +112,8 @@ fn time_scans_wait_for_their_plots_and_late_ones_are_dropped() {
     let mut s = spec("gnn");
     s.scans = ScanGrouping::Time;
     s.confirm_hits = 1;
+    // Confirm on a first plot: its existence is the birth prior, ~0.09.
+    s.confirm_probability = 0.05;
     let mut t = Tracker::new(s).unwrap();
     // Two plots of one scan in separate frames.
     let (a, mut b) = (loud_plot(0), loud_plot(0));
@@ -137,6 +139,8 @@ fn clustering_merges_one_objects_plots() {
     let mut s = spec("gnn");
     s.confirm_hits = 1;
     s.cluster_m = 10.0;
+    // Confirm on a first plot: its existence is the birth prior, ~0.09.
+    s.confirm_probability = 0.05;
     let mut t = Tracker::new(s).unwrap();
     // Two points 6 m apart on one hull, and one 80 m away.
     let a = loud_plot(0);
@@ -193,7 +197,13 @@ fn every_tracker_says_when_it_drops_a_track() {
 #[test]
 fn rejects_nonsense_settings() {
     let mut s = spec("mht");
-    s.mht.detection_probability = 1.0;
+    s.mht.detection_probability = Some(1.0);
+    assert!(Tracker::new(s).is_err());
+    let mut s = spec("gnn");
+    s.detection_probability = 1.0;
+    assert!(Tracker::new(s).is_err());
+    let mut s = spec("gnn");
+    s.drop_probability = 0.99;
     assert!(Tracker::new(s).is_err());
     let mut s = spec("gnn");
     s.gate = 0.0;
@@ -289,10 +299,11 @@ fn score(
 #[test]
 fn autoferry_detections_become_clean_tracks() {
     // Both vessels get a long, pure track from each sensor, by both algorithms.
-    let lidar = json!({"measurement_sigma_m": 4.0, "domain": "surface", "cluster_m": 10.0});
+    let lidar = json!({"measurement_sigma_m": 4.0, "domain": "surface", "cluster_m": 10.0,
+                       "detection_probability": 0.8});
     let radar = json!({"measurement_sigma_m": 6.0, "domain": "surface",
-                       "mht": {"detection_probability": 0.9, "clutter_density": 4e-6,
-                               "birth_density": 1e-7, "n_scan": 3, "max_branches": 20}});
+                       "detection_probability": 0.9, "clutter_density": 4e-6,
+                       "birth_density": 1e-7, "mht": {"n_scan": 3, "max_branches": 20}});
     for algorithm in ["gnn", "mht"] {
         for scenario in [2, 16] {
             for (feed, patch, min_reports) in [("lidar-det", &lidar, 60), ("radar-det", &radar, 30)]
@@ -308,4 +319,140 @@ fn autoferry_detections_become_clean_tracks() {
             }
         }
     }
+}
+
+#[test]
+fn auto_timing_sizes_windows_to_the_revisit() {
+    // Without auto_timing the revisit is ignored.
+    let mut t = Tracker::new(spec("gnn")).unwrap();
+    t.set_revisit(12.0, "measured");
+    assert!(t.timing().is_none());
+    assert_eq!(t.spec().confirm_within_secs, 5.0);
+
+    let auto = |a: serde_json::Value| -> TrackerSpec {
+        serde_json::from_value(json!({ "algorithm": "gnn", "auto_timing": a })).unwrap()
+    };
+    assert!(
+        auto(json!({ "drop_tentative_revisits": 1.0 }))
+            .validate()
+            .is_err()
+    );
+    assert!(
+        auto(json!({ "min_confirm_secs": -1.0 }))
+            .validate()
+            .is_err()
+    );
+
+    for algorithm in ["gnn", "mht"] {
+        let mut s = auto(json!({}));
+        s.algorithm = spec(algorithm).algorithm;
+        let mut t = Tracker::new(s).unwrap();
+        // A fast revisit: the floors.
+        t.set_revisit(2.5, "measured");
+        let w = t.timing().unwrap().clone();
+        assert_eq!(
+            (
+                w.confirm_within_secs,
+                w.drop_tentative_secs,
+                w.drop_confirmed_secs
+            ),
+            (20.0, 8.0, 30.0)
+        );
+        // A slow one: multiples of it. Jitter within 5% changes nothing.
+        t.set_revisit(12.0, "measured");
+        t.set_revisit(12.4, "measured");
+        let w = t.timing().unwrap().clone();
+        assert_eq!(w.revisit_secs, 12.0);
+        assert!((w.confirm_within_secs - 42.0).abs() < 1e-9);
+        assert!((w.drop_tentative_secs - 15.6).abs() < 1e-9);
+        assert!((w.drop_confirmed_secs - 30.0).abs() < 1e-9);
+        assert_eq!(t.spec().drop_tentative_secs, w.drop_tentative_secs);
+
+        // A target seen once every 12 s confirms and is kept (the default
+        // windows, 5 s and 3 s, would drop it before it is seen again).
+        let mut out = Vec::new();
+        for s in [0, 12, 24, 36] {
+            t.push(loud_plot(s), at(s * 1000));
+            out.extend(t.run(at(s * 1000), true));
+        }
+        let keys: std::collections::BTreeSet<_> = out
+            .iter()
+            .map(|(o, _)| o.source_track_key.clone())
+            .collect();
+        assert_eq!(keys.len(), 1, "{algorithm}: {keys:?}");
+        assert!(out.len() >= 2, "{algorithm}: {}", out.len());
+    }
+}
+
+#[test]
+fn reports_carry_existence_and_the_full_covariance() {
+    for algorithm in ["gnn", "mht"] {
+        let mut t = Tracker::new(spec(algorithm)).unwrap();
+        let out = run_all(&mut t, (0..8).map(loud_plot).collect());
+        assert!(!out.is_empty(), "{algorithm}");
+        let mut last = 0.0;
+        for o in &out {
+            let p = o.provenance.confidence.unwrap();
+            assert!(
+                (0.95..=1.0).contains(&p),
+                "{algorithm}: confirmed at 0.95, got {p}"
+            );
+            assert!(p >= last - 1e-9, "{algorithm}: plot after plot raises it");
+            last = p;
+            let u = o.uncertainty.unwrap();
+            let c = u.covariance.unwrap();
+            assert!(c.velocity.is_some() && c.cross.is_some());
+            let e = u.ellipse.unwrap();
+            assert!(e.semi_major_m >= e.semi_minor_m && e.semi_minor_m > 0.0);
+            o.validate().unwrap();
+        }
+    }
+
+    // Misses lower it: a target that stops being seen is dropped by its
+    // existence well before the 8 s drop time (one scan per second, Pd 0.9).
+    let mut t = Tracker::new(spec("gnn")).unwrap();
+    let mut out = run_all(&mut t, (0..6).map(loud_plot).collect());
+    for s in 6..12 {
+        // Another target far away keeps the scans coming.
+        let mut other = loud_plot(s);
+        other.position.latitude += 0.05;
+        t.push(other, at(s * 1000));
+        out.extend(t.run(at(s * 1000), true).into_iter().map(|(o, _)| o));
+    }
+    let dropped: Vec<_> = out
+        .iter()
+        .filter(|o| o.state == Some(ot_core::TrackState::Dropped))
+        .collect();
+    assert_eq!(dropped.len(), 1, "{out:#?}");
+    // Last plot at 5 s: the 8 s drop time would end it at 13 s.
+    assert!(
+        dropped[0].observed_at < at(13_000),
+        "dropped by existence, not the 8 s drop time: {:?}",
+        dropped[0].observed_at
+    );
+}
+
+#[test]
+fn a_miss_counts_once_per_revisit_when_the_revisit_is_known() {
+    let mut s = spec("gnn");
+    s.revisit_secs = Some(10.0);
+    let plot = Plot {
+        lat: 0.0,
+        lon: 0.0,
+        r: [100.0, 0.0, 100.0],
+        domain: None,
+    };
+    let mut l = Life::new(at(0), &plot, &s);
+    l.existence = 0.99;
+    // Scans every second: within a revisit, nothing changes.
+    for k in 1..10 {
+        l.miss(at(k * 1000), &s);
+    }
+    assert!(l.existence > 0.98, "{}", l.existence);
+    // A whole revisit without a plot: one miss.
+    l.miss(at(10_000), &s);
+    // The revisit's decay over the target's lifetime, then one miss (Pd 0.9).
+    let before = 0.99 * (-10.0f64 / 600.0).exp();
+    let one = before * 0.1 / (before * 0.1 + 1.0 - before);
+    assert!((l.existence - one).abs() < 1e-9, "{} vs {one}", l.existence);
 }

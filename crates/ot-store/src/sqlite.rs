@@ -250,6 +250,25 @@ impl Db {
         })
     }
 
+    /// Record facts about a source track on its graph node (merged into what
+    /// is there), e.g. `{"tracker": "gnn-1"}` for one a tracker formed.
+    pub fn note_source_track(
+        &mut self,
+        source_id: &str,
+        source_track_key: &str,
+        attrs: &Value,
+    ) -> Result<()> {
+        self.write(|tx| {
+            let node = graph::upsert_node(
+                tx,
+                NodeKind::SourceTrack,
+                &graph::source_track_key(source_id, source_track_key),
+                now_ms(),
+            )?;
+            graph::merge_node_attrs(tx, node, attrs)
+        })
+    }
+
     /// End a source track's link to its system track (its source said it
     /// ended), recording the decision. Returns the decision id, or None when
     /// it had no live link.
@@ -570,6 +589,31 @@ mod tests {
             [],
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn a_tracker_formed_source_track_names_its_tracker() {
+        let mut db = Db::open_in_memory().unwrap();
+        let site = SiteCode::new("OTK").unwrap();
+        let (uid, _) = db
+            .create_system_track(
+                site,
+                "gmti",
+                "G1-7",
+                Decision::new("engine", "create_system_track"),
+            )
+            .unwrap();
+        db.note_source_track("gmti", "G1-7", &serde_json::json!({ "tracker": "gnn-1" }))
+            .unwrap();
+        db.note_source_track("gmti", "G1-7", &serde_json::json!({ "other": 1 }))
+            .unwrap();
+        let edges = db.explain(uid).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].src_key, "gmti/G1-7");
+        assert_eq!(
+            edges[0].src_attrs,
+            serde_json::json!({ "tracker": "gnn-1", "other": 1 })
+        );
     }
 
     #[test]

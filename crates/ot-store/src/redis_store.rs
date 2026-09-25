@@ -11,6 +11,10 @@ use redis::streams::StreamReadReply;
 use crate::keys::Keys;
 use crate::sqlite::{Result, StoreError};
 
+/// The error of an observation stream entry trimmed (by the stream's length
+/// cap) before its consumer acknowledged it: nothing to read, only to ack.
+pub const TRIMMED: &str = "trimmed before it was read";
+
 /// Work item for the track writer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxOp {
@@ -399,6 +403,12 @@ impl RedisStore {
         for key in reply.map(|r| r.keys).unwrap_or_default() {
             let source = key.key.strip_prefix(&prefix).unwrap_or(&key.key).to_owned();
             for entry in key.ids {
+                // A pending entry the stream's length cap removed before it was
+                // acknowledged comes back with no fields.
+                if entry.map.is_empty() {
+                    out.push((source.clone(), entry.id, Err(TRIMMED.to_owned())));
+                    continue;
+                }
                 let obs = entry
                     .get::<String>("obs")
                     .ok_or_else(|| "missing obs field".to_owned())

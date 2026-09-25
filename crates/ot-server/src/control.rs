@@ -146,6 +146,7 @@ async fn track(
         .await?
         .ok_or_else(|| ApiError::not_found(format!("system track {uid}")))?;
     Ok(Json(json!({
+        "confidence": track.confidence(),
         "track": track,
         "message": ot_core::wire::to_message(&track, &s.common.publish_context(), chrono::Utc::now()),
         "subject": ot_core::wire::subject(&s.common.nats.tracks_subject, uid),

@@ -38,6 +38,7 @@ struct Leaf {
 struct Owner {
     tree: u64,
     kf: Kf,
+    existence: f64,
 }
 
 // A dropped MHT track reports the stage's domain only: the tree that knew
@@ -145,7 +146,7 @@ impl Mht {
                     *l,
                     o.tree,
                     leaf.kf
-                        .innovation(then.lat, then.lon, then.cep_m() / 1.1774)
+                        .innovation(then.lat, then.lon, then.position_cov())
                         .d2,
                 )
             })
@@ -216,16 +217,17 @@ impl Mht {
 }
 
 impl Associate for Mht {
+    fn spec_mut(&mut self) -> &mut TrackerSpec {
+        &mut self.spec
+    }
+
     fn scan(&mut self, t: DateTime<Utc>, plots: &[Plot]) -> Vec<Report> {
         self.k += 1;
         let k = self.k;
         let s = &self.spec;
         let m = &s.mht;
-        let (ln_hit, ln_miss, ln_clutter) = (
-            m.detection_probability.ln(),
-            (1.0 - m.detection_probability).ln(),
-            m.clutter_density.ln(),
-        );
+        let (pd, clutter, birth_density) = s.detection_model();
+        let (ln_hit, ln_miss, ln_clutter) = (pd.ln(), (1.0 - pd).ln(), clutter.ln());
         let keep = m.n_scan + 1;
         let extend = |h: &[Entry], e: Entry| {
             let mut h = h.to_vec();
@@ -240,20 +242,22 @@ impl Associate for Mht {
             for l in leaves.iter() {
                 let pred = l.kf.predict(t, s.process_noise_mps2);
                 if l.life.alive(t, s) {
+                    let mut life = l.life.clone();
+                    life.miss(t, s);
                     out.push(Leaf {
                         kf: pred.clone(),
                         score: l.score + ln_miss,
                         hist: extend(&l.hist, (k, None)),
-                        life: l.life.clone(),
+                        life,
                     });
                 }
                 for (j, z) in plots.iter().enumerate() {
-                    let inn = pred.innovation(z.lat, z.lon, z.sigma);
+                    let inn = pred.innovation(z.lat, z.lon, z.r);
                     if inn.d2 > s.gate {
                         continue;
                     }
                     let mut life = l.life.clone();
-                    life.hit(t, z, s);
+                    life.hit(t, z, &inn, s);
                     out.push(Leaf {
                         kf: pred.update(&inn),
                         score: l.score + ln_hit + inn.ln_likelihood() - ln_clutter,
@@ -267,10 +271,10 @@ impl Associate for Mht {
             *leaves = out;
         }
         self.trees.retain(|_, ls| !ls.is_empty());
-        let birth = (m.birth_density / m.clutter_density).ln();
+        let birth = (birth_density / clutter).ln();
         for (j, z) in plots.iter().enumerate() {
             let leaf = Leaf {
-                kf: Kf::birth(z.lat, z.lon, z.sigma, s.initial_speed_sigma_mps, t),
+                kf: Kf::birth(z.lat, z.lon, z.r, s.initial_speed_sigma_mps, t),
                 score: birth,
                 hist: vec![(k, Some(j))],
                 life: Life::new(t, z, s),
@@ -291,6 +295,7 @@ impl Associate for Mht {
                     Owner {
                         tree: *tree,
                         kf: l.kf.clone(),
+                        existence: l.life.existence,
                     },
                 );
                 reports.push(Report {
@@ -299,6 +304,7 @@ impl Associate for Mht {
                     domain: l.life.domain(&self.spec),
                     plot: j,
                     dropped: false,
+                    existence: l.life.existence,
                 });
             }
         }
@@ -316,6 +322,7 @@ impl Associate for Mht {
                     domain: spec.domain,
                     plot: 0,
                     dropped: true,
+                    existence: o.existence,
                 });
             }
             alive

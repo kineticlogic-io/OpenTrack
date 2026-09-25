@@ -113,7 +113,8 @@ pub async fn probe(
             suggested_records = Some(p);
         }
     }
-    let codec = Codec::new(codec_cfg.clone());
+    let mut codec =
+        Codec::new(codec_cfg.clone()).map_err(|e| ApiError::unprocessable(e.to_string()))?;
     let mut records = Vec::new();
     let mut decode_errors = 0;
     let mut last_decode_error = None;

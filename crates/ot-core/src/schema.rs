@@ -36,7 +36,7 @@ pub struct Position {
     pub altitude_hae_m: Option<f64>,
 }
 
-/// A GOLD XPOS-style uncertainty ellipse.
+/// A GOLD XPOS-style uncertainty ellipse: semi-axes are one standard deviation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Ellipse {
     pub semi_major_m: f64,
@@ -51,6 +51,60 @@ impl Ellipse {
     pub fn cep_m(&self) -> f64 {
         0.59 * (self.semi_major_m + self.semi_minor_m)
     }
+
+    /// The position covariance it describes, `[nn, ne, ee]` (m², north/east).
+    pub fn covariance(&self) -> [f64; 3] {
+        let (a2, b2) = (self.semi_major_m.powi(2), self.semi_minor_m.powi(2));
+        let (s, c) = self.orientation_deg.to_radians().sin_cos();
+        [
+            a2 * c * c + b2 * s * s,
+            (a2 - b2) * s * c,
+            a2 * s * s + b2 * c * c,
+        ]
+    }
+
+    /// The ellipse of a position covariance `[nn, ne, ee]` (m²).
+    pub fn from_covariance([nn, ne, ee]: [f64; 3]) -> Self {
+        let mid = (nn + ee) / 2.0;
+        let r = (((nn - ee) / 2.0).powi(2) + ne * ne).sqrt();
+        let orientation = (0.5 * (2.0 * ne).atan2(nn - ee))
+            .to_degrees()
+            .rem_euclid(180.0);
+        Self {
+            semi_major_m: (mid + r).max(0.0).sqrt(),
+            semi_minor_m: (mid - r).max(0.0).sqrt(),
+            orientation_deg: orientation,
+        }
+    }
+}
+
+/// A report's full error covariance, in metres and m/s along north and east
+/// at its position: what a tracker knows about its estimate, so a consumer
+/// can propagate it in time rather than guess.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Covariance {
+    /// Position `[nn, ne, ee]` (m²).
+    pub position: [f64; 3],
+    /// Velocity `[vn·vn, vn·ve, ve·ve]` (m²/s²).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<[f64; 3]>,
+    /// Position against velocity `[n·vn, n·ve, e·vn, e·ve]` (m²/s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross: Option<[f64; 4]>,
+}
+
+impl Covariance {
+    fn check(&self) -> bool {
+        let psd =
+            |[a, b, c]: [f64; 3]| a >= 0.0 && c >= 0.0 && a * c - b * b >= -1e-6 * (a * c).max(1.0);
+        let finite = self
+            .position
+            .iter()
+            .chain(self.velocity.iter().flatten())
+            .chain(self.cross.iter().flatten())
+            .all(|x| x.is_finite());
+        finite && psd(self.position) && self.velocity.is_none_or(psd)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -62,9 +116,28 @@ pub struct Uncertainty {
     pub circular_error_m: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertical_error_m: Option<f64>,
+    /// The full covariance, when the source has one (a tracker); the ellipse
+    /// and circular error are derived from it for consumers that need them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covariance: Option<Covariance>,
 }
 
 impl Uncertainty {
+    /// The position covariance `[nn, ne, ee]` (m²): the full covariance, else
+    /// the ellipse, else a circle from the circular error (CEP = 1.1774 σ).
+    pub fn position_covariance(&self) -> Option<[f64; 3]> {
+        if let Some(c) = &self.covariance {
+            return Some(c.position);
+        }
+        if let Some(e) = &self.ellipse {
+            return Some(e.covariance());
+        }
+        self.circular_error_m.map(|c| {
+            let v = (c / 1.1774).powi(2);
+            [v, 0.0, v]
+        })
+    }
+
     /// The circular error to publish: the reported one, else derived from the
     /// ellipse.
     pub fn cep_m(&self) -> Option<f64> {
@@ -372,6 +445,8 @@ pub enum ValidationError {
     NotFinite(&'static str),
     #[error("ellipse semi-minor axis exceeds semi-major axis")]
     EllipseAxes,
+    #[error("uncertainty covariance is not a finite, positive semi-definite matrix")]
+    Covariance,
 }
 
 impl Observation {
@@ -422,6 +497,11 @@ impl Observation {
                 if e.semi_minor_m > e.semi_major_m {
                     return Err(ValidationError::EllipseAxes);
                 }
+            }
+            if let Some(c) = &u.covariance
+                && !c.check()
+            {
+                return Err(ValidationError::Covariance);
             }
         }
         opt_range("confidence", self.provenance.confidence, 0.0, 1.0, "[0, 1]")?;
@@ -571,7 +651,7 @@ pub(crate) mod tests {
         let u = Uncertainty {
             ellipse: Some(e),
             circular_error_m: Some(10.0),
-            vertical_error_m: None,
+            ..Default::default()
         };
         assert_eq!(u.cep_m(), Some(10.0));
     }
@@ -606,5 +686,47 @@ pub(crate) mod tests {
         };
         assert_eq!(c.effective_domain(), None);
         assert_eq!(Classification::default().cot_type_or_derived(), "a-u");
+    }
+
+    #[test]
+    fn ellipse_and_covariance_round_trip() {
+        for (a, b, o) in [
+            (30.0, 10.0, 0.0),
+            (30.0, 10.0, 90.0),
+            (50.0, 5.0, 37.0),
+            (8.0, 8.0, 0.0),
+        ] {
+            let e = Ellipse {
+                semi_major_m: a,
+                semi_minor_m: b,
+                orientation_deg: o,
+            };
+            let c = e.covariance();
+            let back = Ellipse::from_covariance(c);
+            assert!((back.semi_major_m - a).abs() < 1e-9 && (back.semi_minor_m - b).abs() < 1e-9);
+            if a != b {
+                assert!((back.orientation_deg - o).abs() < 1e-9, "{o} -> {back:?}");
+            }
+        }
+        // Major axis east-west: all the variance on east.
+        let c = Ellipse {
+            semi_major_m: 3.0,
+            semi_minor_m: 1.0,
+            orientation_deg: 90.0,
+        }
+        .covariance();
+        assert!((c[0] - 1.0).abs() < 1e-9 && c[1].abs() < 1e-9 && (c[2] - 9.0).abs() < 1e-9);
+        let u = Uncertainty {
+            circular_error_m: Some(11.774),
+            ..Default::default()
+        };
+        let p = u.position_covariance().unwrap();
+        assert!((p[0] - 100.0).abs() < 1e-6 && (p[2] - 100.0).abs() < 1e-6);
+        let bad = Covariance {
+            position: [1.0, 5.0, 1.0],
+            velocity: None,
+            cross: None,
+        };
+        assert!(!bad.check());
     }
 }

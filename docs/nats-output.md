@@ -120,7 +120,10 @@ For each output schema field, OpenTrack takes the value from, in order:
    difference.
 2. **A feed**, through the source's mapping to that field.
 3. **OpenTrack itself**, for fields linked to a built-in value (lifecycle `state`, `speed_mps`,
-   `identifiers`, `sources`, ...).
+   `identifiers`, `sources`, ...). `confidence` is the probability that the track is a real
+   object, 0 to 1: `1 − Π(1 − existence · pairing confidence)` over its source tracks, where a
+   tracker's tracks carry their existence probability and track feeds count as 1 unless they
+   report their own (see [algorithms.md](algorithms.md), correlation-3).
 
 ## `delete`
 

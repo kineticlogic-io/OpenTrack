@@ -13,9 +13,9 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
 | 1. Source framework | Transports (TCP, UDP, HTTP poll, WebSocket, MQTT), JSON / CoT / XML codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
-| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | **done**: identifier and kinematic pairing, suggest mode, splits, do-not-pair, runtime settings, detection association, GNN/MHT tracker stage; vector similarity deferred |
+| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | **done**: identifier and kinematic pairing with error propagation and pairing probabilities, suggest mode, splits, do-not-pair, runtime settings, detection association, GNN/MHT tracker stage with existence probabilities and auto timing; vector similarity deferred |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
-| 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | |
+| 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | **started**: codec plugin interface (compiled in), STANAG 4607 GMTI plugin, length-field framing, file transport |
 | 6. Migration and cutover | aisstream / adsb.lol examples, parallel run | |
 
 ## Layout
@@ -25,9 +25,12 @@ crates/
   ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, OTH-GOLD minimum and the published message (opentrack.track.v2)
   ot-store    SQLite (decisions, config, temporal track graph) and Redis (streams, live state)
   ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
-  ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, tracker (GNN/MHT), throttle
+  ot-source   source framework: transports, framing, codecs and codec plugins, mapping, registry grading, filter, tracker (GNN/MHT), throttle
+  ot-codec-stanag4607  STANAG 4607 (Edition 3) GMTI decoder: every segment type, typed and as JSON records
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
-docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
+docs/examples aisstream, adsb.lol, STANAG 4607 GMTI, a GPS feed and the Autoferry demo as pure configuration
+scripts/     replay tools: gmti-rebroadcast.py (4607 recordings over TCP), gmti-gps-replay.py (GMTI and
+             GPS logs of one exercise on one clock), autoferry-replay.py (the Autoferry demo)
 docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview (status and
               system metrics), Sources (topology, list, add-source wizard, mapping studio with live
@@ -49,6 +52,25 @@ tracking, fewer false tracks in clutter). A tracker's tracks carry no identity: 
 classification is unknown affiliation and at most a domain (ground, air, surface, subsurface), from
 the stage's `domain` or the plots' own. Correlation then pairs them with other sources' tracks on
 kinematic agreement.
+
+Every tracker track carries the probability that it is a real target (its **existence**, from how
+well its plots fit against clutter and how often it goes unseen), which confirms and drops it and
+is published as its `confidence`; its reports carry the position error ellipse and the full
+position and velocity covariance. Correlation compares tracks with that covariance propagated in
+time (position, and velocity when both report it), keeps a probability that two source tracks are
+the same object, pairs at 0.99 and follows it afterwards as the pairing's confidence. A system
+track's confidence combines its sources' existence and pairing confidences, and is an output
+schema built-in. Details and scores: [docs/algorithms.md](docs/algorithms.md).
+
+**Codec plugins** decode formats beyond JSON and XML: `"codec": {"type": "plugin", "plugin":
+"stanag4607", "options": {...}}`, with the options and framing each plugin describes at
+`GET /api/v1/plugins` (the Sources form shows them). Plugins are compiled in; the interface is the
+one a sandboxed (WebAssembly) plugin will implement. **STANAG 4607** (NATO GMTI) streams over TCP,
+framed by the packet header's size field; [docs/examples/stanag4607.json](docs/examples/stanag4607.json)
+turns every dwell target into a detection with a ground error ellipse from the radar geometry, forms
+ground tracks with the GNN tracker, times the tracker by the revisit rate it measures in the stream
+(`auto_timing`), and publishes the sensor platform itself as a friendly track (`publish_platform`,
+symbol from the mission's platform type). A mapping rule of kind `track` bypasses the tracker.
 
 Only authoritative system tracks are published: confirmed, and reported for by a source that may
 stand alone (`publish_alone`; by default track feeds may, detection feeds may not). A track only

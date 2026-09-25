@@ -53,6 +53,8 @@ pub enum PipelineError {
     Mapping(#[from] mapping::MappingError),
     #[error("{0}")]
     Tracker(String),
+    #[error("{0}")]
+    Codec(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -284,7 +286,8 @@ impl Pipeline {
         Ok(Self {
             tracker,
             source_id: source_id.into(),
-            codec: Codec::new(spec.codec.clone()),
+            codec: Codec::new(spec.codec.clone())
+                .map_err(|e| PipelineError::Codec(e.to_string()))?,
             spec,
             statics: HashMap::new(),
             throttle: HashMap::new(),
@@ -340,11 +343,23 @@ impl Pipeline {
                 return out;
             }
         };
+        // A tracker timed by the sensor follows what the codec has learnt.
+        if let Some(t) = self.tracker.as_mut()
+            && let Some(h) = self.codec.hints()
+        {
+            t.set_revisit(h.revisit_secs, h.revisit_source);
+        }
         for record in records {
             self.process_record(&record, frame.received_at, registry, &mut out);
         }
         self.run_tracker(frame.received_at, false, &mut out);
         out
+    }
+
+    /// The windows a tracker with `auto_timing` is using, once it knows the
+    /// sensor's revisit period.
+    pub fn tracker_timing(&self) -> Option<&crate::tracker::Timing> {
+        self.tracker.as_ref()?.timing()
     }
 
     /// Run the tracker on scans still waiting (plots grouped by time wait
@@ -431,10 +446,7 @@ impl Pipeline {
             entry.updated_at = received_at;
             out.statics.push((m.key.clone(), entry.clone()));
         }
-        for m in mapped
-            .into_iter()
-            .filter(|m| m.kind == RuleKind::Observation)
-        {
+        for m in mapped.into_iter().filter(|m| m.kind.reports()) {
             let mut m = m;
             if let Some(s) = self.statics.get(&m.key) {
                 mapping::fill_missing(&mut m.fields, &s.fields);
@@ -502,7 +514,9 @@ impl Pipeline {
                     continue;
                 }
             };
-            if let Some(t) = self.tracker.as_mut() {
+            if let Some(t) = self.tracker.as_mut()
+                && m.kind == RuleKind::Observation
+            {
                 self.counts.plots += 1;
                 t.push(obs, received_at);
                 continue;

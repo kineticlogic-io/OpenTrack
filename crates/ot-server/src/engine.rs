@@ -43,9 +43,7 @@ use ot_store::{Decision, RedisStore};
 use serde_json::{Map, Value, json};
 
 use crate::config::Common;
-use crate::correlate::{
-    self, Approach, Contribution, CorrelationSettings, Grid, Mode, Persistence,
-};
+use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
 pub const GROUP: &str = "engine";
 
@@ -101,11 +99,21 @@ pub enum Applied {
     OutOfOrder,
 }
 
+/// A comparison in words, for decision reasons.
+fn describe(k: &correlate::Kinematic) -> String {
+    let speed = k
+        .speed_diff_mps
+        .map(|d| format!(", speeds {:.1} m/s apart", d.abs()))
+        .unwrap_or_default();
+    format!("{:.0} m apart, σ {:.0} m{speed}", k.distance_m, k.sigma_m)
+}
+
 /// Apply an observation to a system track whose only contributor reported it.
 pub fn apply(track: &mut SystemTrack, obs: Observation, confirm_after: u64) -> Applied {
     track.observation_count += 1;
     if let Some(c) = track.contributors.first_mut() {
         c.last_report = c.last_report.max(obs.observed_at);
+        c.existence = obs.provenance.confidence;
     }
     if obs.observed_at < track.last_seen {
         return Applied::OutOfOrder;
@@ -318,7 +326,7 @@ pub struct Engine {
     /// Source track keys an operator said are different objects (sorted pairs).
     do_not_pair: HashSet<(String, String)>,
     /// Recent disagreements of a source track with the rest of its system track.
-    misses: HashMap<(Uid, String), Persistence>,
+    misses: HashMap<(Uid, String), Evidence>,
     /// When each open suggestion was last written (at most every 10 s).
     suggested: HashMap<String, DateTime<Utc>>,
     /// Splits an operator rejected, not proposed again for a while.
@@ -326,7 +334,7 @@ pub struct Engine {
     /// Where each live system track is, for kinematic comparisons.
     grid: Grid<Uid>,
     /// Recent gate results per pair of system tracks (lower uid first).
-    candidates: HashMap<(Uid, Uid), Persistence>,
+    candidates: HashMap<(Uid, Uid), Evidence>,
     attrs: Attributes,
     /// Where each detection went, for scoring replays.
     #[cfg(test)]
@@ -568,15 +576,26 @@ impl Engine {
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
         let mut reports = Vec::with_capacity(batch.len());
+        let mut trimmed: HashMap<String, usize> = HashMap::new();
         for (source, id, obs) in batch {
             acks.entry(source.clone()).or_default().push(id.clone());
             match obs {
                 Ok(o) => reports.push(o),
+                Err(e) if e == ot_store::redis_store::TRIMMED => {
+                    *trimmed.entry(source).or_default() += 1;
+                }
                 Err(e) => {
                     tracing::warn!(%source, %id, error = %e, "unreadable observation skipped");
                     counts.unreadable += 1;
                 }
             }
+        }
+        for (source, n) in trimmed {
+            tracing::warn!(
+                %source,
+                count = n,
+                "observations trimmed from the stream before the engine read them"
+            );
         }
         // A batch holds each source's reports in turn: take them in time order.
         reports.sort_by_key(|o| o.observed_at);
@@ -701,6 +720,13 @@ impl Engine {
         let key = format!("{}/{}", obs.source_id, obs.source_track_key);
         let (source, track_key) = (obs.source_id.clone(), obs.source_track_key.clone());
         let c = self.common.clone();
+        // A tracker formed this source track from the source's detections:
+        // keep that in its lineage.
+        let formed = obs
+            .provenance
+            .tracker
+            .as_ref()
+            .map(|t| json!({ "tracker": t }));
         if let Some((uid, evidence)) = self.find_match(obs, None) {
             let attrs = json!({ "pairing": "auto", "confidence": 1.0, "evidence": evidence });
             let decision = engine_decision("pair")
@@ -710,9 +736,13 @@ impl Engine {
                     uid.doc_id()
                 ))
                 .evidence(evidence);
-            tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
-                Ok(c.open_db()?
-                    .pair_source_track(&source, &track_key, uid, &attrs, decision)?)
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let mut db = c.open_db()?;
+                db.pair_source_track(&source, &track_key, uid, &attrs, decision)?;
+                if let Some(formed) = formed {
+                    db.note_source_track(&source, &track_key, &formed)?;
+                }
+                Ok(())
             })
             .await??;
             if let Some(t) = self.tracks.get_mut(&uid) {
@@ -722,6 +752,7 @@ impl Engine {
                     pairing: PairingType::Auto,
                     confidence: 1.0,
                     last_report: obs.observed_at,
+                    existence: obs.provenance.confidence,
                 });
             }
             self.reports.insert(key, uid);
@@ -730,13 +761,18 @@ impl Engine {
         }
         let site = c.site;
         let (uid, _) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            Ok(c.open_db()?.create_system_track(
+            let mut db = c.open_db()?;
+            let created = db.create_system_track(
                 site,
                 &source,
                 &track_key,
                 engine_decision("create_system_track")
                     .reason("new source track with no identity match"),
-            )?)
+            )?;
+            if let Some(formed) = formed {
+                db.note_source_track(&source, &track_key, &formed)?;
+            }
+            Ok(created)
         })
         .await??;
         self.reports.insert(key, uid);
@@ -1047,17 +1083,27 @@ impl Engine {
         }
         let (view, _) = correlate::best_view(&contribs, self.settings.correlation.freshness_secs);
         let k = correlate::kinematic(obs, &view, &kin);
-        let window = correlate::KinematicSettings {
-            m: split.m,
-            n: split.n,
-            ..kin
+        let far = k.d2 > correlate::chi2_quantile(split.gate_probability, k.dof);
+        let Some(tally) = self.misses.entry((uid, key.clone())).or_default().record(
+            (&key, obs.observed_at),
+            ("rest", view.observed_at),
+            k.ln_lr,
+            far,
+            (split.n, &kin),
+        ) else {
+            return Ok(());
         };
-        let (misses, of) = self.misses.entry((uid, key.clone())).or_default().record(
-            obs.observed_at,
-            k.d2 > split.chi2_gate,
-            &window,
-        );
-        if misses < split.m {
+        // Paired at the pairing threshold; its comparisons since move it.
+        let p = correlate::posterior(kin.pair_probability, tally.ln_lr);
+        let of = tally.comparisons;
+        if let Some(c) = self.tracks.get_mut(&uid).and_then(|t| {
+            t.contributors
+                .iter_mut()
+                .find(|c| contributor_key(c) == key)
+        }) {
+            c.confidence = (p * 1e4).round() / 1e4;
+        }
+        if tally.outside < split.m || p > split.split_probability {
             return Ok(());
         }
         self.misses.remove(&(uid, key.clone()));
@@ -1078,14 +1124,14 @@ impl Engine {
             return Ok(());
         }
         let evidence = json!({
-            "rule": "divergence", "misses": misses, "of": of,
-            "chi2_gate": split.chi2_gate, "last": k,
+            "rule": "divergence", "probability": p, "comparisons": of,
+            "outside_gate": tally.outside, "split_gate_probability": split.gate_probability,
+            "split_probability": split.split_probability, "last": k,
         });
         let reason = format!(
-            "{leaving} disagreed with the rest of {} in {misses} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
+            "{leaving} stopped agreeing with the rest of {}: probability {p:.3} of the same object over {of} comparisons ({})",
             uid.doc_id(),
-            k.distance_m,
-            k.sigma_m
+            describe(&k)
         );
         if split.automatic {
             self.split(uid, &leaving, "engine", &reason, evidence)
@@ -1574,6 +1620,7 @@ impl Engine {
                     c.source_id == obs.source_id && c.source_track_key == obs.source_track_key
                 }) {
                     c.last_report = c.last_report.max(obs.observed_at);
+                    c.existence = obs.provenance.confidence;
                 }
                 t.provenance = provenance;
                 apply_view(t, view, confirm)
@@ -1656,7 +1703,7 @@ impl Engine {
             .map(str::to_owned)
             .collect();
         let max_age = chrono::Duration::milliseconds((s.max_age_secs * 1000.0) as i64);
-        let mut ready: Option<(Uid, correlate::Kinematic, usize, usize)> = None;
+        let mut ready: Option<(Uid, correlate::Kinematic, f64, usize)> = None;
         for other in self
             .grid
             .near(obs.position.latitude, obs.position.longitude)
@@ -1687,20 +1734,28 @@ impl Engine {
             if !k.pass && !self.candidates.contains_key(&key) {
                 continue;
             }
-            let (hits, of) =
-                self.candidates
-                    .entry(key)
-                    .or_default()
-                    .record(obs.observed_at, k.pass, &s);
-            if hits >= s.m && ready.as_ref().is_none_or(|r| k.d2 < r.1.d2) {
-                ready = Some((other, k, hits, of));
+            let Some(tally) = self.candidates.entry(key).or_default().record(
+                (&uid.to_string(), obs.observed_at),
+                (&other.to_string(), t.view.observed_at),
+                k.ln_lr,
+                !k.pass,
+                (s.n, &s),
+            ) else {
+                continue;
+            };
+            let (p, of) = (
+                correlate::posterior(s.prior_probability, tally.ln_lr),
+                tally.comparisons,
+            );
+            if of >= s.m && p >= s.pair_probability && ready.as_ref().is_none_or(|r| p > r.2) {
+                ready = Some((other, k, p, of));
             }
         }
         // Forget pairs that stopped being compared.
         let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
         self.candidates
             .retain(|_, p| p.last().is_some_and(|l| obs.observed_at - l <= window));
-        let Some((other, k, hits, of)) = ready else {
+        let Some((other, k, p, of)) = ready else {
             return Ok(());
         };
         let (from, into) = self.merge_order(uid, other);
@@ -1714,16 +1769,15 @@ impl Engine {
             "rule": "kinematic",
             "trackers": trackers,
             "approach": self.settings.correlation.approach,
-            "hits": hits, "of": of,
-            "chi2_gate": s.chi2_gate,
+            "probability": p, "comparisons": of,
+            "pair_probability": s.pair_probability,
             "last": k,
         });
         let reason = format!(
-            "{} and {} agreed kinematically in {hits} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
+            "{} and {} agreed kinematically: probability {p:.3} of the same object over {of} comparisons ({})",
             from.doc_id(),
             into.doc_id(),
-            k.distance_m,
-            k.sigma_m
+            describe(&k)
         );
         if self.settings.correlation.mode == Mode::Suggest {
             if self
@@ -1740,7 +1794,18 @@ impl Engine {
             Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
         })
         .await??;
+        let moved = self.keys_of(from);
         self.absorb(from, into).await?;
+        // The source tracks that joined are paired at this probability.
+        if let Some(t) = self.tracks.get_mut(&into) {
+            for c in t
+                .contributors
+                .iter_mut()
+                .filter(|c| moved.contains(&contributor_key(c)))
+            {
+                c.confidence = (p * 1e4).round() / 1e4;
+            }
+        }
         counts.kinematic_merged += 1;
         self.republish(into).await?;
         Ok(())
@@ -1841,6 +1906,7 @@ impl Engine {
                     pairing: PairingType::Auto,
                     confidence: 1.0,
                     last_report: det.observed_at,
+                    existence: None,
                 });
             }
             if let Some((_, urgent)) = self.observe(uid, det).await? {
@@ -2051,6 +2117,9 @@ mod tests {
         let mut e = Engine::new(common, EngineSettings::default())
             .await
             .unwrap();
+        // The synthetic feeds below report once a second with independent
+        // noise, so each report is new evidence.
+        e.settings.correlation.kinematic.min_interval_secs = 1.0;
         e.sources = sources.iter().map(|s| s.to_string()).collect();
         e.redis.ensure_obs_groups(&e.sources, GROUP).await.unwrap();
         Some((e, dir))
@@ -2297,8 +2366,10 @@ mod tests {
             o.name = Some("TED STEVENS".into());
             o
         };
+        // Both report: each comparison needs a new report from each side.
         for s in 10..13 {
             feed(&mut e, &[ais(s)]).await;
+            feed(&mut e, &[report("radar", "r1", s, 32.0, -117.0, None)]).await;
         }
         assert_eq!(e.tracks[&track_of(&e, "ais", "366")].published, Some(true));
         feed(&mut e, &[report("radar", "r1", 13, 32.0, -117.0, None)]).await;
@@ -2541,7 +2612,7 @@ mod tests {
             c.open_db()
                 .unwrap()
                 .save_correlation_settings(
-                    &json!({"mode": "suggest"}),
+                    &json!({"mode": "suggest", "kinematic": {"min_interval_secs": 1.0}}),
                     ot_store::Decision::new("operator", "correlation_settings"),
                 )
                 .unwrap()

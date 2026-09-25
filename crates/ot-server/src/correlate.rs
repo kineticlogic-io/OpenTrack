@@ -18,7 +18,7 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// publish rule. Stamped on every engine decision and published message.
 /// Bump it whenever the same inputs would give different system tracks, and
 /// record it in docs/algorithms.md with its scores.
-pub const VERSION: &str = "correlation-2";
+pub const VERSION: &str = "correlation-3";
 
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry
@@ -153,37 +153,84 @@ pub fn sanity_gate(obs: &Observation, view: &Observation, s: &GateSettings) -> G
 
 /// Settings of kinematic pairing (tracks with no shared identity) and of
 /// detection association.
+///
+/// Two reports are compared by propagating the older one's state and
+/// covariance to the newer one's time (constant velocity, white-acceleration
+/// process noise) and testing the difference against the sum of both
+/// covariances: position, and velocity when both report motion (2 or 4
+/// degrees of freedom). Each comparison is a likelihood ratio, "the same
+/// object" against "another object nearby"; a pair's probability of being the
+/// same object is the prior updated by the ratios of its recent comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KinematicSettings {
-    /// Chi-square gate on the normalised distance (2 degrees of freedom;
-    /// 9.21 keeps 99% of true matches).
-    pub chi2_gate: f64,
-    /// Floor on a report's position standard deviation, for sources that
-    /// claim more precision than they have (or report none).
+    /// Share of true matches the gate keeps (chi-square, 2 or 4 degrees of
+    /// freedom); a comparison outside it counts against the pair.
+    pub gate_probability: f64,
+    /// Floor on a report's position standard deviation per axis, for
+    /// sources that claim more precision than they have (or report none).
     pub min_sigma_m: f64,
-    /// Position uncertainty growth per second of dead-reckoning (m/s).
-    pub drift_mps: f64,
-    /// Pair when `m` of the last `n` comparisons pass the gate...
+    /// White-acceleration process noise (m/s²) for propagating a report's
+    /// covariance to another's time.
+    pub process_noise_mps2: f64,
+    /// Standard deviation of a reported velocity (per axis, m/s) when the
+    /// report gives course and speed but no covariance.
+    pub speed_sigma_mps: f64,
+    /// How many other objects per km² a report could be, and how spread their
+    /// velocities are (m/s): the "another object nearby" of each comparison.
+    pub object_density_per_km2: f64,
+    pub velocity_spread_mps: f64,
+    /// Probability that two unrelated tracks are the same object before any
+    /// comparison.
+    pub prior_probability: f64,
+    /// Pair (or propose the pairing) at this probability...
+    pub pair_probability: f64,
+    /// ...with at least `m` comparisons, from the last `n`...
     pub m: usize,
     pub n: usize,
-    /// ...within this many seconds.
+    /// ...within this many seconds, at least this far apart (consecutive
+    /// reports are not independent evidence).
     pub window_secs: f64,
+    pub min_interval_secs: f64,
     /// Views older than this are not compared.
     pub max_age_secs: f64,
+    /// Settings from before correlation-3, still read: a chi-square gate
+    /// (2 degrees of freedom) becomes the gate probability; the flat drift
+    /// allowance is replaced by `process_noise_mps2`.
+    #[serde(skip_serializing)]
+    pub chi2_gate: Option<f64>,
+    #[serde(skip_serializing)]
+    pub drift_mps: Option<f64>,
 }
 
 impl Default for KinematicSettings {
     fn default() -> Self {
         Self {
-            chi2_gate: 9.21,
+            gate_probability: 0.99,
             min_sigma_m: 5.0,
-            drift_mps: 1.0,
-            m: 4,
+            process_noise_mps2: 0.3,
+            speed_sigma_mps: 1.0,
+            object_density_per_km2: 1.0,
+            velocity_spread_mps: 15.0,
+            prior_probability: 0.01,
+            pair_probability: 0.99,
+            m: 3,
             n: 5,
             window_secs: 30.0,
+            min_interval_secs: 3.0,
             max_age_secs: 30.0,
+            chi2_gate: None,
+            drift_mps: None,
         }
+    }
+}
+
+impl KinematicSettings {
+    /// The gate probability, from a pre-correlation-3 chi-square gate if set.
+    pub fn gate(&self) -> f64 {
+        self.chi2_gate
+            .map(|g| 1.0 - (-g / 2.0).exp())
+            .unwrap_or(self.gate_probability)
     }
 }
 
@@ -214,7 +261,10 @@ pub enum Mode {
 
 /// Decorrelation: a source track that stops agreeing with the rest of its
 /// system track (a sensor track that followed the wrong vessel through a
-/// crossing, a wrongly shared identifier).
+/// crossing, a wrongly shared identifier). A paired source track keeps a
+/// probability of being the same object as the rest, starting at the pairing
+/// threshold and updated by every comparison (like pairing, see
+/// [`KinematicSettings`]); it is its confidence on the track.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SplitSettings {
@@ -222,11 +272,18 @@ pub struct SplitSettings {
     pub propose: bool,
     /// Split without asking.
     pub automatic: bool,
-    /// Chi-square distance beyond which a report disagrees (18.4: 99.99%).
-    pub chi2_gate: f64,
-    /// Split when `m` of the last `n` comparisons disagree.
+    /// Split (or propose it) when the probability falls to this...
+    pub split_probability: f64,
+    /// ...and `m` of the last `n` comparisons fall outside a gate keeping this
+    /// share of true matches: a constant-velocity model understates the error
+    /// of a manoeuvring target, so one bad stretch alone does not split.
+    pub gate_probability: f64,
     pub m: usize,
     pub n: usize,
+    /// Before correlation-3: a chi-square distance counted as a miss. Read,
+    /// no longer used.
+    #[serde(skip_serializing)]
+    pub chi2_gate: Option<f64>,
 }
 
 impl Default for SplitSettings {
@@ -234,9 +291,11 @@ impl Default for SplitSettings {
         Self {
             propose: true,
             automatic: false,
-            chi2_gate: 18.4,
+            split_probability: 0.001,
+            gate_probability: 0.9999,
             m: 5,
             n: 6,
+            chi2_gate: None,
         }
     }
 }
@@ -273,8 +332,11 @@ impl CorrelationSettings {
     pub fn validate(&self) -> Result<(), String> {
         let k = &self.kinematic;
         let positive = [
-            ("kinematic.chi2_gate", k.chi2_gate),
             ("kinematic.min_sigma_m", k.min_sigma_m),
+            ("kinematic.process_noise_mps2", k.process_noise_mps2),
+            ("kinematic.speed_sigma_mps", k.speed_sigma_mps),
+            ("kinematic.object_density_per_km2", k.object_density_per_km2),
+            ("kinematic.velocity_spread_mps", k.velocity_spread_mps),
             ("kinematic.window_secs", k.window_secs),
             ("kinematic.max_age_secs", k.max_age_secs),
             ("gate.base_m", self.gate.base_m),
@@ -283,15 +345,29 @@ impl CorrelationSettings {
                 self.gate.max_extrapolation_secs,
             ),
             ("freshness_secs", self.freshness_secs),
-            ("split.chi2_gate", self.split.chi2_gate),
         ];
         for (name, v) in positive {
             if !(v.is_finite() && v > 0.0) {
                 return Err(format!("{name} must be a positive number"));
             }
         }
-        if !(k.drift_mps.is_finite() && k.drift_mps >= 0.0) {
-            return Err("kinematic.drift_mps must not be negative".into());
+        let unit = |v: f64| v > 0.0 && v < 1.0;
+        for (name, v) in [
+            ("kinematic.gate_probability", k.gate()),
+            ("kinematic.prior_probability", k.prior_probability),
+            ("kinematic.pair_probability", k.pair_probability),
+            ("split.split_probability", self.split.split_probability),
+            ("split.gate_probability", self.split.gate_probability),
+        ] {
+            if !unit(v) {
+                return Err(format!("{name} must be between 0 and 1"));
+            }
+        }
+        if self.split.split_probability >= k.pair_probability {
+            return Err("split.split_probability must be below kinematic.pair_probability".into());
+        }
+        if !(k.min_interval_secs.is_finite() && k.min_interval_secs >= 0.0) {
+            return Err("kinematic.min_interval_secs must not be negative".into());
         }
         for (name, m, n) in [
             ("kinematic", k.m, k.n),
@@ -305,44 +381,293 @@ impl CorrelationSettings {
     }
 }
 
-/// A report's position standard deviation per axis: its circular error
-/// (CEP = 1.1774 σ for a circular normal), no smaller than the floor.
-fn sigma_m(obs: &Observation, floor: f64) -> f64 {
-    obs.uncertainty
-        .and_then(|u| u.cep_m())
-        .map(|c| c / 1.1774)
-        .unwrap_or(floor)
-        .max(floor)
+type M4 = [[f64; 4]; 4];
+
+/// A report's kinematic state with its covariance: north/east metres and m/s
+/// at the report's position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Estimate {
+    pub lat: f64,
+    pub lon: f64,
+    /// North and east velocity, when the report gives course and speed.
+    pub v: Option<[f64; 2]>,
+    /// Covariance of (north, east, v north, v east); the velocity rows only
+    /// mean something with `v`.
+    pub p: M4,
+    pub t: DateTime<Utc>,
+    domain: Option<Domain>,
 }
 
-/// How well a report agrees with a view: the view dead-reckoned to the
-/// report's time, and the distance normalised by both uncertainties.
+/// A report as an [`Estimate`]: its full covariance when it has one (a
+/// tracker's), else its ellipse or circular error (floored at
+/// `min_sigma_m`) and `speed_sigma_mps` on a reported velocity.
+pub fn estimate(obs: &Observation, s: &KinematicSettings) -> Estimate {
+    let floor = s.min_sigma_m.powi(2);
+    let pos = obs
+        .uncertainty
+        .and_then(|u| u.position_covariance())
+        .unwrap_or([floor, 0.0, floor]);
+    // Raise the smaller principal variance to the floor.
+    let mid = (pos[0] + pos[2]) / 2.0;
+    let r = (((pos[0] - pos[2]) / 2.0).powi(2) + pos[1] * pos[1]).sqrt();
+    let add = (floor - (mid - r)).max(0.0);
+    let mut p = [[0.0; 4]; 4];
+    p[0][0] = pos[0] + add;
+    p[0][1] = pos[1];
+    p[1][0] = pos[1];
+    p[1][1] = pos[2] + add;
+    let v = match (obs.kinematics.course_deg, obs.kinematics.speed_mps) {
+        (Some(c), Some(sp)) if c.is_finite() && sp.is_finite() => {
+            let (sn, cs) = c.to_radians().sin_cos();
+            Some([sp * cs, sp * sn])
+        }
+        // Stopped: no course (a still GPS reports none), but the velocity is
+        // known to be about zero.
+        (None, Some(sp)) if sp.is_finite() && sp.abs() <= s.speed_sigma_mps => Some([0.0, 0.0]),
+        _ => None,
+    };
+    let cov = obs.uncertainty.and_then(|u| u.covariance);
+    match cov.and_then(|c| c.velocity) {
+        Some([a, b, c]) if v.is_some() => {
+            let fl = s.speed_sigma_mps.powi(2) * 0.01;
+            p[2][2] = a.max(fl);
+            p[2][3] = b;
+            p[3][2] = b;
+            p[3][3] = c.max(fl);
+            if let Some([nvn, nve, evn, eve]) = cov.and_then(|c| c.cross) {
+                (p[0][2], p[2][0], p[0][3], p[3][0]) = (nvn, nvn, nve, nve);
+                (p[1][2], p[2][1], p[1][3], p[3][1]) = (evn, evn, eve, eve);
+            }
+        }
+        _ => {
+            // Unknown motion: a spread wide enough for the domain.
+            let sigma = if v.is_some() {
+                s.speed_sigma_mps
+            } else {
+                max_speed(obs.classification.effective_domain()) / 3.0
+            };
+            p[2][2] = sigma * sigma;
+            p[3][3] = sigma * sigma;
+        }
+    }
+    Estimate {
+        lat: obs.position.latitude,
+        lon: obs.position.longitude,
+        v,
+        p,
+        t: obs.observed_at,
+        domain: obs.classification.effective_domain(),
+    }
+}
+
+impl Estimate {
+    /// The state at `at` (at most `max_secs` away), moving at constant
+    /// velocity (still, without one) with white-acceleration noise `q`.
+    pub fn predict(&self, at: DateTime<Utc>, q: f64, max_secs: f64) -> Self {
+        let dt = ((at - self.t).num_milliseconds() as f64 / 1000.0).clamp(-max_secs, max_secs);
+        let [vn, ve] = self.v.unwrap_or([0.0, 0.0]);
+        let (lat, lon) = offset(self.lat, self.lon, vn * dt, ve * dt);
+        let mut f = identity4();
+        f[0][2] = dt;
+        f[1][3] = dt;
+        let mut p = mul4(&mul4(&f, &self.p), &transpose4(&f));
+        let (a, b, c) = (
+            dt.powi(4) / 4.0,
+            dt.abs().powi(3) / 2.0 * dt.signum(),
+            dt * dt,
+        );
+        let q2 = q * q;
+        for (i, j) in [(0, 2), (1, 3)] {
+            p[i][i] += a * q2;
+            p[i][j] += b * q2;
+            p[j][i] += b * q2;
+            p[j][j] += c * q2;
+        }
+        Self {
+            lat,
+            lon,
+            p,
+            t: at,
+            ..*self
+        }
+    }
+}
+
+/// How well a report agrees with a view: the view's state and covariance
+/// propagated to the report's time, and their difference against the sum of
+/// both covariances.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Kinematic {
     pub distance_m: f64,
     pub dt_s: f64,
-    /// Combined standard deviation per axis.
+    /// Combined position standard deviation (RMS of the two axes).
     pub sigma_m: f64,
-    /// Squared normalised distance (chi-square, 2 degrees of freedom).
+    /// Difference in speed, when both report motion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_diff_mps: Option<f64>,
+    /// Squared Mahalanobis distance and its degrees of freedom (2: position,
+    /// 4: position and velocity).
     pub d2: f64,
+    pub dof: usize,
+    /// ln of the likelihood ratio: the same object against another nearby.
+    pub ln_lr: f64,
     pub pass: bool,
 }
 
 pub fn kinematic(obs: &Observation, view: &Observation, s: &KinematicSettings) -> Kinematic {
-    let (lat, lon) = dead_reckon(view, obs.observed_at, s.max_age_secs);
-    let distance = distance_m(obs.position.latitude, obs.position.longitude, lat, lon);
-    let dt = ((obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0).abs();
-    let var = sigma_m(obs, s.min_sigma_m).powi(2)
-        + sigma_m(view, s.min_sigma_m).powi(2)
-        + (s.drift_mps * dt).powi(2);
-    let d2 = distance * distance / var;
+    let a = estimate(obs, s);
+    let b = estimate(view, s).predict(obs.observed_at, s.process_noise_mps2, s.max_age_secs);
+    let dt = (obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0;
     Kinematic {
-        distance_m: (distance * 10.0).round() / 10.0,
-        dt_s: (dt * 10.0).round() / 10.0,
-        sigma_m: (var.sqrt() * 10.0).round() / 10.0,
-        d2: (d2 * 100.0).round() / 100.0,
-        pass: d2 <= s.chi2_gate,
+        dt_s: (dt.abs() * 10.0).round() / 10.0,
+        ..compare(&a, &b, s)
     }
+}
+
+/// Compare two estimates at the same time (`dt_s` is left 0).
+#[allow(clippy::needless_range_loop)] // matrix maths reads clearest by index
+pub fn compare(a: &Estimate, b: &Estimate, s: &KinematicSettings) -> Kinematic {
+    let (dn, de) = local(b.lat, b.lon, a.lat, a.lon);
+    let mut sum = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            sum[i][j] = a.p[i][j] + b.p[i][j];
+        }
+    }
+    let (dof, v) = match (a.v, b.v) {
+        (Some(x), Some(y)) => (4, [dn, de, x[0] - y[0], x[1] - y[1]]),
+        _ => (2, [dn, de, 0.0, 0.0]),
+    };
+    let (d2, ln_det) = mahalanobis(&v, &sum, dof).unwrap_or((f64::INFINITY, 0.0));
+    let ln_g = -0.5 * d2 - 0.5 * dof as f64 * (2.0 * std::f64::consts::PI).ln() - 0.5 * ln_det;
+    // "Another object": uniform over the area it could be in, and over a
+    // velocity spread when velocities are compared.
+    let mut ln_other = (s.object_density_per_km2 / 1e6).ln();
+    if dof == 4 {
+        ln_other -= (std::f64::consts::PI * s.velocity_spread_mps.powi(2)).ln();
+    }
+    let round = |x: f64, k: f64| (x * k).round() / k;
+    let pass = d2 <= chi2_quantile(s.gate(), dof);
+    // Outside the gate, a true match is that rare: the comparison counts at
+    // most (1 − gate probability) : 1 for "the same object".
+    let mut ln_lr = ln_g - ln_other;
+    if !pass {
+        ln_lr = ln_lr.min((1.0 - s.gate()).ln());
+    }
+    Kinematic {
+        distance_m: round(dn.hypot(de), 10.0),
+        dt_s: 0.0,
+        sigma_m: round(((sum[0][0] + sum[1][1]) / 2.0).sqrt(), 10.0),
+        speed_diff_mps: match (a.v, b.v) {
+            (Some(x), Some(y)) => Some(round(x[0].hypot(x[1]) - y[0].hypot(y[1]), 100.0)),
+            _ => None,
+        },
+        d2: round(d2.min(1e9), 100.0),
+        dof,
+        ln_lr: round(ln_lr.max(-50.0), 1000.0),
+        pass,
+    }
+}
+
+/// The chi-square value below which a share `p` of the distribution lies,
+/// for 2 or 4 degrees of freedom.
+pub fn chi2_quantile(p: f64, dof: usize) -> f64 {
+    let two = -2.0 * (1.0 - p).ln();
+    if dof == 2 {
+        return two;
+    }
+    // 4 degrees of freedom: 1 − e^(−x/2)(1 + x/2) = p, by bisection.
+    let (mut lo, mut hi) = (two, two * 4.0 + 10.0);
+    for _ in 0..100 {
+        let x = (lo + hi) / 2.0;
+        if 1.0 - (-x / 2.0).exp() * (1.0 + x / 2.0) < p {
+            lo = x;
+        } else {
+            hi = x;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// vᵀ S⁻¹ v and ln |S| over the first `n` dimensions (Cholesky); None when S
+/// is not positive definite.
+#[allow(clippy::needless_range_loop)] // matrix maths reads clearest by index
+fn mahalanobis(v: &[f64; 4], s: &M4, n: usize) -> Option<(f64, f64)> {
+    let mut l = [[0.0; 4]; 4];
+    for i in 0..n {
+        for j in 0..=i {
+            let sum: f64 = (0..j).map(|k| l[i][k] * l[j][k]).sum();
+            if i == j {
+                let d = s[i][i] - sum;
+                if !(d > 0.0 && d.is_finite()) {
+                    return None;
+                }
+                l[i][i] = d.sqrt();
+            } else {
+                l[i][j] = (s[i][j] - sum) / l[j][j];
+            }
+        }
+    }
+    // Solve L y = v; d2 = |y|².
+    let mut y = [0.0; 4];
+    for i in 0..n {
+        let sum: f64 = (0..i).map(|k| l[i][k] * y[k]).sum();
+        y[i] = (v[i] - sum) / l[i][i];
+    }
+    let d2 = y[..n].iter().map(|x| x * x).sum();
+    let ln_det = 2.0 * (0..n).map(|i| l[i][i].ln()).sum::<f64>();
+    Some((d2, ln_det))
+}
+
+fn identity4() -> M4 {
+    let mut m = [[0.0; 4]; 4];
+    for (i, row) in m.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    m
+}
+
+#[allow(clippy::needless_range_loop)] // matrix maths reads clearest by index
+fn mul4(a: &M4, b: &M4) -> M4 {
+    let mut m = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            m[i][j] = (0..4).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
+#[allow(clippy::needless_range_loop)] // matrix maths reads clearest by index
+fn transpose4(a: &M4) -> M4 {
+    let mut m = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            m[i][j] = a[j][i];
+        }
+    }
+    m
+}
+
+/// North and east metres from (lat1, lon1) to (lat2, lon2), locally flat.
+fn local(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64) {
+    let n = (lat2 - lat1).to_radians() * EARTH_RADIUS_M;
+    let e = (lon2 - lon1).to_radians() * EARTH_RADIUS_M * lat1.to_radians().cos();
+    (n, e)
+}
+
+/// The point `dn` metres north and `de` east of (lat, lon).
+fn offset(lat: f64, lon: f64, dn: f64, de: f64) -> (f64, f64) {
+    let lat2 = lat + (dn / EARTH_RADIUS_M).to_degrees();
+    let lon2 = lon + (de / (EARTH_RADIUS_M * lat.to_radians().cos().max(1e-6))).to_degrees();
+    (lat2, lon2)
+}
+
+/// The probability of "the same object" from a prior and the summed ln
+/// likelihood ratios of the evidence.
+pub fn posterior(prior: f64, ln_lr: f64) -> f64 {
+    let lo = (prior / (1.0 - prior)).ln() + ln_lr;
+    1.0 / (1.0 + (-lo).exp())
 }
 
 /// Why two tracks cannot be the same object whatever their kinematics:
@@ -367,30 +692,63 @@ pub fn veto(a: &Observation, b: &Observation) -> Option<String> {
     }
 }
 
-/// The recent gate results of one pair of tracks, for M-of-N persistence.
+/// The recent comparisons of one pair of tracks (or of a source track with
+/// the rest of its system track): their ln likelihood ratios, at most `n`,
+/// within the window, at least `min_interval_secs` apart.
 #[derive(Debug, Clone, Default)]
-pub struct Persistence {
-    results: std::collections::VecDeque<(DateTime<Utc>, bool)>,
+pub struct Evidence {
+    results: std::collections::VecDeque<(DateTime<Utc>, f64, bool)>,
+    /// Each side's report in the last counted comparison: comparing a new
+    /// report with the other side's same old one again is not new evidence.
+    used: BTreeMap<String, DateTime<Utc>>,
 }
 
-impl Persistence {
-    /// Record a comparison at `at`; returns (passes, comparisons) over the
-    /// last `n` within the window.
+/// What a pair's recent comparisons add up to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tally {
+    /// Summed ln likelihood ratio.
+    pub ln_lr: f64,
+    pub comparisons: usize,
+    /// How many fell outside the gate they were recorded against.
+    pub outside: usize,
+}
+
+impl Evidence {
+    /// Record a comparison of `side`'s report at `at` with `other`'s report of
+    /// `other_at` (and whether it fell outside the gate that matters to the
+    /// caller); returns the tally, or None when it is not new evidence: too
+    /// soon after the last one, or with either side's report no newer than
+    /// the one it gave the last counted comparison.
     pub fn record(
         &mut self,
-        at: DateTime<Utc>,
-        pass: bool,
-        s: &KinematicSettings,
-    ) -> (usize, usize) {
-        self.results.push_back((at, pass));
+        (side, at): (&str, DateTime<Utc>),
+        (other, other_at): (&str, DateTime<Utc>),
+        ln_lr: f64,
+        outside: bool,
+        (n, s): (usize, &KinematicSettings),
+    ) -> Option<Tally> {
+        let gap = chrono::Duration::milliseconds((s.min_interval_secs * 1000.0) as i64);
+        let stale = |who: &str, t: DateTime<Utc>| self.used.get(who).is_some_and(|u| t <= *u);
+        if self.results.back().is_some_and(|l| (at - l.0).abs() < gap)
+            || stale(side, at)
+            || stale(other, other_at)
+        {
+            return None;
+        }
+        self.used.insert(side.to_owned(), at);
+        self.used.insert(other.to_owned(), other_at);
+        self.results.push_back((at, ln_lr, outside));
         let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
         let newest = self.results.iter().map(|r| r.0).max().unwrap_or(at);
         self.results.retain(|r| newest - r.0 <= window);
-        while self.results.len() > s.n {
+        while self.results.len() > n {
             self.results.pop_front();
         }
-        let hits = self.results.iter().filter(|r| r.1).count();
-        (hits, self.results.len())
+        Some(Tally {
+            ln_lr: self.results.iter().map(|r| r.1).sum(),
+            comparisons: self.results.len(),
+            outside: self.results.iter().filter(|r| r.2).count(),
+        })
     }
 
     /// The newest comparison, to forget pairs that stopped being compared.
@@ -492,6 +850,8 @@ fn cot_specificity(cot: Option<&str>) -> usize {
 /// - `position` (position, kinematics, uncertainty, time): among reports
 ///   within `window_secs` of the newest, the smallest uncertainty, then the
 ///   highest priority, then the newest.
+/// - `kinematics`: when that report has no course and speed (a plot), the
+///   newest report in the window that has them.
 /// - `identity` (name, callsign, platform): a registry-corroborated report,
 ///   else the highest priority, else the newest; gaps filled from the others
 ///   in the same order.
@@ -536,6 +896,19 @@ pub fn best_view(
         .expect("the newest report is within the window");
     let mut view = position.obs.clone();
     provenance.insert("position".into(), position.key());
+    // A position without motion (a plot) takes it from the newest report
+    // that has it: a view without velocity cannot be propagated in time.
+    let moving =
+        |o: &Observation| o.kinematics.course_deg.is_some() && o.kinematics.speed_mps.is_some();
+    if !moving(&view)
+        && let Some(m) = contribs
+            .iter()
+            .filter(|c| moving(c.obs) && newest - c.obs.observed_at <= window)
+            .max_by_key(|c| c.obs.observed_at)
+    {
+        view.kinematics = m.obs.kinematics;
+        provenance.insert("kinematics".into(), m.key());
+    }
 
     // Identity: ordered by preference, the first supplies, the rest fill gaps.
     let mut by_identity: Vec<&Contribution<'_>> = contribs.iter().collect();
@@ -808,18 +1181,135 @@ mod tests {
     }
 
     #[test]
-    fn persistence_counts_m_of_n_within_the_window() {
+    fn evidence_sums_spaced_comparisons_within_the_window() {
         let s = KinematicSettings::default();
-        let mut p = Persistence::default();
-        assert_eq!(p.record(at(0), true, &s), (1, 1));
-        assert_eq!(p.record(at(2), false, &s), (1, 2));
-        p.record(at(4), true, &s);
-        p.record(at(6), true, &s);
-        assert_eq!(p.record(at(8), true, &s), (4, 5));
-        // Only the last five count.
-        assert_eq!(p.record(at(10), false, &s), (3, 5));
-        // Results older than the window fall out.
-        assert_eq!(p.record(at(60), true, &s), (1, 1));
+        let mut e = Evidence::default();
+        let tally = |ln_lr, comparisons, outside| {
+            Some(Tally {
+                ln_lr,
+                comparisons,
+                outside,
+            })
+        };
+        assert_eq!(
+            e.record(("a", at(0)), ("b", at(0)), 2.0, false, (5, &s)),
+            tally(2.0, 1, 0)
+        );
+        // Too soon after the last one to be new evidence.
+        assert_eq!(
+            e.record(("a", at(1)), ("b", at(1)), 9.0, false, (5, &s)),
+            None
+        );
+        // A new report, but against the other side's same old one.
+        assert_eq!(
+            e.record(("a", at(40)), ("b", at(0)), 9.0, false, (5, &s)),
+            None
+        );
+        assert_eq!(
+            e.record(("a", at(3)), ("b", at(3)), -1.0, true, (5, &s)),
+            tally(1.0, 2, 1)
+        );
+        for t in [6, 9, 12] {
+            e.record(("a", at(t)), ("b", at(t)), 1.0, false, (5, &s));
+        }
+        // Only the last five count: -1 + 1 + 1 + 1 + 1.
+        assert_eq!(
+            e.record(("a", at(15)), ("b", at(15)), 1.0, false, (5, &s)),
+            tally(3.0, 5, 1)
+        );
+        // Older than the window: gone.
+        assert_eq!(
+            e.record(("a", at(60)), ("b", at(60)), 0.5, false, (5, &s)),
+            tally(0.5, 1, 0)
+        );
+        assert!((posterior(0.5, 0.0) - 0.5).abs() < 1e-12);
+        assert!(posterior(0.01, 10.0) > 0.99);
+    }
+
+    #[test]
+    fn chi_square_quantiles() {
+        assert!((chi2_quantile(0.99, 2) - 9.2103).abs() < 1e-3);
+        assert!((chi2_quantile(0.99, 4) - 13.2767).abs() < 1e-3);
+        assert!((chi2_quantile(0.95, 4) - 9.4877).abs() < 1e-3);
+        let old: KinematicSettings = serde_json::from_value(json!({"chi2_gate": 9.21})).unwrap();
+        assert!(
+            (old.gate() - 0.99).abs() < 1e-4,
+            "a chi-square gate from before"
+        );
+    }
+
+    #[test]
+    fn propagation_grows_the_older_reports_covariance() {
+        let s = KinematicSettings::default();
+        let mut o = obs("ais", "1", 0, 0.0, 0.0);
+        o.kinematics.course_deg = Some(90.0);
+        o.kinematics.speed_mps = Some(10.0);
+        let e = estimate(&o, &s);
+        let later = e.predict(at(10), s.process_noise_mps2, s.max_age_secs);
+        assert!((distance_m(0.0, 0.0, later.lat, later.lon) - 100.0).abs() < 0.5);
+        // Position variance: σ² + σv²·t² + q²t⁴/4.
+        let want = 25.0 + 1.0f64.powi(2) * 100.0 + 0.09 * 1e4 / 4.0;
+        assert!(
+            (later.p[1][1] - want).abs() < 1e-6,
+            "{} vs {want}",
+            later.p[1][1]
+        );
+        // No motion reported: a still estimate with a wide velocity spread.
+        let still = estimate(&obs("ais", "2", 0, 0.0, 0.0), &s);
+        assert!(still.v.is_none() && still.p[2][2] > 100.0);
+    }
+
+    /// A GMTI track passing a parked GPS vehicle at 56 m (Garden Island,
+    /// 13 Oct 2015): close enough in position, but one is moving at 6 m/s and
+    /// the other is still. Before correlation-3 only positions were compared
+    /// and the two paired.
+    #[test]
+    fn a_moving_track_does_not_pair_with_a_still_one_nearby() {
+        let s = KinematicSettings::default();
+        // Parked: speed 0 and no course, as a still GPS reports it.
+        let mut gps = obs("gps", "TM01", 0, -34.80595, 138.54036);
+        gps.kinematics.speed_mps = Some(0.0);
+        gps.uncertainty = Some(Uncertainty {
+            circular_error_m: Some(5.0),
+            ..Default::default()
+        });
+        let (lat, lon) = (-34.80595 + 56.0 / 110_540.0, 138.54036);
+        let mut gmti = obs("gmti", "G1", 0, lat, lon);
+        gmti.kinematics.course_deg = Some(40.0);
+        gmti.kinematics.speed_mps = Some(6.0);
+        gmti.uncertainty = Some(Uncertainty {
+            ellipse: Some(ot_core::Ellipse {
+                semi_major_m: 60.0,
+                semi_minor_m: 20.0,
+                orientation_deg: 30.0,
+            }),
+            covariance: Some(ot_core::Covariance {
+                position: ot_core::Ellipse {
+                    semi_major_m: 60.0,
+                    semi_minor_m: 20.0,
+                    orientation_deg: 30.0,
+                }
+                .covariance(),
+                velocity: Some([1.0, 0.0, 1.0]),
+                cross: None,
+            }),
+            ..Default::default()
+        });
+        let k = kinematic(&gmti, &gps, &s);
+        assert_eq!(k.dof, 4);
+        assert!(!k.pass, "{k:?}");
+        assert!(k.ln_lr <= (0.01f64).ln() + 1e-3, "{k:?}");
+        // Positions alone would have passed.
+        let mut still = gmti.clone();
+        still.kinematics = Default::default();
+        let k = kinematic(&still, &gps, &s);
+        assert_eq!(k.dof, 2);
+        assert!(k.pass, "{k:?}");
+        // The same vehicle moving the same way pairs quickly.
+        gps.kinematics.course_deg = Some(40.0);
+        gps.kinematics.speed_mps = Some(6.3);
+        let k = kinematic(&gmti, &gps, &s);
+        assert!(k.pass && k.ln_lr > 2.0, "{k:?}");
     }
 
     #[test]

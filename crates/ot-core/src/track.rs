@@ -21,8 +21,17 @@ pub struct Contributor {
     pub source_id: String,
     pub source_track_key: String,
     pub pairing: PairingType,
+    /// Probability that it reports the same object as the rest of the track
+    /// (1 for the source track that started it, an operator's pairing or a
+    /// shared identity until the kinematics say otherwise).
     pub confidence: f64,
     pub last_report: DateTime<Utc>,
+    /// The source's own probability that the object exists: its latest
+    /// report's `provenance.confidence` (a tracker's existence probability).
+    /// Absent: the source does not say, and a track it reports is taken as
+    /// real.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existence: Option<f64>,
 }
 
 /// A card value that differs from what a feed reports for the same
@@ -83,6 +92,24 @@ impl SystemTrack {
         self.published != Some(false)
     }
 
+    /// Probability that the track is a real object: that at least one of its
+    /// source tracks is a real report of it, each independently with its
+    /// source's existence times its pairing confidence,
+    /// `1 − Π(1 − existence · confidence)`. Plots associated from a detection
+    /// source (`~` keys) are not counted: they only update a track others
+    /// hold up.
+    pub fn confidence(&self) -> f64 {
+        let none = self
+            .contributors
+            .iter()
+            .filter(|c| !c.source_track_key.starts_with('~'))
+            .map(|c| {
+                1.0 - c.existence.unwrap_or(1.0).clamp(0.0, 1.0) * c.confidence.clamp(0.0, 1.0)
+            })
+            .product::<f64>();
+        ((1.0 - none) * 1e4).round() / 1e4
+    }
+
     /// A new tentative system track seeded from one observation.
     pub fn from_first_observation(uid: Uid, obs: Observation) -> Self {
         let contributor = Contributor {
@@ -91,6 +118,7 @@ impl SystemTrack {
             pairing: PairingType::Auto,
             confidence: 1.0,
             last_report: obs.observed_at,
+            existence: obs.provenance.confidence,
         };
         Self {
             uid,

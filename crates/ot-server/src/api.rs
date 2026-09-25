@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
             "/sources/{id}",
             get(get_source).put(put_source).delete(delete_source),
         )
+        .route("/plugins", get(list_plugins))
         .route("/sources/{id}/enable", post(enable_source))
         .route("/sources/{id}/disable", post(disable_source))
         .route(
@@ -65,6 +66,15 @@ pub(crate) fn actor(headers: &HeaderMap) -> String {
 /// Parse and validate a source spec, including against the published
 /// extension schema version its mapping targets. Returns the spec, its
 /// normalised JSON (defaults filled in) and that schema.
+/// The codec plugins this build has, with their options.
+async fn list_plugins() -> Json<Value> {
+    let plugins: Vec<Value> = ot_source::plugin::plugins()
+        .into_iter()
+        .map(ot_source::plugin::describe)
+        .collect();
+    Json(json!({ "plugins": plugins }))
+}
+
 async fn parse_spec(
     s: &AppState,
     body: Value,
@@ -513,6 +523,7 @@ async fn list_tracks(
                 "last_seen": t.last_seen,
                 "observation_count": t.observation_count,
                 "published": t.is_published(),
+                "confidence": t.confidence(),
                 "sources": t.contributors.iter().map(|c| format!("{}/{}", c.source_id, c.source_track_key)).collect::<Vec<_>>(),
                 "registry": t.view.ext.get("registry"),
             })
@@ -647,6 +658,33 @@ mod tests {
                 serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
             spec.validate_against(Some(&schema))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        // Examples that use only the core schema.
+        for (name, text) in [
+            (
+                "stanag4607",
+                include_str!("../../../docs/examples/stanag4607.json"),
+            ),
+            (
+                "gps-udp",
+                include_str!("../../../docs/examples/gps-udp.json"),
+            ),
+            (
+                "autoferry track",
+                include_str!("../../../docs/examples/autoferry/demo-autoferry-track.json"),
+            ),
+            (
+                "autoferry lidar",
+                include_str!("../../../docs/examples/autoferry/demo-autoferry-lidar.json"),
+            ),
+            (
+                "autoferry radar",
+                include_str!("../../../docs/examples/autoferry/demo-autoferry-radar.json"),
+            ),
+        ] {
+            let spec: ot_source::source::SourceSpec =
+                serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            spec.validate().unwrap_or_else(|e| panic!("{name}: {e}"));
         }
     }
 

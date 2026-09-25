@@ -30,6 +30,12 @@ pub enum CodecConfig {
     CotXml,
     /// Generic XML: one record per `record_element`.
     Xml { record_element: String },
+    /// A codec plugin (see [`crate::plugin`]), e.g. STANAG 4607.
+    Plugin {
+        plugin: String,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        options: Value,
+    },
 }
 
 impl CodecConfig {
@@ -38,6 +44,7 @@ impl CodecConfig {
             CodecConfig::Json { .. } => "json",
             CodecConfig::CotXml => "cot_xml",
             CodecConfig::Xml { .. } => "xml",
+            CodecConfig::Plugin { .. } => "plugin",
         }
     }
 }
@@ -52,25 +59,50 @@ pub enum CodecError {
     NotArray(String),
     #[error("invalid XML: {0}")]
     Xml(String),
+    #[error("{0}")]
+    Plugin(String),
 }
 
 pub struct Codec {
     config: CodecConfig,
+    /// The plugin's decoder for this stream, for a plugin codec.
+    plugin: Option<Box<dyn crate::plugin::PluginDecoder>>,
 }
 
 impl Codec {
-    pub fn new(config: CodecConfig) -> Self {
-        Self { config }
+    /// A codec for one stream (a plugin's decoder keeps state across frames).
+    pub fn new(config: CodecConfig) -> Result<Self, CodecError> {
+        let plugin = match &config {
+            CodecConfig::Plugin { plugin, options } => Some(
+                crate::plugin::plugin(plugin)
+                    .ok_or_else(|| CodecError::Plugin(format!("no codec plugin {plugin:?}")))?
+                    .decoder(options)
+                    .map_err(CodecError::Plugin)?,
+            ),
+            _ => None,
+        };
+        Ok(Self { config, plugin })
     }
 
     pub fn config(&self) -> &CodecConfig {
         &self.config
     }
 
+    /// What a plugin decoder has learnt about the sensor so far.
+    pub fn hints(&self) -> Option<crate::plugin::StreamHints> {
+        self.plugin.as_ref()?.hints()
+    }
+
     /// Decode one frame into zero or more records. Transport metadata on the
     /// frame is added to every record under `_frame`.
-    pub fn decode(&self, frame: &Frame) -> Result<Vec<Value>, CodecError> {
+    pub fn decode(&mut self, frame: &Frame) -> Result<Vec<Value>, CodecError> {
         let mut records = match &self.config {
+            CodecConfig::Plugin { .. } => self
+                .plugin
+                .as_mut()
+                .expect("a plugin codec has a decoder")
+                .decode(&frame.bytes)
+                .map_err(CodecError::Plugin),
             CodecConfig::Json { records, context } => {
                 decode_json(&frame.bytes, records.as_ref(), context)
             }
@@ -277,6 +309,7 @@ mod tests {
 
     fn decode(config: CodecConfig, s: &str) -> Vec<Value> {
         Codec::new(config)
+            .unwrap()
             .decode(&Frame::new(s.as_bytes().to_vec()))
             .unwrap()
     }
@@ -299,6 +332,7 @@ mod tests {
         assert_eq!(recs[1]["_frame"]["now"], 1);
         assert!(decode(ac.clone(), r#"{"now":1,"ac":null}"#).is_empty());
         let err = Codec::new(ac)
+            .unwrap()
             .decode(&Frame::new(&b"{\"now\":1}"[..]))
             .unwrap_err();
         assert!(matches!(err, CodecError::MissingRecords(_)));
@@ -332,10 +366,11 @@ mod tests {
         let mut meta = serde_json::Map::new();
         meta.insert("topic".into(), json!("ais/366123456/pos"));
         let frame = Frame::new(&br#"{"now":1,"ac":[{"hex":"a"},{"hex":"b"}]}"#[..]).with_meta(meta);
-        let codec = Codec::new(CodecConfig::Json {
+        let mut codec = Codec::new(CodecConfig::Json {
             records: Some("ac".parse().unwrap()),
             context: vec!["now".parse().unwrap()],
-        });
+        })
+        .unwrap();
         let recs = codec.decode(&frame).unwrap();
         assert_eq!(recs.len(), 2);
         // Merged with the JSON codec's own frame context.
@@ -344,6 +379,7 @@ mod tests {
             json!({"now": 1, "topic": "ais/366123456/pos"})
         );
         let cot = Codec::new(CodecConfig::CotXml)
+            .unwrap()
             .decode(
                 &Frame::new(&br#"<event uid="x" type="a-f-G"/>"#[..]).with_meta(
                     serde_json::Map::from_iter([("topic".to_string(), json!("cot/x"))]),
@@ -362,6 +398,7 @@ mod tests {
         assert_eq!(recs.len(), 2);
         assert!(
             Codec::new(CodecConfig::CotXml)
+                .unwrap()
                 .decode(&Frame::new(&b"<event><point></event>"[..]))
                 .is_err()
         );

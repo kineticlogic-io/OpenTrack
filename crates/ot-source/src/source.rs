@@ -101,6 +101,10 @@ impl SourceSpec {
         if let Some(t) = &self.pipeline.tracker {
             t.validate().map_err(SourceError::Tracker)?;
         }
+        if let crate::codec::CodecConfig::Plugin { .. } = &self.pipeline.codec {
+            crate::codec::Codec::new(self.pipeline.codec.clone())
+                .map_err(|e| SourceError::Tracker(e.to_string()))?;
+        }
         self.transport.check().map_err(SourceError::Transport)?;
         if let TransportConfig::TcpClient { framing, .. }
         | TransportConfig::TcpServer { framing, .. } = &self.transport

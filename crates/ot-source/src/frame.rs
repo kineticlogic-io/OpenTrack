@@ -83,6 +83,22 @@ pub enum Framing {
         #[serde(default = "default_max")]
         max_len: usize,
     },
+    /// Frames whose header holds their total length at a fixed offset (the
+    /// frame starts at the header and keeps it). STANAG 4607 packets: a
+    /// big-endian `u32` at offset 2 counts the whole packet.
+    LengthField {
+        /// Byte offset of the length field from the start of the frame.
+        offset: usize,
+        width: PrefixWidth,
+        #[serde(default)]
+        endian: Endian,
+        /// Added to the field's value to get the frame's total length (for
+        /// fields that count only what follows them).
+        #[serde(default)]
+        adjust: i64,
+        #[serde(default = "default_max")]
+        max_len: usize,
+    },
     /// Frames that end with a closing tag, which is kept (e.g. `</event>` for CoT).
     /// Bytes before the first opening `<` of a frame are discarded.
     EndTag {
@@ -104,6 +120,10 @@ pub enum FrameError {
     BadVarint,
     #[error("delimiter or tag must not be empty")]
     EmptyDelimiter,
+    #[error("length field says {0} bytes, shorter than its own header")]
+    BadLength(i64),
+    #[error("a length field must be 1, 2 or 4 bytes wide")]
+    BadLengthWidth,
 }
 
 /// Incremental splitter over a stream buffer.
@@ -121,6 +141,10 @@ impl Framer {
             Framing::EndTag { tag, .. } if tag.is_empty() => {
                 return Err(FrameError::EmptyDelimiter);
             }
+            Framing::LengthField {
+                width: PrefixWidth::Varint,
+                ..
+            } => return Err(FrameError::BadLengthWidth),
             _ => {}
         }
         Ok(Self { framing })
@@ -190,6 +214,42 @@ impl Framer {
                 let end = pos + tag.len();
                 check_len(end, *max_len)?;
                 Ok(Some(buf.split_to(end).freeze()))
+            }
+            Framing::LengthField {
+                offset,
+                width,
+                endian,
+                adjust,
+                max_len,
+            } => {
+                let size = match width {
+                    PrefixWidth::U8 => 1,
+                    PrefixWidth::U16 => 2,
+                    PrefixWidth::U32 => 4,
+                    PrefixWidth::Varint => return Err(FrameError::BadLengthWidth),
+                };
+                let header = offset + size;
+                let Some(field) = buf.get(*offset..header) else {
+                    return Ok(None);
+                };
+                let mut v: u64 = 0;
+                let bytes: Vec<u8> = match endian {
+                    Endian::Big => field.to_vec(),
+                    Endian::Little => field.iter().rev().copied().collect(),
+                };
+                for b in bytes {
+                    v = (v << 8) | u64::from(b);
+                }
+                let len = v as i64 + adjust;
+                if len < header as i64 {
+                    return Err(FrameError::BadLength(len));
+                }
+                let len = len as usize;
+                check_len(len, *max_len)?;
+                if buf.len() < len {
+                    return Ok(None);
+                }
+                Ok(Some(buf.split_to(len).freeze()))
             }
             Framing::LengthPrefix {
                 width,
@@ -408,5 +468,33 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn length_field_keeps_the_header_and_splits_across_reads() {
+        // A 4607-style header: 2 bytes, then a big-endian u32 total length.
+        let mut framer = Framer::new(Framing::LengthField {
+            offset: 2,
+            width: PrefixWidth::U32,
+            endian: Endian::Big,
+            adjust: 0,
+            max_len: 1000,
+        })
+        .unwrap();
+        let a = b"30\x00\x00\x00\x08ab".to_vec();
+        let b = b"30\x00\x00\x00\x07c".to_vec();
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&a[..5]);
+        assert_eq!(framer.next(&mut buf).unwrap(), None);
+        buf.extend_from_slice(&a[5..]);
+        buf.extend_from_slice(&b[..3]);
+        assert_eq!(framer.next(&mut buf).unwrap().unwrap().as_ref(), &a[..]);
+        assert_eq!(framer.next(&mut buf).unwrap(), None);
+        buf.extend_from_slice(&b[3..]);
+        assert_eq!(framer.next(&mut buf).unwrap().unwrap().as_ref(), &b[..]);
+        // A length shorter than the header is corrupt: the buffer is dropped.
+        buf.extend_from_slice(b"30\x00\x00\x00\x02");
+        assert!(framer.next(&mut buf).is_err());
+        assert!(buf.is_empty());
     }
 }

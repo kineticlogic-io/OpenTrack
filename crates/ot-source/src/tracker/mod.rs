@@ -29,8 +29,8 @@ use filter::Kf;
 /// Versions of the trackers' behaviour, stamped on every report as
 /// `provenance.tracker`. Bump one whenever what that tracker outputs for the
 /// same plots changes, and record it in docs/algorithms.md with its scores.
-pub const GNN_VERSION: &str = "gnn-1";
-pub const MHT_VERSION: &str = "mht-1";
+pub const GNN_VERSION: &str = "gnn-2";
+pub const MHT_VERSION: &str = "mht-2";
 
 /// Settings of the tracker stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,10 +49,33 @@ pub struct TrackerSpec {
     /// Chi-square gate (2 degrees of freedom; 13.8 keeps 99.9% of true plots).
     #[serde(default = "d_gate")]
     pub gate: f64,
+    /// Fewest plots a track needs before it can be confirmed.
     #[serde(default = "d_confirm_hits")]
     pub confirm_hits: usize,
+    /// Superseded by `confirm_probability` (gnn-2, mht-2); still accepted,
+    /// and still sized by `auto_timing`, but no longer used.
     #[serde(default = "d_confirm_secs")]
     pub confirm_within_secs: f64,
+    /// Chance the sensor detects a target it looks at.
+    #[serde(default = "d_pd")]
+    pub detection_probability: f64,
+    /// False plots per square metre per look.
+    #[serde(default = "d_clutter")]
+    pub clutter_density: f64,
+    /// New targets per square metre per look.
+    #[serde(default = "d_birth")]
+    pub birth_density: f64,
+    /// How long a target lasts on average (s): a track's existence decays at
+    /// this rate between looks, so misses can end even a long-lived track.
+    #[serde(default = "d_lifetime")]
+    pub target_lifetime_secs: f64,
+    /// A track is confirmed once the probability that it is a real target
+    /// reaches this (and it has `confirm_hits` plots).
+    #[serde(default = "d_confirm_p")]
+    pub confirm_probability: f64,
+    /// A track is dropped once that probability falls to this.
+    #[serde(default = "d_drop_p")]
+    pub drop_probability: f64,
     #[serde(default = "d_drop_tentative")]
     pub drop_tentative_secs: f64,
     #[serde(default = "d_drop_confirmed")]
@@ -76,6 +99,71 @@ pub struct TrackerSpec {
     pub key_prefix: String,
     #[serde(default)]
     pub mht: MhtSpec,
+    /// Set `confirm_within_secs` and the drop times from the sensor's revisit
+    /// period, as the source's codec measures it (STANAG 4607), instead of
+    /// the fixed values; those apply until the codec knows the period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_timing: Option<AutoTiming>,
+    /// The sensor's revisit period once `auto_timing` knows it: a track is
+    /// counted as missed once per revisit without a plot, not once per scan
+    /// (a scan may be one dwell that never looked at it).
+    #[serde(skip)]
+    pub revisit_secs: Option<f64>,
+}
+
+impl TrackerSpec {
+    /// The detection model, `(detection probability, clutter density, birth
+    /// density)`; MHT settings from before gnn-2 override it when present.
+    pub fn detection_model(&self) -> (f64, f64, f64) {
+        (
+            self.mht
+                .detection_probability
+                .unwrap_or(self.detection_probability),
+            self.mht.clutter_density.unwrap_or(self.clutter_density),
+            self.mht.birth_density.unwrap_or(self.birth_density),
+        )
+    }
+}
+
+/// Tracker windows as multiples of the sensor's revisit period, never
+/// shorter than a floor: a sensor that revisits every couple of seconds still
+/// misses a target for longer than that (terrain, a stop below the minimum
+/// detectable velocity). The default floors suit GMTI of ground movers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoTiming {
+    /// `confirm_hits` plots within this many revisits confirm a track.
+    #[serde(default = "d_confirm_revisits")]
+    pub confirm_revisits: f64,
+    /// An unconfirmed track is dropped this many revisits after its last plot
+    /// (above 1, or none survives to the next revisit).
+    #[serde(default = "d_drop_tentative_revisits")]
+    pub drop_tentative_revisits: f64,
+    /// A confirmed track is dropped this many revisits after its last plot.
+    #[serde(default = "d_drop_confirmed_revisits")]
+    pub drop_confirmed_revisits: f64,
+    #[serde(default = "d_min_confirm")]
+    pub min_confirm_secs: f64,
+    #[serde(default = "d_min_drop_tentative")]
+    pub min_drop_tentative_secs: f64,
+    #[serde(default = "d_min_drop_confirmed")]
+    pub min_drop_confirmed_secs: f64,
+}
+
+impl Default for AutoTiming {
+    fn default() -> Self {
+        serde_json::from_value(serde_json::json!({})).expect("defaults")
+    }
+}
+
+/// The windows a tracker with `auto_timing` is using, for status.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Timing {
+    pub revisit_secs: f64,
+    pub revisit_source: &'static str,
+    pub confirm_within_secs: f64,
+    pub drop_tentative_secs: f64,
+    pub drop_confirmed_secs: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,15 +221,16 @@ pub enum ScanGrouping {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MhtSpec {
-    /// Chance the sensor detects a target in a scan.
-    #[serde(default = "d_pd")]
-    pub detection_probability: f64,
-    /// False plots per square metre per scan.
-    #[serde(default = "d_clutter")]
-    pub clutter_density: f64,
-    /// New targets per square metre per scan.
-    #[serde(default = "d_birth")]
-    pub birth_density: f64,
+    /// Before gnn-2 and mht-2 the detection model was MHT-only and lived
+    /// here; set, these override the stage's `detection_probability`,
+    /// `clutter_density` and `birth_density` (sources saved before keep their
+    /// meaning).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection_probability: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clutter_density: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_density: Option<f64>,
     /// Scans before an association is final.
     #[serde(default = "d_n_scan")]
     pub n_scan: usize,
@@ -180,6 +269,33 @@ fn d_drop_tentative() -> f64 {
 fn d_drop_confirmed() -> f64 {
     8.0
 }
+fn d_confirm_revisits() -> f64 {
+    3.5
+}
+fn d_drop_tentative_revisits() -> f64 {
+    1.3
+}
+fn d_drop_confirmed_revisits() -> f64 {
+    2.5
+}
+fn d_min_confirm() -> f64 {
+    20.0
+}
+fn d_min_drop_tentative() -> f64 {
+    8.0
+}
+fn d_min_drop_confirmed() -> f64 {
+    30.0
+}
+fn d_lifetime() -> f64 {
+    600.0
+}
+fn d_confirm_p() -> f64 {
+    0.95
+}
+fn d_drop_p() -> f64 {
+    0.02
+}
 fn d_hold() -> f64 {
     0.5
 }
@@ -212,17 +328,25 @@ impl TrackerSpec {
             ("confirm_within_secs", self.confirm_within_secs),
             ("drop_tentative_secs", self.drop_tentative_secs),
             ("drop_confirmed_secs", self.drop_confirmed_secs),
-            ("mht.clutter_density", self.mht.clutter_density),
-            ("mht.birth_density", self.mht.birth_density),
+            ("clutter_density", self.detection_model().1),
+            ("birth_density", self.detection_model().2),
+            ("target_lifetime_secs", self.target_lifetime_secs),
         ];
         for (name, v) in positive {
             if !(v.is_finite() && v > 0.0) {
                 return Err(format!("tracker {name} must be a positive number"));
             }
         }
-        let pd = self.mht.detection_probability;
+        let (pd, _, _) = self.detection_model();
         if !(pd > 0.0 && pd < 1.0) {
-            return Err("tracker mht.detection_probability must be between 0 and 1".into());
+            return Err("tracker detection_probability must be between 0 and 1".into());
+        }
+        let (c, d) = (self.confirm_probability, self.drop_probability);
+        if !(d > 0.0 && d < c && c < 1.0) {
+            return Err(
+                "tracker probabilities must satisfy 0 < drop_probability < confirm_probability < 1"
+                    .into(),
+            );
         }
         if self.confirm_hits == 0 || self.mht.n_scan == 0 || self.mht.max_branches == 0 {
             return Err(
@@ -231,6 +355,26 @@ impl TrackerSpec {
         }
         if !(self.scan_hold_secs >= 0.0 && self.cluster_m >= 0.0) {
             return Err("tracker scan_hold_secs and cluster_m must not be negative".into());
+        }
+        if let Some(a) = &self.auto_timing {
+            let ok = |v: f64| v.is_finite() && v > 1.0;
+            if !(ok(a.confirm_revisits)
+                && ok(a.drop_tentative_revisits)
+                && ok(a.drop_confirmed_revisits))
+            {
+                return Err(
+                    "tracker auto_timing multiples must be above 1 (a track must outlive a revisit)"
+                        .into(),
+                );
+            }
+            let floors = [
+                a.min_confirm_secs,
+                a.min_drop_tentative_secs,
+                a.min_drop_confirmed_secs,
+            ];
+            if !floors.iter().all(|v| v.is_finite() && *v >= 0.0) {
+                return Err("tracker auto_timing floors must not be negative".into());
+            }
         }
         Ok(())
     }
@@ -255,8 +399,9 @@ pub fn tracker_classification(domain: Option<Domain>) -> Classification {
 pub struct Plot {
     pub lat: f64,
     pub lon: f64,
-    /// Standard deviation per axis, metres.
-    pub sigma: f64,
+    /// Position covariance `[nn, ne, ee]` (m²): the detection's own error
+    /// ellipse, else its circular error, else `measurement_sigma_m`.
+    pub r: [f64; 3],
     pub domain: Option<TrackerDomain>,
 }
 
@@ -270,36 +415,100 @@ pub struct Report {
     pub plot: usize,
     /// The tracker gave up on it: reported once, with `state: dropped`.
     pub dropped: bool,
+    /// The probability that it is a real target.
+    pub existence: f64,
 }
 
-/// A track's confirmation, age and the domains its plots reported.
+/// A track's existence, confirmation, age and the domains its plots
+/// reported.
+///
+/// Existence is the probability that the track is a real target rather than
+/// clutter (IPDA, integrated probabilistic data association, with the
+/// assigned plot only): a new track starts at the prior `birth / (birth +
+/// clutter)`; between looks it decays with the target's lifetime; a plot
+/// multiplies its odds by `(Λ + 1 − Pd)` with `Λ = Pd·g/λ` (the plot's
+/// Gaussian likelihood against the clutter density); a look without one by
+/// `1 − Pd`. The track is confirmed at `confirm_probability` and dropped at
+/// `drop_probability` (or after the drop time without a plot).
 #[derive(Debug, Clone)]
 struct Life {
-    hits: Vec<DateTime<Utc>>,
+    hits: usize,
+    last_hit: DateTime<Utc>,
+    /// When existence was last brought up to date by a look.
+    last_look: DateTime<Utc>,
+    existence: f64,
     confirmed: bool,
     domains: [u32; 4],
 }
 
 impl Life {
     fn new(t: DateTime<Utc>, plot: &Plot, spec: &TrackerSpec) -> Self {
+        let (_, clutter, birth) = spec.detection_model();
         let mut l = Self {
-            hits: Vec::new(),
+            hits: 1,
+            last_hit: t,
+            last_look: t,
+            existence: birth / (birth + clutter),
             confirmed: false,
             domains: [0; 4],
         };
-        l.hit(t, plot, spec);
+        l.count_domain(plot);
+        l.confirm(spec);
         l
     }
 
-    fn hit(&mut self, t: DateTime<Utc>, plot: &Plot, spec: &TrackerSpec) {
-        self.hits.push(t);
-        let window = secs(spec.confirm_within_secs);
-        let recent = self.hits.iter().filter(|h| t - **h <= window).count();
-        self.confirmed |= recent >= spec.confirm_hits;
-        // Only the recent hits matter (confirmation and the last one).
-        if self.hits.len() > spec.confirm_hits.max(2) * 2 {
-            self.hits.remove(0);
+    /// Decay existence over `dt` seconds of the target's lifetime.
+    fn survive(&mut self, dt: f64, spec: &TrackerSpec) {
+        self.existence *= (-dt.max(0.0) / spec.target_lifetime_secs).exp();
+    }
+
+    /// A plot updated the track.
+    fn hit(&mut self, t: DateTime<Utc>, plot: &Plot, inn: &filter::Innovation, spec: &TrackerSpec) {
+        let (pd, clutter, _) = spec.detection_model();
+        self.survive(seconds(t - self.last_look), spec);
+        let lambda = pd * inn.ln_likelihood().exp() / clutter;
+        let p = self.existence;
+        let num = p * (lambda + 1.0 - pd);
+        self.existence = num / (num + 1.0 - p);
+        self.hits += 1;
+        self.last_hit = t;
+        self.last_look = t;
+        self.count_domain(plot);
+        self.confirm(spec);
+    }
+
+    /// A scan passed with no plot for the track. With a known revisit period,
+    /// a miss counts once per revisit since the last look, not per scan.
+    fn miss(&mut self, t: DateTime<Utc>, spec: &TrackerSpec) {
+        let (pd, _, _) = spec.detection_model();
+        let looks = match spec.revisit_secs {
+            Some(r) => {
+                let n = (seconds(t - self.last_look) / r).floor();
+                if n < 1.0 {
+                    return;
+                }
+                self.survive(n * r, spec);
+                self.last_look += secs(n * r);
+                n as i32
+            }
+            None => {
+                self.survive(seconds(t - self.last_look), spec);
+                self.last_look = t;
+                1
+            }
+        };
+        for _ in 0..looks {
+            let p = self.existence;
+            self.existence = p * (1.0 - pd) / (p * (1.0 - pd) + 1.0 - p);
         }
+    }
+
+    fn confirm(&mut self, spec: &TrackerSpec) {
+        self.confirmed |=
+            self.hits >= spec.confirm_hits && self.existence >= spec.confirm_probability;
+    }
+
+    fn count_domain(&mut self, plot: &Plot) {
         if let Some(d) = plot.domain {
             let i = TrackerDomain::ALL
                 .iter()
@@ -315,7 +524,7 @@ impl Life {
         } else {
             spec.drop_tentative_secs
         };
-        self.hits.last().is_some_and(|h| t - *h <= secs(limit))
+        self.existence > spec.drop_probability && t - self.last_hit <= secs(limit)
     }
 
     /// The configured domain, else the one most plots reported.
@@ -332,6 +541,10 @@ impl Life {
     }
 }
 
+fn seconds(d: chrono::Duration) -> f64 {
+    d.num_microseconds().unwrap_or(i64::MAX) as f64 / 1e6
+}
+
 fn secs(s: f64) -> chrono::Duration {
     chrono::Duration::microseconds((s * 1e6) as i64)
 }
@@ -339,6 +552,8 @@ fn secs(s: f64) -> chrono::Duration {
 /// Scan-by-scan association: GNN or MHT.
 trait Associate: Send {
     fn scan(&mut self, t: DateTime<Utc>, plots: &[Plot]) -> Vec<Report>;
+    /// The settings it runs with, to retime (`auto_timing`).
+    fn spec_mut(&mut self) -> &mut TrackerSpec;
 }
 
 /// The tracker stage of one source's pipeline.
@@ -353,6 +568,8 @@ pub struct Tracker {
     /// Tags this tracker's keys (`R3f2a-7`): a restarted tracker numbers from
     /// 1 again and must not continue another run's tracks.
     run: String,
+    /// With `auto_timing`, the windows in use since the revisit period was known.
+    timing: Option<Timing>,
 }
 
 impl Tracker {
@@ -368,6 +585,7 @@ impl Tracker {
             buffer: Vec::new(),
             last_scan: None,
             late: 0,
+            timing: None,
             run: format!("{:04x}", Utc::now().timestamp() & 0xffff),
         })
     }
@@ -382,6 +600,45 @@ impl Tracker {
             Algorithm::Gnn => GNN_VERSION,
             Algorithm::Mht => MHT_VERSION,
         }
+    }
+
+    /// With `auto_timing`, size the windows to the sensor's revisit period
+    /// (a no-op without it, or for a change within 5%: the windows follow a
+    /// new job, not every revisit's jitter).
+    pub fn set_revisit(&mut self, revisit_secs: f64, source: &'static str) {
+        let Some(a) = &self.spec.auto_timing else {
+            return;
+        };
+        if !(revisit_secs.is_finite() && revisit_secs > 0.0) {
+            return;
+        }
+        if let Some(t) = &self.timing
+            && t.revisit_source == source
+            && (t.revisit_secs - revisit_secs).abs() <= 0.05 * t.revisit_secs
+        {
+            return;
+        }
+        let timing = Timing {
+            revisit_secs,
+            revisit_source: source,
+            confirm_within_secs: (a.confirm_revisits * revisit_secs).max(a.min_confirm_secs),
+            drop_tentative_secs: (a.drop_tentative_revisits * revisit_secs)
+                .max(a.min_drop_tentative_secs),
+            drop_confirmed_secs: (a.drop_confirmed_revisits * revisit_secs)
+                .max(a.min_drop_confirmed_secs),
+        };
+        for spec in [&mut self.spec, self.inner.spec_mut()] {
+            spec.revisit_secs = Some(revisit_secs);
+            spec.confirm_within_secs = timing.confirm_within_secs;
+            spec.drop_tentative_secs = timing.drop_tentative_secs;
+            spec.drop_confirmed_secs = timing.drop_confirmed_secs;
+        }
+        self.timing = Some(timing);
+    }
+
+    /// The windows `auto_timing` chose, once it has a revisit period.
+    pub fn timing(&self) -> Option<&Timing> {
+        self.timing.as_ref()
     }
 
     /// Queue a detection.
@@ -467,13 +724,20 @@ impl Tracker {
             .into_iter()
             .map(|(members, lat, lon)| {
                 let each: Vec<Plot> = members.iter().map(|&i| self.plot(&scan[i])).collect();
-                let sigma = each.iter().map(|p| p.sigma).fold(f64::INFINITY, f64::min);
+                // The sharpest member's error (smallest area).
+                let r = each
+                    .iter()
+                    .map(|p| p.r)
+                    .min_by(|a, b| {
+                        (a[0] * a[2] - a[1] * a[1]).total_cmp(&(b[0] * b[2] - b[1] * b[1]))
+                    })
+                    .expect("a group has members");
                 let domain = each.iter().find_map(|p| p.domain);
                 (
                     Plot {
                         lat,
                         lon,
-                        sigma,
+                        r,
                         domain,
                     },
                     members[0],
@@ -486,11 +750,12 @@ impl Tracker {
         Plot {
             lat: o.position.latitude,
             lon: o.position.longitude,
-            sigma: o
-                .uncertainty
-                .and_then(|u| u.cep_m())
-                .map(|c| c / 1.1774)
-                .unwrap_or(self.spec.measurement_sigma_m),
+            r: o.uncertainty
+                .and_then(|u| u.position_covariance())
+                .unwrap_or_else(|| {
+                    let v = self.spec.measurement_sigma_m.powi(2);
+                    [v, 0.0, v]
+                }),
             domain: o
                 .classification
                 .effective_domain()
@@ -518,8 +783,12 @@ impl Tracker {
                 altitude_hae_m: det.position.altitude_hae_m,
             },
             uncertainty: Some(Uncertainty {
+                ellipse: Some(round_ellipse(ot_core::Ellipse::from_covariance(
+                    r.kf.position_cov(),
+                ))),
                 circular_error_m: Some((r.kf.cep_m() * 10.0).round() / 10.0),
-                ..Default::default()
+                vertical_error_m: None,
+                covariance: Some(r.kf.covariance()),
             }),
             kinematics: Kinematics {
                 course_deg: Some((course * 10.0).round() / 10.0),
@@ -530,12 +799,23 @@ impl Tracker {
             platform: Default::default(),
             provenance: ot_core::Provenance {
                 tracker: Some(self.version().to_owned()),
+                // The probability the track is a real target.
+                confidence: Some((r.existence * 1e4).round() / 1e4),
                 ..det.provenance.clone()
             },
             state: r.dropped.then_some(ot_core::TrackState::Dropped),
             track_type: det.track_type,
             ext: Default::default(),
         }
+    }
+}
+
+fn round_ellipse(e: ot_core::Ellipse) -> ot_core::Ellipse {
+    let r = |x: f64| (x * 10.0).round() / 10.0;
+    ot_core::Ellipse {
+        semi_major_m: r(e.semi_major_m),
+        semi_minor_m: r(e.semi_minor_m).min(r(e.semi_major_m)),
+        orientation_deg: r(e.orientation_deg) % 180.0,
     }
 }
 

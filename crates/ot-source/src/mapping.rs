@@ -58,9 +58,22 @@ pub struct RejectRule {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {
+    /// A report of an object; on a source with a tracker stage, a detection
+    /// for the tracker.
     #[default]
     Observation,
+    /// Identity fields joined onto later observations with the same key.
     Static,
+    /// A report of an object that carries its own identity (e.g. a sensor's
+    /// own platform): it bypasses the source's tracker stage.
+    Track,
+}
+
+impl RuleKind {
+    /// Whether the rule's output is a report of an object.
+    pub fn reports(self) -> bool {
+        matches!(self, RuleKind::Observation | RuleKind::Track)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,7 +210,7 @@ impl MappingSpec {
                     });
                 }
             }
-            if rule.kind == RuleKind::Observation
+            if rule.kind.reports()
                 && !(rule.fields.contains_key("position.latitude")
                     && rule.fields.contains_key("position.longitude"))
             {

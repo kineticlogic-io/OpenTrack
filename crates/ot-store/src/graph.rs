@@ -107,6 +107,15 @@ pub fn upsert_node(tx: &Transaction<'_>, kind: NodeKind, key: &str, now_ms: i64)
     )?)
 }
 
+/// Merge `attrs` (an object) into a node's attributes.
+pub fn merge_node_attrs(tx: &Transaction<'_>, node: i64, attrs: &Value) -> Result<()> {
+    tx.execute(
+        "UPDATE nodes SET attrs = json_patch(attrs, ?2) WHERE id = ?1",
+        params![node, attrs.to_string()],
+    )?;
+    Ok(())
+}
+
 /// Open a new edge. Endpoint kinds are checked against the edge kind.
 pub fn add_edge(
     tx: &Transaction<'_>,
@@ -165,6 +174,9 @@ pub struct EdgeRecord {
     pub src_key: String,
     pub dst_key: String,
     pub attrs: Value,
+    /// The source node's own attributes, e.g. the `tracker` that formed a
+    /// source track from detections.
+    pub src_attrs: Value,
     pub valid_from_ms: i64,
     pub valid_to_ms: Option<i64>,
     pub decision_id: i64,
@@ -186,7 +198,7 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
              WHERE e.kind = 'MERGED_INTO'
          )
          SELECT e.id, e.kind, s.key, d.key, e.attrs, e.valid_from_ms, e.valid_to_ms,
-                e.decision_id, dec.op, dec.actor, e.ended_by, dec.reason
+                e.decision_id, dec.op, dec.actor, e.ended_by, dec.reason, s.attrs
          FROM edges e
          JOIN nodes s ON s.id = e.src
          JOIN nodes d ON d.id = e.dst
@@ -208,10 +220,12 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
             r.get::<_, String>(9)?,
             r.get::<_, Option<i64>>(10)?,
             r.get::<_, Option<String>>(11)?,
+            r.get::<_, String>(12)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, kind, src_key, dst_key, attrs, from, to, dec, op, actor, ended, reason) = row?;
+        let (id, kind, src_key, dst_key, attrs, from, to, dec, op, actor, ended, reason, src_attrs) =
+            row?;
         Ok(EdgeRecord {
             id,
             kind: EdgeKind::parse(&kind)
@@ -219,6 +233,7 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
             src_key,
             dst_key,
             attrs: serde_json::from_str(&attrs)?,
+            src_attrs: serde_json::from_str(&src_attrs)?,
             valid_from_ms: from,
             valid_to_ms: to,
             decision_id: dec,

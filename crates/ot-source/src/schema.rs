@@ -83,6 +83,8 @@ pub enum Builtin {
     PlatformFlag,
     PlatformHull,
     SensorCode,
+    /// Probability that the track is a real object, from its sources'
+    /// existence and pairing confidences (`SystemTrack::confidence`).
     Confidence,
     /// Ids of the sources reporting for the track.
     Sources,
@@ -160,10 +162,8 @@ impl Builtin {
             PlatformFlag => &["platform.flag"],
             PlatformHull => &["platform.hull"],
             SensorCode => &["provenance.sensor_code"],
-            Confidence => &["provenance.confidence"],
-            State | Sources | Contributors | ObservationCount | FirstSeen | LastSeen | EntityId => {
-                &[]
-            }
+            State | Confidence | Sources | Contributors | ObservationCount | FirstSeen
+            | LastSeen | EntityId => &[],
         }
     }
 
@@ -193,7 +193,7 @@ impl Builtin {
             PlatformFlag => text(&v.platform.flag),
             PlatformHull => text(&v.platform.hull),
             SensorCode => text(&v.provenance.sensor_code),
-            Confidence => num(v.provenance.confidence),
+            Confidence => Some(json!(t.confidence())),
             Sources => {
                 let mut ids: Vec<&str> = t
                     .contributors

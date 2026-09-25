@@ -3,7 +3,7 @@ import { TbTrash } from 'react-icons/tb'
 import { Badge, Button, DataTable, SaveButton, TabPanel, Tabs, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type MetricsResponse, type SourceRow, type SourceSpec } from '../../api/client'
-import { ago, errorMessage, fmtCount, fmtTime } from '../../lib/format'
+import { ago, errorMessage, fmtCount, fmtNum, fmtTime } from '../../lib/format'
 import { DetailDrawer } from '../../lib/DetailDrawer'
 import { PipelineView } from './PipelineView'
 import { sourceState } from '../../lib/sourceState'
@@ -30,6 +30,7 @@ function StatusTab({ source }: { source: SourceRow }) {
     api.metrics(source.id, 60).then(setMetrics, () => setMetrics(null))
   }, [source.id, source.status?.updated_at])
   const link = source.status?.link
+  const timing = source.status?.tracker_timing
   const totals = Object.entries(metrics?.totals ?? {}).filter(([k]) => !k.includes(':'))
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -50,6 +51,16 @@ function StatusTab({ source }: { source: SourceRow }) {
         <dd>
           {source.revision} · saved {fmtTime(source.updated_at_ms)}
         </dd>
+        {(source.spec.pipeline as { tracker?: { auto_timing?: unknown } }).tracker?.auto_timing != null && (
+          <>
+            <dt>Tracker timing</dt>
+            <dd>
+              {timing
+                ? `revisit ${fmtNum(timing.revisit_secs, 1)} s (${timing.revisit_source}) · confirm within ${fmtNum(timing.confirm_within_secs, 0)} s · drop after ${fmtNum(timing.drop_tentative_secs, 0)} s unconfirmed, ${fmtNum(timing.drop_confirmed_secs, 0)} s confirmed`
+                : 'waiting for the sensor’s revisit rate'}
+            </dd>
+          </>
+        )}
         <dt>Raw output</dt>
         <dd className="mono">{source.raw_subject ?? 'off'}</dd>
       </dl>

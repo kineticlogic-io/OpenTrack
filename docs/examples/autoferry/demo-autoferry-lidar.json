@@ -40,7 +40,8 @@
       "measurement_sigma_m": 4.0,
       "cluster_m": 10.0,
       "domain": "surface",
-      "key_prefix": "L"
+      "key_prefix": "L",
+      "detection_probability": 0.8
     }
   }
 }

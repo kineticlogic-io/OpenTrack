@@ -13,6 +13,7 @@ ot-core = { path = "crates/ot-core" }
 ot-store = { path = "crates/ot-store" }
 ot-nats = { path = "crates/ot-nats" }
 ot-source = { path = "crates/ot-source" }
+ot-codec-stanag4607 = { path = "crates/ot-codec-stanag4607" }
 anyhow = "1"
 async-nats = "0.50"
 bytes = "1"

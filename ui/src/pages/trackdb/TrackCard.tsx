@@ -19,6 +19,7 @@ type Contributor = SystemTrack['contributors'][number]
 
 /** Plots a detection source's contributions are keyed under (see the engine). */
 const DETECTIONS = '~detections'
+const pct = (p: number) => `${Math.round(p * 1000) / 10}%`
 const keyOf = (c: Contributor) => `${c.source_id}/${c.source_track_key}`
 
 /** How a source track came to report for this track, from its live link in the graph. */
@@ -163,6 +164,22 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
         return <span title={text}>{text}</span>
       },
     },
+    {
+      key: 'conf',
+      header: 'Confidence',
+      width: 96,
+      align: 'right',
+      render: (c) => {
+        if (c.source_track_key === DETECTIONS) return '—'
+        const exists = c.existence != null ? `, exists ${pct(c.existence)}` : ''
+        return (
+          <span title={`Same object as the rest: ${pct(c.confidence)}${exists}`}>
+            {pct(c.confidence)}
+            {c.existence != null && <span className="muted"> · {pct(c.existence)}</span>}
+          </span>
+        )
+      },
+    },
     { key: 'last', header: 'Last', width: 56, align: 'right', render: (c) => ago(c.last_report) },
     {
       key: 'act',
@@ -264,7 +281,15 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
           </div>
         ) : (
           <div className="stack">
-            <h3 className="subhead">Source tracks</h3>
+            <h3 className="subhead">
+              Source tracks
+              {data.confidence != null && (
+                <span className="muted" title="Probability that the track is a real object, from its sources' existence and pairing confidences">
+                  {' '}
+                  · confidence {pct(data.confidence)}
+                </span>
+              )}
+            </h3>
             <DataTable
               aria-label="Source tracks"
               columns={contributorColumns}

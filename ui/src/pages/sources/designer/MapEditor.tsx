@@ -9,7 +9,7 @@ import { ValueEditor } from './ValueEditor'
 
 type Obj = Record<string, unknown>
 const OTHER_EXT = 'other ext field…'
-const KINDS = ['observation', 'static']
+const KINDS = ['observation', 'static', 'track']
 
 interface Row {
   id: string
@@ -231,7 +231,7 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
               ariaLabel="Rule kind"
               fields={KINDS.map((name) => ({ name }))}
               value={String(rule.kind ?? 'observation')}
-              onChange={(v) => (v === 'static' ? setRule({ kind: 'static' }) : replaceRule(drop(rule, 'kind')))}
+              onChange={(v) => (v === 'observation' ? replaceRule(drop(rule, 'kind')) : setRule({ kind: v }))}
               style={{ width: 130 }}
             />
           </div>

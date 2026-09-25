@@ -60,8 +60,11 @@ export interface SystemTrack {
     source_id: string
     source_track_key: string
     pairing: 'auto' | 'manual'
+    /** Probability that it reports the same object as the rest of the track. */
     confidence: number
     last_report: string
+    /** The source's own probability that the object exists (a tracker's). */
+    existence?: number
   }[]
   first_seen: string
   last_seen: string
@@ -71,6 +74,8 @@ export interface SystemTrack {
 }
 
 export interface TrackResponse {
+  /** Probability that the track is a real object (its sources' existence and pairing confidences). */
+  confidence?: number
   track: SystemTrack
   /** The `opentrack.track.v2` message as published. */
   message: TrackMessage
@@ -100,6 +105,8 @@ export interface GraphEdge {
   src_key: string
   dst_key: string
   attrs: Record<string, unknown>
+  /** The source node's attributes, e.g. `tracker` for a source track a tracker formed. */
+  src_attrs?: Record<string, unknown>
   valid_from_ms: number
   valid_to_ms: number | null
   decision_id: number
@@ -116,17 +123,23 @@ export interface CorrelationSettings {
   approach: 'identifiers' | 'kinematics' | 'kinematics_metadata'
   mode: 'automatic' | 'suggest'
   kinematic: {
-    chi2_gate: number
+    gate_probability: number
     min_sigma_m: number
-    drift_mps: number
+    process_noise_mps2: number
+    speed_sigma_mps: number
+    object_density_per_km2: number
+    velocity_spread_mps: number
+    prior_probability: number
+    pair_probability: number
     m: number
     n: number
     window_secs: number
+    min_interval_secs: number
     max_age_secs: number
   }
   gate: { base_m: number; max_extrapolation_secs: number }
   freshness_secs: number
-  split: { propose: boolean; automatic: boolean; chi2_gate: number; m: number; n: number }
+  split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number }
 }
 
 export interface CorrelationSettingsResponse {
@@ -272,6 +285,20 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const get = <T,>(path: string) => request<T>('GET', path)
+
+/** A codec plugin and the options it takes. */
+export interface CodecPlugin {
+  name: string
+  version: string
+  description: string
+  options: (
+    | { name: string; label: string; help: string; type: 'bool'; default: boolean }
+    | { name: string; label: string; help: string; type: 'choice'; choices: string[]; default: string }
+    | { name: string; label: string; help: string; type: 'number'; default: number | null; unit: string; min: number | null }
+  )[]
+  default_options: Record<string, unknown>
+  framing: Record<string, unknown> | null
+}
 const enc = encodeURIComponent
 
 // --- Sources -------------------------------------------------------------------------------
@@ -309,6 +336,14 @@ export interface SourceStatus {
   link: LinkStatus
   last_error: string | null
   totals_since_start: Record<string, number>
+  /** The windows a tracker with auto timing chose from the sensor's revisit rate. */
+  tracker_timing?: {
+    revisit_secs: number
+    revisit_source: string
+    confirm_within_secs: number
+    drop_tentative_secs: number
+    drop_confirmed_secs: number
+  } | null
   updated_at: string
 }
 
@@ -501,6 +536,8 @@ export const api = {
     get<{ revisions: { revision: number; saved_at_ms: number; decision_id: number | null; spec: SourceSpec }[] }>(
       `/sources/${enc(id)}/revisions`,
     ).then((r) => r.revisions),
+
+  plugins: () => get<{ plugins: CodecPlugin[] }>('/plugins').then((r) => r.plugins),
 
   probe: (body: {
     transport: SourceSpec['transport']
