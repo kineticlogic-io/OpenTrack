@@ -105,6 +105,7 @@ export interface GraphEdge {
   decision_id: number
   decision_op: string
   decision_actor: string
+  decision_reason?: string | null
   ended_by: number | null
 }
 

@@ -31,8 +31,11 @@ function pairedBy(edge: GraphEdge | undefined): string {
       return 'started this track'
     case 'pair':
       return 'shared identifier'
-    case 'merge':
-      return `merged (decision #${edge.decision_id})`
+    case 'merge': {
+      // "a and b agreed kinematically in 4 of 4 comparisons (6 m apart, σ 9 m)" → the evidence part.
+      const why = edge.decision_reason?.match(/(agreed kinematically.*|share .*)$/)?.[1]
+      return why ? `merged: ${why}` : `merged (decision #${edge.decision_id})`
+    }
     case 'split':
       return 'split off another track'
     default:
@@ -152,12 +155,19 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
   }
   const contributorColumns: DataTableColumn<Contributor>[] = [
     { key: 'track', header: 'Source track', mono: true, render: keyOf },
-    { key: 'by', header: 'Paired by', render: (c) => (c.source_track_key === DETECTIONS ? 'plots associated' : pairedBy(live.get(keyOf(c)))) },
-    { key: 'last', header: 'Last report', width: 90, align: 'right', render: (c) => ago(c.last_report) },
+    {
+      key: 'by',
+      header: 'Paired by',
+      render: (c) => {
+        const text = c.source_track_key === DETECTIONS ? 'plots associated' : pairedBy(live.get(keyOf(c)))
+        return <span title={text}>{text}</span>
+      },
+    },
+    { key: 'last', header: 'Last', width: 56, align: 'right', render: (c) => ago(c.last_report) },
     {
       key: 'act',
       header: '',
-      width: 90,
+      width: 84,
       align: 'right',
       render: (c) =>
         own.length > 1 && c.source_track_key !== DETECTIONS ? (

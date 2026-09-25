@@ -18,10 +18,10 @@ function Row({ label, children, hint }: { label: string; children: React.ReactNo
   )
 }
 
-function Num({ label, value, onChange, step }: { label: string; value: number; onChange: (v: number) => void; step?: number }) {
+function Num({ label, value, onChange, step, width = 90 }: { label: string; value: number; onChange: (v: number) => void; step?: number; width?: number }) {
   return (
     <Input
-      style={{ ...INPUT, width: 90 }}
+      style={{ ...INPUT, width }}
       type="number"
       step={step ?? 'any'}
       aria-label={label}
@@ -59,12 +59,12 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
       </Row>
       <h4 className="subhead">Kinematic pairing</h4>
       <Row label="Pair after" hint={`${k.m} of the last ${k.n} comparisons agree, within ${k.window_secs} s.`}>
-        <div className="value-row">
-          <Num label="Agreeing comparisons" value={k.m} step={1} onChange={(m) => setK({ m })} />
+        <div className="num-row">
+          <Num width={58} label="Agreeing comparisons" value={k.m} step={1} onChange={(m) => setK({ m })} />
           <span className="muted">of</span>
-          <Num label="Comparisons" value={k.n} step={1} onChange={(n) => setK({ n })} />
+          <Num width={58} label="Comparisons" value={k.n} step={1} onChange={(n) => setK({ n })} />
           <span className="muted">within</span>
-          <Num label="Window seconds" value={k.window_secs} onChange={(window_secs) => setK({ window_secs })} />
+          <Num width={58} label="Window seconds" value={k.window_secs} onChange={(window_secs) => setK({ window_secs })} />
           <span className="muted">s</span>
         </div>
       </Row>
@@ -96,11 +96,11 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
         <FieldSelect ariaLabel="Split automatically" fields={YES_NO} value={sp.automatic ? 'yes' : 'no'} onChange={(v) => setS({ automatic: v === 'yes' })} style={{ width: 90 }} />
       </Row>
       <Row label="Disagree beyond" hint={`${sp.m} of the last ${sp.n} comparisons beyond this chi-square (18.4: 99.99%).`}>
-        <div className="value-row">
-          <Num label="Split gate" value={sp.chi2_gate} onChange={(chi2_gate) => setS({ chi2_gate })} />
-          <Num label="Disagreeing comparisons" value={sp.m} step={1} onChange={(m) => setS({ m })} />
+        <div className="num-row">
+          <Num width={58} label="Split gate" value={sp.chi2_gate} onChange={(chi2_gate) => setS({ chi2_gate })} />
+          <Num width={58} label="Disagreeing comparisons" value={sp.m} step={1} onChange={(m) => setS({ m })} />
           <span className="muted">of</span>
-          <Num label="Split comparisons" value={sp.n} step={1} onChange={(n) => setS({ n })} />
+          <Num width={58} label="Split comparisons" value={sp.n} step={1} onChange={(n) => setS({ n })} />
         </div>
       </Row>
     </div>

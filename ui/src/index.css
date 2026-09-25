@@ -559,3 +559,15 @@ body {
   border: 1px solid var(--color-glass-border);
   border-radius: var(--radius-sm);
 }
+
+/* Several small number inputs in one line (M of N within T). */
+.num-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs, 4px);
+  flex-wrap: nowrap;
+}
+
+.num-row > * {
+  flex: 0 0 auto;
+}

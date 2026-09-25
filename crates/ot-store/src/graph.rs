@@ -170,6 +170,8 @@ pub struct EdgeRecord {
     pub decision_id: i64,
     pub decision_op: String,
     pub decision_actor: String,
+    /// Why the opening decision was made.
+    pub decision_reason: Option<String>,
     pub ended_by: Option<i64>,
 }
 
@@ -184,7 +186,7 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
              WHERE e.kind = 'MERGED_INTO'
          )
          SELECT e.id, e.kind, s.key, d.key, e.attrs, e.valid_from_ms, e.valid_to_ms,
-                e.decision_id, dec.op, dec.actor, e.ended_by
+                e.decision_id, dec.op, dec.actor, e.ended_by, dec.reason
          FROM edges e
          JOIN nodes s ON s.id = e.src
          JOIN nodes d ON d.id = e.dst
@@ -205,10 +207,11 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
             r.get::<_, String>(8)?,
             r.get::<_, String>(9)?,
             r.get::<_, Option<i64>>(10)?,
+            r.get::<_, Option<String>>(11)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, kind, src_key, dst_key, attrs, from, to, dec, op, actor, ended) = row?;
+        let (id, kind, src_key, dst_key, attrs, from, to, dec, op, actor, ended, reason) = row?;
         Ok(EdgeRecord {
             id,
             kind: EdgeKind::parse(&kind)
@@ -221,6 +224,7 @@ pub fn explain_system_track(conn: &Connection, uid: &str) -> Result<Vec<EdgeReco
             decision_id: dec,
             decision_op: op,
             decision_actor: actor,
+            decision_reason: reason,
             ended_by: ended,
         })
     })
