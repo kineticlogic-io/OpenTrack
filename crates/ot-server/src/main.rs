@@ -13,6 +13,7 @@ mod api;
 mod config;
 mod control;
 mod engine;
+mod probe;
 mod sources;
 mod synthetic;
 mod writer;

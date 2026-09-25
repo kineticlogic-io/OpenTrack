@@ -8,6 +8,7 @@
 
 pub mod graph;
 pub mod keys;
+pub mod probe;
 pub mod redis_store;
 pub mod registry;
 pub mod schema;

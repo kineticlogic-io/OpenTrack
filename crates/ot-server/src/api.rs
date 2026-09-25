@@ -41,6 +41,8 @@ pub fn routes() -> Router<AppState> {
         .route("/registry/import", post(registry_import))
         .route("/registry/entities/{id}", get(registry_entity))
         .route("/tracks", get(list_tracks))
+        .route("/probe", post(crate::probe::probe))
+        .route("/sources/{id}/samples", get(crate::probe::samples))
         .route("/schema", get(schema_overview))
         .route(
             "/schema/draft",
@@ -316,6 +318,9 @@ struct ValidateBody {
     /// Optional sample frames (strings) to run through the pipeline.
     #[serde(default)]
     samples: Vec<String>,
+    /// Also run the stored probe samples of this source id.
+    #[serde(default)]
+    stored_samples_of: Option<String>,
 }
 
 /// Validate a source spec and optionally dry-run sample frames through its
@@ -325,7 +330,18 @@ async fn validate_source(
     Json(body): Json<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
     let (spec, normalised, schema) = parse_spec(&s, body.spec).await?;
-    if body.samples.is_empty() {
+    let mut frames: Vec<Vec<u8>> = body
+        .samples
+        .iter()
+        .map(|s| s.clone().into_bytes())
+        .collect();
+    if let Some(id) = body.stored_samples_of.clone() {
+        let stored = s
+            .with_db(move |db| db.probe_samples(&id, ot_store::probe::DEFAULT_SAMPLE_CAP))
+            .await?;
+        frames.extend(stored.into_iter().map(|(_, b)| b));
+    }
+    if frames.is_empty() {
         return Ok(Json(json!({ "valid": true, "spec": normalised })));
     }
     let rows = s.with_db(|db| db.registry_rows()).await?;
@@ -348,8 +364,8 @@ async fn validate_source(
         .with_schema(schema);
     let mut observations = Vec::new();
     let mut errors = Vec::new();
-    for sample in body.samples.iter().take(1000) {
-        let out = pipeline.process(&Frame::new(sample.clone().into_bytes()), &registry);
+    for sample in frames.into_iter().take(1000) {
+        let out = pipeline.process(&Frame::new(sample), &registry);
         observations.extend(out.observations);
         if let Some(e) = out.last_error {
             errors.push(e);
