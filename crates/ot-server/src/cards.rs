@@ -23,7 +23,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// The newest published output schema (version 1 has no fields).
-async fn latest_schema(s: &AppState) -> Result<ExtensionSchema, ApiError> {
+pub(crate) async fn latest_schema(s: &AppState) -> Result<ExtensionSchema, ApiError> {
     let versions = s.with_db(|db| db.schema_versions()).await?;
     versions
         .into_iter()

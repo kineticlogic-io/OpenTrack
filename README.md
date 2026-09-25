@@ -35,7 +35,8 @@ docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview (status and
               system metrics), Sources (topology, list, add-source wizard, mapping studio with live
               preview), Correlation (suggestions, settings, decisions), Track Database (map,
-              baseball card with provenance, card editor, tracks table), Schema workspace
+              baseball card with provenance, card editor, tracks table), Registry (entities,
+              identifiers and cards; spreadsheet export and import), Schema workspace
 ```
 
 Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
@@ -110,6 +111,14 @@ What a track message carries:
 
 A card belongs to a registry entity, which tracks reach through their identifiers of any scheme;
 **Create card** on a looked-up track starts one with that track's identifiers.
+
+The **Registry** tab lists and searches every entity with its identifiers, registry fields and
+card, and opens its card. The whole registry exports as a spreadsheet (XLSX or CSV,
+`GET /api/v1/registry/export?format=xlsx`), one row per entity with `entity_id`, `name`,
+`status`, `id:<scheme>`, `registry:<key>` and `card:<field>` columns, and imports the same way
+(`POST /api/v1/registry/import-sheet`): a dry run shows each row's change first, a row updates
+the entity its id or identifiers name or creates one, blank cells change nothing, an identifier is
+never taken from another entity, and nothing is written while any row has an error.
 
 ## Running
 

@@ -51,6 +51,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/schema/draft/publish", post(publish_schema_draft))
         .merge(crate::cards::routes())
+        .merge(crate::registry_api::routes())
         .merge(crate::correlation_api::routes())
 }
 
@@ -1085,6 +1086,118 @@ mod tests {
             json!({"scheme": "mmsi", "value": "366123456"})
         );
         redis.purge_namespace().await.unwrap();
+    }
+
+    /// Raw request and response bodies (spreadsheets).
+    async fn call_raw(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-opentrack-actor", "op:test")
+            .body(Body::from(body))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        (
+            status,
+            res.into_body().collect().await.unwrap().to_bytes().to_vec(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_registry_round_trips_through_a_spreadsheet() {
+        let Some((app, _redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(json!({"fields": [{"key": "contact_phone", "type": "string"}, {"key": "crew", "type": "integer"}]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        call(&app, "POST", "/api/v1/schema/draft/publish", None).await;
+
+        let csv = "name,id:mmsi,registry:flag,card:crew\nTED STEVENS,338000001,US,12\nOTHER,366000002,,\n";
+        // A dry run writes nothing.
+        let (st, body) = call_raw(
+            &app,
+            "POST",
+            "/api/v1/registry/import-sheet?format=csv",
+            csv.into(),
+        )
+        .await;
+        let plan: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(st, StatusCode::OK, "{plan}");
+        assert_eq!(plan["counts"]["create"], 2);
+        assert_eq!(plan["applied"], false);
+        let (_, list) = call(&app, "GET", "/api/v1/registry/entities", None).await;
+        assert_eq!(list["total"], 0);
+
+        let (st, body) = call_raw(
+            &app,
+            "POST",
+            "/api/v1/registry/import-sheet?format=csv&apply=true",
+            csv.into(),
+        )
+        .await;
+        let done: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            (st, &done["applied"]),
+            (StatusCode::OK, &json!(true)),
+            "{done}"
+        );
+        let (_, list) = call(&app, "GET", "/api/v1/registry/entities?q=338", None).await;
+        assert_eq!(list["total"], 1, "{list}");
+        let ted = &list["entities"][0];
+        assert_eq!(ted["name"], "TED STEVENS");
+        assert_eq!(ted["fields"]["flag"], "US");
+        assert_eq!(ted["card"]["crew"], 12);
+
+        // The same sheet again changes nothing; a conflicting row is refused whole.
+        let (_, body) = call_raw(
+            &app,
+            "POST",
+            "/api/v1/registry/import-sheet?format=csv",
+            csv.into(),
+        )
+        .await;
+        let again: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(again["counts"]["unchanged"], 2, "{again}");
+        let bad = "entity_id,id:mmsi\nent-x,338000001\n";
+        let (st, _) = call_raw(
+            &app,
+            "POST",
+            "/api/v1/registry/import-sheet?format=csv&apply=true",
+            bad.into(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+        for format in ["csv", "xlsx"] {
+            let (st, bytes) = call_raw(
+                &app,
+                "GET",
+                &format!("/api/v1/registry/export?format={format}"),
+                Vec::new(),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            let sheet = crate::registry_sheet::read(
+                &bytes,
+                crate::registry_sheet::Format::parse(format).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(sheet.rows.len(), 2, "{format}");
+            assert!(sheet.header.contains(&"card:crew".to_owned()));
+        }
     }
 
     #[tokio::test]

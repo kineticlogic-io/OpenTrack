@@ -17,7 +17,7 @@ pub mod schema;
 pub mod sources;
 pub mod sqlite;
 
-pub use cards::{Card, CardRevision};
+pub use cards::{Card, CardRevision, new_entity_id};
 pub use correlation::{DecisionRow, Suggestion};
 pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;

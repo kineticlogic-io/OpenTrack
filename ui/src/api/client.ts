@@ -286,6 +286,33 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const get = <T,>(path: string) => request<T>('GET', path)
 
+/** An entity as the registry list shows it, with its card values. */
+export interface RegistryListEntity {
+  id: string
+  name?: string | null
+  status: string
+  fields: Record<string, unknown>
+  identifiers: { scheme: string; value: string }[]
+  card?: Record<string, unknown> | null
+  card_updated_at_ms?: number | null
+}
+
+/** What a spreadsheet import does, row by row. */
+export interface SheetImport {
+  applied: boolean
+  counts: { create: number; update: number; unchanged: number; error: number }
+  rows: {
+    row: number
+    action: 'create' | 'update' | 'unchanged' | 'error'
+    entity_id: string
+    name?: string
+    identifiers_added?: string[]
+    registry_fields?: string[]
+    card_fields?: string[]
+    errors?: string[]
+  }[]
+}
+
 /** A codec plugin and the options it takes. */
 export interface CodecPlugin {
   name: string
@@ -554,6 +581,22 @@ export const api = {
     request<SchemaVersion>('PUT', '/schema/draft', { fields, notes }),
   publishDraft: () => request<SchemaVersion>('POST', '/schema/draft/publish'),
   discardDraft: () => request<unknown>('DELETE', '/schema/draft'),
+
+  registryEntities: (q: string, limit = 100, offset = 0) =>
+    get<{ entities: RegistryListEntity[]; total: number }>(`/registry/entities?q=${enc(q)}&limit=${limit}&offset=${offset}`),
+  registryExportUrl: (format: 'xlsx' | 'csv') => `/api/v1/registry/export?format=${format}`,
+  /** Plan (or with `apply`, make) the changes a spreadsheet describes. */
+  importSheet: async (file: File, apply: boolean): Promise<SheetImport> => {
+    const format = file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx'
+    const res = await fetch(`/api/v1/registry/import-sheet?format=${format}&apply=${apply}&label=${enc(file.name)}`, {
+      method: 'POST',
+      headers: { 'x-opentrack-actor': ACTOR },
+      body: file,
+    })
+    const parsed = JSON.parse((await res.text()) || '{}')
+    if (!res.ok && !parsed.rows) throw new ApiError(res.status, parsed.error ?? res.statusText)
+    return parsed as SheetImport
+  },
 
   searchCards: (q: string) =>
     get<{ entities: (Entity & { has_card: boolean })[] }>(`/cards?q=${enc(q)}`).then((r) => r.entities),

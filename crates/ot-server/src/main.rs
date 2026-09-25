@@ -17,6 +17,8 @@ mod correlation_api;
 mod engine;
 mod metrics;
 mod probe;
+mod registry_api;
+mod registry_sheet;
 mod sources;
 mod synthetic;
 mod writer;

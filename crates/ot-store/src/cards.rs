@@ -20,6 +20,9 @@ pub struct Card {
     pub decision_id: Option<i64>,
 }
 
+/// An entity and its card, if it has one.
+pub type EntityWithCard = (RegistryEntity, Option<Card>);
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CardRevision {
     pub id: i64,
@@ -37,8 +40,8 @@ fn object(text: &str) -> Result<Map<String, Value>> {
     })
 }
 
-/// A short, readable id for an entity created from the UI.
-fn new_entity_id() -> String {
+/// A short, readable id for an entity created from the UI or a sheet.
+pub fn new_entity_id() -> String {
     let t = chrono::Utc::now().timestamp_micros() as u64;
     let mut n = t ^ (u64::from(std::process::id()) << 40);
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -234,6 +237,52 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("entity {id}")))
     }
 
+    /// A page of the entities whose name or any identifier value contains
+    /// `q` (case-insensitive; empty: every entity), by name then id, each with
+    /// its card; and how many match.
+    pub fn list_entities(
+        &self,
+        q: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<EntityWithCard>, usize)> {
+        let q = q.trim();
+        let pattern = format!("%{}%", q.replace(['%', '_'], ""));
+        let filter = "(?1 = '%%' OR e.name LIKE ?1 COLLATE NOCASE OR e.id = ?2
+             OR EXISTS (SELECT 1 FROM registry_identifiers i
+                        WHERE i.entity_id = e.id AND i.value LIKE ?1 COLLATE NOCASE))";
+        let total: i64 = self.connection().query_row(
+            &format!("SELECT count(*) FROM registry_entities e WHERE {filter}"),
+            params![pattern, q],
+            |r| r.get(0),
+        )?;
+        let mut stmt = self.connection().prepare(&format!(
+            "SELECT e.id FROM registry_entities e WHERE {filter}
+             ORDER BY e.name IS NULL, e.name COLLATE NOCASE, e.id LIMIT ?3 OFFSET ?4"
+        ))?;
+        let ids: Vec<String> = stmt
+            .query_map(
+                params![
+                    pattern,
+                    q,
+                    limit.min(i64::MAX as usize) as i64,
+                    offset as i64
+                ],
+                |r| r.get(0),
+            )?
+            .collect::<std::result::Result<_, _>>()?;
+        let page = ids
+            .into_iter()
+            .filter_map(|id| self.registry_entity(&id).transpose())
+            .map(|e| {
+                let e = e?;
+                let card = self.card(&e.id)?;
+                Ok((e, card))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((page, total as usize))
+    }
+
     /// Entities whose name or any identifier value contains `q`
     /// (case-insensitive), with whether each has a card.
     pub fn search_entities(&self, q: &str, limit: usize) -> Result<Vec<(RegistryEntity, bool)>> {
@@ -322,5 +371,23 @@ mod tests {
             db.put_card("ent-missing", &Map::new(), 3, "op:test"),
             Err(StoreError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn list_entities_pages_and_filters() {
+        let mut db = Db::open_in_memory().unwrap();
+        for (name, mmsi) in [("BRAVO", "2"), ("ALPHA", "1"), ("CHARLIE", "3")] {
+            db.create_entity(Some(name), &[ident("mmsi", mmsi)], "op:test")
+                .unwrap();
+        }
+        let (all, total) = db.list_entities("", 10, 0).unwrap();
+        assert_eq!(total, 3);
+        let names: Vec<_> = all.iter().map(|(e, _)| e.name.clone().unwrap()).collect();
+        assert_eq!(names, ["ALPHA", "BRAVO", "CHARLIE"]);
+        let (page, total) = db.list_entities("", 1, 1).unwrap();
+        assert_eq!((page[0].0.name.as_deref(), total), (Some("BRAVO"), 3));
+        let (hit, total) = db.list_entities("3", 10, 0).unwrap();
+        assert_eq!((hit[0].0.name.as_deref(), total), (Some("CHARLIE"), 1));
+        assert!(hit[0].1.is_none(), "no card yet");
     }
 }
