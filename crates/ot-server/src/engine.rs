@@ -124,7 +124,8 @@ pub fn apply(track: &mut SystemTrack, obs: Observation, confirm_after: u64) -> A
 
 /// Show a new view on a system track (one contributor's report, or the best
 /// of several) and update its state.
-pub fn apply_view(track: &mut SystemTrack, view: Observation, confirm_after: u64) -> Applied {
+pub fn apply_view(track: &mut SystemTrack, mut view: Observation, confirm_after: u64) -> Applied {
+    keep_identity(&track.view, &mut view);
     let before_state = track.state;
     let identity_changed = track.view.name != view.name
         || track.view.callsign != view.callsign
@@ -142,6 +143,42 @@ pub fn apply_view(track: &mut SystemTrack, view: Observation, confirm_after: u64
         Applied::Significant
     } else {
         Applied::Routine
+    }
+}
+
+/// Identity is sticky: when the sources that named a track stop (an AIS feed
+/// ends, a ship switches its transponder off) but sensors still hold it, the
+/// track keeps its name, identifiers, classification and extension fields
+/// rather than turning anonymous. A new view only replaces what it reports.
+fn keep_identity(prev: &Observation, view: &mut Observation) {
+    fn keep(v: &mut Option<String>, p: &Option<String>) {
+        if v.is_none() {
+            v.clone_from(p);
+        }
+    }
+    keep(&mut view.name, &prev.name);
+    keep(&mut view.callsign, &prev.callsign);
+    keep(&mut view.platform.name, &prev.platform.name);
+    keep(&mut view.platform.class, &prev.platform.class);
+    keep(&mut view.platform.type_code, &prev.platform.type_code);
+    keep(&mut view.platform.flag, &prev.platform.flag);
+    keep(&mut view.platform.hull, &prev.platform.hull);
+    if view.identifiers.is_empty() {
+        view.identifiers.clone_from(&prev.identifiers);
+    }
+    let vague = |c: &ot_core::Classification| {
+        matches!(
+            c.effective_affiliation(),
+            None | Some(ot_core::Affiliation::Unknown)
+        ) && c.cot_type.is_none()
+    };
+    if vague(&view.classification) && !vague(&prev.classification) {
+        view.classification = prev.classification.clone();
+    } else if view.classification.effective_domain().is_none() {
+        view.classification.domain = prev.classification.effective_domain();
+    }
+    for (k, v) in &prev.ext {
+        view.ext.entry(k.clone()).or_insert_with(|| v.clone());
     }
 }
 
@@ -691,12 +728,7 @@ impl Engine {
         let Some((other, evidence)) = self.find_match(obs, Some(uid)) else {
             return Ok(None);
         };
-        let o = &self.tracks[&other];
-        let (from, into) = if o.contributors.len() == 1 && o.first_seen > t.first_seen {
-            (other, uid)
-        } else {
-            (uid, other)
-        };
+        let (from, into) = self.merge_order(uid, other);
         let decision = Decision::new("engine", "merge")
             .reason(format!(
                 "{} and {} share {}",
@@ -780,6 +812,18 @@ impl Engine {
         self.retire_in_redis(from, published, &format!("merged into {}", into.doc_id()))
             .await?;
         Ok(())
+    }
+
+    /// Which of two tracks survives a merge, as (from, into): the published
+    /// one, so consumers keep the id they know; else the older.
+    fn merge_order(&self, a: Uid, b: Uid) -> (Uid, Uid) {
+        let (ta, tb) = (&self.tracks[&a], &self.tracks[&b]);
+        match (ta.is_published(), tb.is_published()) {
+            (true, false) => (b, a),
+            (false, true) => (a, b),
+            _ if tb.first_seen <= ta.first_seen => (a, b),
+            _ => (b, a),
+        }
     }
 
     /// Tombstone a retired track for consumers if they ever saw it, else
@@ -1079,11 +1123,7 @@ impl Engine {
         let Some((other, k, hits, of)) = ready else {
             return Ok(());
         };
-        let (from, into) = if self.tracks[&other].first_seen <= self.tracks[&uid].first_seen {
-            (uid, other)
-        } else {
-            (other, uid)
-        };
+        let (from, into) = self.merge_order(uid, other);
         let evidence = json!({
             "rule": "kinematic",
             "approach": self.settings.approach,
@@ -1526,7 +1566,16 @@ mod tests {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
-        feed(&mut e, &[report("ais", "777", 0, 10.0, 20.0, Some("777"))]).await;
+        // AIS reports a ship, long enough to be confirmed and published.
+        feed(
+            &mut e,
+            &[
+                report("ais", "777", -4, 10.0, 20.0, Some("777")),
+                report("ais", "777", -2, 10.0, 20.0, Some("777")),
+                report("ais", "777", 0, 10.0, 20.0, Some("777")),
+            ],
+        )
+        .await;
         // TAK sees something nearby with no identifier yet: its own track,
         // confirmed and published.
         feed(
@@ -1628,34 +1677,43 @@ mod tests {
         assert_eq!(e.tracks[&ship].published, Some(false));
         assert!(!published(&outbox(&e).await, ship));
 
-        // AIS reports the same ship: kinematic agreement merges them, and the
-        // corroborated track is published.
-        for s in 0..4 {
-            feed(
-                &mut e,
-                &[
-                    report("radar", "r1", 10 + s * 2, 32.0, -117.0, None),
-                    report("ais", "366", 10 + s * 2, 32.00001, -117.0, Some("366")),
-                ],
-            )
-            .await;
+        // AIS reports the same ship: published on its own once confirmed, then
+        // kinematic agreement merges the radar's internal track into it (the
+        // published track survives, so consumers keep its id).
+        let ais = |s: i64| {
+            let mut o = report("ais", "366", s, 32.00001, -117.0, Some("366"));
+            o.name = Some("TED STEVENS".into());
+            o
+        };
+        for s in 10..13 {
+            feed(&mut e, &[ais(s)]).await;
         }
-        assert_eq!(track_of(&e, "ais", "366"), ship);
+        assert_eq!(e.tracks[&track_of(&e, "ais", "366")].published, Some(true));
+        feed(&mut e, &[report("radar", "r1", 13, 32.0, -117.0, None)]).await;
+        let internal = ship;
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(track_of(&e, "radar", "r1"), ship);
+        assert_ne!(ship, internal);
         assert_eq!(e.tracks[&ship].published, Some(true));
-        assert!(published(&outbox(&e).await, ship));
+        let entries = outbox(&e).await;
+        assert!(published(&entries, ship));
+        assert!(
+            !tombstoned(&entries, internal),
+            "never published, so no tombstone"
+        );
 
-        // The radar ends its track: the ship carries on with AIS alone.
-        feed(
-            &mut e,
-            &[ended(report("radar", "r1", 20, 32.0, -117.0, None))],
-        )
-        .await;
+        // AIS ends (a transponder switched off) while the radar holds the ship:
+        // the track stays published and keeps its identity.
+        feed(&mut e, &[ended(ais(20))]).await;
+        feed(&mut e, &[report("radar", "r1", 21, 32.0, -117.0, None)]).await;
         assert_eq!(e.tracks[&ship].contributors.len(), 1);
+        assert_eq!(e.tracks[&ship].view.name.as_deref(), Some("TED STEVENS"));
+        assert_eq!(e.tracks[&ship].view.identifiers.len(), 1);
         assert!(published(&outbox(&e).await, ship));
-        // AIS ends too: nothing reports for it, so it is retired and tombstoned.
+        // The radar ends too: nothing reports for it, so it is retired and tombstoned.
         feed(
             &mut e,
-            &[ended(report("ais", "366", 22, 32.0, -117.0, Some("366")))],
+            &[ended(report("radar", "r1", 22, 32.0, -117.0, None))],
         )
         .await;
         assert!(!e.tracks.contains_key(&ship));
