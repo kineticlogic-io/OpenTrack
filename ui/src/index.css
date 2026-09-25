@@ -321,7 +321,12 @@ body {
   align-items: start;
 }
 
-/* A denser page (Track Database, on operator direction): panels 8px apart instead of 16. */
+/* A denser page (Track Database, on operator direction): 8px below the tab bar and between
+   panels, instead of 24 and 16. */
+.content.tight {
+  padding-top: var(--space-sm);
+}
+
 .panels.tight,
 .panels.tight .workspace {
   gap: var(--space-sm);

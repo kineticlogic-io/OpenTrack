@@ -55,7 +55,7 @@ export default function App() {
           )}
         </PageHeader>
         <Tabs variant="bar" aria-label="Workspaces" value={active} onChange={(id) => go(id)} tabs={VIEWS} />
-        <main className="content">
+        <main className={active === 'tracks' ? 'content tight' : 'content'}>
           {active === 'overview' && <OverviewPage onStatus={onStatus} />}
           <Suspense fallback={<span className="muted">LOADING…</span>}>
             {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
