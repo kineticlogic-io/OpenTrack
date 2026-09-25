@@ -36,6 +36,42 @@ fn active() -> String {
     "active".into()
 }
 
+/// Normalise an identifier scheme. Schemes are open-ended (`mmsi`, `icao`,
+/// `imo`, `elnot`, `hull`, ...), but every identifier must name one: lower
+/// case, starting with a letter or digit, then letters, digits, `_`, `-`
+/// or `.`, at most 32 characters.
+pub fn normalize_scheme(scheme: &str) -> Result<String> {
+    let s = scheme.trim().to_ascii_lowercase();
+    let ok = !s.is_empty()
+        && s.len() <= 32
+        && s.as_bytes()[0].is_ascii_alphanumeric()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+    if ok {
+        Ok(s)
+    } else {
+        Err(StoreError::Conflict(format!(
+            "invalid identifier scheme {scheme:?}"
+        )))
+    }
+}
+
+impl RegistryIdentifier {
+    /// `scheme:value`, the form identifiers are shown and logged in.
+    pub fn label(&self) -> String {
+        format!("{}:{}", self.scheme, self.value)
+    }
+}
+
+impl RegistryEntity {
+    /// e.g. `USS HARRY S TRUMAN mmsi:338000001 imo:9876543 elnot:NL504`.
+    pub fn label(&self) -> String {
+        let mut parts = vec![self.name.clone().unwrap_or_else(|| self.id.clone())];
+        parts.extend(self.identifiers.iter().map(RegistryIdentifier::label));
+        parts.join(" ")
+    }
+}
+
 /// One active identifier joined to its entity, for lookup snapshots.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryRow {
@@ -69,6 +105,9 @@ impl Db {
         self.write(|tx| {
             let now = now_ms();
             let mut counts = ImportCounts::default();
+            // Typed identifiers added or refused, for the decision log.
+            let mut added: Vec<Value> = Vec::new();
+            let mut refused: Vec<Value> = Vec::new();
             for e in entities {
                 if !matches!(e.status.as_str(), "active" | "retired") {
                     return Err(StoreError::Conflict(format!(
@@ -94,6 +133,19 @@ impl Db {
                     counts.entities_created += 1;
                 }
                 for i in &e.identifiers {
+                    let scheme = normalize_scheme(&i.scheme)?;
+                    let value = i.value.trim();
+                    if value.is_empty() {
+                        return Err(StoreError::Conflict(format!(
+                            "entity {}: identifier of scheme {scheme} has no value",
+                            e.id
+                        )));
+                    }
+                    let i = &RegistryIdentifier {
+                        scheme,
+                        value: value.to_owned(),
+                        ..i.clone()
+                    };
                     let holder: Option<String> = tx
                         .query_row(
                             "SELECT entity_id FROM registry_identifiers WHERE scheme = ?1 AND value = ?2",
@@ -102,8 +154,21 @@ impl Db {
                         )
                         .optional()?;
                     match holder {
-                        Some(h) if h != e.id => counts.conflicts += 1,
-                        _ => {
+                        Some(h) if h != e.id => {
+                            counts.conflicts += 1;
+                            refused.push(json!({
+                                "identifier": i.label(), "held_by": h, "claimed_by": e.id,
+                            }));
+                        }
+                        Some(_) => {
+                            tx.execute(
+                                "UPDATE registry_identifiers SET expected_name = ?3, source = ?4
+                                 WHERE scheme = ?1 AND value = ?2",
+                                params![i.scheme, i.value, i.expected_name, i.source],
+                            )?;
+                            counts.identifiers += 1;
+                        }
+                        None => {
                             tx.execute(
                                 "INSERT INTO registry_identifiers (scheme, value, entity_id, expected_name, source, added_at_ms)
                                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -112,13 +177,22 @@ impl Db {
                                 params![i.scheme, i.value, e.id, i.expected_name, i.source, now],
                             )?;
                             counts.identifiers += 1;
+                            added.push(json!({
+                                "entity": e.id,
+                                "name": e.name,
+                                "identifier": i.label(),
+                            }));
                         }
                     }
                 }
             }
             let d = Decision::new(actor, "registry_import")
                 .reason(label.to_owned())
-                .evidence(serde_json::to_value(counts)?);
+                .evidence(json!({
+                    "counts": counts,
+                    "identifiers_added": added,
+                    "identifiers_refused": refused,
+                }));
             record_decision(tx, &d, now)?;
             Ok(counts)
         })
@@ -258,6 +332,51 @@ mod tests {
     }
 
     #[test]
+    fn identifiers_of_any_scheme_are_typed_and_labelled() {
+        let mut db = Db::open_in_memory().unwrap();
+        let e: RegistryEntity = serde_json::from_value(json!({
+            "id": "cvn75", "name": "USS HARRY S TRUMAN",
+            "identifiers": [
+                {"scheme": "MMSI", "value": " 338000001 "},
+                {"scheme": "imo", "value": "9876543"},
+                {"scheme": "elnot", "value": "NL504"}]
+        }))
+        .unwrap();
+        db.registry_import(&[e], "op:test", "typed").unwrap();
+        let back = db.registry_entity("cvn75").unwrap().unwrap();
+        assert_eq!(
+            back.label(),
+            "USS HARRY S TRUMAN elnot:NL504 imo:9876543 mmsi:338000001"
+        );
+        assert_eq!(
+            db.registry_resolve("elnot", "NL504").unwrap().unwrap().id,
+            "cvn75"
+        );
+        let evidence: String = db
+            .connection()
+            .query_row(
+                "SELECT evidence FROM decisions WHERE reason = 'typed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            evidence.contains("\"identifier\":\"elnot:NL504\""),
+            "{evidence}"
+        );
+
+        for bad in ["", " ", "has space", "-lead"] {
+            let e: RegistryEntity = serde_json::from_value(json!({
+                "id": "x", "identifiers": [{"scheme": bad, "value": "1"}]}))
+            .unwrap();
+            assert!(
+                db.registry_import(&[e], "op:test", "bad").is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
     fn import_upserts_and_refuses_to_move_identifiers() {
         let mut db = Db::open_in_memory().unwrap();
         let c = db
@@ -276,6 +395,19 @@ mod tests {
         );
         assert_eq!(db.registry_resolve("mmsi", "1").unwrap().unwrap().id, "e1");
         assert_ne!(db.registry_version().unwrap(), v1);
+
+        // The decision log names every identifier with its type.
+        let evidence: String = db
+            .connection()
+            .query_row(
+                "SELECT evidence FROM decisions WHERE reason = 'again'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let evidence: Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["identifiers_refused"][0]["identifier"], "mmsi:1");
+        assert_eq!(evidence["identifiers_refused"][0]["held_by"], "e1");
 
         let rows = db.registry_rows().unwrap();
         assert_eq!(rows.len(), 2);

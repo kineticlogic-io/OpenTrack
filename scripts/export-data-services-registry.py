@@ -10,6 +10,8 @@ Run it wherever the `redis` package and the Redis instance are reachable, e.g.
 
 Values are kept as stored (strings); `name` and `status` are promoted to the
 entity, managed timestamps are dropped, and everything else goes to `fields`.
+Identifier-like fields (currently `imo`) become typed identifiers, so every
+identifier an entity has is stored as scheme:value (mmsi:..., imo:...).
 """
 
 import json
@@ -21,6 +23,9 @@ import redis
 r = redis.Redis(host=os.environ.get("REDIS_HOST", "127.0.0.1"), port=int(os.environ.get("REDIS_PORT", "6379")),
                 decode_responses=True)
 MANAGED = {"status", "created", "updated", "name", "source"}
+#: Entity fields that are really identifiers: field -> scheme.
+IDENTIFIER_FIELDS = {"imo": "imo"}
+PLACEHOLDERS = {"0", "1", "1234567"}
 
 entities = []
 for eid in sorted(r.smembers("reg:entities")):
@@ -37,12 +42,17 @@ for eid in sorted(r.smembers("reg:entities")):
             "scheme": scheme, "value": value,
             "expected_name": i.get("expected_name") or None, "source": i.get("source") or None,
         }.items() if v is not None})
+    for field, scheme in IDENTIFIER_FIELDS.items():
+        value = (h.get(field) or "").strip()
+        if value and value not in PLACEHOLDERS and not any(
+                i["scheme"] == scheme and i["value"] == value for i in identifiers):
+            identifiers.append({"scheme": scheme, "value": value, "source": h.get("source") or "registry field"})
     entities.append({
         "id": eid,
         "name": h.get("name") or None,
         "status": h.get("status", "active"),
         "source": h.get("source") or None,
-        "fields": {k: v for k, v in h.items() if k not in MANAGED and v != ""},
+        "fields": {k: v for k, v in h.items() if k not in MANAGED and k not in IDENTIFIER_FIELDS and v != ""},
         "identifiers": identifiers,
     })
 

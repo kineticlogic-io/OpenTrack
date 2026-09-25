@@ -457,7 +457,7 @@ mod tests {
                               "observed_at": { "path": "ts", "transforms": ["time"] },
                               "classification.cot_type": { "const": "a-u-S" } } }
             ] },
-            "registry": { "scheme": "mmsi", "markers": ["NAVY"],
+            "registry": { "markers": ["NAVY"],
                           "apply": { "classification.cot_type": "cot", "platform.flag": "flag" } },
             "affiliation": { "country": "platform.flag", "friendly": ["US"], "hostile": ["XX"] },
             "filter": { "keep_if": { "any": [

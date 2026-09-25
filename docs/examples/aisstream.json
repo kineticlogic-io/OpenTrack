@@ -305,7 +305,21 @@
                 "_body.Dimension.D"
               ]
             }
-          }
+          },
+          "identifiers": [
+            {
+              "scheme": "imo",
+              "value": {
+                "path": "_body.ImoNumber",
+                "null_if": [
+                  0
+                ],
+                "transforms": [
+                  "string"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "static-24",
@@ -730,7 +744,6 @@
       ]
     },
     "registry": {
-      "scheme": "mmsi",
       "broadcast_name": "name",
       "generic_tokens": [
         "ARGENTINE",

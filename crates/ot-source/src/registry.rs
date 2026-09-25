@@ -11,6 +11,13 @@
 //!   classification).
 //! * `stale`: the identifier is registered, but nothing corroborates it.
 //!
+//! Identifiers are open-ended: any scheme (`mmsi`, `icao`, `elnot`, `hull`,
+//! `cot-uid`, ...) with any value, and a scheme implies nothing about the
+//! platform's domain. The stage resolves every identifier a track carries
+//! (optionally restricted to, and prioritised by, a list of schemes). When
+//! identifiers resolve to different entities the match is recorded as a
+//! conflict and nothing is applied.
+//!
 //! The token lists and which entry fields are applied at which grades are
 //! per-source configuration.
 
@@ -89,8 +96,10 @@ impl Grade {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryStage {
-    /// Identifier scheme to resolve (e.g. `mmsi`, `icao`).
-    pub scheme: String,
+    /// Identifier schemes to resolve, in priority order. Empty (the default)
+    /// resolves every identifier the observation carries, in its order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemes: Vec<String>,
     /// Observation field holding the broadcast name to grade.
     #[serde(default = "default_name_field")]
     pub broadcast_name: Path,
@@ -129,6 +138,13 @@ pub struct RegistryMatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub applied: bool,
+    /// The identifier that produced the grade.
+    pub scheme: String,
+    pub value: String,
+    /// Other entities this track's identifiers resolve to. Non-empty means
+    /// the identifiers disagree, so nothing was applied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
 }
 
 fn tokens(s: &str) -> Vec<String> {
@@ -208,21 +224,53 @@ impl RegistryStage {
         }
     }
 
-    /// Look up the observation's identifier of this stage's scheme, grade it,
-    /// apply the entry at corroborated grades, and record the match under
-    /// `ext.registry`. Returns the match, if any.
+    /// Resolve the observation's identifiers, grade the best match, apply the
+    /// entry at corroborated grades (unless identifiers conflict), and record
+    /// the match under `ext.registry`. Returns the match, if any.
     pub fn run(&self, obs: &mut Value, registry: &dyn RegistryLookup) -> Option<RegistryMatch> {
-        let value = obs
+        let carried: Vec<(String, String)> = obs
             .get("identifiers")
             .and_then(Value::as_array)?
             .iter()
-            .find(|i| i.get("scheme").and_then(Value::as_str) == Some(self.scheme.as_str()))
-            .and_then(|i| i.get("value"))
-            .map(as_string)?;
-        let entry = registry.lookup(&self.scheme, &value)?;
+            .filter_map(|i| {
+                let scheme = i.get("scheme").and_then(Value::as_str)?;
+                let value = as_string(i.get("value")?);
+                (!value.trim().is_empty()).then(|| (scheme.to_owned(), value))
+            })
+            .collect();
+        let ordered: Vec<&(String, String)> = if self.schemes.is_empty() {
+            carried.iter().collect()
+        } else {
+            self.schemes
+                .iter()
+                .flat_map(|s| carried.iter().filter(move |(scheme, _)| scheme == s))
+                .collect()
+        };
+        let hits: Vec<(&(String, String), RegistryEntry)> = ordered
+            .into_iter()
+            .filter_map(|id| registry.lookup(&id.0, &id.1).map(|e| (id, e)))
+            .collect();
+        let primary = hits.first()?.1.entity_id.clone();
+        let mut conflicts: Vec<String> = hits
+            .iter()
+            .map(|(_, e)| e.entity_id.clone())
+            .filter(|e| *e != primary)
+            .collect();
+        conflicts.sort();
+        conflicts.dedup();
         let broadcast = self.broadcast_name.get(obs).map(as_string);
-        let grade = self.grade(broadcast.as_deref(), &entry);
-        let applied = entry.name.is_some() && self.apply_grades.contains(&grade);
+        // Each identifier carries its own expected name: grade them all and
+        // keep the strongest.
+        let (id, entry, grade) = hits
+            .into_iter()
+            .filter(|(_, e)| e.entity_id == primary)
+            .map(|(id, e)| {
+                let g = self.grade(broadcast.as_deref(), &e);
+                (id, e, g)
+            })
+            .min_by_key(|(_, _, g)| *g)?;
+        let applied =
+            conflicts.is_empty() && entry.name.is_some() && self.apply_grades.contains(&grade);
         if applied {
             for (target, source) in &self.apply {
                 let v = match source.as_str() {
@@ -242,6 +290,9 @@ impl RegistryStage {
             grade,
             name: entry.name.clone(),
             applied,
+            scheme: id.0.clone(),
+            value: id.1.clone(),
+            conflicts,
         };
         let ext = obs
             .as_object_mut()
@@ -264,7 +315,6 @@ mod tests {
 
     fn stage() -> RegistryStage {
         serde_json::from_value(json!({
-            "scheme": "mmsi",
             "generic_tokens": ["USS", "USNS", "NAVY", "WARSHIP", "US", "GOV", "THE"],
             "markers": ["NAVY", "WARSHIP", "GOV", "USS"],
             "military_cot": "^a-.-(U|S-C)",
@@ -336,5 +386,44 @@ mod tests {
 
         let mut miss = json!({"identifiers": [{"scheme": "mmsi", "value": "1"}]});
         assert!(stage().run(&mut miss, &reg).is_none());
+    }
+
+    #[test]
+    fn any_scheme_resolves_and_disagreement_is_a_conflict() {
+        let mut other = entry();
+        other.entity_id = "e2".into();
+        let reg: BTreeMap<(String, String), RegistryEntry> = [
+            (("elnot".to_string(), "X123A".to_string()), entry()),
+            (("hull".to_string(), "DDG-128".to_string()), entry()),
+            (("icao".to_string(), "ae1234".to_string()), other),
+        ]
+        .into();
+        // An ELNOT alone resolves: schemes are open-ended.
+        let mut obs =
+            json!({"identifiers": [{"scheme": "elnot", "value": "X123A"}], "name": "TED STEVENS"});
+        let m = stage().run(&mut obs, &reg).unwrap();
+        assert_eq!(
+            (m.scheme.as_str(), m.grade, m.applied),
+            ("elnot", Grade::Exact, true)
+        );
+
+        // Two identifiers, same entity: fine. A third pointing elsewhere: conflict, nothing applied.
+        let mut obs = json!({"identifiers": [
+            {"scheme": "elnot", "value": "X123A"}, {"scheme": "hull", "value": "DDG-128"},
+            {"scheme": "icao", "value": "ae1234"}], "name": "TED STEVENS",
+            "classification": {"cot_type": "a-u-S"}});
+        let m = stage().run(&mut obs, &reg).unwrap();
+        assert_eq!(m.conflicts, ["e2"]);
+        assert!(!m.applied);
+        assert_eq!(obs["classification"]["cot_type"], "a-u-S");
+        assert_eq!(obs["ext"]["registry"]["conflicts"][0], "e2");
+
+        // A scheme list restricts and prioritises.
+        let mut s = stage();
+        s.schemes = vec!["icao".into(), "elnot".into()];
+        let mut obs = json!({"identifiers": [
+            {"scheme": "elnot", "value": "X123A"}, {"scheme": "icao", "value": "ae1234"}]});
+        let m = s.run(&mut obs, &reg).unwrap();
+        assert_eq!((m.entity_id.as_str(), m.scheme.as_str()), ("e2", "icao"));
     }
 }

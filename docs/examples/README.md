@@ -5,7 +5,7 @@ either feed is built into OpenTrack; both are reproduced from these files alone.
 
 | Example | Transport | Codec | What it teaches |
 |---------|-----------|-------|-----------------|
-| [`aisstream.json`](aisstream.json) | WebSocket client with a subscribe message | JSON | Subscribe-on-connect with a secret from the environment, record rejection (MMSI rules), a per-message-type body (`let` + dynamic `key`), the static join (AIS types 5, 19 and 24 onto position reports), registry lookup and grading by MMSI, country-based affiliation, a military-only filter, throttling |
+| [`aisstream.json`](aisstream.json) | WebSocket client with a subscribe message | JSON | Subscribe-on-connect with a secret from the environment, record rejection (MMSI rules), a per-message-type body (`let` + dynamic `key`), the static join (AIS types 5, 19 and 24 onto position reports), registry lookup and grading (any identifier scheme; here MMSI), country-based affiliation, a military-only filter, throttling |
 | [`adsb-lol.json`](adsb-lol.json) | HTTP poll every 5 s | JSON with a record path (`ac`) and frame context (`now`) | Polling, splitting one response into many records, unit transforms (knots, feet, ft/min), time arithmetic, lookup tables, ICAO address blocks to countries (`ranges`), tiered values (`cases`) |
 
 ## Using them
@@ -39,8 +39,10 @@ curl -X POST -H 'content-type: application/json' \
 4. **Mapping** rules map records to the track schema. Every matching rule applies; `static` rules feed the static
    join, `observation` rules yield track reports.
 5. **Static join** fills identity fields missing from a report from the latest static record with the same key.
-6. **Registry** resolves one identifier scheme, grades the match (`exact`, `hull`, `name`, `generic`, `stale`),
-   applies entity fields at corroborated grades, and records `ext.registry`.
+6. **Registry** resolves every identifier the track carries, of any scheme (`mmsi`, `icao`, `elnot`, hull numbers,
+   anything an admin registers; `schemes` optionally restricts and prioritises them). It grades the match
+   (`exact`, `hull`, `name`, `generic`, `stale`), applies entity fields at corroborated grades, and records
+   `ext.registry`. Identifiers that resolve to different entities are recorded as a conflict and nothing is applied.
 7. **Affiliation** maps a country code to friend / hostile / neutral / otherwise.
 8. **Filter** keeps or drops reports (`keep_if`, `drop_if`).
 9. **Throttle** limits writes per source track (minimum interval, heartbeat, minimum movement).
