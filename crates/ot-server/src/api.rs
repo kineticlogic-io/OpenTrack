@@ -50,6 +50,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/schema/draft/publish", post(publish_schema_draft))
         .merge(crate::cards::routes())
+        .merge(crate::correlation_api::routes())
 }
 
 pub(crate) fn actor(headers: &HeaderMap) -> String {
@@ -1157,6 +1158,96 @@ mod tests {
                 .iter()
                 .any(|b| b["name"] == "state")
         );
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn correlation_settings_and_operator_commands() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, body) = call(&app, "GET", "/api/v1/correlation/settings", None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["saved"], false);
+        assert_eq!(body["settings"]["mode"], "automatic");
+        assert_eq!(body["version"], crate::correlate::VERSION);
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/correlation/settings",
+            Some(json!({"split": {"m": 9, "n": 6}})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (st, body) = call(
+            &app,
+            "PUT",
+            "/api/v1/correlation/settings",
+            Some(json!({"mode": "suggest", "kinematic": {"m": 3}})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (_, body) = call(&app, "GET", "/api/v1/correlation/settings", None).await;
+        assert_eq!(body["saved"], true);
+        assert_eq!(body["settings"]["mode"], "suggest");
+        assert_eq!(body["settings"]["kinematic"]["m"], 3);
+        let (_, body) = call(&app, "GET", "/api/v1/correlation/decisions", None).await;
+        assert_eq!(body["decisions"][0]["op"], "correlation_settings");
+        let (_, body) = call(
+            &app,
+            "GET",
+            "/api/v1/correlation/suggestions?status=open",
+            None,
+        )
+        .await;
+        assert_eq!(body["suggestions"], json!([]));
+
+        // Commands go to the engine and come back with its answer.
+        let engine = redis.clone();
+        let responder = tokio::spawn(async move {
+            loop {
+                for cmd in engine.pop_commands(10).await.unwrap() {
+                    let answer = if cmd["op"] == "merge" {
+                        json!({"ok": true, "result": {"merged_into": cmd["into"]}})
+                    } else {
+                        json!({"ok": false, "error": "no such track"})
+                    };
+                    engine
+                        .put_command_result(cmd["id"].as_str().unwrap(), &answer)
+                        .await
+                        .unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        });
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/tracks/merge",
+            Some(json!({"from": "tms-TST000000001", "into": "tms-TST000000002"})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["merged_into"], "tms-TST000000002");
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/tracks/tms-TST000000001/split",
+            Some(json!({"source_track": "radar/r1"})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "no such track");
+        let (st, _) = call(
+            &app,
+            "POST",
+            "/api/v1/correlation/suggestions/1/maybe",
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        responder.abort();
         redis.purge_namespace().await.unwrap();
     }
 

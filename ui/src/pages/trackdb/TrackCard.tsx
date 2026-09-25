@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { TbAlertTriangle } from 'react-icons/tb'
-import { Badge, DataTable, TabPanel, Tabs, type DataTableColumn } from 'staresdk'
+import { TbAlertTriangle, TbArrowsSplit } from 'react-icons/tb'
+import { Badge, Button, DataTable, TabPanel, Tabs, useToast, type DataTableColumn } from 'staresdk'
 import { api, type ExtensionField, type GraphEdge, type SystemTrack, type TrackResponse } from '../../api/client'
 import { ago, errorMessage, fmtNum, fmtTime, show, STATE_COLOR } from '../../lib/format'
 import { standardName, symbolUrl } from '../../lib/symbol'
@@ -17,12 +17,28 @@ const TABS = [
 
 type Contributor = SystemTrack['contributors'][number]
 
-const CONTRIBUTOR_COLUMNS: DataTableColumn<Contributor>[] = [
-  { key: 'track', header: 'Source track', mono: true, render: (c) => `${c.source_id}/${c.source_track_key}` },
-  { key: 'pairing', header: 'Pairing', width: 80, render: (c) => c.pairing },
-  { key: 'conf', header: 'Confidence', width: 90, align: 'right', render: (c) => c.confidence.toFixed(2) },
-  { key: 'last', header: 'Last report', width: 90, align: 'right', render: (c) => ago(c.last_report) },
-]
+/** Plots a detection source's contributions are keyed under (see the engine). */
+const DETECTIONS = '~detections'
+const keyOf = (c: Contributor) => `${c.source_id}/${c.source_track_key}`
+
+/** How a source track came to report for this track, from its live link in the graph. */
+function pairedBy(edge: GraphEdge | undefined): string {
+  if (!edge) return '—'
+  const evidence = (edge.attrs.evidence ?? {}) as Record<string, unknown>
+  if (evidence.rule === 'identifier') return `shared ${String(evidence.identity ?? 'identifier')}`
+  switch (edge.decision_op) {
+    case 'create_system_track':
+      return 'started this track'
+    case 'pair':
+      return 'shared identifier'
+    case 'merge':
+      return `merged (decision #${edge.decision_id})`
+    case 'split':
+      return 'split off another track'
+    default:
+      return edge.decision_op
+  }
+}
 
 /** Where a published attribute's value came from. */
 function origin(f: ExtensionField, card: Record<string, unknown> | null): string {
@@ -45,6 +61,9 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
   const [edges, setEdges] = useState<GraphEdge[] | null>(null)
   const [fields, setFields] = useState<ExtensionField[]>([])
   const [card, setCard] = useState<Record<string, unknown> | null>(null)
+  const [edgesRev, setEdgesRev] = useState(0)
+  const [splitting, setSplitting] = useState<string | null>(null)
+  const { toast, confirm } = useToast()
 
   // Live state, refreshed.
   useEffect(() => {
@@ -73,7 +92,7 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
     return () => {
       cancelled = true
     }
-  }, [uid, tab])
+  }, [uid, tab, edgesRev])
 
   // The schema's fields, and the card's own values to tell card from feed.
   const entityId = data?.track.entity_id ?? null
@@ -110,6 +129,44 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
   }
   const t = data.track
   const m = data.message
+  const own = t.contributors.filter((c) => c.source_track_key !== DETECTIONS)
+  const live = new Map((edges ?? []).filter((e) => e.kind === 'REPORTS_FOR' && e.valid_to_ms === null).map((e) => [e.src_key, e]))
+  const split = async (c: Contributor) => {
+    const key = keyOf(c)
+    const ok = await confirm(`${key} leaves this track for a track of its own, and the two are not paired again.`, {
+      title: 'Split source track',
+      confirmLabel: 'Split',
+    })
+    if (!ok) return
+    setSplitting(key)
+    try {
+      const r = await api.splitTrack(t.uid, key)
+      toast({ variant: 'success', title: 'Split', message: `${key} is now ${r.new_track}` })
+      setData({ ...data, track: { ...t, contributors: t.contributors.filter((x) => keyOf(x) !== key) } })
+      setEdgesRev((n) => n + 1)
+    } catch (e) {
+      toast({ variant: 'error', title: 'Not split', message: errorMessage(e) })
+    } finally {
+      setSplitting(null)
+    }
+  }
+  const contributorColumns: DataTableColumn<Contributor>[] = [
+    { key: 'track', header: 'Source track', mono: true, render: keyOf },
+    { key: 'by', header: 'Paired by', render: (c) => (c.source_track_key === DETECTIONS ? 'plots associated' : pairedBy(live.get(keyOf(c)))) },
+    { key: 'last', header: 'Last report', width: 90, align: 'right', render: (c) => ago(c.last_report) },
+    {
+      key: 'act',
+      header: '',
+      width: 90,
+      align: 'right',
+      render: (c) =>
+        own.length > 1 && c.source_track_key !== DETECTIONS ? (
+          <Button size="sm" variant="ghost" icon={<TbArrowsSplit />} disabled={splitting !== null} onClick={() => split(c)} title="Split it off this track">
+            Split
+          </Button>
+        ) : null,
+    },
+  ]
   const icon = symbolUrl(m.sidc, 36)
   const attrs = t.attributes ?? {}
   const cardValues = entityId ? card : null
@@ -200,7 +257,7 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
             <h3 className="subhead">Source tracks</h3>
             <DataTable
               aria-label="Source tracks"
-              columns={CONTRIBUTOR_COLUMNS}
+              columns={contributorColumns}
               rows={t.contributors}
               rowKey={(c) => `${c.source_id}/${c.source_track_key}`}
               empty="No source track reports for this track."

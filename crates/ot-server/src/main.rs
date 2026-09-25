@@ -13,6 +13,7 @@ mod cards;
 mod config;
 mod control;
 mod correlate;
+mod correlation_api;
 mod engine;
 mod metrics;
 mod probe;
@@ -100,9 +101,10 @@ struct EngineArgs {
     /// Hours without a report before a system track is dropped.
     #[arg(long, env = "OT_DROP_AFTER_HOURS", default_value_t = 6.0)]
     drop_after_hours: f64,
-    /// How tracks with no shared identifier pair: identifiers (never),
-    /// kinematics, or kinematics-metadata (kinematics, vetoed by conflicting
-    /// identifiers or domains).
+    /// How tracks with no shared identifier pair until an operator saves
+    /// correlation settings: identifiers (never), kinematics, or
+    /// kinematics-metadata (kinematics, vetoed by conflicting identifiers or
+    /// domains).
     #[arg(
         long,
         env = "OT_CORRELATION",
@@ -118,7 +120,10 @@ impl EngineArgs {
             consumer: self.engine_consumer.clone(),
             confirm_after: self.confirm_after.max(1),
             drop_after: Duration::from_secs_f64(self.drop_after_hours.max(0.01) * 3600.0),
-            approach: self.correlation,
+            correlation: correlate::CorrelationSettings {
+                approach: self.correlation,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }

@@ -7,6 +7,7 @@
 //! speed while Redis absorbs thousands of observations per second.
 
 pub mod cards;
+pub mod correlation;
 pub mod graph;
 pub mod keys;
 pub mod probe;
@@ -17,6 +18,7 @@ pub mod sources;
 pub mod sqlite;
 
 pub use cards::{Card, CardRevision};
+pub use correlation::{DecisionRow, Suggestion};
 pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;
 pub use redis_store::{GroupBacklog, OutboxEntry, OutboxOp, RedisStore};

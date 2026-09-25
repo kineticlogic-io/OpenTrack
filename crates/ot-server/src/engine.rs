@@ -44,7 +44,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::Common;
 use crate::correlate::{
-    self, Approach, Contribution, GateSettings, Grid, KinematicSettings, Persistence,
+    self, Approach, Contribution, CorrelationSettings, Grid, Mode, Persistence,
 };
 
 pub const GROUP: &str = "engine";
@@ -60,15 +60,9 @@ pub struct EngineSettings {
     pub stale_other: Duration,
     /// Time after the last report at which a track is dropped and tombstoned.
     pub drop_after: Duration,
-    /// Reports this close to a system track's newest one compete on quality
-    /// for its position (best-source selection).
-    pub freshness_secs: f64,
-    /// Sanity gate on identifier matches.
-    pub gate: GateSettings,
-    /// How tracks with no shared identity pair.
-    pub approach: Approach,
-    /// Kinematic pairing and detection association.
-    pub kinematic: KinematicSettings,
+    /// Correlation settings until an operator saves others (then those,
+    /// reloaded while running).
+    pub correlation: CorrelationSettings,
 }
 
 impl Default for EngineSettings {
@@ -81,10 +75,7 @@ impl Default for EngineSettings {
             stale_subsurface: Duration::from_secs(30 * 60),
             stale_other: Duration::from_secs(15 * 60),
             drop_after: Duration::from_secs(6 * 3600),
-            freshness_secs: 60.0,
-            gate: GateSettings::default(),
-            approach: Approach::default(),
-            kinematic: KinematicSettings::default(),
+            correlation: CorrelationSettings::default(),
         }
     }
 }
@@ -262,6 +253,10 @@ struct EngineCounts {
     ended: u64,
     /// System tracks retired because every source track ended.
     retired: u64,
+    /// Pair or split suggestions made (in suggest mode, or for splits).
+    suggested: u64,
+    /// Source tracks split off their system track.
+    split: u64,
     /// Changes published at once rather than throttled.
     urgent: u64,
     out_of_order: u64,
@@ -282,6 +277,8 @@ impl EngineCounts {
             ("unassociated", self.unassociated),
             ("ended", self.ended),
             ("retired", self.retired),
+            ("suggested", self.suggested),
+            ("split", self.split),
             ("urgent", self.urgent),
             ("out_of_order", self.out_of_order),
             ("unreadable", self.unreadable),
@@ -314,6 +311,18 @@ pub struct Engine {
     detection_sources: HashSet<String>,
     /// Source id → whether a track it alone reports for is published.
     alone: HashMap<String, bool>,
+    /// Correlation settings from the command line, used until saved ones exist.
+    default_correlation: CorrelationSettings,
+    /// Version of the saved settings and "do not pair" decisions loaded.
+    correlation_version: String,
+    /// Source track keys an operator said are different objects (sorted pairs).
+    do_not_pair: HashSet<(String, String)>,
+    /// Recent disagreements of a source track with the rest of its system track.
+    misses: HashMap<(Uid, String), Persistence>,
+    /// When each open suggestion was last written (at most every 10 s).
+    suggested: HashMap<String, DateTime<Utc>>,
+    /// Splits an operator rejected, not proposed again for a while.
+    split_rejected: HashMap<(Uid, String), DateTime<Utc>>,
     /// Where each live system track is, for kinematic comparisons.
     grid: Grid<Uid>,
     /// Recent gate results per pair of system tracks (lower uid first).
@@ -376,6 +385,7 @@ impl Engine {
             tracks = tracks.len(),
             "engine state loaded"
         );
+        let default_correlation = settings.correlation.clone();
         let mut engine = Self {
             common,
             settings,
@@ -388,6 +398,12 @@ impl Engine {
             priorities: HashMap::new(),
             detection_sources: HashSet::new(),
             alone: HashMap::new(),
+            default_correlation,
+            correlation_version: String::new(),
+            do_not_pair: HashSet::new(),
+            misses: HashMap::new(),
+            suggested: HashMap::new(),
+            split_rejected: HashMap::new(),
             grid: Grid::default(),
             candidates: HashMap::new(),
             attrs: Attributes::default(),
@@ -426,6 +442,9 @@ impl Engine {
                 _ = sources_tick.tick() => {
                     if let Err(e) = self.refresh_sources().await {
                         tracing::warn!(error = %format!("{e:#}"), "source list refresh failed");
+                    }
+                    if let Err(e) = self.refresh_correlation().await {
+                        tracing::warn!(error = %format!("{e:#}"), "correlation settings refresh failed");
                     }
                     if let Err(e) = self.refresh_attributes().await {
                         tracing::warn!(error = %format!("{e:#}"), "card refresh failed");
@@ -529,6 +548,9 @@ impl Engine {
     }
 
     async fn pump(&mut self, pending: bool) -> anyhow::Result<()> {
+        if let Err(e) = self.process_commands().await {
+            tracing::warn!(error = %format!("{e:#}"), "operator commands failed");
+        }
         let batch = self
             .redis
             .read_observations(
@@ -596,6 +618,9 @@ impl Engine {
                     counts.urgent += u64::from(urgent);
                     self.save(uid, urgent).await?;
                     self.pair_kinematically(uid, &obs, &mut counts).await?;
+                    if let Some(now) = self.reports.get(&key).copied() {
+                        self.check_split(now, &obs, &mut counts).await?;
+                    }
                 }
                 None => counts.out_of_order += 1,
             }
@@ -654,7 +679,11 @@ impl Engine {
             if t.contributors.iter().any(|c| c.source_id == obs.source_id) {
                 continue;
             }
-            let gate = correlate::sanity_gate(obs, &t.view, &self.settings.gate);
+            // An operator said they are different objects.
+            if self.key_forbidden(&format!("{}/{}", obs.source_id, obs.source_track_key), uid) {
+                continue;
+            }
+            let gate = correlate::sanity_gate(obs, &t.view, &self.settings.correlation.gate);
             if !gate.pass {
                 tracing::debug!(identity = %k, track = %uid.doc_id(), ?gate, "identity match outside the sanity gate");
                 continue;
@@ -733,6 +762,9 @@ impl Engine {
         let Some((other, evidence)) = self.find_match(obs, Some(uid)) else {
             return Ok(None);
         };
+        if self.forbidden(uid, other) {
+            return Ok(None);
+        }
         let (from, into) = self.merge_order(uid, other);
         let decision = engine_decision("merge")
             .reason(format!(
@@ -839,7 +871,546 @@ impl Engine {
         } else {
             self.redis.forget_system_track(uid).await?;
         }
+        // Suggestions about it are moot.
+        let c = self.common.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
+            Ok(c.open_db()?.expire_suggestions(uid)?)
+        })
+        .await??;
         Ok(())
+    }
+
+    /// Reload correlation settings and "do not pair" decisions when they
+    /// changed (an operator saved settings, rejected a pairing, split a track).
+    async fn refresh_correlation(&mut self) -> anyhow::Result<()> {
+        type Loaded = (String, Option<Value>, Vec<(String, String)>);
+        let c = self.common.clone();
+        let known = self.correlation_version.clone();
+        let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Loaded>> {
+            let db = c.open_db()?;
+            let version = db.correlation_version()?;
+            if version == known {
+                return Ok(None);
+            }
+            Ok(Some((
+                version,
+                db.correlation_settings()?,
+                db.do_not_pairs()?,
+            )))
+        })
+        .await??;
+        let Some((version, saved, pairs)) = loaded else {
+            return Ok(());
+        };
+        self.correlation_version = version;
+        self.do_not_pair = pairs.into_iter().collect();
+        let settings = match saved {
+            None => self.default_correlation.clone(),
+            Some(v) => match serde_json::from_value::<CorrelationSettings>(v)
+                .map_err(|e| e.to_string())
+                .and_then(|s| s.validate().map(|_| s))
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "saved correlation settings are invalid; keeping the current ones");
+                    self.settings.correlation.clone()
+                }
+            },
+        };
+        if settings != self.settings.correlation {
+            tracing::info!(?settings, "correlation settings loaded");
+            self.settings.correlation = settings;
+        }
+        Ok(())
+    }
+
+    /// A track's own source tracks (not detection sources' contributions).
+    fn keys_of(&self, uid: Uid) -> Vec<String> {
+        self.tracks
+            .get(&uid)
+            .map(|t| {
+                t.contributors
+                    .iter()
+                    .filter(|c| c.source_track_key != DETECTIONS)
+                    .map(contributor_key)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn keys_forbidden(&self, a: &str, b: &str) -> bool {
+        let pair = if a < b { (a, b) } else { (b, a) };
+        self.do_not_pair
+            .iter()
+            .any(|(x, y)| x == pair.0 && y == pair.1)
+    }
+
+    /// Whether an operator said this source track is not the object a track shows.
+    fn key_forbidden(&self, key: &str, uid: Uid) -> bool {
+        !self.do_not_pair.is_empty()
+            && self
+                .keys_of(uid)
+                .iter()
+                .any(|k| self.keys_forbidden(key, k))
+    }
+
+    /// Whether an operator said two tracks are different objects.
+    fn forbidden(&self, a: Uid, b: Uid) -> bool {
+        !self.do_not_pair.is_empty() && self.keys_of(a).iter().any(|k| self.key_forbidden(k, b))
+    }
+
+    /// Record (or refresh) a suggestion; true when it is new.
+    async fn suggest(
+        &mut self,
+        kind: &'static str,
+        a: Uid,
+        b: Option<Uid>,
+        source_track: Option<String>,
+        mut evidence: Value,
+        reason: String,
+    ) -> anyhow::Result<bool> {
+        let key = format!(
+            "{kind}:{a}:{}:{}",
+            b.map(|u| u.to_string()).unwrap_or_default(),
+            source_track.clone().unwrap_or_default()
+        );
+        let now = Utc::now();
+        let first = !self.suggested.contains_key(&key);
+        if self
+            .suggested
+            .get(&key)
+            .is_some_and(|t| now - *t < chrono::Duration::seconds(10))
+        {
+            return Ok(false);
+        }
+        self.suggested.insert(key, now);
+        evidence["reason"] = json!(reason);
+        evidence["correlation_version"] = json!(correlate::VERSION);
+        let c = self.common.clone();
+        let (a, b) = (a.to_string(), b.map(|u| u.to_string()));
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.upsert_suggestion(
+                kind,
+                &a,
+                b.as_deref(),
+                source_track.as_deref(),
+                &evidence,
+            )?)
+        })
+        .await??;
+        Ok(first)
+    }
+
+    /// Compare a source track's report with the rest of its system track;
+    /// when it has disagreed for M of the last N comparisons, propose (or,
+    /// with automatic splits, make) a split.
+    async fn check_split(
+        &mut self,
+        uid: Uid,
+        obs: &Observation,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<()> {
+        let split = self.settings.correlation.split;
+        if !split.propose && !split.automatic {
+            return Ok(());
+        }
+        let kin = self.settings.correlation.kinematic;
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let others: Vec<(String, String)> = match self.tracks.get(&uid) {
+            Some(t) => t
+                .contributors
+                .iter()
+                .filter(|c| c.source_track_key != DETECTIONS && contributor_key(c) != key)
+                .map(|c| (contributor_key(c), c.source_id.clone()))
+                .collect(),
+            None => return Ok(()),
+        };
+        if others.is_empty() {
+            return Ok(());
+        }
+        let max_age = chrono::Duration::milliseconds((kin.max_age_secs * 1000.0) as i64);
+        let contribs: Vec<Contribution<'_>> = others
+            .iter()
+            .filter_map(|(k, _)| self.latest.get(k))
+            .filter(|o| (obs.observed_at - o.observed_at).abs() <= max_age)
+            .map(|o| Contribution {
+                obs: o,
+                priority: self
+                    .priorities
+                    .get(&o.source_id)
+                    .copied()
+                    .unwrap_or(DEFAULT_PRIORITY),
+            })
+            .collect();
+        if contribs.is_empty() {
+            return Ok(());
+        }
+        let (view, _) = correlate::best_view(&contribs, self.settings.correlation.freshness_secs);
+        let k = correlate::kinematic(obs, &view, &kin);
+        let window = correlate::KinematicSettings {
+            m: split.m,
+            n: split.n,
+            ..kin
+        };
+        let (misses, of) = self.misses.entry((uid, key.clone())).or_default().record(
+            obs.observed_at,
+            k.d2 > split.chi2_gate,
+            &window,
+        );
+        if misses < split.m {
+            return Ok(());
+        }
+        self.misses.remove(&(uid, key.clone()));
+        // Which one leaves: of two, the one that may not stand alone (a sensor
+        // that followed the wrong object), else the one that disagrees.
+        let alone = |s: &str| self.alone.get(s).copied().unwrap_or(true);
+        let leaving = match others.as_slice() {
+            [(other, other_source)] if alone(&obs.source_id) && !alone(other_source) => {
+                other.clone()
+            }
+            _ => key,
+        };
+        if self
+            .split_rejected
+            .get(&(uid, leaving.clone()))
+            .is_some_and(|t| Utc::now() - *t < chrono::Duration::minutes(30))
+        {
+            return Ok(());
+        }
+        let evidence = json!({
+            "rule": "divergence", "misses": misses, "of": of,
+            "chi2_gate": split.chi2_gate, "last": k,
+        });
+        let reason = format!(
+            "{leaving} disagreed with the rest of {} in {misses} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
+            uid.doc_id(),
+            k.distance_m,
+            k.sigma_m
+        );
+        if split.automatic {
+            self.split(uid, &leaving, "engine", &reason, evidence)
+                .await?;
+            counts.split += 1;
+        } else if self
+            .suggest("split", uid, None, Some(leaving), evidence, reason)
+            .await?
+        {
+            counts.suggested += 1;
+        }
+        Ok(())
+    }
+
+    /// Split a source track (`<source>/<key>`) off its system track onto a
+    /// new one, and record that the two are different objects so they do not
+    /// pair again. Returns the new track.
+    async fn split(
+        &mut self,
+        uid: Uid,
+        leaving: &str,
+        actor: &str,
+        reason: &str,
+        evidence: Value,
+    ) -> anyhow::Result<Uid> {
+        if !self.tracks.contains_key(&uid) {
+            anyhow::bail!("{} is not a live track", uid.doc_id());
+        }
+        let keys = self.keys_of(uid);
+        if !keys.iter().any(|k| k == leaving) {
+            anyhow::bail!("{leaving} does not report for {}", uid.doc_id());
+        }
+        if keys.len() < 2 {
+            anyhow::bail!("{leaving} is the only source track of {}", uid.doc_id());
+        }
+        let rest: Vec<String> = keys.into_iter().filter(|k| k != leaving).collect();
+        let (source, track_key) = leaving
+            .split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("source track {leaving:?} is not <source>/<key>"))?;
+        let decision = Decision::new(actor, "split")
+            .reason(reason)
+            .evidence(evidence)
+            .evidence(json!({
+                "correlation_version": correlate::VERSION,
+                "from": uid.doc_id(),
+                "source_track": leaving,
+            }));
+        let dnp = Decision::new(actor, "do_not_pair")
+            .reason(format!("{leaving} split from {}", uid.doc_id()));
+        let c = self.common.clone();
+        let (source, track_key, left, rest_keys) = (
+            source.to_owned(),
+            track_key.to_owned(),
+            leaving.to_owned(),
+            rest.clone(),
+        );
+        let new = tokio::task::spawn_blocking(move || -> anyhow::Result<Uid> {
+            let mut db = c.open_db()?;
+            let (new, _) = db.split_source_track(c.site, &source, &track_key, decision)?;
+            db.do_not_pair(&[left], &rest_keys, dnp)?;
+            Ok(new)
+        })
+        .await??;
+        for r in &rest {
+            let pair = if leaving < r.as_str() {
+                (leaving.to_owned(), r.clone())
+            } else {
+                (r.clone(), leaving.to_owned())
+            };
+            self.do_not_pair.insert(pair);
+        }
+        if let Some(t) = self.tracks.get_mut(&uid) {
+            t.contributors.retain(|c| contributor_key(c) != leaving);
+        }
+        self.reports.insert(leaving.to_owned(), new);
+        let latest = match self.latest.get(leaving).cloned() {
+            Some(o) => Some(o),
+            None => {
+                let (s, k) = leaving.split_once('/').expect("checked above");
+                self.redis.get_source_track(s, k).await?
+            }
+        };
+        if let Some(obs) = latest {
+            let mut t = SystemTrack::from_first_observation(new, obs);
+            t.observation_count = self.settings.confirm_after;
+            t.state = TrackState::Confirmed;
+            resolve(&self.attrs, &mut t);
+            self.grid
+                .put(new, t.view.position.latitude, t.view.position.longitude);
+            self.tracks.insert(new, t);
+            self.index_track(new);
+            self.save(new, true).await?;
+        }
+        // The track left behind shows only what its remaining sources say,
+        // identity included: it may have come from the one that left.
+        self.load_missing(uid).await?;
+        if let Some((view, provenance)) = self.best_of(uid)
+            && let Some(t) = self.tracks.get_mut(&uid)
+        {
+            t.view = view;
+            t.provenance = provenance;
+            resolve(&self.attrs, t);
+        }
+        self.index_track(uid);
+        self.save(uid, true).await?;
+        self.misses.retain(|(u, _), _| *u != uid);
+        self.candidates.retain(|(a, b), _| *a != uid && *b != uid);
+        Ok(new)
+    }
+
+    /// Merge two tracks on an operator's word.
+    async fn operator_merge(
+        &mut self,
+        from: Uid,
+        into: Uid,
+        actor: &str,
+        reason: String,
+        evidence: Value,
+    ) -> anyhow::Result<Uid> {
+        for u in [from, into] {
+            if !self.tracks.contains_key(&u) {
+                anyhow::bail!("{} is not a live track", u.doc_id());
+            }
+        }
+        if from == into {
+            anyhow::bail!("cannot merge a track into itself");
+        }
+        let decision = Decision::new(actor, "merge")
+            .reason(reason)
+            .evidence(evidence)
+            .evidence(json!({ "correlation_version": correlate::VERSION }));
+        let c = self.common.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
+        })
+        .await??;
+        self.absorb(from, into).await?;
+        self.republish(into).await?;
+        Ok(into)
+    }
+
+    /// Record an operator's word that two tracks are different objects.
+    async fn operator_do_not_pair(
+        &mut self,
+        a: Uid,
+        b: Uid,
+        actor: &str,
+        reason: String,
+    ) -> anyhow::Result<()> {
+        let (ka, kb) = (self.keys_of(a), self.keys_of(b));
+        if ka.is_empty() || kb.is_empty() {
+            anyhow::bail!("both tracks must be live");
+        }
+        let decision = Decision::new(actor, "do_not_pair").reason(reason);
+        let c = self.common.clone();
+        let (la, lb) = (ka.clone(), kb.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.do_not_pair(&la, &lb, decision)?)
+        })
+        .await??;
+        for x in &ka {
+            for y in &kb {
+                let pair = if x < y {
+                    (x.clone(), y.clone())
+                } else {
+                    (y.clone(), x.clone())
+                };
+                self.do_not_pair.insert(pair);
+            }
+        }
+        self.candidates.remove(&pair_key(a, b));
+        Ok(())
+    }
+
+    /// Run queued operator commands, answering each.
+    async fn process_commands(&mut self) -> anyhow::Result<()> {
+        for cmd in self.redis.pop_commands(20).await? {
+            let id = cmd["id"].as_str().unwrap_or_default().to_owned();
+            let result = match self.command(&cmd).await {
+                Ok(v) => json!({ "ok": true, "result": v }),
+                Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            tracing::info!(command = %cmd, %result, "operator command");
+            if !id.is_empty() {
+                self.redis.put_command_result(&id, &result).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn command(&mut self, cmd: &Value) -> anyhow::Result<Value> {
+        let actor = cmd["actor"].as_str().unwrap_or("operator").to_owned();
+        let uid = |k: &str| -> anyhow::Result<Uid> {
+            let s = cmd[k]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("{k} is required"))?;
+            s.trim_start_matches("tms-")
+                .parse()
+                .map_err(|e| anyhow::anyhow!("{k}: {e}"))
+        };
+        let op = cmd["op"].as_str().unwrap_or_default();
+        match op {
+            "accept" | "reject" => {
+                let id = cmd["suggestion"]
+                    .as_i64()
+                    .ok_or_else(|| anyhow::anyhow!("suggestion is required"))?;
+                let c = self.common.clone();
+                let s = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                    Ok(c.open_db()?.suggestion(id)?)
+                })
+                .await??
+                .ok_or_else(|| anyhow::anyhow!("no suggestion {id}"))?;
+                if s.status != "open" {
+                    anyhow::bail!("suggestion {id} is already {}", s.status);
+                }
+                let a: Uid = s.track_a.parse()?;
+                let common = self.common.clone();
+                let close = |status: &'static str, d: Option<Decision>| {
+                    let c = common.clone();
+                    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                        Ok(c.open_db()?.close_suggestion(id, status, d)?)
+                    })
+                };
+                let reason = s.evidence["reason"].as_str().unwrap_or_default().to_owned();
+                match (s.kind.as_str(), op == "accept") {
+                    ("pair", accept) => {
+                        let b: Uid = s
+                            .track_b
+                            .as_deref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("pair suggestion without a second track")
+                            })?
+                            .parse()?;
+                        if !self.tracks.contains_key(&a) || !self.tracks.contains_key(&b) {
+                            close("expired", None).await??;
+                            anyhow::bail!(
+                                "suggestion {id} is out of date: a track no longer exists"
+                            );
+                        }
+                        if accept {
+                            close("accepted", None).await??;
+                            let into = self
+                                .operator_merge(
+                                    b,
+                                    a,
+                                    &actor,
+                                    format!("accepted suggestion {id}: {reason}"),
+                                    s.evidence.clone(),
+                                )
+                                .await?;
+                            Ok(json!({ "merged_into": into.doc_id() }))
+                        } else {
+                            self.operator_do_not_pair(
+                                a,
+                                b,
+                                &actor,
+                                format!("rejected suggestion {id}: {reason}"),
+                            )
+                            .await?;
+                            close("rejected", None).await??;
+                            Ok(json!({}))
+                        }
+                    }
+                    ("split", accept) => {
+                        let leaving = s.source_track.clone().ok_or_else(|| {
+                            anyhow::anyhow!("split suggestion without a source track")
+                        })?;
+                        if accept {
+                            let new = self
+                                .split(
+                                    a,
+                                    &leaving,
+                                    &actor,
+                                    &format!("accepted suggestion {id}: {reason}"),
+                                    s.evidence.clone(),
+                                )
+                                .await?;
+                            close("accepted", None).await??;
+                            Ok(json!({ "new_track": new.doc_id() }))
+                        } else {
+                            self.split_rejected.insert((a, leaving.clone()), Utc::now());
+                            let d = Decision::new(&actor, "reject_split").reason(format!(
+                                "{leaving} stays on {}: rejected suggestion {id}",
+                                a.doc_id()
+                            ));
+                            close("rejected", Some(d)).await??;
+                            Ok(json!({}))
+                        }
+                    }
+                    (other, _) => anyhow::bail!("unknown suggestion kind {other:?}"),
+                }
+            }
+            "split" => {
+                let track = uid("track")?;
+                let leaving = cmd["source_track"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("source_track is required"))?;
+                let reason = cmd["reason"].as_str().unwrap_or("split by an operator");
+                let new = self
+                    .split(track, leaving, &actor, reason, json!({}))
+                    .await?;
+                Ok(json!({ "new_track": new.doc_id() }))
+            }
+            "merge" => {
+                let (from, into) = (uid("from")?, uid("into")?);
+                let reason = cmd["reason"]
+                    .as_str()
+                    .unwrap_or("merged by an operator")
+                    .to_owned();
+                let into = self
+                    .operator_merge(from, into, &actor, reason, json!({}))
+                    .await?;
+                Ok(json!({ "merged_into": into.doc_id() }))
+            }
+            "do_not_pair" => {
+                let (a, b) = (uid("a")?, uid("b")?);
+                let reason = cmd["reason"]
+                    .as_str()
+                    .unwrap_or("different objects, by an operator")
+                    .to_owned();
+                self.operator_do_not_pair(a, b, &actor, reason).await?;
+                Ok(json!({}))
+            }
+            other => anyhow::bail!("unknown command {other:?}"),
+        }
     }
 
     /// Whether a track is authoritative enough to publish: confirmed, and
@@ -1041,7 +1612,7 @@ impl Engine {
             })
             .collect();
         (!contribs.is_empty())
-            .then(|| correlate::best_view(&contribs, self.settings.freshness_secs))
+            .then(|| correlate::best_view(&contribs, self.settings.correlation.freshness_secs))
     }
 
     /// Sources still reporting for a track (within the kinematic max age of
@@ -1049,8 +1620,9 @@ impl Engine {
     /// engine associated. A source's track that stopped reporting does not
     /// block its next track of the same object (a sensor re-initiating).
     fn track_sources(&self, uid: Uid, at: DateTime<Utc>) -> HashSet<&str> {
-        let max_age =
-            chrono::Duration::milliseconds((self.settings.kinematic.max_age_secs * 1000.0) as i64);
+        let max_age = chrono::Duration::milliseconds(
+            (self.settings.correlation.kinematic.max_age_secs * 1000.0) as i64,
+        );
         self.tracks
             .get(&uid)
             .map(|t| {
@@ -1072,10 +1644,12 @@ impl Engine {
         obs: &Observation,
         counts: &mut EngineCounts,
     ) -> anyhow::Result<()> {
-        if self.settings.approach == Approach::Identifiers || !self.tracks.contains_key(&uid) {
+        if self.settings.correlation.approach == Approach::Identifiers
+            || !self.tracks.contains_key(&uid)
+        {
             return Ok(());
         }
-        let s = self.settings.kinematic;
+        let s = self.settings.correlation.kinematic;
         let mine: HashSet<String> = self
             .track_sources(uid, obs.observed_at)
             .into_iter()
@@ -1095,6 +1669,7 @@ impl Engine {
             };
             if (obs.observed_at - t.view.observed_at).abs() > max_age
                 || t.state == TrackState::Lost
+                || self.forbidden(uid, other)
                 || self
                     .track_sources(other, obs.observed_at)
                     .iter()
@@ -1102,7 +1677,7 @@ impl Engine {
             {
                 continue;
             }
-            if self.settings.approach == Approach::KinematicsMetadata
+            if self.settings.correlation.approach == Approach::KinematicsMetadata
                 && correlate::veto(obs, &t.view).is_some()
             {
                 continue;
@@ -1138,20 +1713,28 @@ impl Engine {
         let evidence = json!({
             "rule": "kinematic",
             "trackers": trackers,
-            "approach": self.settings.approach,
+            "approach": self.settings.correlation.approach,
             "hits": hits, "of": of,
             "chi2_gate": s.chi2_gate,
             "last": k,
         });
-        let decision = engine_decision("merge")
-            .reason(format!(
-                "{} and {} agreed kinematically in {hits} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
-                from.doc_id(),
-                into.doc_id(),
-                k.distance_m,
-                k.sigma_m
-            ))
-            .evidence(evidence);
+        let reason = format!(
+            "{} and {} agreed kinematically in {hits} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
+            from.doc_id(),
+            into.doc_id(),
+            k.distance_m,
+            k.sigma_m
+        );
+        if self.settings.correlation.mode == Mode::Suggest {
+            if self
+                .suggest("pair", into, Some(from), None, evidence, reason)
+                .await?
+            {
+                counts.suggested += 1;
+            }
+            return Ok(());
+        }
+        let decision = engine_decision("merge").reason(reason).evidence(evidence);
         let c = self.common.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
             Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
@@ -1188,7 +1771,7 @@ impl Engine {
         scan: Vec<Observation>,
         counts: &mut EngineCounts,
     ) -> anyhow::Result<()> {
-        let s = self.settings.kinematic;
+        let s = self.settings.correlation.kinematic;
         let max_age = chrono::Duration::milliseconds((s.max_age_secs * 1000.0) as i64);
         let mut pairs = Vec::new();
         for (i, det) in scan.iter().enumerate() {
@@ -1315,6 +1898,9 @@ impl Engine {
         })
         .await??;
         let reason = format!("no report for {}s", drop_after.as_secs());
+        let hour = chrono::Duration::hours(1);
+        self.suggested.retain(|_, t| now - *t < hour);
+        self.split_rejected.retain(|_, t| now - *t < hour);
         for uid in dropped {
             let published = self.forget(uid);
             self.retire_in_redis(uid, published, &reason).await?;
@@ -1788,6 +2374,275 @@ mod tests {
         e.redis.purge_namespace().await.unwrap();
     }
 
+    /// Queue an operator command and run it; the engine's answer.
+    async fn operator(e: &mut Engine, mut cmd: Value) -> Value {
+        let id = format!("t{}", Utc::now().timestamp_micros());
+        cmd["id"] = json!(id);
+        e.redis.push_command(&cmd).await.unwrap();
+        e.process_commands().await.unwrap();
+        e.redis
+            .command_result(&id)
+            .await
+            .unwrap()
+            .expect("an answer")
+    }
+
+    async fn suggestions(e: &Engine, status: &str) -> Vec<ot_store::Suggestion> {
+        let c = e.common.clone();
+        let status = status.to_owned();
+        tokio::task::spawn_blocking(move || {
+            c.open_db()
+                .unwrap()
+                .suggestions(Some(&status), 100)
+                .unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    fn named(mut o: Observation, name: &str) -> Observation {
+        o.name = Some(name.into());
+        o
+    }
+
+    #[tokio::test]
+    async fn replay_divergence_proposes_a_split_and_an_operator_accepts_it() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.alone = [("radar".to_string(), false)].into();
+        // AIS and radar on the same ship: paired.
+        for s in 0..6 {
+            feed(
+                &mut e,
+                &[
+                    named(
+                        report("ais", "366", s, 32.0, -117.0, Some("366")),
+                        "TED STEVENS",
+                    ),
+                    report("radar", "r1", s, 32.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(track_of(&e, "radar", "r1"), ship);
+        // The radar track wanders onto another boat 450 m north.
+        for s in 6..14 {
+            feed(
+                &mut e,
+                &[
+                    named(
+                        report("ais", "366", s, 32.0, -117.0, Some("366")),
+                        "TED STEVENS",
+                    ),
+                    report("radar", "r1", s, 32.004, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        // Proposed, not done: the radar (which may not stand alone) is the one to leave.
+        assert_eq!(track_of(&e, "radar", "r1"), ship);
+        let open = suggestions(&e, "open").await;
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].kind, "split");
+        assert_eq!(open[0].source_track.as_deref(), Some("radar/r1"));
+        assert_eq!(open[0].evidence["rule"], "divergence");
+
+        let answer = operator(&mut e, json!({"op": "accept", "suggestion": open[0].id})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        let radar = track_of(&e, "radar", "r1");
+        assert_ne!(radar, ship);
+        assert_eq!(answer["result"]["new_track"], radar.doc_id());
+        assert_eq!(e.tracks[&ship].contributors.len(), 1);
+        assert_eq!(e.tracks[&ship].view.name.as_deref(), Some("TED STEVENS"));
+        assert_eq!(
+            e.tracks[&radar].view.name, None,
+            "the radar track carries no identity"
+        );
+        assert!(suggestions(&e, "open").await.is_empty());
+        // Even back alongside, the two are not paired again.
+        for s in 14..22 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "366", s, 32.0, -117.0, Some("366")),
+                    report("radar", "r1", s, 32.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        assert_ne!(track_of(&e, "radar", "r1"), track_of(&e, "ais", "366"));
+        let c = e.common.clone();
+        let log = tokio::task::spawn_blocking(move || {
+            c.open_db()
+                .unwrap()
+                .decisions_by_op(ot_store::correlation::CORRELATION_OPS, 50)
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let split = log
+            .iter()
+            .find(|d| d.op == "split")
+            .expect("a split decision");
+        assert_eq!(split.actor, "operator");
+        assert_eq!(split.evidence["source_track"], "radar/r1");
+        assert!(log.iter().any(|d| d.op == "do_not_pair"));
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_automatic_split() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.alone = [("radar".to_string(), false)].into();
+        e.settings.correlation.split.automatic = true;
+        for s in 0..6 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "366", s, 32.0, -117.0, Some("366")),
+                    report("radar", "r1", s, 32.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        let ship = track_of(&e, "ais", "366");
+        assert_eq!(track_of(&e, "radar", "r1"), ship);
+        for s in 6..14 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "366", s, 32.0, -117.0, Some("366")),
+                    report("radar", "r1", s, 32.004, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        assert_ne!(track_of(&e, "radar", "r1"), ship);
+        assert!(suggestions(&e, "open").await.is_empty());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_suggest_mode_and_operator_decisions() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar", "tak"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.alone = [("radar".to_string(), false)].into();
+        // Saved settings reach the running engine.
+        let c = e.common.clone();
+        tokio::task::spawn_blocking(move || {
+            c.open_db()
+                .unwrap()
+                .save_correlation_settings(
+                    &json!({"mode": "suggest"}),
+                    ot_store::Decision::new("operator", "correlation_settings"),
+                )
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        e.refresh_correlation().await.unwrap();
+        assert_eq!(e.settings.correlation.mode, Mode::Suggest);
+
+        let pair = |e: &Engine, a: &str, b: &str| track_of(e, "ais", a) == track_of(e, "radar", b);
+        // Agreement is proposed, not acted on.
+        for s in 0..6 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "367", s, 33.0, -117.0, Some("367")),
+                    report("radar", "r2", s, 33.00001, -117.0, None),
+                    report("ais", "368", s, 34.0, -117.0, Some("368")),
+                    report("radar", "r3", s, 34.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        assert!(!pair(&e, "367", "r2") && !pair(&e, "368", "r3"));
+        let open = suggestions(&e, "open").await;
+        assert_eq!(open.len(), 2, "{open:?}");
+        let about = |a: &str| {
+            let uid = track_of(&e, "ais", a).to_string();
+            open.iter()
+                .find(|s| s.track_a == uid)
+                .expect("a suggestion")
+                .id
+        };
+        let (reject, accept) = (about("367"), about("368"));
+
+        // Accepted: merged, into the published AIS track.
+        let answer = operator(&mut e, json!({"op": "accept", "suggestion": accept})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(pair(&e, "368", "r3"));
+        // Rejected: never paired, and not proposed again.
+        let answer = operator(&mut e, json!({"op": "reject", "suggestion": reject})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        e.settings.correlation.mode = Mode::Automatic;
+        for s in 6..14 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "367", s, 33.0, -117.0, Some("367")),
+                    report("radar", "r2", s, 33.00001, -117.0, None),
+                ],
+            )
+            .await;
+        }
+        assert!(!pair(&e, "367", "r2"));
+        assert!(suggestions(&e, "open").await.is_empty());
+        // A closed suggestion cannot be decided twice.
+        let again = operator(&mut e, json!({"op": "accept", "suggestion": accept})).await;
+        assert_eq!(again["ok"], false);
+
+        // "Do not pair" holds even against a shared identifier.
+        feed(&mut e, &[report("tak", "u1", 20, 35.0, -117.0, None)]).await;
+        feed(
+            &mut e,
+            &[report("ais", "369", 20, 35.0, -117.0, Some("369"))],
+        )
+        .await;
+        let (tak, ais) = (track_of(&e, "tak", "u1"), track_of(&e, "ais", "369"));
+        let answer = operator(
+            &mut e,
+            json!({"op": "do_not_pair", "a": tak.doc_id(), "b": ais.doc_id()}),
+        )
+        .await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        feed(
+            &mut e,
+            &[report("tak", "u1", 21, 35.0, -117.0, Some("369"))],
+        )
+        .await;
+        assert_ne!(track_of(&e, "tak", "u1"), track_of(&e, "ais", "369"));
+
+        // An operator can still merge by hand, and bad commands say why they failed.
+        let (from, into) = (
+            track_of(&e, "tak", "u1").doc_id(),
+            track_of(&e, "ais", "369").doc_id(),
+        );
+        let answer = operator(&mut e, json!({"op": "merge", "from": from, "into": into})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(track_of(&e, "tak", "u1"), track_of(&e, "ais", "369"));
+        let bad = operator(
+            &mut e,
+            json!({"op": "split", "track": "tms-TST000999999", "source_track": "x/y"}),
+        )
+        .await;
+        assert_eq!(bad["ok"], false);
+        assert!(
+            bad["error"].as_str().unwrap().contains("not a live track"),
+            "{bad}"
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
     #[test]
     fn algorithm_versions_are_documented() {
         let doc = include_str!("../../../docs/algorithms.md");
@@ -1961,6 +2816,25 @@ mod tests {
         };
         replay(&mut e, rows).await;
         write_trace(&e, name);
+        let c = e.common.clone();
+        let suggestions = tokio::task::spawn_blocking(move || {
+            c.open_db().unwrap().suggestions(None, 1000).unwrap()
+        })
+        .await
+        .unwrap();
+        for sg in &suggestions {
+            eprintln!(
+                "{name}: suggestion {} {} {} {:?}: {}",
+                sg.kind,
+                sg.track_a,
+                sg.track_b
+                    .as_deref()
+                    .or(sg.source_track.as_deref())
+                    .unwrap_or(""),
+                sg.status,
+                sg.evidence["reason"].as_str().unwrap_or("")
+            );
+        }
         let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
         assert_ne!(target(1), target(2), "the two targets stay apart");
 

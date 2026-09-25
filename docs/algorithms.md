@@ -32,6 +32,29 @@ range), replayed by the tests in `crates/ot-source/src/tracker/tests.rs` and
 
 ## Changelog
 
+### correlation-2 (2026-09-25)
+
+Operators steer correlation, and settings change at runtime:
+
+- **Settings** (approach, mode, gates, M of N, splits) are saved from the Correlation page
+  and reloaded by the running engine; the `--correlation` flag only sets the approach until
+  some are saved.
+- **Suggest mode**: kinematic pairings are proposed instead of made; an operator accepts
+  (merge) or rejects (the two never pair). Shared identifiers still pair on their own.
+- **Do not pair**: an operator's rejection, split or explicit decision is a DO_NOT_PAIR
+  edge between source tracks, checked before every pairing, identifier matches included.
+- **Splits**: a source track that disagrees with the rest of its system track (chi-square
+  18.4, 5 of the last 6 comparisons) is proposed for a split (or split, with automatic
+  splits on). Of two, the one that may not stand alone leaves. A split puts it on a track
+  of its own, leaves the rest showing only what they report (identity included), and
+  records that the two do not pair again.
+- Operators can also split, merge and mark "do not pair" by hand; every decision records
+  its actor and the correlation version.
+
+Autoferry scores are unchanged from correlation-1 (same tables), and neither scenario
+raises a split suggestion: the crossing in scenario 2 does not make correlated tracks
+disagree.
+
 ### correlation-1 (2026-09-25)
 
 Identifier pairing behind a kinematic sanity gate; kinematic pairing (chi-square gate,

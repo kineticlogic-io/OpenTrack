@@ -9,10 +9,12 @@ import { OverviewPage } from './pages/OverviewPage'
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
 const SchemaPage = lazy(() => import('./pages/schema/SchemaPage'))
 const TrackDbPage = lazy(() => import('./pages/trackdb/TrackDbPage'))
+const CorrelationPage = lazy(() => import('./pages/correlation/CorrelationPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'sources', label: 'Sources' },
+  { id: 'correlation', label: 'Correlation' },
   { id: 'tracks', label: 'Track Database' },
   { id: 'schema', label: 'Schema' },
 ]
@@ -59,6 +61,7 @@ export default function App() {
           {active === 'overview' && <OverviewPage onStatus={onStatus} />}
           <Suspense fallback={<span className="muted">LOADING…</span>}>
             {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
+            {active === 'correlation' && <CorrelationPage />}
             {active === 'tracks' && <TrackDbPage selected={sub} onSelect={(id) => go('tracks', id)} />}
             {active === 'schema' && <SchemaPage />}
           </Suspense>

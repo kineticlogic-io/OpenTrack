@@ -50,6 +50,16 @@ impl Keys {
         format!("{}:hist:{source}:{key}", self.ns)
     }
 
+    /// Operator commands for the engine (a list; the engine pops them).
+    pub fn commands(&self) -> String {
+        format!("{}:cmd", self.ns)
+    }
+
+    /// The engine's answer to one command.
+    pub fn command_result(&self, id: &str) -> String {
+        format!("{}:cmdres:{id}", self.ns)
+    }
+
     pub fn outbox(&self) -> String {
         format!("{}:out", self.ns)
     }

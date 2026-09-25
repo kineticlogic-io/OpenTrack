@@ -108,6 +108,70 @@ export interface GraphEdge {
   ended_by: number | null
 }
 
+// --- Correlation ---------------------------------------------------------------------------
+
+/** Correlation settings as the server stores them (see correlate::CorrelationSettings). */
+export interface CorrelationSettings {
+  approach: 'identifiers' | 'kinematics' | 'kinematics_metadata'
+  mode: 'automatic' | 'suggest'
+  kinematic: {
+    chi2_gate: number
+    min_sigma_m: number
+    drift_mps: number
+    m: number
+    n: number
+    window_secs: number
+    max_age_secs: number
+  }
+  gate: { base_m: number; max_extrapolation_secs: number }
+  freshness_secs: number
+  split: { propose: boolean; automatic: boolean; chi2_gate: number; m: number; n: number }
+}
+
+export interface CorrelationSettingsResponse {
+  settings: CorrelationSettings
+  saved: boolean
+  defaults: CorrelationSettings
+  version: string
+}
+
+/** A live track as a suggestion shows it. */
+export interface SuggestionTrack {
+  uid: string
+  track_id: string
+  live: boolean
+  name?: string | null
+  state?: string
+  published?: boolean
+  latitude?: number
+  longitude?: number
+  sources?: string[]
+}
+
+export interface Suggestion {
+  id: number
+  kind: 'pair' | 'split'
+  track_a: string
+  track_b?: string
+  source_track?: string
+  evidence: Record<string, unknown> & { reason?: string }
+  status: 'open' | 'accepted' | 'rejected' | 'expired'
+  created_at_ms: number
+  updated_at_ms: number
+  decision_id?: number
+  a: SuggestionTrack
+  b: SuggestionTrack | null
+}
+
+export interface DecisionRow {
+  id: number
+  at_ms: number
+  actor: string
+  op: string
+  reason: string | null
+  evidence: Record<string, unknown> | null
+}
+
 /** A row of the live tracks list: GOLD fields as published plus what the table shows. */
 export interface TrackRow {
   uid: string
@@ -413,6 +477,16 @@ export const api = {
   tracks: (limit = 10000) => get<{ total: number; tracks: TrackRow[] }>(`/tracks?limit=${limit}`),
   track: (uid: string) => get<TrackResponse>(`/tracks/${enc(uid)}`),
   explain: (uid: string) => get<{ uid: string; edges: GraphEdge[] }>(`/tracks/${enc(uid)}/explain`),
+  correlationSettings: () => get<CorrelationSettingsResponse>('/correlation/settings'),
+  saveCorrelationSettings: (s: CorrelationSettings) => request<{ settings: CorrelationSettings }>('PUT', '/correlation/settings', s),
+  suggestions: (status = 'open') => get<{ suggestions: Suggestion[] }>(`/correlation/suggestions?status=${enc(status)}`),
+  decideSuggestion: (id: number, decision: 'accept' | 'reject') =>
+    request<Record<string, unknown>>('POST', `/correlation/suggestions/${id}/${decision}`),
+  correlationDecisions: (limit = 100) => get<{ decisions: DecisionRow[] }>(`/correlation/decisions?limit=${limit}`),
+  splitTrack: (uid: string, sourceTrack: string) =>
+    request<{ new_track: string }>('POST', `/tracks/${enc(uid)}/split`, { source_track: sourceTrack }),
+  mergeTracks: (from: string, into: string) => request<{ merged_into: string }>('POST', '/tracks/merge', { from, into }),
+  doNotPair: (a: string, b: string) => request<Record<string, unknown>>('POST', '/tracks/do-not-pair', { a, b }),
 
   sources: () => get<{ sources: SourceRow[] }>('/sources').then((r) => r.sources),
   source: (id: string) => get<SourceRow>(`/sources/${enc(id)}`),

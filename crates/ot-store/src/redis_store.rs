@@ -128,6 +128,50 @@ impl RedisStore {
         Ok(())
     }
 
+    /// Queue a command for the engine.
+    pub async fn push_command(&self, command: &serde_json::Value) -> Result<()> {
+        redis::cmd("LPUSH")
+            .arg(self.keys.commands())
+            .arg(command.to_string())
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Take up to `n` queued commands, oldest first.
+    pub async fn pop_commands(&self, n: usize) -> Result<Vec<serde_json::Value>> {
+        let raw: Option<Vec<String>> = redis::cmd("RPOP")
+            .arg(self.keys.commands())
+            .arg(n)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect())
+    }
+
+    /// The engine's answer to a command, kept for a minute.
+    pub async fn put_command_result(&self, id: &str, result: &serde_json::Value) -> Result<()> {
+        redis::cmd("SET")
+            .arg(self.keys.command_result(id))
+            .arg(result.to_string())
+            .arg("EX")
+            .arg(60)
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn command_result(&self, id: &str) -> Result<Option<serde_json::Value>> {
+        let raw: Option<String> = redis::cmd("GET")
+            .arg(self.keys.command_result(id))
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
     /// Remove a system track that was never published (no tombstone needed).
     pub async fn forget_system_track(&self, uid: Uid) -> Result<()> {
         redis::cmd("DEL")

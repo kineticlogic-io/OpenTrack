@@ -528,3 +528,34 @@ body {
 .map-table .value-row.three {
   grid-template-columns: minmax(0, 1fr);
 }
+
+/* Correlation: suggestions beside the settings, one column when narrow. */
+.correlation-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 440px);
+  gap: var(--space-sm);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .correlation-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.correlation-settings {
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+/* A decision's evidence, as stored. */
+.evidence {
+  margin: 0;
+  padding: var(--space-sm);
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-sm);
+}

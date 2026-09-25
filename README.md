@@ -13,7 +13,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
 | 1. Source framework | Transports (TCP, UDP, HTTP poll, WebSocket, MQTT), JSON / CoT / XML codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
-| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | in progress: identifier and kinematic pairing, detection association, GNN/MHT tracker stage, merges and best source done |
+| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | **done**: identifier and kinematic pairing, suggest mode, splits, do-not-pair, runtime settings, detection association, GNN/MHT tracker stage; vector similarity deferred |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
 | 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | |
 | 6. Migration and cutover | aisstream / adsb.lol examples, parallel run | |
@@ -31,8 +31,8 @@ docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/RE
 docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview (status and
               system metrics), Sources (topology, list, add-source wizard, mapping studio with live
-              preview), Track Database (map, baseball card with provenance, card editor, tracks
-              table), Schema workspace
+              preview), Correlation (suggestions, settings, decisions), Track Database (map,
+              baseball card with provenance, card editor, tracks table), Schema workspace
 ```
 
 Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
@@ -55,6 +55,15 @@ stand alone (`publish_alone`; by default track feeds may, detection feeds may no
 sensors report for, even several agreeing with each other, stays inside OpenTrack (the track card
 marks it "not published") until a track feed reports for it too. A source ends a track with
 `state: dropped`; a system track no source reports for any more is retired at once.
+
+The **Correlation** workspace shows the engine's suggestions (pairings in suggest mode, and
+splits when a source track stops agreeing with its track) for an operator to accept or reject,
+the correlation settings (saved and applied while running), and every correlation decision with
+its evidence. A track's Provenance tab shows how each source track was paired, and splits one
+off. The same operations are API calls: `/api/v1/correlation/settings`,
+`/api/v1/correlation/suggestions/{id}/accept|reject`, `/api/v1/tracks/{uid}/split`,
+`/api/v1/tracks/merge`, `/api/v1/tracks/do-not-pair`. Algorithm versions and their scores are in
+[docs/algorithms.md](docs/algorithms.md).
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
 mappings, entity cards, the audit log, the track graph); **Redis** holds everything feeds produce

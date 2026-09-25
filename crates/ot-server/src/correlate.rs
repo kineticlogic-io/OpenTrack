@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use ot_core::{Domain, Observation};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
@@ -18,7 +18,7 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// publish rule. Stamped on every engine decision and published message.
 /// Bump it whenever the same inputs would give different system tracks, and
 /// record it in docs/algorithms.md with its scores.
-pub const VERSION: &str = "correlation-1";
+pub const VERSION: &str = "correlation-2";
 
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry
@@ -104,7 +104,8 @@ fn max_speed(domain: Option<Domain>) -> f64 {
 }
 
 /// Settings of the kinematic sanity gate on identifier matches.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GateSettings {
     /// Allowed distance at zero time difference (reporting error, lag).
     pub base_m: f64,
@@ -152,7 +153,8 @@ pub fn sanity_gate(obs: &Observation, view: &Observation, s: &GateSettings) -> G
 
 /// Settings of kinematic pairing (tracks with no shared identity) and of
 /// detection association.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct KinematicSettings {
     /// Chi-square gate on the normalised distance (2 degrees of freedom;
     /// 9.21 keeps 99% of true matches).
@@ -186,7 +188,7 @@ impl Default for KinematicSettings {
 }
 
 /// How pairing decides, beyond shared identifiers (which always pair).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Approach {
     /// Only shared identifiers pair tracks.
@@ -196,6 +198,111 @@ pub enum Approach {
     /// Kinematic agreement, vetoed by conflicting identifiers or domains.
     #[default]
     KinematicsMetadata,
+}
+
+/// Whether kinematic pairings are made or proposed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// The engine pairs tracks that agree kinematically.
+    #[default]
+    Automatic,
+    /// The engine proposes those pairings; an operator accepts or rejects.
+    /// (Shared identifiers always pair.)
+    Suggest,
+}
+
+/// Decorrelation: a source track that stops agreeing with the rest of its
+/// system track (a sensor track that followed the wrong vessel through a
+/// crossing, a wrongly shared identifier).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SplitSettings {
+    /// Propose splits for an operator to accept or reject.
+    pub propose: bool,
+    /// Split without asking.
+    pub automatic: bool,
+    /// Chi-square distance beyond which a report disagrees (18.4: 99.99%).
+    pub chi2_gate: f64,
+    /// Split when `m` of the last `n` comparisons disagree.
+    pub m: usize,
+    pub n: usize,
+}
+
+impl Default for SplitSettings {
+    fn default() -> Self {
+        Self {
+            propose: true,
+            automatic: false,
+            chi2_gate: 18.4,
+            m: 5,
+            n: 6,
+        }
+    }
+}
+
+/// Everything about correlation an operator can change while it runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CorrelationSettings {
+    pub approach: Approach,
+    pub mode: Mode,
+    pub kinematic: KinematicSettings,
+    /// Sanity gate on identifier matches.
+    pub gate: GateSettings,
+    /// Reports this close to a system track's newest one compete on quality
+    /// for its position (best-source selection).
+    pub freshness_secs: f64,
+    pub split: SplitSettings,
+}
+
+impl Default for CorrelationSettings {
+    fn default() -> Self {
+        Self {
+            approach: Approach::default(),
+            mode: Mode::default(),
+            kinematic: KinematicSettings::default(),
+            gate: GateSettings::default(),
+            freshness_secs: 60.0,
+            split: SplitSettings::default(),
+        }
+    }
+}
+
+impl CorrelationSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        let k = &self.kinematic;
+        let positive = [
+            ("kinematic.chi2_gate", k.chi2_gate),
+            ("kinematic.min_sigma_m", k.min_sigma_m),
+            ("kinematic.window_secs", k.window_secs),
+            ("kinematic.max_age_secs", k.max_age_secs),
+            ("gate.base_m", self.gate.base_m),
+            (
+                "gate.max_extrapolation_secs",
+                self.gate.max_extrapolation_secs,
+            ),
+            ("freshness_secs", self.freshness_secs),
+            ("split.chi2_gate", self.split.chi2_gate),
+        ];
+        for (name, v) in positive {
+            if !(v.is_finite() && v > 0.0) {
+                return Err(format!("{name} must be a positive number"));
+            }
+        }
+        if !(k.drift_mps.is_finite() && k.drift_mps >= 0.0) {
+            return Err("kinematic.drift_mps must not be negative".into());
+        }
+        for (name, m, n) in [
+            ("kinematic", k.m, k.n),
+            ("split", self.split.m, self.split.n),
+        ] {
+            if m == 0 || m > n {
+                return Err(format!("{name}.m must be between 1 and {name}.n"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A report's position standard deviation per axis: its circular error
@@ -713,6 +820,19 @@ mod tests {
         assert_eq!(p.record(at(10), false, &s), (3, 5));
         // Results older than the window fall out.
         assert_eq!(p.record(at(60), true, &s), (1, 1));
+    }
+
+    #[test]
+    fn correlation_settings_take_partial_json_and_are_checked() {
+        let s: CorrelationSettings =
+            serde_json::from_value(json!({"mode": "suggest", "kinematic": {"m": 3}})).unwrap();
+        assert_eq!(s.mode, Mode::Suggest);
+        assert_eq!(s.kinematic.m, 3);
+        assert_eq!(s.kinematic.n, 5, "unset fields keep their defaults");
+        s.validate().unwrap();
+        let bad: CorrelationSettings = serde_json::from_value(json!({"split": {"m": 7}})).unwrap();
+        assert!(bad.validate().unwrap_err().contains("split.m"));
+        assert!(serde_json::from_value::<CorrelationSettings>(json!({"nope": 1})).is_err());
     }
 
     #[test]
