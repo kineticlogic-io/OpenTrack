@@ -23,7 +23,8 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-lg);
+  /* 8px rather than the contract's 24px, on operator direction. */
+  padding: var(--space-sm);
   margin-right: var(--assistant-width, 0px);
 }
 
@@ -321,12 +322,7 @@ body {
   align-items: start;
 }
 
-/* A denser page (Track Database, on operator direction): 8px of page padding and between
-   panels, instead of 24 and 16. */
-.content.tight {
-  padding: var(--space-sm);
-}
-
+/* A denser page (Track Database, on operator direction): panels 8px apart instead of 16. */
 .panels.tight,
 .panels.tight .workspace {
   gap: var(--space-sm);
