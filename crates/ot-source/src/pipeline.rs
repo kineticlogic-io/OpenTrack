@@ -242,6 +242,8 @@ pub struct Pipeline {
     codec: Codec,
     statics: HashMap<String, StaticEntry>,
     throttle: HashMap<String, LastWrite>,
+    /// Extension field types for the mapping's schema version.
+    schema: Option<crate::schema::ExtensionSchema>,
     pub counts: Counts,
 }
 
@@ -257,8 +259,15 @@ impl Pipeline {
             spec,
             statics: HashMap::new(),
             throttle: HashMap::new(),
+            schema: None,
             counts: Counts::default(),
         })
+    }
+
+    /// Enforce this extension schema (types, defaults, required fields).
+    pub fn with_schema(mut self, schema: crate::schema::ExtensionSchema) -> Self {
+        self.schema = Some(schema);
+        self
     }
 
     pub fn spec(&self) -> &PipelineSpec {
@@ -357,6 +366,21 @@ impl Pipeline {
                     if !m.identifiers.contains(id) {
                         m.identifiers.push(id.clone());
                     }
+                }
+            }
+            if let Some(schema) = &self.schema {
+                let ext = m
+                    .fields
+                    .as_object_mut()
+                    .expect("mapped fields are an object")
+                    .entry("ext")
+                    .or_insert_with(|| Value::Object(Default::default()));
+                if let Some(ext) = ext.as_object_mut()
+                    && let Err(e) = schema.apply(ext)
+                {
+                    self.counts.invalid += 1;
+                    out.last_error = Some(e);
+                    continue;
                 }
             }
             // Stages below work on the observation's JSON form.

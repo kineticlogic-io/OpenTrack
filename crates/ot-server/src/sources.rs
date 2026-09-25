@@ -15,6 +15,7 @@ use chrono::Utc;
 use ot_source::frame::Frame;
 use ot_source::pipeline::{Pipeline, StaticEntry};
 use ot_source::registry::{RegistryEntry, RegistryLookup};
+use ot_source::schema::{ExtensionField, ExtensionSchema};
 use ot_source::source::SourceSpec;
 use ot_source::transport::{self, SharedStatus};
 use ot_store::RedisStore;
@@ -111,15 +112,15 @@ pub async fn run(
             _ = config_tick.tick() => {
                 let c = common.clone();
                 let seen = config_version.clone();
-                let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(String, Vec<ot_store::SourceRow>)>> {
+                let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(String, Vec<ot_store::SourceRow>, Schemas)>> {
                     let db = c.open_db()?;
                     let v = db.sources_version()?;
                     if v == seen { return Ok(None) }
-                    Ok(Some((v, db.list_sources()?)))
+                    Ok(Some((v, db.list_sources()?, load_schemas(&db)?)))
                 }).await?;
                 match res {
-                    Ok(Some((v, rows))) => {
-                        reconcile(&mut running, rows, &redis, &registry);
+                    Ok(Some((v, rows, schemas))) => {
+                        reconcile(&mut running, rows, &schemas, &redis, &registry);
                         config_version = v;
                     }
                     Ok(None) => {}
@@ -135,9 +136,35 @@ pub async fn run(
     Ok(())
 }
 
+/// Published extension schemas by version.
+type Schemas = HashMap<u32, ExtensionSchema>;
+
+fn load_schemas(db: &ot_store::Db) -> anyhow::Result<Schemas> {
+    let mut out = HashMap::new();
+    for v in db.schema_versions()? {
+        if v.status != "published" {
+            continue;
+        }
+        let fields = v
+            .fields
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<ExtensionField>, _>>()?;
+        out.insert(
+            v.version,
+            ExtensionSchema {
+                version: v.version,
+                fields,
+            },
+        );
+    }
+    Ok(out)
+}
+
 fn reconcile(
     running: &mut BTreeMap<String, Running>,
     rows: Vec<ot_store::SourceRow>,
+    schemas: &Schemas,
     redis: &RedisStore,
     registry: &Arc<Registry>,
 ) {
@@ -165,8 +192,14 @@ fn reconcile(
                 continue;
             }
         };
+        let Some(schema) = schemas.get(&spec.pipeline.mapping.schema_version).cloned() else {
+            tracing::error!(source = %id, version = spec.pipeline.mapping.schema_version,
+                "mapping targets an unpublished schema version; not started");
+            continue;
+        };
         let handle = tokio::spawn(run_source(
             spec,
+            schema,
             row.revision,
             redis.clone(),
             registry.clone(),
@@ -183,7 +216,13 @@ fn reconcile(
 }
 
 /// Run one source forever: a supervised transport and its pipeline.
-async fn run_source(spec: SourceSpec, revision: i64, redis: RedisStore, registry: Arc<Registry>) {
+async fn run_source(
+    spec: SourceSpec,
+    schema: ExtensionSchema,
+    revision: i64,
+    redis: RedisStore,
+    registry: Arc<Registry>,
+) {
     let id = spec.id.clone();
     let link = SharedStatus::default();
     let (tx, rx) = mpsc::channel::<Frame>(10_000);
@@ -223,7 +262,7 @@ async fn run_source(spec: SourceSpec, revision: i64, redis: RedisStore, registry
 
     let mut rx = rx;
     loop {
-        match pipeline_loop(&spec, revision, &mut rx, &redis, &registry, &link).await {
+        match pipeline_loop(&spec, &schema, revision, &mut rx, &redis, &registry, &link).await {
             Ok(()) => break,
             Err(e) => {
                 // Usually Redis; frames buffer in the channel meanwhile.
@@ -237,6 +276,7 @@ async fn run_source(spec: SourceSpec, revision: i64, redis: RedisStore, registry
 
 async fn pipeline_loop(
     spec: &SourceSpec,
+    schema: &ExtensionSchema,
     revision: i64,
     rx: &mut mpsc::Receiver<Frame>,
     redis: &RedisStore,
@@ -244,7 +284,9 @@ async fn pipeline_loop(
     link: &SharedStatus,
 ) -> anyhow::Result<()> {
     let id = spec.id.as_str();
-    let mut pipeline = Pipeline::new(id, spec.pipeline.clone()).context("invalid pipeline")?;
+    let mut pipeline = Pipeline::new(id, spec.pipeline.clone())
+        .context("invalid pipeline")?
+        .with_schema(schema.clone());
     let static_ttl = Duration::from_secs(spec.pipeline.static_join.ttl_secs);
 
     // Warm the static cache so identity survives a restart.

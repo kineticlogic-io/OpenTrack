@@ -11,5 +11,6 @@ pub mod mapping;
 pub mod path;
 pub mod pipeline;
 pub mod registry;
+pub mod schema;
 pub mod source;
 pub mod transport;

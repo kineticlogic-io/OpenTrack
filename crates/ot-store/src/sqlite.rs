@@ -13,6 +13,7 @@ use crate::graph::{self, EdgeKind, NodeKind};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_registry.sql"),
+    include_str!("../migrations/0003_schema_seed.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -280,9 +281,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 2);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 3);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 2);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 3);
     }
 
     #[test]

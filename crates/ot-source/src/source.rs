@@ -35,6 +35,14 @@ pub enum SourceError {
     Mapping(#[from] crate::mapping::MappingError),
     #[error("framing: {0}")]
     Framing(#[from] crate::frame::FrameError),
+    #[error("mapping targets schema version {wanted}, but it is {found}")]
+    SchemaVersion { wanted: u32, found: String },
+    #[error("rule {rule:?} maps ext.{key}, which schema version {version} does not define")]
+    UndeclaredExtension {
+        rule: String,
+        key: String,
+        version: u32,
+    },
 }
 
 impl SourceSpec {
@@ -56,6 +64,32 @@ impl SourceSpec {
         | TransportConfig::TcpServer { framing, .. } = &self.transport
         {
             crate::frame::Framer::new(framing.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Validate against the extension schema version the mapping targets
+    /// (`None` if that version is not published).
+    pub fn validate_against(
+        &self,
+        schema: Option<&crate::schema::ExtensionSchema>,
+    ) -> Result<(), SourceError> {
+        self.validate()?;
+        let wanted = self.pipeline.mapping.schema_version;
+        let Some(schema) = schema.filter(|s| s.version == wanted) else {
+            return Err(SourceError::SchemaVersion {
+                wanted,
+                found: "not published".into(),
+            });
+        };
+        for (key, rules) in crate::schema::mapped_ext_keys(&self.pipeline.mapping) {
+            if schema.field(&key).is_none() {
+                return Err(SourceError::UndeclaredExtension {
+                    rule: rules[0].clone(),
+                    key,
+                    version: wanted,
+                });
+            }
         }
         Ok(())
     }

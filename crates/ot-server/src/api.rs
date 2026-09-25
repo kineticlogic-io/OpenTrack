@@ -12,6 +12,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use ot_source::frame::Frame;
 use ot_source::pipeline::Pipeline;
+use ot_source::schema::{ExtensionField, ExtensionSchema};
 use ot_source::source::SourceSpec;
 use ot_store::{RegistryEntity, SourceRow, SourceWrite};
 use serde::Deserialize;
@@ -40,6 +41,12 @@ pub fn routes() -> Router<AppState> {
         .route("/registry/import", post(registry_import))
         .route("/registry/entities/{id}", get(registry_entity))
         .route("/tracks", get(list_tracks))
+        .route("/schema", get(schema_overview))
+        .route(
+            "/schema/draft",
+            put(put_schema_draft).delete(discard_schema_draft),
+        )
+        .route("/schema/draft/publish", post(publish_schema_draft))
 }
 
 fn actor(headers: &HeaderMap) -> String {
@@ -51,14 +58,50 @@ fn actor(headers: &HeaderMap) -> String {
         .map_or_else(|| "op:api".to_owned(), str::to_owned)
 }
 
-fn parse_spec(body: Value) -> Result<(SourceSpec, Value), ApiError> {
+/// Parse and validate a source spec, including against the published
+/// extension schema version its mapping targets. Returns the spec, its
+/// normalised JSON (defaults filled in) and that schema.
+async fn parse_spec(
+    s: &AppState,
+    body: Value,
+) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
     let spec: SourceSpec = serde_json::from_value(body)
         .map_err(|e| ApiError::unprocessable(format!("invalid source spec: {e}")))?;
-    spec.validate()
+    let schema = published_schema(s, spec.pipeline.mapping.schema_version).await?;
+    spec.validate_against(schema.as_ref())
         .map_err(|e| ApiError::unprocessable(e.to_string()))?;
-    // Store the normalised form (defaults filled in).
     let normalised = serde_json::to_value(&spec).map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok((spec, normalised))
+    Ok((
+        spec,
+        normalised,
+        schema.expect("validated against a published schema"),
+    ))
+}
+
+/// A published extension schema version, typed.
+pub(crate) async fn published_schema(
+    s: &AppState,
+    version: u32,
+) -> Result<Option<ExtensionSchema>, ApiError> {
+    let v = s.with_db(move |db| db.schema_version_get(version)).await?;
+    v.filter(|v| v.status == "published")
+        .map(to_extension_schema)
+        .transpose()
+}
+
+pub(crate) fn to_extension_schema(v: ot_store::SchemaVersion) -> Result<ExtensionSchema, ApiError> {
+    let fields = v
+        .fields
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<ExtensionField>, _>>()
+        .map_err(|e| {
+            ApiError::internal(format!("stored schema {} is unreadable: {e}", v.version))
+        })?;
+    Ok(ExtensionSchema {
+        version: v.version,
+        fields,
+    })
 }
 
 async fn with_status(s: &AppState, row: SourceRow) -> Value {
@@ -121,7 +164,7 @@ async fn create_source(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let (spec, normalised) = parse_spec(body)?;
+    let (spec, normalised, _) = parse_spec(&s, body).await?;
     let id = spec.id.clone();
     if s.with_db(move |db| db.get_source(&id)).await?.is_some() {
         return Err(ApiError::conflict(format!(
@@ -139,7 +182,7 @@ async fn put_source(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let (spec, normalised) = parse_spec(body)?;
+    let (spec, normalised, _) = parse_spec(&s, body).await?;
     if spec.id != id {
         return Err(ApiError::unprocessable(format!(
             "body id {:?} does not match path id {id:?} (source ids never change)",
@@ -281,7 +324,7 @@ async fn validate_source(
     State(s): State<AppState>,
     Json(body): Json<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let (spec, normalised) = parse_spec(body.spec)?;
+    let (spec, normalised, schema) = parse_spec(&s, body.spec).await?;
     if body.samples.is_empty() {
         return Ok(Json(json!({ "valid": true, "spec": normalised })));
     }
@@ -301,7 +344,8 @@ async fn validate_source(
         })
         .collect();
     let mut pipeline = Pipeline::new(spec.id.clone(), spec.pipeline.clone())
-        .map_err(|e| ApiError::unprocessable(e.to_string()))?;
+        .map_err(|e| ApiError::unprocessable(e.to_string()))?
+        .with_schema(schema);
     let mut observations = Vec::new();
     let mut errors = Vec::new();
     for sample in body.samples.iter().take(1000) {
@@ -411,6 +455,89 @@ async fn list_tracks(
     Ok(Json(json!({ "total": total, "tracks": items })))
 }
 
+/// The whole schema: fixed core fields, every extension version, and which
+/// sources target which version.
+async fn schema_overview(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let versions = s.with_db(|db| db.schema_versions()).await?;
+    let sources = s.with_db(|db| db.list_sources()).await?;
+    let usage: Vec<Value> = sources
+        .iter()
+        .map(|r| {
+            json!({
+                "source": r.id,
+                "enabled": r.enabled,
+                "schema_version": r.spec.pointer("/pipeline/mapping/schema_version").cloned().unwrap_or(json!(1)),
+            })
+        })
+        .collect();
+    let latest = versions
+        .iter()
+        .filter(|v| v.status == "published")
+        .map(|v| v.version)
+        .max();
+    Ok(Json(json!({
+        "core": ot_source::mapping::target_fields().collect::<Vec<_>>(),
+        "reserved_extension_keys": ot_source::schema::RESERVED_KEYS,
+        "latest_published": latest,
+        "versions": versions,
+        "sources": usage,
+    })))
+}
+
+#[derive(Deserialize)]
+struct DraftBody {
+    fields: Vec<Value>,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+async fn put_schema_draft(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DraftBody>,
+) -> Result<Json<Value>, ApiError> {
+    let fields: Vec<ExtensionField> = body
+        .fields
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()
+        .map_err(|e| ApiError::unprocessable(format!("invalid field definition: {e}")))?;
+    ExtensionSchema {
+        version: 0,
+        fields: fields.clone(),
+    }
+    .validate()
+    .map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    let normalised: Vec<Value> = fields
+        .iter()
+        .map(|f| serde_json::to_value(f).expect("field serialises"))
+        .collect();
+    let actor = actor(&headers);
+    let draft = s
+        .with_db(move |db| db.put_schema_draft(&normalised, body.notes.as_deref(), &actor))
+        .await?;
+    Ok(Json(serde_json::to_value(draft).unwrap_or_default()))
+}
+
+async fn publish_schema_draft(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let actor = actor(&headers);
+    let v = s.with_db(move |db| db.publish_schema_draft(&actor)).await?;
+    Ok(Json(serde_json::to_value(v).unwrap_or_default()))
+}
+
+async fn discard_schema_draft(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let actor = actor(&headers);
+    s.with_db(move |db| db.discard_schema_draft(&actor)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -426,14 +553,39 @@ mod tests {
 
     const AIS: &str = include_str!("../../../docs/examples/aisstream.json");
     const ADSB: &str = include_str!("../../../docs/examples/adsb-lol.json");
+    const SCHEMA: &str = include_str!("../../../docs/examples/schema.json");
 
     #[test]
     fn worked_examples_stay_valid() {
+        let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+        let schema = ot_source::schema::ExtensionSchema {
+            version: 2,
+            fields: serde_json::from_value(schema["fields"].clone()).unwrap(),
+        };
+        schema.validate().unwrap();
         for (name, text) in [("aisstream", AIS), ("adsb-lol", ADSB)] {
             let spec: ot_source::source::SourceSpec =
                 serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            spec.validate().unwrap_or_else(|e| panic!("{name}: {e}"));
+            spec.validate_against(Some(&schema))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
         }
+    }
+
+    async fn publish_example_schema(app: &axum::Router) {
+        let (st, body) = call(
+            app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(serde_json::from_str(SCHEMA).unwrap()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (st, body) = call(app, "POST", "/api/v1/schema/draft/publish", None).await;
+        assert_eq!(
+            (st, body["version"].as_u64()),
+            (StatusCode::OK, Some(2)),
+            "{body}"
+        );
     }
 
     /// The router over an in-memory database and an isolated Redis
@@ -499,6 +651,15 @@ mod tests {
         };
         let spec: Value = serde_json::from_str(ADSB).unwrap();
 
+        // Its extension schema is not published yet.
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            body["error"].as_str().unwrap().contains("schema version 2"),
+            "{body}"
+        );
+        publish_example_schema(&app).await;
+
         let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
         assert_eq!(st, StatusCode::CREATED, "{body}");
         assert_eq!(
@@ -522,6 +683,15 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("kinematic.speed_mps"),
+            "{body}"
+        );
+
+        let mut undeclared = spec.clone();
+        undeclared["pipeline"]["mapping"]["rules"][1]["fields"]["ext.tail_art"] = json!("r");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(undeclared)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            body["error"].as_str().unwrap().contains("ext.tail_art"),
             "{body}"
         );
 
@@ -570,6 +740,47 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         let (st, _) = call(&app, "GET", "/api/v1/sources/adsb-lol", None).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn schema_workspace() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, body) = call(&app, "GET", "/api/v1/schema", None).await;
+        assert_eq!(body["latest_published"], 1);
+        assert!(
+            body["core"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("position.latitude"))
+        );
+
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(json!({"fields": [{"key": "registry", "type": "json"}]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "reserved key");
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(json!({"fields": [{"key": "mode", "type": "enum"}]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "enum without values");
+
+        publish_example_schema(&app).await;
+        let (_, body) = call(&app, "GET", "/api/v1/schema", None).await;
+        assert_eq!(body["latest_published"], 2);
+        assert_eq!(body["versions"][1]["fields"].as_array().unwrap().len(), 8);
+        let (st, _) = call(&app, "POST", "/api/v1/schema/draft/publish", None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "no draft left to publish");
         redis.purge_namespace().await.unwrap();
     }
 

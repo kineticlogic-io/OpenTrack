@@ -10,6 +10,7 @@ pub mod graph;
 pub mod keys;
 pub mod redis_store;
 pub mod registry;
+pub mod schema;
 pub mod sources;
 pub mod sqlite;
 
@@ -17,5 +18,6 @@ pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;
 pub use redis_store::{OutboxEntry, OutboxOp, RedisStore};
 pub use registry::{RegistryEntity, RegistryIdentifier, RegistryRow};
+pub use schema::SchemaVersion;
 pub use sources::{SourceRevision, SourceRow, SourceWrite};
 pub use sqlite::{Db, Decision, StoreError};

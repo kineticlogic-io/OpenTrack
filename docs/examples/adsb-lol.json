@@ -17,6 +17,7 @@
       ]
     },
     "mapping": {
+      "schema_version": 2,
       "rules": [
         {
           "name": "static",

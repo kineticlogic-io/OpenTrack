@@ -10,6 +10,17 @@ either feed is built into OpenTrack; both are reproduced from these files alone.
 
 ## Using them
 
+Both mappings target extension schema version 2, defined in [`schema.json`](schema.json). Publish it first
+(version 1 is the core schema with no extensions):
+
+```sh
+curl -X PUT -H 'content-type: application/json' --data @docs/examples/schema.json \
+     http://127.0.0.1:8090/api/v1/schema/draft
+curl -X POST http://127.0.0.1:8090/api/v1/schema/draft/publish
+```
+
+Then add the sources:
+
 ```sh
 # aisstream needs its API key in the server's environment; the spec only references it.
 export AISSTREAM_API_KEY=...
