@@ -36,10 +36,23 @@ export interface Observation {
   identifiers?: { scheme: string; value: string }[]
 }
 
+/** A card value that differs from what a feed reports; the card value is published. */
+export interface AttributeNotice {
+  key: string
+  card: unknown
+  feed: unknown
+  source_id: string
+}
+
 export interface SystemTrack {
   uid: string
   state: 'tentative' | 'confirmed' | 'lost' | 'dropped'
   view: Observation
+  /** The entity (card) this track resolves to. */
+  entity_id?: string
+  /** Published attributes, resolved from the card, the feed and built-ins. */
+  attributes?: Record<string, unknown>
+  notices?: AttributeNotice[]
   contributors: {
     source_id: string
     source_track_key: string
@@ -54,9 +67,24 @@ export interface SystemTrack {
 
 export interface TrackResponse {
   track: SystemTrack
-  /** The `opentrack.track.v1` message as published. */
-  message: { classification?: { cot_type?: string } } & Record<string, unknown>
+  /** The `opentrack.track.v2` message as published. */
+  message: TrackMessage
   subject: string
+}
+
+/** OTH-GOLD minimum plus the output schema's attributes. */
+export interface TrackMessage {
+  track_id: string
+  class: string
+  name: string
+  domain: string
+  affiliation: string
+  force_code: number
+  track_type: string
+  time: string
+  lat: number
+  lon: number
+  attributes?: Record<string, unknown>
 }
 
 export interface GraphEdge {
@@ -227,7 +255,10 @@ export interface ExtensionField {
   required?: boolean
   default?: unknown
   enum_values?: string[]
+  /** Notes for the people who maintain and consume the schema. */
   description?: string
+  /** Filled by OpenTrack (state, speed_mps, ...) instead of a feed or card. */
+  builtin?: string
 }
 
 export interface SchemaVersion {
@@ -239,11 +270,56 @@ export interface SchemaVersion {
 }
 
 export interface SchemaOverview {
+  /** Always published: the OTH-GOLD minimum. */
+  published_core: string[]
+  /** OpenTrack values a field can be linked to, with the type the field must have. */
+  builtins: { name: string; type: ExtensionField['type'] }[]
   core: string[]
   reserved_extension_keys: string[]
   latest_published: number | null
   versions: SchemaVersion[]
   sources: { source: string; enabled: boolean; schema_version: number }[]
+}
+
+// --- Cards ---------------------------------------------------------------------------------
+
+export interface RegistryIdentifier {
+  scheme: string
+  value: string
+  expected_name?: string | null
+  source?: string | null
+}
+
+export interface Entity {
+  id: string
+  name?: string | null
+  status: string
+  identifiers: RegistryIdentifier[]
+}
+
+export interface CardView {
+  entity: Entity
+  /** The output schema the card form follows (latest published). */
+  schema: { version: number; fields: ExtensionField[] }
+  card: { values: Record<string, unknown>; schema_version: number; updated_at_ms: number } | null
+  revisions: {
+    id: number
+    values: Record<string, unknown>
+    schema_version: number
+    saved_at_ms: number
+    decision_id: number | null
+    actor: string | null
+  }[]
+  /** Live tracks this card speaks for, with what their feed reports. */
+  tracks: {
+    uid: string
+    track_id: string
+    state: string
+    source_id: string
+    last_seen: string
+    feed: Record<string, unknown>
+    notices: AttributeNotice[]
+  }[]
 }
 
 export const api = {
@@ -279,4 +355,16 @@ export const api = {
     request<SchemaVersion>('PUT', '/schema/draft', { fields, notes }),
   publishDraft: () => request<SchemaVersion>('POST', '/schema/draft/publish'),
   discardDraft: () => request<unknown>('DELETE', '/schema/draft'),
+
+  searchCards: (q: string) =>
+    get<{ entities: (Entity & { has_card: boolean })[] }>(`/cards?q=${enc(q)}`).then((r) => r.entities),
+  card: (id: string) => get<CardView>(`/cards/${enc(id)}`),
+  saveCard: (id: string, values: Record<string, unknown>) =>
+    request<CardView>('PUT', `/cards/${enc(id)}`, { values }),
+  createCard: (body: {
+    from_track?: string
+    name?: string
+    identifiers?: RegistryIdentifier[]
+    values?: Record<string, unknown>
+  }) => request<CardView>('POST', '/cards', body),
 }

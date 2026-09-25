@@ -49,9 +49,10 @@ pub fn routes() -> Router<AppState> {
             put(put_schema_draft).delete(discard_schema_draft),
         )
         .route("/schema/draft/publish", post(publish_schema_draft))
+        .merge(crate::cards::routes())
 }
 
-fn actor(headers: &HeaderMap) -> String {
+pub(crate) fn actor(headers: &HeaderMap) -> String {
     headers
         .get("x-opentrack-actor")
         .and_then(|v| v.to_str().ok())
@@ -480,7 +481,9 @@ async fn list_tracks(
         .map(|t| {
             json!({
                 "uid": t.uid,
-                "doc_id": t.uid.doc_id(),
+                "track_id": t.uid.doc_id(),
+                "entity_id": t.entity_id,
+                "notices": t.notices.len(),
                 "state": t.state,
                 "name": t.view.name,
                 "callsign": t.view.callsign,
@@ -518,7 +521,15 @@ async fn schema_overview(State(s): State<AppState>) -> Result<Json<Value>, ApiEr
         .filter(|v| v.status == "published")
         .map(|v| v.version)
         .max();
+    let builtins: Vec<Value> = ot_source::schema::Builtin::ALL
+        .iter()
+        .map(|b| json!({ "name": b, "type": b.kind() }))
+        .collect();
     Ok(Json(json!({
+        // Always published (the OTH-GOLD minimum); the schema adds `attributes`.
+        "published_core": ["track_id", "class", "name", "domain", "affiliation", "force_code",
+                           "track_type", "time", "lat", "lon"],
+        "builtins": builtins,
         "core": ot_source::mapping::target_fields().collect::<Vec<_>>(),
         "reserved_extension_keys": ot_source::schema::RESERVED_KEYS,
         "latest_published": latest,
@@ -1003,6 +1014,118 @@ mod tests {
         assert_eq!(
             o["identifiers"][0],
             json!({"scheme": "mmsi", "value": "366123456"})
+        );
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cards_through_the_api() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, body) = call(
+            &app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(json!({"fields": [
+                {"key": "contact_phone", "type": "string", "description": "Ship's contact number"},
+                {"key": "length_m", "type": "number", "unit": "m"},
+                {"key": "speed_mps", "type": "number", "builtin": "speed_mps"}
+            ]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"][2]["builtin"], "speed_mps");
+        let (st, _) = call(&app, "POST", "/api/v1/schema/draft/publish", None).await;
+        assert_eq!(st, StatusCode::OK);
+        // A linked field must declare its built-in's type.
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/schema/draft",
+            Some(json!({"fields": [
+                {"key": "speed", "type": "string", "builtin": "speed_mps"}
+            ]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        call(&app, "DELETE", "/api/v1/schema/draft", None).await;
+
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/cards",
+            Some(json!({
+                "name": "TED STEVENS",
+                "identifiers": [{"scheme": "mmsi", "value": "338924210"}],
+                "values": {"contact_phone": "+1 555 0100", "length_m": "210"}
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        let id = body["entity"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            body["card"]["values"],
+            json!({"contact_phone": "+1 555 0100", "length_m": 210.0})
+        );
+        assert_eq!(body["schema"]["version"], 2);
+
+        // The same identifier cannot start a second card.
+        let (st, _) = call(
+            &app,
+            "POST",
+            "/api/v1/cards",
+            Some(json!({
+                "identifiers": [{"scheme": "mmsi", "value": "338924210"}]
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        let (st, _) = call(&app, "POST", "/api/v1/cards", Some(json!({"name": "x"}))).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Built-in fields and unknown keys cannot be set on a card.
+        for bad in [
+            json!({"speed_mps": 3}),
+            json!({"nope": 1}),
+            json!({"length_m": "long"}),
+        ] {
+            let (st, _) = call(
+                &app,
+                "PUT",
+                &format!("/api/v1/cards/{id}"),
+                Some(json!({"values": bad.clone()})),
+            )
+            .await;
+            assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        }
+        let (st, body) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/cards/{id}"),
+            Some(json!({"values": {"contact_phone": "+1 555 0199"}})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["card"]["values"],
+            json!({"contact_phone": "+1 555 0199"})
+        );
+        assert_eq!(body["revisions"].as_array().unwrap().len(), 2);
+
+        let (_, body) = call(&app, "GET", "/api/v1/cards?q=stevens", None).await;
+        assert_eq!(body["entities"][0]["id"], id);
+        assert_eq!(body["entities"][0]["has_card"], true);
+        let (st, _) = call(&app, "GET", "/api/v1/cards/ent-nope", None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let (_, body) = call(&app, "GET", "/api/v1/schema", None).await;
+        assert!(
+            body["builtins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["name"] == "state")
         );
         redis.purge_namespace().await.unwrap();
     }

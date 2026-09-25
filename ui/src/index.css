@@ -140,6 +140,27 @@ body {
   overflow-wrap: anywhere;
 }
 
+.notice {
+  display: block;
+  margin: 2px 0 6px;
+  color: var(--status-warning);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.notice svg {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+
+.card-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px 12px;
+}
+
 .error-text {
   color: var(--color-destructive);
   font-size: 11px;

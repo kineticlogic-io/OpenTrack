@@ -25,6 +25,19 @@ pub struct Contributor {
     pub last_report: DateTime<Utc>,
 }
 
+/// A card value that differs from what a feed reports for the same
+/// attribute. The card wins; the difference is surfaced to operators.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttributeNotice {
+    /// Output schema field key.
+    pub key: String,
+    /// The value on the entity's card (published).
+    pub card: serde_json::Value,
+    /// What the feed reported (not published).
+    pub feed: serde_json::Value,
+    pub source_id: String,
+}
+
 /// Current state of one system track, as held in `tms:sys:<uid>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemTrack {
@@ -42,6 +55,17 @@ pub struct SystemTrack {
     pub aliases: Vec<Uid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// Registry entity (baseball card) this track resolves to, when the
+    /// registry match is corroborated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    /// Output schema values, resolved from the card, the feed and built-ins;
+    /// published as `attributes`.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+    /// Card values that differ from the feed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<AttributeNotice>,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub observation_count: u64,
@@ -68,6 +92,9 @@ impl SystemTrack {
             contributors: vec![contributor],
             aliases: Vec::new(),
             groups: Vec::new(),
+            entity_id: None,
+            attributes: Default::default(),
+            notices: Vec::new(),
         }
     }
 }

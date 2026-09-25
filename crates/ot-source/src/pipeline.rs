@@ -29,6 +29,9 @@ pub struct PipelineSpec {
     #[serde(default)]
     pub static_join: StaticJoinSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Registry resolution settings. Without them the registry still runs
+    /// with defaults: identifiers are resolved and graded under
+    /// `ext.registry` (so entity cards reach the track) but nothing is applied.
     pub registry: Option<RegistryStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affiliation: Option<AffiliationStage>,
@@ -245,6 +248,8 @@ pub struct Pipeline {
     /// Extension field types for the mapping's schema version.
     schema: Option<crate::schema::ExtensionSchema>,
     pub counts: Counts,
+    /// Used when the spec configures no registry stage.
+    default_registry: RegistryStage,
 }
 
 impl Pipeline {
@@ -261,6 +266,8 @@ impl Pipeline {
             throttle: HashMap::new(),
             schema: None,
             counts: Counts::default(),
+            default_registry: serde_json::from_value(serde_json::json!({}))
+                .expect("registry stage defaults"),
         })
     }
 
@@ -400,12 +407,15 @@ impl Pipeline {
                     continue;
                 }
             };
-            if let Some(stage) = &self.spec.registry {
-                let grade = stage
-                    .run(&mut obs, registry)
-                    .map_or("none", |m| m.grade.as_str());
-                *self.counts.grades.entry(grade).or_default() += 1;
-            }
+            let stage = self
+                .spec
+                .registry
+                .as_ref()
+                .unwrap_or(&self.default_registry);
+            let grade = stage
+                .run(&mut obs, registry)
+                .map_or("none", |m| m.grade.as_str());
+            *self.counts.grades.entry(grade).or_default() += 1;
             if let Some(stage) = &self.spec.affiliation {
                 stage.run(&mut obs);
             }

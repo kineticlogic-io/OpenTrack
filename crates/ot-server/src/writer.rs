@@ -544,8 +544,8 @@ mod tests {
                 let (subject, op, doc) = &bodies[1];
                 assert_eq!(subject, "tracks.tms-OTK000000001");
                 assert_eq!(op, "upsert");
-                assert_eq!(doc["position"]["lat"], 32.3);
-                assert_eq!(doc["schema"], "opentrack.track.v1");
+                assert_eq!(doc["lat"], 32.3);
+                assert_eq!(doc["schema"], "opentrack.track.v2");
                 let sent = sink.sent.lock().unwrap();
                 assert_ne!(sent[0].msg_id, sent[1].msg_id);
                 assert!(sent[1].msg_id.starts_with("opentrack-OTK:"));

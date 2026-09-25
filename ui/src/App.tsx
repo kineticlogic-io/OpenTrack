@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { TbLayoutDashboard, TbMoon, TbPlugConnected, TbSchema, TbSun } from 'react-icons/tb'
+import { TbId, TbLayoutDashboard, TbMoon, TbPlugConnected, TbSchema, TbSun } from 'react-icons/tb'
 import { Badge, Button, Tabs, useTheme } from 'staresdk'
 import { api, type ServerStatus } from './api/client'
 import { useHashView } from './lib/hashView'
@@ -8,10 +8,12 @@ import { OverviewPage } from './pages/OverviewPage'
 // Code editor and map (CodeMirror, MapLibre) load only with the pages that use them.
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
 const SchemaPage = lazy(() => import('./pages/schema/SchemaPage'))
+const CardsPage = lazy(() => import('./pages/cards/CardsPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview', icon: <TbLayoutDashboard /> },
   { id: 'sources', label: 'Sources', icon: <TbPlugConnected /> },
+  { id: 'cards', label: 'Cards', icon: <TbId /> },
   { id: 'schema', label: 'Schema', icon: <TbSchema /> },
 ]
 
@@ -56,6 +58,7 @@ export default function App() {
         {active === 'overview' && <OverviewPage onStatus={onStatus} />}
         <Suspense fallback={<span className="muted">Loading…</span>}>
           {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
+          {active === 'cards' && <CardsPage selected={sub} onSelect={(id) => go('cards', id)} />}
           {active === 'schema' && <SchemaPage />}
         </Suspense>
       </main>

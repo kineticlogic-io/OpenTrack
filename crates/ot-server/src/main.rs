@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 
 mod api;
+mod cards;
 mod config;
 mod control;
 mod engine;

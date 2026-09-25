@@ -25,18 +25,24 @@ const VERSION_COLUMNS: DataTableColumn<VersionRow>[] = [
 ]
 
 const FIELD_COLUMNS: DataTableColumn<ExtensionField>[] = [
-  { key: 'key', header: 'Key', mono: true, width: '22%', render: (f) => `ext.${f.key}`, sortValue: (f) => f.key },
-  { key: 'type', header: 'Type', width: '12%', render: (f) => f.type, sortValue: (f) => f.type },
-  { key: 'unit', header: 'Unit', width: '8%', render: (f) => f.unit ?? '' },
-  { key: 'req', header: 'Required', width: '10%', render: (f) => (f.required ? 'yes' : '') },
+  { key: 'key', header: 'Field', mono: true, width: '20%', render: (f) => f.key, sortValue: (f) => f.key },
+  { key: 'type', header: 'Type', width: '10%', render: (f) => f.type, sortValue: (f) => f.type },
+  { key: 'unit', header: 'Unit', width: '7%', render: (f) => f.unit ?? '' },
   {
-    key: 'default',
-    header: 'Default',
-    mono: true,
-    width: '12%',
-    render: (f) => (f.default === undefined ? '' : JSON.stringify(f.default)),
+    key: 'source',
+    header: 'Filled by',
+    width: '20%',
+    render: (f) =>
+      f.builtin ? (
+        <span>
+          OpenTrack <span className="mono">{f.builtin}</span>
+        </span>
+      ) : (
+        <span className="muted">card, else feed mapping</span>
+      ),
+    sortValue: (f) => f.builtin ?? '',
   },
-  { key: 'desc', header: 'Description', render: (f) => f.description ?? (f.enum_values ? f.enum_values.join(' | ') : '') },
+  { key: 'desc', header: 'Notes', render: (f) => f.description ?? (f.enum_values ? f.enum_values.join(' | ') : '') },
 ]
 
 export default function SchemaPage() {
@@ -135,7 +141,7 @@ export default function SchemaPage() {
       <div className="stack">
         <section className="section" aria-labelledby="versions-heading">
           <div className="section-head">
-            <h2 id="versions-heading">Schema versions</h2>
+            <h2 id="versions-heading">Output schema versions</h2>
             <span className="spacer" />
             {!editing && (
               <Button size="sm" icon={<TbPencil />} onClick={startEditing}>
@@ -154,12 +160,15 @@ export default function SchemaPage() {
           />
         </section>
         <section className="section" aria-labelledby="core-heading">
-          <h2 id="core-heading">Core fields</h2>
+          <h2 id="core-heading">Always published</h2>
           <p className="muted" style={{ margin: '0 0 8px' }}>
-            Fixed: correlation and published tracks depend on them. Extensions are mapped as <span className="mono">ext.&lt;key&gt;</span>.
+            The OTH-GOLD minimum (contact and position sets) is in every track message. The output schema adds{' '}
+            <span className="mono">attributes</span>: each field is filled from the entity's card, else from a feed
+            mapping (<span className="mono">ext.&lt;field&gt;</span> in the mapping studio), or linked to an OpenTrack
+            value.
           </p>
           <div className="counts">
-            {(overview?.core ?? []).map((f) => (
+            {(overview?.published_core ?? []).map((f) => (
               <Badge key={f} color="grey" size="sm">
                 {f}
               </Badge>
@@ -200,9 +209,17 @@ export default function SchemaPage() {
           <div className="stack" style={{ gap: 6 }}>
             <span className="muted">
               Each field: <span className="mono">key</span>, <span className="mono">type</span> (string, integer, number,
-              boolean, enum, timestamp, position, json), and optionally unit, required, default, enum_values,
-              description. Save the draft, then publish it.
+              boolean, enum, timestamp, position, json) and <span className="mono">description</span> (notes), and
+              optionally unit, enum_values, default, required. To fill a field from OpenTrack instead of a card or
+              feed, add <span className="mono">builtin</span>. Save the draft, then publish it.
             </span>
+            <div className="counts">
+              {(overview?.builtins ?? []).map((b) => (
+                <Badge key={b.name} color="grey" size="sm" title={`field type must be ${b.type}`}>
+                  {b.name} · {b.type}
+                </Badge>
+              ))}
+            </div>
             <CodeEditor aria-label="Draft fields" value={text} onChange={setText} minHeight={240} maxHeight={560} />
           </div>
         ) : (

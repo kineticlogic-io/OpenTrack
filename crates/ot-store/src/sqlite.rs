@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_schema_seed.sql"),
     include_str!("../migrations/0004_raw_subject.sql"),
     include_str!("../migrations/0005_sample_meta.sql"),
+    include_str!("../migrations/0006_cards.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +71,18 @@ impl Decision {
 
     pub fn evidence(mut self, evidence: Value) -> Self {
         self.evidence = evidence;
+        self
+    }
+
+    /// State before the change, for review and undo.
+    pub fn before(mut self, before: Value) -> Self {
+        self.before = Some(before);
+        self
+    }
+
+    /// State after the change.
+    pub fn after(mut self, after: Value) -> Self {
+        self.after = Some(after);
         self
     }
 }
@@ -283,9 +296,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 5);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 6);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 5);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 6);
     }
 
     #[test]

@@ -108,8 +108,8 @@ pub async fn run(common: &Common, args: SyntheticArgs) -> anyhow::Result<()> {
             let subject = ot_core::wire::subject(&prefix, t.uid);
             let doc = wait_for(&nats, &subject, "upsert", timeout).await?;
             println!(
-                "verified {subject}: lat {} lon {} state {}",
-                doc["position"]["lat"], doc["position"]["lon"], doc["state"],
+                "verified {subject}: lat {} lon {} force code {} track type {}",
+                doc["lat"], doc["lon"], doc["force_code"], doc["track_type"],
             );
         }
     }
@@ -175,6 +175,8 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
             ..Default::default()
         },
         state: None,
+        // Generated, not real-world: GOLD's simulated training track.
+        track_type: Some(ot_core::TrackType::SimulatedTraining),
         ext: Default::default(),
     }
 }

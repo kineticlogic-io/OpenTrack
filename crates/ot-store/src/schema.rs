@@ -50,7 +50,7 @@ impl Db {
 
     fn schema_fields(&self, version: u32) -> Result<Vec<Value>> {
         let mut stmt = self.connection().prepare(
-            "SELECT key, type, unit, required, default_json, enum_values, description
+            "SELECT key, type, unit, required, default_json, enum_values, description, builtin
              FROM extension_fields WHERE schema_version = ?1 ORDER BY key",
         )?;
         let rows = stmt.query_map([version], |r| {
@@ -62,10 +62,11 @@ impl Db {
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })?;
         rows.map(|r| {
-            let (key, kind, unit, required, default, enum_values, description) = r?;
+            let (key, kind, unit, required, default, enum_values, description, builtin) = r?;
             let mut f = json!({ "key": key, "type": kind, "required": required });
             if let Some(u) = unit {
                 f["unit"] = json!(u);
@@ -78,6 +79,9 @@ impl Db {
             }
             if let Some(d) = description {
                 f["description"] = json!(d);
+            }
+            if let Some(b) = builtin {
+                f["builtin"] = json!(b);
             }
             Ok(f)
         })
@@ -117,8 +121,8 @@ impl Db {
                 let text = |k: &str| f.get(k).and_then(Value::as_str).map(str::to_owned);
                 tx.execute(
                     "INSERT INTO extension_fields
-                       (schema_version, key, type, unit, required, default_json, enum_values, description)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                       (schema_version, key, type, unit, required, default_json, enum_values, description, builtin)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         version,
                         text("key"),
@@ -128,6 +132,7 @@ impl Db {
                         f.get("default").filter(|v| !v.is_null()).map(Value::to_string),
                         f.get("enum_values").filter(|v| !v.is_null()).map(Value::to_string),
                         text("description"),
+                        text("builtin"),
                     ],
                 )?;
             }

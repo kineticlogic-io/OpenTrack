@@ -6,6 +6,7 @@
 //! and system track state, history and metrics. SQLite writes stay at human
 //! speed while Redis absorbs thousands of observations per second.
 
+pub mod cards;
 pub mod graph;
 pub mod keys;
 pub mod probe;
@@ -15,6 +16,7 @@ pub mod schema;
 pub mod sources;
 pub mod sqlite;
 
+pub use cards::{Card, CardRevision};
 pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;
 pub use redis_store::{OutboxEntry, OutboxOp, RedisStore};

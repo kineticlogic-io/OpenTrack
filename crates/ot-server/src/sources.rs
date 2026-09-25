@@ -137,9 +137,9 @@ pub async fn run(
 }
 
 /// Published extension schemas by version.
-type Schemas = HashMap<u32, ExtensionSchema>;
+pub(crate) type Schemas = HashMap<u32, ExtensionSchema>;
 
-fn load_schemas(db: &ot_store::Db) -> anyhow::Result<Schemas> {
+pub(crate) fn load_schemas(db: &ot_store::Db) -> anyhow::Result<Schemas> {
     let mut out = HashMap::new();
     for v in db.schema_versions()? {
         if v.status != "published" {

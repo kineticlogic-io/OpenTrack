@@ -21,74 +21,83 @@ replicas). It must capture `tracks.>` and should keep one message per subject.
 Because the stream keeps the latest message per track, a consumer that starts late gets the whole
 current picture by reading the stream from the start (for example an ordered consumer with
 `DeliverPolicy::LastPerSubject` on `tracks.>`), then keeps receiving updates. Live tracks are
-republished whenever they change, at most every 5 s each (immediately when identity or
-classification changes); a track with no report for 6 h is dropped and deleted.
+republished whenever they change, at most every 5 s each (immediately when identity,
+classification or a card changes); a track with no report for 6 h is dropped and deleted.
 
 ## Headers
 
 | Header | Value |
 |--------|-------|
 | `OT-Op` | `upsert` or `delete` |
-| `OT-Schema` | `opentrack.track.v1` |
+| `OT-Schema` | `opentrack.track.v2` |
 | `Nats-Msg-Id` | unique per update, e.g. `opentrack-OTK:1790303694426-0` |
 
 ## `upsert`
 
-The full current state of one track; it replaces whatever the consumer holds for that
-`track_id`. Timestamps are RFC 3339 UTC, units are SI (metres, metres per second, degrees true),
-enums are lower-case strings, and absent values are omitted rather than sent as null.
+Two parts:
+
+* **The OTH-GOLD minimum**, always present. These are the fields OS-OTG Rev C makes mandatory
+  in a contact report: the track number, class-name, force code and track type (CTC fields 1, 2,
+  11 and 13), and the position with its time (POS fields 1-4).
+* **`attributes`**, defined by the administrator. It holds exactly the fields of the published
+  output schema that have a value for this track, and nothing else. Which fields exist, their
+  types and their notes are set in OpenTrack's Schema workspace, so the set changes when an admin
+  publishes a new schema version; consumers should treat unknown keys as data, not errors.
+
+An upsert replaces whatever the consumer holds for that `track_id`. Timestamps are RFC 3339 UTC,
+units are SI (metres, metres per second, degrees true), enums are lower-case strings, and an
+attribute without a value is omitted rather than sent as null.
 
 ```json
 {
-  "schema": "opentrack.track.v1",
+  "schema": "opentrack.track.v2",
   "op": "upsert",
-  "track_id": "tms-OTK000000003",
-  "uid": "OTK000000003",
-  "state": "confirmed",
-  "classification": { "cot_type": "a-p-S", "domain": "surface", "affiliation": "pending" },
-  "identity": {
-    "name": "OPENTRACK SYNTHETIC SYN-1790303764-01",
-    "identifiers": [{ "scheme": "synthetic", "value": "SYN-1790303764-01" }]
+  "track_id": "tms-OTK000000001",
+  "uid": "OTK000000001",
+  "class": "UNEQUATED",
+  "name": "TED STEVENS",
+  "domain": "surface",
+  "affiliation": "unknown",
+  "force_code": 30,
+  "track_type": "tactical",
+  "time": "2026-09-25T03:21:14.990Z",
+  "lat": 32.701,
+  "lon": -117.2,
+  "attributes": {
+    "contact_phone": "+1 555 0100",
+    "destination": "LONG BEACH",
+    "state": "confirmed"
   },
-  "position": { "lat": 32.7, "lon": -117.25 },
-  "kinematics": { "course_deg": 270.0, "speed_mps": 5.0, "heading_deg": 270.0 },
-  "confidence": 1.0,
-  "observed_at": "2026-09-25T02:36:04.662565816Z",
-  "first_seen": "2026-09-25T02:36:04.662565816Z",
-  "last_seen": "2026-09-25T02:36:04.662565816Z",
-  "observation_count": 1,
-  "contributors": [
-    {
-      "source_id": "synthetic",
-      "source_track_key": "SYN-1790303764-01",
-      "pairing": "auto",
-      "confidence": 1.0,
-      "last_report": "2026-09-25T02:36:04.662565816Z"
-    }
-  ],
-  "ext_schema_version": 1,
   "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0" },
-  "published_at": "2026-09-25T02:36:09.752308997Z"
+  "published_at": "2026-09-25T03:21:17.000676087Z"
 }
 ```
 
-| Field | |
-|-------|-|
-| `track_id` | `tms-<UID>`: the key. Stable for the life of the track. |
-| `state` | `tentative`, `confirmed`, `lost` or `dropped` |
-| `classification.cot_type` | CoT type with the affiliation atom applied |
-| `classification.domain` | `air`, `surface`, `subsurface`, `ground` or `space` |
-| `classification.affiliation` | `pending`, `unknown`, `assumed_friend`, `friend`, `neutral`, `suspect`, `hostile`, `joker`, `faker` or `none` |
-| `identity.identifiers` | every identifier, each with its scheme (`mmsi`, `imo`, `icao`, `elnot`, ...) |
-| `position.alt_hae_m` | height above the WGS84 ellipsoid, when known |
-| `uncertainty` | `cep_m`, `ellipse` (`semi_major_m`, `semi_minor_m`, `orientation_deg`), `vertical_error_m` |
-| `kinematics` | `course_deg`, `speed_mps`, `heading_deg`, `vertical_rate_mps` |
-| `platform` | `type_code`, `class`, `name`, `flag`, `hull` |
-| `contributors` | the source tracks reporting for this track |
-| `field_sources` | which contributor supplied each field group |
-| `aliases` | track ids merged into this one; treat them as this track |
-| `groups` | operator-defined groups |
-| `ext`, `ext_schema_version` | admin-defined extension fields and the schema version they follow |
+### The GOLD minimum
+
+| Field | GOLD | |
+|-------|------|-|
+| `track_id` | CTC 1 | `tms-<UID>`: the key. Stable for the life of the track. `uid` is the bare UID. |
+| `class` | CTC 2 | platform class, `UNEQUATED` when unknown |
+| `name` | CTC 2 | platform name, `UNKNOWN` when unknown (GOLD writes these as `class-name`) |
+| `domain` | CTC 11 | force code position: `air`, `surface`, `subsurface`, `ground`, `space` or `unknown` |
+| `affiliation` | CTC 11 | force code threat identity: `pending`, `unknown`, `assumed_friend`, `friend`, `neutral`, `suspect`, `hostile`, `joker`, `faker` or `none` |
+| `force_code` | CTC 11 | the GOLD force code (Table 5-1), e.g. 9 surface friend, 30 surface unknown |
+| `track_type` | CTC 13 | `tactical`, `live_training`, `simulated_training` or `demand_entry` |
+| `time` | POS 1-2 | when the published position was observed |
+| `lat`, `lon` | POS 3-4 | degrees, WGS84 |
+
+### Where attribute values come from
+
+For each output schema field, OpenTrack takes the value from, in order:
+
+1. **The entity's card**: values an admin entered on the baseball card of the ship, aircraft or
+   emitter the track resolves to (through its identifiers). The card is the authority: when a feed
+   reports something different, the card value is published and OpenTrack shows operators the
+   difference.
+2. **A feed**, through the source's mapping to that field.
+3. **OpenTrack itself**, for fields linked to a built-in value (lifecycle `state`, `speed_mps`,
+   `identifiers`, `sources`, ...).
 
 ## `delete`
 
@@ -98,7 +107,7 @@ ages out, so a consumer that starts later still learns of it.
 
 ```json
 {
-  "schema": "opentrack.track.v1",
+  "schema": "opentrack.track.v2",
   "op": "delete",
   "track_id": "tms-OTK000000001",
   "uid": "OTK000000001",

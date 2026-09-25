@@ -259,6 +259,22 @@ pub struct Provenance {
     pub confidence: Option<f64>,
 }
 
+/// OTH-GOLD track type (CTC field 13): whether the track is real-world
+/// tactical data or training/simulation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackType {
+    /// Real-world track (GOLD's default, a null entry).
+    #[default]
+    Tactical,
+    /// Real-world friendly track designated as a training track (GOLD 2).
+    LiveTraining,
+    /// Manually created or generated as part of a training scenario (GOLD 3).
+    SimulatedTraining,
+    /// Demand entry: an actual unit that receivers should not filter (GOLD 4).
+    DemandEntry,
+}
+
 /// Track lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -299,6 +315,9 @@ pub struct Observation {
     /// State reported by the source, if it reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<TrackState>,
+    /// OTH-GOLD track type; tactical when the source does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_type: Option<TrackType>,
     /// Admin-defined extension fields, published under `attributes_json.ext`.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub ext: serde_json::Map<String, serde_json::Value>,
@@ -458,6 +477,7 @@ pub(crate) mod tests {
                 ..Default::default()
             },
             state: None,
+            track_type: None,
             ext: Default::default(),
         }
     }

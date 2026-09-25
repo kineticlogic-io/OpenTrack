@@ -5,13 +5,20 @@
 //! owns what correlation will build on: system track creation through the
 //! track graph, the lifecycle (tentative → confirmed → lost → dropped) with
 //! per-domain stale times, and publishing through the outbox.
+//!
+//! It also resolves each track's published `attributes` against the latest
+//! published output schema: the entity's card first (with a notice where a
+//! feed disagrees), then the feed, then linked built-ins. Card and schema
+//! changes are picked up within seconds and republish the affected tracks.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ot_core::{Domain, Observation, SystemTrack, TrackState, Uid};
+use ot_source::schema::{ExtensionSchema, resolve_attributes};
 use ot_store::{Decision, RedisStore};
+use serde_json::{Map, Value};
 
 use crate::config::Common;
 
@@ -115,6 +122,55 @@ pub fn lifecycle(track: &SystemTrack, now: DateTime<Utc>, s: &EngineSettings) ->
     }
 }
 
+/// What attribute resolution needs: the latest published output schema and
+/// every card, with the version they were loaded at.
+#[derive(Default)]
+struct Attributes {
+    version: String,
+    schema: Option<ExtensionSchema>,
+    cards: HashMap<String, Map<String, Value>>,
+}
+
+/// The entity a track's registry match points to, when it was corroborated
+/// and unambiguous (so its card may speak for the track).
+fn entity_of(t: &SystemTrack) -> Option<String> {
+    let r = t.view.ext.get("registry")?;
+    let corroborated = r
+        .get("corroborated")
+        .or_else(|| r.get("applied"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let conflicted = r
+        .get("conflicts")
+        .and_then(Value::as_array)
+        .is_some_and(|c| !c.is_empty());
+    (corroborated && !conflicted)
+        .then(|| {
+            r.get("entity_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten()
+}
+
+/// Re-resolve a track's entity, attributes and notices. True if any changed.
+fn resolve(attrs: &Attributes, t: &mut SystemTrack) -> bool {
+    let entity = entity_of(t);
+    let entity_changed = entity != t.entity_id;
+    t.entity_id = entity;
+    let (values, notices) = match &attrs.schema {
+        Some(schema) => {
+            let card = t.entity_id.as_ref().and_then(|e| attrs.cards.get(e));
+            resolve_attributes(schema, t, card)
+        }
+        None => (Map::new(), Vec::new()),
+    };
+    let changed = entity_changed || values != t.attributes || notices != t.notices;
+    t.attributes = values;
+    t.notices = notices;
+    changed
+}
+
 pub struct Engine {
     common: Common,
     settings: EngineSettings,
@@ -123,6 +179,7 @@ pub struct Engine {
     reports: HashMap<String, Uid>,
     tracks: HashMap<Uid, SystemTrack>,
     sources: Vec<String>,
+    attrs: Attributes,
 }
 
 impl Engine {
@@ -151,6 +208,7 @@ impl Engine {
             reports: reports.into_iter().collect(),
             tracks,
             sources: Vec::new(),
+            attrs: Attributes::default(),
         })
     }
 
@@ -161,6 +219,7 @@ impl Engine {
         tokio::pin!(shutdown);
         // Re-read anything delivered to this consumer before a restart.
         self.refresh_sources().await?;
+        self.refresh_attributes().await?;
         self.pump(true).await?;
         let mut sources_tick = tokio::time::interval(Duration::from_secs(5));
         let mut reap_tick = tokio::time::interval(Duration::from_secs(10));
@@ -170,6 +229,9 @@ impl Engine {
                 _ = sources_tick.tick() => {
                     if let Err(e) = self.refresh_sources().await {
                         tracing::warn!(error = %format!("{e:#}"), "source list refresh failed");
+                    }
+                    if let Err(e) = self.refresh_attributes().await {
+                        tracing::warn!(error = %format!("{e:#}"), "card refresh failed");
                     }
                 }
                 _ = reap_tick.tick() => {
@@ -206,6 +268,47 @@ impl Engine {
             tracing::info!(sources = ?ids, "engine consuming");
             self.sources = ids;
         }
+        Ok(())
+    }
+
+    /// Reload cards and the output schema when either changed, and republish
+    /// every live track whose attributes change as a result.
+    async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
+        let c = self.common.clone();
+        let known = self.attrs.version.clone();
+        let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Attributes>> {
+            let db = c.open_db()?;
+            let version = db.cards_version()?;
+            if version == known {
+                return Ok(None);
+            }
+            let schema = crate::sources::load_schemas(&db)?
+                .into_values()
+                .max_by_key(|s| s.version);
+            Ok(Some(Attributes {
+                version,
+                schema,
+                cards: db.all_cards()?.into_iter().collect(),
+            }))
+        })
+        .await??;
+        let Some(attrs) = loaded else {
+            return Ok(());
+        };
+        self.attrs = attrs;
+        let mut republished = 0;
+        for track in self.tracks.values_mut() {
+            if resolve(&self.attrs, track) {
+                self.redis.put_system_track(track, true).await?;
+                republished += 1;
+            }
+        }
+        tracing::info!(
+            schema = self.attrs.schema.as_ref().map(|s| s.version),
+            cards = self.attrs.cards.len(),
+            republished,
+            "cards and output schema loaded"
+        );
         Ok(())
     }
 
@@ -277,10 +380,15 @@ impl Engine {
                     if outcome == Applied::OutOfOrder {
                         continue;
                     }
-                    (t.clone(), outcome == Applied::Significant)
+                    let before = t.entity_id.clone();
+                    resolve(&self.attrs, t);
+                    // A track gaining or losing its card is worth publishing now.
+                    let urgent = outcome == Applied::Significant || before != t.entity_id;
+                    (t.clone(), urgent)
                 }
                 None => {
-                    let t = SystemTrack::from_first_observation(uid, obs);
+                    let mut t = SystemTrack::from_first_observation(uid, obs);
+                    resolve(&self.attrs, &mut t);
                     self.tracks.insert(uid, t.clone());
                     (t, true)
                 }
@@ -301,6 +409,7 @@ impl Engine {
                 Lifecycle::Keep => {}
                 Lifecycle::Lost => {
                     track.state = TrackState::Lost;
+                    resolve(&self.attrs, track);
                     self.redis.put_system_track(track, true).await?;
                 }
                 Lifecycle::Drop => dropped.push(track.uid),
@@ -396,5 +505,53 @@ mod tests {
         let mut lost = air.clone();
         lost.state = TrackState::Lost;
         assert_eq!(lifecycle(&lost, at(120), &s), Lifecycle::Keep);
+    }
+
+    #[test]
+    fn cards_attach_through_a_corroborated_registry_match() {
+        let schema: ExtensionSchema =
+            serde_json::from_value(serde_json::json!({"version": 2, "fields": [
+                {"key": "destination", "type": "string"},
+                {"key": "contact_phone", "type": "string"},
+                {"key": "state", "type": "string", "builtin": "state"}
+            ]}))
+            .unwrap();
+        let card = serde_json::json!({"contact_phone": "+1 555 0100", "destination": "LONG BEACH"});
+        let attrs = Attributes {
+            version: "v".into(),
+            schema: Some(schema),
+            cards: [("ent-1".to_string(), card.as_object().unwrap().clone())].into(),
+        };
+        let mut o = obs(t0(), "A", Domain::Surface);
+        o.ext
+            .insert("destination".into(), serde_json::json!("SAN DIEGO"));
+        o.ext.insert(
+            "registry".into(),
+            serde_json::json!({"entity_id": "ent-1", "applied": true, "grade": "exact"}),
+        );
+        let uid: Uid = "OTK000000001".parse().unwrap();
+        let mut t = SystemTrack::from_first_observation(uid, o.clone());
+        assert!(resolve(&attrs, &mut t));
+        assert_eq!(t.entity_id.as_deref(), Some("ent-1"));
+        assert_eq!(
+            Value::Object(t.attributes.clone()),
+            serde_json::json!({"contact_phone": "+1 555 0100", "destination": "LONG BEACH",
+                               "state": "tentative"})
+        );
+        assert_eq!(t.notices.len(), 1);
+        assert_eq!(t.notices[0].feed, "SAN DIEGO");
+        // Nothing changed: no republish needed.
+        assert!(!resolve(&attrs, &mut t));
+
+        // A stale (uncorroborated) match must not pull in the card.
+        o.ext.insert(
+            "registry".into(),
+            serde_json::json!({"entity_id": "ent-1", "applied": false, "grade": "stale"}),
+        );
+        let mut stale = SystemTrack::from_first_observation(uid, o);
+        resolve(&attrs, &mut stale);
+        assert_eq!(stale.entity_id, None);
+        assert_eq!(stale.attributes["destination"], "SAN DIEGO");
+        assert!(stale.notices.is_empty());
     }
 }

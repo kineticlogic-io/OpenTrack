@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
-import { TbSearch } from 'react-icons/tb'
+import { TbAlertTriangle, TbId, TbSearch } from 'react-icons/tb'
 import { Badge, Button, Input, Label, useToast, type BadgeColor } from 'staresdk'
 import { api, ApiError, type GraphEdge, type TrackResponse } from '../api/client'
+import { errorMessage } from '../lib/format'
 
 const STATE_COLOR: Record<string, BadgeColor> = {
   tentative: 'warning',
@@ -45,7 +46,22 @@ export function TrackLookup() {
     }
   }
 
+  const openCard = (id: string) => {
+    window.location.hash = `cards/${encodeURIComponent(id)}`
+  }
+  const createCard = async (uid: string) => {
+    try {
+      const v = await api.createCard({ from_track: uid })
+      toast({ variant: 'success', message: `Card started for ${v.entity.name ?? v.entity.id}.` })
+      openCard(v.entity.id)
+    } catch (e) {
+      toast({ variant: 'error', title: 'Could not start a card', message: errorMessage(e) })
+    }
+  }
+
   const t = result?.track?.track
+  const m = result?.track?.message
+  const show = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
   return (
     <section className="section" aria-labelledby="lookup-heading">
       <h2 id="lookup-heading">System track lookup</h2>
@@ -78,10 +94,16 @@ export function TrackLookup() {
               {t.state}
             </Badge>
           </dd>
-          <dt>Name</dt>
-          <dd>{t.view.name ?? t.view.callsign ?? '—'}</dd>
-          <dt>Classification</dt>
-          <dd className="mono">{result?.track?.message.classification?.cot_type ?? '—'}</dd>
+          <dt>Class-name</dt>
+          <dd>
+            {m?.class}-{m?.name}
+          </dd>
+          <dt>Force code</dt>
+          <dd className="mono">
+            {String(m?.force_code).padStart(2, '0')} · {m?.domain} {m?.affiliation}
+          </dd>
+          <dt>Track type</dt>
+          <dd className="mono">{m?.track_type}</dd>
           <dt>Position</dt>
           <dd className="mono">
             {t.view.position.latitude.toFixed(5)}, {t.view.position.longitude.toFixed(5)}
@@ -98,7 +120,44 @@ export function TrackLookup() {
           <dd className="mono">
             {t.contributors.map((c) => `${c.source_id}/${c.source_track_key} (${c.pairing})`).join(', ')}
           </dd>
+          <dt>Card</dt>
+          <dd>
+            {t.entity_id ? (
+              <Button size="sm" variant="secondary" icon={<TbId />} onClick={() => openCard(t.entity_id!)}>
+                Open card
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" icon={<TbId />} onClick={() => createCard(t.uid)}>
+                Create card
+              </Button>
+            )}
+          </dd>
         </dl>
+      )}
+
+      {t && (
+        <>
+          <h3>Published attributes</h3>
+          {Object.keys(t.attributes ?? {}).length === 0 ? (
+            <p className="muted">None: the output schema has no field with a value for this track.</p>
+          ) : (
+            <dl className="facts">
+              {Object.entries(t.attributes ?? {}).map(([k, v]) => (
+                <div key={k} style={{ display: 'contents' }}>
+                  <dt className="mono">{k}</dt>
+                  <dd className="mono">{show(v)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {(t.notices ?? []).map((n) => (
+            <div key={n.key} className="notice">
+              <TbAlertTriangle aria-hidden /> <span className="mono">{n.key}</span>: card says{' '}
+              <span className="mono">{show(n.card)}</span>, {n.source_id} reports <span className="mono">{show(n.feed)}</span>.
+              The card value is published.
+            </div>
+          ))}
+        </>
       )}
 
       {result && result.edges.length > 0 && (

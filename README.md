@@ -22,7 +22,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 
 ```
 crates/
-  ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, published message (opentrack.track.v1)
+  ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, OTH-GOLD minimum and the published message (opentrack.track.v2)
   ot-store    SQLite (decisions, config, temporal track graph) and Redis (streams, live state)
   ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
   ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, throttle
@@ -40,14 +40,27 @@ carried in the topic (`ais/366123456/pos`) can be the track key or an identifier
 written as `${env:NAME}` and resolved when the source starts.
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
-mappings, the audit log, the track graph); **Redis** holds everything feeds produce
+mappings, entity cards, the audit log, the track graph); **Redis** holds everything feeds produce
 (`tms:obs:*` streams, `tms:src:*` / `tms:sys:*` live state, the `tms:out` outbox, metrics).
 
 System tracks are published to NATS JetStream, one subject per track: `tracks.tms-<UID>`, where the
 UID is a GOLD-style 3-character site code plus a 9-digit sequence (`tracks.tms-OTK000000042`). The
 `TRACKS` stream keeps the latest message per track, so a consumer that starts late still gets the
-whole picture. Messages are JSON `opentrack.track.v1` (`upsert` or `delete`); the full contract is
+whole picture. Messages are JSON `opentrack.track.v2` (`upsert` or `delete`); the full contract is
 in [docs/nats-output.md](docs/nats-output.md).
+
+What a track message carries:
+
+* **The OTH-GOLD minimum**, always: track number, class-name, force code, track type, time and
+  position (the mandatory CTC and POS fields of OS-OTG Rev C).
+* **`attributes`**, designed by the admin in the Schema workspace as an output schema (field name,
+  type, notes). A field's value comes from the entity's **card** (the baseball card an admin fills
+  in on the Cards page, e.g. a ship's contact phone), else from a **feed** mapped to it at
+  onboarding, or from an OpenTrack **built-in** it is linked to (state, speed, identifiers...).
+  The card is the authority; where a feed disagrees, the track and the card show a warning.
+
+A card belongs to a registry entity, which tracks reach through their identifiers of any scheme;
+**Create card** on a looked-up track starts one with that track's identifiers.
 
 ## Running
 

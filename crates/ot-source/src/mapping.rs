@@ -99,6 +99,7 @@ enum FieldType {
     Domain,
     Affiliation,
     State,
+    TrackType,
 }
 
 /// Every core field a mapping may write. Extension fields are `ext.<key>`.
@@ -130,6 +131,7 @@ const TARGETS: &[(&str, FieldType)] = &[
     ("provenance.source_code", FieldType::Text),
     ("provenance.confidence", FieldType::Number),
     ("state", FieldType::State),
+    ("track_type", FieldType::TrackType),
 ];
 
 fn target_type(field: &str) -> Option<FieldType> {
@@ -294,6 +296,21 @@ fn coerce(target: &str, v: Value) -> Value {
             serde_json::from_value::<TrackState>(Value::String(as_string(&v).trim().to_lowercase()))
                 .ok()
                 .and_then(|s| serde_json::to_value(s).ok())
+                .unwrap_or(Value::Null)
+        }
+        Some(FieldType::TrackType) => {
+            // GOLD codes (2, 3, 4) or names; a null entry means tactical.
+            let s = as_string(&v).trim().to_lowercase().replace([' ', '-'], "_");
+            let named = match s.as_str() {
+                "" | "0" | "1" => "tactical",
+                "2" => "live_training",
+                "3" => "simulated_training",
+                "4" => "demand_entry",
+                other => other,
+            };
+            serde_json::from_value::<ot_core::TrackType>(Value::String(named.to_owned()))
+                .ok()
+                .and_then(|t| serde_json::to_value(t).ok())
                 .unwrap_or(Value::Null)
         }
         None => Value::Null,

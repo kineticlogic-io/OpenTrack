@@ -1,9 +1,14 @@
-//! The published track message: `opentrack.track.v1`.
+//! The published track message: `opentrack.track.v2`.
 //!
 //! Every system track is published as JSON on its own subject,
 //! `<prefix>.<track_id>` (by default `tracks.tms-OTK000000123`). A consumer
 //! subscribes to `tracks.>`; the stream keeps the latest message per subject,
 //! so a consumer that starts late still receives the whole current picture.
+//!
+//! The body is the OTH-GOLD mandatory minimum (see [`crate::gold`]), which is
+//! fixed, plus `attributes`: exactly the fields of the admin-designed output
+//! schema that have a value for this track, whether from a feed mapping, the
+//! entity's card or an OpenTrack built-in. Nothing else is published.
 //!
 //! Two operations, carried both in the `OT-Op` header and in the body's `op`:
 //!
@@ -14,23 +19,20 @@
 //!   that subject's latest message until it ages out.
 //!
 //! Conventions: timestamps are RFC 3339 UTC, units are SI (metres, metres per
-//! second, degrees true), enums are lower-case strings, and absent values are
-//! omitted rather than sent as null.
-
-use std::collections::BTreeMap;
+//! second, degrees true), enums are lower-case strings, and absent attributes
+//! are omitted rather than sent as null.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::schema::{
-    Affiliation, Domain, Ellipse, Identifier, Kinematics, Platform, TrackState, Uncertainty,
-};
-use crate::track::{Contributor, SystemTrack};
+use crate::gold;
+use crate::schema::TrackType;
+use crate::track::SystemTrack;
 use crate::uid::Uid;
 
 /// Schema name, in the `OT-Schema` header and the body's `schema`.
-pub const TRACK_SCHEMA: &str = "opentrack.track.v1";
+pub const TRACK_SCHEMA: &str = "opentrack.track.v2";
 
 /// Default subject prefix for system tracks.
 pub const TRACKS_SUBJECT: &str = "tracks";
@@ -73,91 +75,32 @@ pub fn subject(prefix: &str, uid: Uid) -> String {
 pub struct TrackMessage {
     pub schema: String,
     pub op: Op,
-    /// `tms-<UID>`: the id every consumer keys on.
+    /// Track number / UID (GOLD CTC 1): `tms-<UID>`, the key consumers use.
     pub track_id: String,
     pub uid: Uid,
-    pub state: TrackState,
-    pub classification: WireClassification,
-    #[serde(default, skip_serializing_if = "WireIdentity::is_empty")]
-    pub identity: WireIdentity,
-    pub position: WirePosition,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uncertainty: Option<WireUncertainty>,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub kinematics: Kinematics,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub platform: Platform,
-    /// Confidence in the track, 0 to 1, when the source reports one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
-    /// When the published position was observed.
-    pub observed_at: DateTime<Utc>,
-    pub first_seen: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-    pub observation_count: u64,
-    /// Source tracks reporting for this track.
-    pub contributors: Vec<Contributor>,
-    /// Which contributor supplied each field group.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub field_sources: BTreeMap<String, String>,
-    /// Track ids merged into this one; consumers should treat them as this track.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aliases: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<String>,
-    /// Extension schema version `ext` follows.
-    pub ext_schema_version: u32,
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub ext: Map<String, Value>,
-    pub publisher: PublishContext,
-    pub published_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WireClassification {
-    /// CoT type, with the affiliation atom applied (e.g. `a-f-S`).
-    pub cot_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domain: Option<Domain>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub affiliation: Option<Affiliation>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WireIdentity {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub callsign: Option<String>,
-    /// Every identifier, each with its scheme (`mmsi`, `icao`, `elnot`, ...).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub identifiers: Vec<Identifier>,
-}
-
-impl WireIdentity {
-    fn is_empty(&self) -> bool {
-        self.name.is_none() && self.callsign.is_none() && self.identifiers.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WirePosition {
+    /// Class (GOLD CTC 2), `UNEQUATED` when unknown.
+    pub class: String,
+    /// Name (GOLD CTC 2), `UNKNOWN` when unknown.
+    pub name: String,
+    /// Force code position (GOLD CTC 11): `air`, `surface`, `subsurface`,
+    /// `ground`, `space` or `unknown`.
+    pub domain: String,
+    /// Force code threat identity (GOLD CTC 11), `unknown` when unknown.
+    pub affiliation: String,
+    /// The GOLD force code itself (Table 5-1).
+    pub force_code: u8,
+    /// GOLD CTC 13.
+    pub track_type: TrackType,
+    /// Time of the position (GOLD POS 1-2).
+    pub time: DateTime<Utc>,
+    /// Position (GOLD POS 3-4), degrees WGS84.
     pub lat: f64,
     pub lon: f64,
-    /// Height above the WGS84 ellipsoid, metres.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alt_hae_m: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WireUncertainty {
-    /// Circular error probable: as reported, else derived from the ellipse.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cep_m: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ellipse: Option<Ellipse>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vertical_error_m: Option<f64>,
+    /// The admin-designed output schema's fields that have a value.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub attributes: Map<String, Value>,
+    pub publisher: PublishContext,
+    pub published_at: DateTime<Utc>,
 }
 
 /// Body of a `delete`.
@@ -173,12 +116,14 @@ pub struct DeleteMessage {
     pub publisher: PublishContext,
 }
 
-fn is_default<T: Default + PartialEq>(v: &T) -> bool {
-    *v == T::default()
+fn lower(v: impl Serialize) -> Option<String> {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
 }
 
-fn finite(v: Option<f64>) -> Option<f64> {
-    v.filter(|x| x.is_finite())
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// Encode a system track as an `upsert`.
@@ -188,51 +133,30 @@ pub fn to_message(
     published_at: DateTime<Utc>,
 ) -> TrackMessage {
     let v = &track.view;
-    let k = v.kinematics;
+    let domain = v.classification.effective_domain();
+    let affiliation = v.classification.effective_affiliation();
     TrackMessage {
         schema: TRACK_SCHEMA.into(),
         op: Op::Upsert,
         track_id: track.uid.doc_id(),
         uid: track.uid,
-        state: track.state,
-        classification: WireClassification {
-            cot_type: v.classification.cot_type_or_derived(),
-            domain: v.classification.effective_domain(),
-            affiliation: v.classification.effective_affiliation(),
-        },
-        identity: WireIdentity {
-            name: v.name.clone(),
-            callsign: v.callsign.clone(),
-            identifiers: v.identifiers.clone(),
-        },
-        position: WirePosition {
-            lat: v.position.latitude,
-            lon: v.position.longitude,
-            alt_hae_m: finite(v.position.altitude_hae_m),
-        },
-        uncertainty: v.uncertainty.map(|u: Uncertainty| WireUncertainty {
-            cep_m: finite(u.cep_m()),
-            ellipse: u.ellipse,
-            vertical_error_m: finite(u.vertical_error_m),
-        }),
-        kinematics: Kinematics {
-            course_deg: finite(k.course_deg),
-            speed_mps: finite(k.speed_mps),
-            heading_deg: finite(k.heading_deg),
-            vertical_rate_mps: finite(k.vertical_rate_mps),
-        },
-        platform: v.platform.clone(),
-        confidence: finite(v.provenance.confidence),
-        observed_at: v.observed_at,
-        first_seen: track.first_seen,
-        last_seen: track.last_seen,
-        observation_count: track.observation_count,
-        contributors: track.contributors.clone(),
-        field_sources: track.provenance.clone(),
-        aliases: track.aliases.iter().map(|u| u.doc_id()).collect(),
-        groups: track.groups.clone(),
-        ext_schema_version: v.schema_version,
-        ext: v.ext.clone(),
+        class: non_empty(v.platform.class.as_deref())
+            .unwrap_or(gold::UNEQUATED)
+            .to_owned(),
+        name: non_empty(v.name.as_deref())
+            .or(non_empty(v.platform.name.as_deref()))
+            .unwrap_or(gold::UNKNOWN)
+            .to_owned(),
+        domain: domain.and_then(lower).unwrap_or_else(|| "unknown".into()),
+        affiliation: affiliation
+            .and_then(lower)
+            .unwrap_or_else(|| "unknown".into()),
+        force_code: gold::force_code(domain, affiliation),
+        track_type: v.track_type.unwrap_or_default(),
+        time: v.observed_at,
+        lat: v.position.latitude,
+        lon: v.position.longitude,
+        attributes: track.attributes.clone(),
         publisher: ctx.clone(),
         published_at,
     }
@@ -260,6 +184,7 @@ pub fn delete_message(
 mod tests {
     use super::*;
     use crate::schema::tests::sample;
+    use serde_json::json;
 
     fn ctx() -> PublishContext {
         PublishContext {
@@ -273,58 +198,70 @@ mod tests {
     }
 
     #[test]
-    fn upsert_is_clean_json() {
+    fn upsert_is_the_gold_minimum_plus_attributes() {
         let uid: Uid = "OTK000000001".parse().unwrap();
-        let track = SystemTrack::from_first_observation(uid, sample());
+        let mut track = SystemTrack::from_first_observation(uid, sample());
+        track
+            .attributes
+            .insert("contact_phone".into(), json!("+1 555 0100"));
         let v = serde_json::to_value(to_message(&track, &ctx(), at())).unwrap();
 
         assert_eq!(subject(TRACKS_SUBJECT, uid), "tracks.tms-OTK000000001");
-        assert_eq!(v["schema"], "opentrack.track.v1");
-        assert_eq!(v["op"], "upsert");
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "affiliation",
+                "attributes",
+                "class",
+                "domain",
+                "force_code",
+                "lat",
+                "lon",
+                "name",
+                "op",
+                "published_at",
+                "publisher",
+                "schema",
+                "time",
+                "track_id",
+                "track_type",
+                "uid"
+            ]
+        );
+        assert_eq!(v["schema"], "opentrack.track.v2");
         assert_eq!(v["track_id"], "tms-OTK000000001");
-        assert_eq!(v["uid"], "OTK000000001");
-        assert_eq!(v["state"], "tentative");
-        assert_eq!(v["classification"]["cot_type"], "a-f-S");
-        assert_eq!(v["classification"]["domain"], "surface");
-        assert_eq!(v["classification"]["affiliation"], "friend");
-        assert_eq!(v["identity"]["name"], "TED STEVENS");
-        assert_eq!(v["identity"]["identifiers"][0]["scheme"], "mmsi");
-        assert!(v["identity"].get("callsign").is_none());
-        assert!(v["position"]["lat"].is_f64());
-        assert!((v["uncertainty"]["cep_m"].as_f64().unwrap() - 88.5).abs() < 1e-9);
-        assert_eq!(v["uncertainty"]["ellipse"]["semi_major_m"], 100.0);
-        assert_eq!(v["first_seen"], "2026-09-24T12:00:00Z");
-        assert_eq!(v["published_at"], "2026-09-25T00:00:00Z");
-        assert_eq!(v["publisher"]["node_id"], "opentrack-OTK");
-        assert_eq!(v["contributors"][0]["source_id"], "synthetic");
-        // Round-trips, so consumers written in Rust can use the same types.
+        assert_eq!(v["class"], "UNEQUATED");
+        assert_eq!(v["name"], "TED STEVENS");
+        assert_eq!(v["domain"], "surface");
+        assert_eq!(v["affiliation"], "friend");
+        assert_eq!(v["force_code"], 9);
+        assert_eq!(v["track_type"], "tactical");
+        assert_eq!(v["time"], "2026-09-24T12:00:00Z");
+        assert_eq!(v["attributes"], json!({"contact_phone": "+1 555 0100"}));
         let back: TrackMessage = serde_json::from_value(v).unwrap();
         assert_eq!(back.uid, uid);
     }
 
     #[test]
-    fn absent_values_are_omitted_not_null() {
+    fn unknowns_use_gold_placeholders() {
         let mut obs = sample();
-        obs.kinematics = Kinematics {
-            speed_mps: Some(f64::NAN),
-            ..Default::default()
-        };
-        obs.uncertainty = None;
         obs.name = None;
-        obs.identifiers.clear();
-        obs.platform = Default::default();
+        obs.classification = Default::default();
         let uid: Uid = "OTK000000002".parse().unwrap();
-        let text = serde_json::to_string(&to_message(
+        let v = serde_json::to_value(to_message(
             &SystemTrack::from_first_observation(uid, obs),
             &ctx(),
             at(),
         ))
         .unwrap();
-        assert!(!text.contains("null"), "{text}");
-        let v: Value = serde_json::from_str(&text).unwrap();
-        for k in ["uncertainty", "kinematics", "identity", "platform"] {
-            assert!(v.get(k).is_none(), "{k} should be omitted");
-        }
+        assert_eq!(v["class"], "UNEQUATED");
+        assert_eq!(v["name"], "UNKNOWN");
+        assert_eq!(v["domain"], "unknown");
+        assert_eq!(v["affiliation"], "unknown");
+        assert_eq!(v["force_code"], 32);
+        assert!(v.get("attributes").is_none());
     }
 
     #[test]

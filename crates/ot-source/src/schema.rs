@@ -1,14 +1,25 @@
-//! Admin-defined extension fields: the versioned part of the track schema.
+//! The admin-designed output schema: the versioned part of the track schema.
 //!
-//! The core schema is fixed (correlation depends on it). Extensions are
-//! defined by the administrator, grouped into versions that are immutable
-//! once published, mapped as `ext.<key>`, and published under
-//! `attributes_json.ext.<key>`. Every mapping names the version it targets.
+//! The core schema is fixed (correlation and the OTH-GOLD minimum depend on
+//! it). The output schema is designed by the administrator: each field has a
+//! key, a type and notes. Fields are grouped into versions that are immutable
+//! once published. A field's value for a track comes from, in order of
+//! authority:
+//!
+//! 1. the entity's card (the baseball card an admin fills in),
+//! 2. a feed, through a source mapping that targets `ext.<key>`,
+//! 3. an OpenTrack built-in the field is linked to (state, speed, ...).
+//!
+//! When the card and a feed disagree the card wins and an
+//! [`AttributeNotice`] records the difference. Resolved values are published
+//! under `attributes`.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+
+use ot_core::{AttributeNotice, SystemTrack};
 
 use crate::expr::{as_f64, as_string, parse_time_value};
 
@@ -44,8 +55,209 @@ pub struct ExtensionField {
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_values: Vec<String>,
+    /// Notes for the people who maintain and consume the schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Fill this field from an OpenTrack value instead of a feed or card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<Builtin>,
+}
+
+/// OpenTrack values an output field can be linked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Builtin {
+    /// Lifecycle state: tentative, confirmed, lost, dropped.
+    State,
+    CotType,
+    CourseDeg,
+    SpeedMps,
+    HeadingDeg,
+    VerticalRateMps,
+    AltitudeHaeM,
+    CepM,
+    Callsign,
+    /// Every identifier, `[{scheme, value}]`.
+    Identifiers,
+    PlatformType,
+    PlatformFlag,
+    PlatformHull,
+    SensorCode,
+    Confidence,
+    /// Ids of the sources reporting for the track.
+    Sources,
+    /// Source tracks reporting for the track, with pairing and last report.
+    Contributors,
+    ObservationCount,
+    FirstSeen,
+    LastSeen,
+    /// The registry entity (card) the track resolves to.
+    EntityId,
+}
+
+impl Builtin {
+    pub const ALL: [Builtin; 21] = [
+        Builtin::State,
+        Builtin::CotType,
+        Builtin::CourseDeg,
+        Builtin::SpeedMps,
+        Builtin::HeadingDeg,
+        Builtin::VerticalRateMps,
+        Builtin::AltitudeHaeM,
+        Builtin::CepM,
+        Builtin::Callsign,
+        Builtin::Identifiers,
+        Builtin::PlatformType,
+        Builtin::PlatformFlag,
+        Builtin::PlatformHull,
+        Builtin::SensorCode,
+        Builtin::Confidence,
+        Builtin::Sources,
+        Builtin::Contributors,
+        Builtin::ObservationCount,
+        Builtin::FirstSeen,
+        Builtin::LastSeen,
+        Builtin::EntityId,
+    ];
+
+    /// The field type a linked field must declare.
+    pub fn kind(self) -> ExtType {
+        use Builtin::*;
+        match self {
+            State | CotType | Callsign | PlatformType | PlatformFlag | PlatformHull
+            | SensorCode | EntityId => ExtType::String,
+            CourseDeg | SpeedMps | HeadingDeg | VerticalRateMps | AltitudeHaeM | CepM
+            | Confidence => ExtType::Number,
+            ObservationCount => ExtType::Integer,
+            FirstSeen | LastSeen => ExtType::Timestamp,
+            Identifiers | Sources | Contributors => ExtType::Json,
+        }
+    }
+
+    /// The value for a track, if it has one.
+    pub fn value(self, t: &SystemTrack) -> Option<Value> {
+        use Builtin::*;
+        let v = &t.view;
+        let num = |x: Option<f64>| x.filter(|x| x.is_finite()).map(|x| json!(x));
+        let text = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| json!(s))
+        };
+        match self {
+            State => serde_json::to_value(t.state).ok(),
+            CotType => Some(json!(v.classification.cot_type_or_derived())),
+            CourseDeg => num(v.kinematics.course_deg),
+            SpeedMps => num(v.kinematics.speed_mps),
+            HeadingDeg => num(v.kinematics.heading_deg),
+            VerticalRateMps => num(v.kinematics.vertical_rate_mps),
+            AltitudeHaeM => num(v.position.altitude_hae_m),
+            CepM => num(v.uncertainty.and_then(|u| u.cep_m())),
+            Callsign => text(&v.callsign),
+            Identifiers => (!v.identifiers.is_empty()).then(|| json!(v.identifiers)),
+            PlatformType => text(&v.platform.type_code),
+            PlatformFlag => text(&v.platform.flag),
+            PlatformHull => text(&v.platform.hull),
+            SensorCode => text(&v.provenance.sensor_code),
+            Confidence => num(v.provenance.confidence),
+            Sources => {
+                let mut ids: Vec<&str> = t
+                    .contributors
+                    .iter()
+                    .map(|c| c.source_id.as_str())
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                Some(json!(ids))
+            }
+            Contributors => Some(json!(t.contributors)),
+            ObservationCount => Some(json!(t.observation_count)),
+            FirstSeen => Some(json!(t.first_seen)),
+            LastSeen => Some(json!(t.last_seen)),
+            EntityId => t.entity_id.as_ref().map(|e| json!(e)),
+        }
+    }
+}
+
+/// Whether two values of a field are the same (numbers within rounding).
+fn same(a: &Value, b: &Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+        _ => a == b,
+    }
+}
+
+/// Resolve a track's attributes against the output schema: card first, then
+/// the feed (the track's mapped `ext` values), then linked built-ins. Returns
+/// the values to publish and the card values that differ from the feed.
+pub fn resolve_attributes(
+    schema: &ExtensionSchema,
+    track: &SystemTrack,
+    card: Option<&Map<String, Value>>,
+) -> (Map<String, Value>, Vec<AttributeNotice>) {
+    let mut out = Map::new();
+    let mut notices = Vec::new();
+    for f in &schema.fields {
+        if let Some(b) = f.builtin {
+            if let Some(v) = b.value(track) {
+                out.insert(f.key.clone(), v);
+            }
+            continue;
+        }
+        let feed = track.view.ext.get(&f.key).filter(|v| !v.is_null());
+        let carded = card
+            .and_then(|c| c.get(&f.key))
+            .filter(|v| !v.is_null())
+            .and_then(|v| coerce(f, v));
+        match (carded, feed) {
+            (Some(c), Some(fv)) => {
+                if !same(&c, fv) {
+                    notices.push(AttributeNotice {
+                        key: f.key.clone(),
+                        card: c.clone(),
+                        feed: fv.clone(),
+                        source_id: track.view.source_id.clone(),
+                    });
+                }
+                out.insert(f.key.clone(), c);
+            }
+            (Some(c), None) => {
+                out.insert(f.key.clone(), c);
+            }
+            (None, Some(fv)) => {
+                out.insert(f.key.clone(), fv.clone());
+            }
+            (None, None) => {}
+        }
+    }
+    (out, notices)
+}
+
+/// Check card values against the schema: every key must be a field that is
+/// not linked to a built-in, and every value must fit its type. Empty values
+/// (null or blank text) are removed. Returns the cleaned values.
+pub fn check_card(
+    schema: &ExtensionSchema,
+    values: &Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    let mut out = Map::new();
+    for (k, v) in values {
+        let f = schema
+            .field(k)
+            .ok_or_else(|| format!("{k} is not a field of schema version {}", schema.version))?;
+        if f.builtin.is_some() {
+            return Err(format!(
+                "{k} is filled by OpenTrack and cannot be set on a card"
+            ));
+        }
+        if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) {
+            continue;
+        }
+        let c = coerce(f, v).ok_or_else(|| format!("{k}: {v} is not a valid {:?}", f.kind))?;
+        out.insert(k.clone(), c);
+    }
+    Ok(out)
 }
 
 /// Extension keys written by OpenTrack itself, which admins cannot define.
@@ -63,6 +275,13 @@ pub enum SchemaError {
     NoEnumValues(String),
     #[error("default for {key:?} is not a valid {kind:?}")]
     BadDefault { key: String, kind: ExtType },
+    #[error("{key:?} is linked to {builtin:?}, which is a {expected:?}, not a {kind:?}")]
+    BuiltinType {
+        key: String,
+        builtin: Builtin,
+        expected: ExtType,
+        kind: ExtType,
+    },
 }
 
 /// One schema version's extension fields.
@@ -93,6 +312,16 @@ impl ExtensionSchema {
             }
             if f.kind == ExtType::Enum && f.enum_values.is_empty() {
                 return Err(SchemaError::NoEnumValues(f.key.clone()));
+            }
+            if let Some(b) = f.builtin
+                && b.kind() != f.kind
+            {
+                return Err(SchemaError::BuiltinType {
+                    key: f.key.clone(),
+                    builtin: b,
+                    expected: b.kind(),
+                    kind: f.kind,
+                });
             }
             if let Some(d) = &f.default
                 && coerce(f, d).is_none()
@@ -255,5 +484,96 @@ mod tests {
 
         let mut missing: Map<String, Value> = Map::new();
         assert!(s.apply(&mut missing).unwrap_err().contains("mission"));
+    }
+
+    fn output_schema() -> ExtensionSchema {
+        serde_json::from_value(json!({"version": 3, "fields": [
+            {"key": "destination", "type": "string", "description": "Voyage destination"},
+            {"key": "contact_phone", "type": "string", "description": "Ship's contact number"},
+            {"key": "length_m", "type": "number", "unit": "m"},
+            {"key": "state", "type": "string", "builtin": "state"},
+            {"key": "speed_mps", "type": "number", "builtin": "speed_mps"},
+            {"key": "sources", "type": "json", "builtin": "sources"}
+        ]}))
+        .unwrap()
+    }
+
+    fn track() -> SystemTrack {
+        let now = chrono::Utc::now();
+        let obs: ot_core::Observation = serde_json::from_value(json!({
+            "schema_version": 3, "source_id": "ais", "source_track_key": "366123456",
+            "observed_at": now, "received_at": now,
+            "position": {"latitude": 32.7, "longitude": -117.2},
+            "kinematics": {"speed_mps": 6.1},
+            "ext": {"destination": "SAN DIEGO", "length_m": 210.0, "unmapped": "x"}
+        }))
+        .unwrap();
+        SystemTrack::from_first_observation("OTK000000001".parse().unwrap(), obs)
+    }
+
+    #[test]
+    fn card_wins_over_feed_and_differences_are_noticed() {
+        let schema = output_schema();
+        schema.validate().unwrap();
+        let t = track();
+
+        // No card: feed values and built-ins; unknown ext keys are not published.
+        let (attrs, notices) = resolve_attributes(&schema, &t, None);
+        assert_eq!(
+            Value::Object(attrs),
+            json!({"destination": "SAN DIEGO", "length_m": 210.0, "state": "tentative",
+                   "speed_mps": 6.1, "sources": ["ais"]})
+        );
+        assert!(notices.is_empty());
+
+        // The card adds a phone number, agrees on length (as text) and
+        // disagrees on the destination: the card wins, with a notice.
+        let card = json!({"contact_phone": "+1 555 0100", "destination": "LONG BEACH",
+                          "length_m": "210"});
+        let (attrs, notices) = resolve_attributes(&schema, &t, card.as_object());
+        assert_eq!(attrs["contact_phone"], "+1 555 0100");
+        assert_eq!(attrs["destination"], "LONG BEACH");
+        assert_eq!(attrs["length_m"], 210.0);
+        assert_eq!(
+            notices,
+            [AttributeNotice {
+                key: "destination".into(),
+                card: json!("LONG BEACH"),
+                feed: json!("SAN DIEGO"),
+                source_id: "ais".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn cards_are_checked_against_the_schema() {
+        let schema = output_schema();
+        let ok = check_card(
+            &schema,
+            json!({"contact_phone": "+1 555 0100", "length_m": "210", "destination": ""})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Value::Object(ok),
+            json!({"contact_phone": "+1 555 0100", "length_m": 210.0})
+        );
+        let err = |v: Value| check_card(&schema, v.as_object().unwrap()).unwrap_err();
+        assert!(err(json!({"nope": 1})).contains("not a field"));
+        assert!(err(json!({"state": "confirmed"})).contains("filled by OpenTrack"));
+        assert!(err(json!({"length_m": "long"})).contains("not a valid"));
+    }
+
+    #[test]
+    fn linked_fields_must_declare_the_builtin_type() {
+        let bad: ExtensionSchema = serde_json::from_value(json!({"version": 2, "fields": [
+            {"key": "speed", "type": "string", "builtin": "speed_mps"}
+        ]}))
+        .unwrap();
+        assert!(matches!(
+            bad.validate(),
+            Err(SchemaError::BuiltinType { .. })
+        ));
     }
 }

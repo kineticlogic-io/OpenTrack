@@ -138,6 +138,9 @@ pub struct RegistryMatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub applied: bool,
+    /// The match is trustworthy: an accepted grade and no disagreeing
+    /// identifiers. The entity's card then speaks for the track.
+    pub corroborated: bool,
     /// The identifier that produced the grade.
     pub scheme: String,
     pub value: String,
@@ -269,8 +272,8 @@ impl RegistryStage {
                 (id, e, g)
             })
             .min_by_key(|(_, _, g)| *g)?;
-        let applied =
-            conflicts.is_empty() && entry.name.is_some() && self.apply_grades.contains(&grade);
+        let corroborated = conflicts.is_empty() && self.apply_grades.contains(&grade);
+        let applied = corroborated && entry.name.is_some();
         if applied {
             for (target, source) in &self.apply {
                 let v = match source.as_str() {
@@ -290,6 +293,7 @@ impl RegistryStage {
             grade,
             name: entry.name.clone(),
             applied,
+            corroborated,
             scheme: id.0.clone(),
             value: id.1.clone(),
             conflicts,
