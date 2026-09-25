@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { TbArrowLeft, TbArrowRight, TbCheck, TbRadar, TbX } from 'react-icons/tb'
-import { Badge, Button, DataTable, Input, Label, Stepper, Toggle, useToast, type DataTableColumn, type StepStatus } from 'staresdk'
+import { Badge, Button, CollapsiblePanel, DataTable, Input, Label, Stepper, Toggle, useToast, type DataTableColumn, type StepStatus } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type FieldStat, type ProbeResult, type SourceSpec } from '../../api/client'
 import { errorMessage } from '../../lib/format'
@@ -125,14 +125,13 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
   const canNext = step === 0 ? problems.length === 0 : step === 1 ? probed : true
 
   return (
-    <section className="section" aria-labelledby="wizard-heading">
-      <div className="section-head">
-        <h2 id="wizard-heading">Add source</h2>
+    <CollapsiblePanel title="Add source">
+      <div className="panel-body">
+      <div className="toolbar">
         <Stepper
           aria-label="Add source steps"
           steps={STEPS.map((s, i) => ({ ...s, status: statuses[i] }))}
           onStepClick={(id) => setStep(STEPS.findIndex((s) => s.id === id))}
-          style={{ marginLeft: 'var(--space-md)' }}
         />
         <span className="spacer" />
         <Button size="xs" variant="ghost" icon={<TbX />} aria-label="Cancel" title="Cancel" onClick={onCancel} />
@@ -231,7 +230,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
               />
               {probe.sample_frames[0] && (
                 <>
-                  <h3>First frame</h3>
+                  <h3 className="subhead">First frame</h3>
                   {probe.sample_frames[0].meta?.topic !== undefined && (
                     <span className="muted">
                       topic <span className="mono">{String(probe.sample_frames[0].meta.topic)}</span>, available to the
@@ -284,6 +283,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
           </Button>
         )}
       </div>
-    </section>
+      </div>
+    </CollapsiblePanel>
   )
 }

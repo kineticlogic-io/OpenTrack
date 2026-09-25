@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Badge } from 'staresdk'
+import { Badge, CollapsiblePanel } from 'staresdk'
 import { api, type DependencyStatus, type ServerStatus } from '../api/client'
 
 const REFRESH_MS = 5000
@@ -50,8 +50,8 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
   }, [onStatus])
 
   return (
-    <section className="section" aria-labelledby="status-heading">
-      <h2 id="status-heading">System status</h2>
+    <CollapsiblePanel title="System status" persistKey="ot.panel.status">
+      <div className="panel-body" style={{ gap: 0, paddingTop: 'var(--space-sm)', paddingBottom: 'var(--space-sm)' }}>
       <Dependency
         name="Control plane"
         dep={unreachable ? { ok: false, error: unreachable } : status ? { ok: true } : undefined}
@@ -76,6 +76,7 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
             : ''
         }
       />
-    </section>
+      </div>
+    </CollapsiblePanel>
   )
 }

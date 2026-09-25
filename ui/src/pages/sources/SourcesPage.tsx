@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { TbPlus } from 'react-icons/tb'
-import { Badge, Button, DataTable, type DataTableColumn } from 'staresdk'
+import { Badge, Button, CollapsiblePanel, DataTable, type DataTableColumn } from 'staresdk'
 import { api, type SourceRow } from '../../api/client'
 import { ago, errorMessage, fmtCount } from '../../lib/format'
 import { sourceState } from '../../lib/sourceState'
@@ -20,11 +20,11 @@ const COLUMNS: DataTableColumn<SourceRow>[] = [
     ),
     sortValue: (s) => s.name,
   },
-  { key: 'transport', header: 'Transport', width: 84, render: (s) => s.transport, sortValue: (s) => s.transport },
+  { key: 'transport', header: 'Transport', width: 110, render: (s) => s.transport, sortValue: (s) => s.transport },
   {
     key: 'state',
     header: 'State',
-    width: 92,
+    width: 100,
     render: (s) => {
       const st = sourceState(s)
       return (
@@ -38,15 +38,15 @@ const COLUMNS: DataTableColumn<SourceRow>[] = [
   {
     key: 'emitted',
     header: 'Emitted',
-    width: 76,
+    width: 100,
     align: 'right',
     render: (s) => fmtCount(s.status?.totals_since_start.emitted),
     sortValue: (s) => s.status?.totals_since_start.emitted ?? null,
   },
   {
     key: 'last',
-    header: 'Last',
-    width: 56,
+    header: 'Last frame',
+    width: 100,
     align: 'right',
     render: (s) => ago(s.status?.link.last_frame_at),
   },
@@ -56,6 +56,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   const [sources, setSources] = useState<SourceRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  // The drawer keeps showing the last source while it slides closed.
+  const [shownId, setShownId] = useState(selected)
 
   const load = useCallback(() => {
     api.sources().then(
@@ -73,48 +75,64 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
     return () => clearInterval(t)
   }, [load])
 
+  const select = (id: string) => {
+    if (id) setShownId(id)
+    onSelect(id)
+  }
+
   if (adding) {
     return (
-      <AddSourceWizard
-        onCancel={() => setAdding(false)}
-        onDone={(id) => {
-          setAdding(false)
-          load()
-          onSelect(id)
-        }}
-      />
+      <div className="panels">
+        <AddSourceWizard
+          onCancel={() => setAdding(false)}
+          onDone={(id) => {
+            setAdding(false)
+            load()
+            select(id)
+          }}
+        />
+      </div>
     )
   }
 
-  const current = sources?.find((s) => s.id === selected) ?? null
+  const shown = sources?.find((s) => s.id === (selected || shownId)) ?? null
+  const open = !!selected && !!shown
   return (
-    <div className="split">
-      <section className="section" aria-labelledby="sources-heading">
-        <div className="section-head">
-          <h2 id="sources-heading">Sources</h2>
-          {sources && <span className="muted">{sources.length}</span>}
-          <span className="spacer" />
-          <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
-            Add source
-          </Button>
+    <div className="panels">
+      <CollapsiblePanel title="Sources" badge={sources ? String(sources.length) : undefined} persistKey="ot.panel.sources">
+        <div className="panel-body">
+          <div className="toolbar">
+            <span className="muted">Feeds OpenTrack ingests. Select one to see its status, transport, pipeline and history.</span>
+            <span className="spacer" />
+            <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
+              Add source
+            </Button>
+          </div>
+          {error && <div className="error-text">{error}</div>}
+          <DataTable
+            aria-label="Sources"
+            columns={COLUMNS}
+            rows={sources ?? []}
+            rowKey={(s) => s.id}
+            selectedKey={open ? shown?.id : null}
+            onRowClick={(s) => select(s.id)}
+            empty={sources ? 'No sources yet. Add one to start onboarding a feed.' : 'LOADING…'}
+          />
         </div>
-        {error && <div className="error-text">{error}</div>}
-        <DataTable
-          aria-label="Sources"
-          columns={COLUMNS}
-          rows={sources ?? []}
-          rowKey={(s) => s.id}
-          selectedKey={current?.id}
-          onRowClick={(s) => onSelect(s.id)}
-          empty={sources ? 'No sources yet. Add one to start onboarding a feed.' : 'Loading…'}
+      </CollapsiblePanel>
+      {shown && (
+        <SourceDetail
+          key={shown.id}
+          source={shown}
+          open={open}
+          onClose={() => select('')}
+          onChanged={load}
+          onDeleted={() => {
+            load()
+            onSelect('')
+            setShownId('')
+          }}
         />
-      </section>
-      {current ? (
-        <SourceDetail key={current.id} source={current} onChanged={load} onDeleted={() => { load(); onSelect('') }} />
-      ) : (
-        <section className="section">
-          <span className="muted">Select a source to see its status, pipeline, preview and history.</span>
-        </section>
       )}
     </div>
   )

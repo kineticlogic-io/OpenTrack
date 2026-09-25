@@ -1,5 +1,5 @@
-/* OpenTrack page layout. Colours, fonts, radii and spacing come only from stareSDK tokens;
-   reusable components come only from stareSDK. Dense by design: 12px body text, 8/12px gaps. */
+/* OpenTrack page layout, following stareSDK's DESIGN-CONTRACT.md. Colours, fonts, radii and
+   spacing come only from stareSDK tokens; reusable components come only from stareSDK. */
 
 body {
   color: var(--color-text-primary);
@@ -7,108 +7,108 @@ body {
   font-size: 12px;
 }
 
-.shell {
-  height: 100vh;
+/* Page anatomy (stareSDK DESIGN-CONTRACT.md): PageHeader, a Tabs bar, then a scrolling column of
+   CollapsiblePanels; details open in a right SideNav, whose width the page gives up through
+   --assistant-width (maintained by DockProvider). */
+.page {
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
+  background: var(--color-bg-primary);
+  font-family: var(--font-sans);
 }
 
-.topbar {
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-lg);
+  margin-right: var(--assistant-width, 0px);
+}
+
+.panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+/* Inside a CollapsiblePanel or a drawer. */
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  min-width: 0;
+}
+
+.toolbar {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  height: 40px;
-  padding: 0 var(--space-md);
-  background: var(--color-bg-secondary);
-  border-bottom: 1px solid var(--color-glass-border);
-  flex-shrink: 0;
-}
-
-.topbar h1 {
-  margin: 0;
-  font-family: var(--font-header);
-  font-weight: 600;
-  font-size: 16px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  flex-wrap: wrap;
+  min-height: 28px;
 }
 
 .spacer {
   flex: 1;
 }
 
-.workspace {
-  flex: 1;
+/* A heading inside a panel body: the field-label style. */
+.subhead {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+/* SideNav contents: a header row (title, actions, close) over a scrolling body. */
+.drawer {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: auto;
-  padding: 12px;
+  height: 100%;
+  font-family: var(--font-sans);
 }
 
-.grid-2 {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
-  gap: 12px;
-  align-items: start;
-}
-
-/* List on the left, detail on the right. */
-.split {
-  display: grid;
-  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.6fr);
-  gap: 12px;
-  align-items: start;
-}
-
-@media (max-width: 1000px) {
-  .grid-2,
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 600px) {
-  .workspace {
-    padding: 8px;
-  }
-  .topbar {
-    padding: 0 8px;
-  }
-}
-
-.section {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-glass-border);
-  border-radius: var(--radius-lg);
-  padding: 12px;
-  min-width: 0;
-}
-
-.section-head {
+.drawer-head {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  margin-bottom: 8px;
-  min-height: 28px;
+  min-height: 40px;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-glass-border);
 }
 
-.section h2,
-.section-head h2 {
+.drawer-title {
   margin: 0;
-  font-family: var(--font-header);
-  font-weight: 500;
-  font-size: 13px;
-  letter-spacing: 0.05em;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-text-secondary);
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.section h3 {
-  margin: 12px 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Two columns that wrap when the space (page or drawer) is narrow. */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: var(--space-md);
+  align-items: start;
 }
 
 .dep {
@@ -260,7 +260,7 @@ body {
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-sm);
   min-width: 0;
 }
 
@@ -268,5 +268,4 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-sm);
-  margin-top: 12px;
 }

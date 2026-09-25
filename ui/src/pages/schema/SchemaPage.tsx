@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TbPencil, TbSend, TbTrash } from 'react-icons/tb'
-import { Badge, Button, DataTable, SaveButton, useToast, type DataTableColumn } from 'staresdk'
+import { Badge, Button, CollapsiblePanel, DataTable, SaveButton, useToast, type DataTableColumn } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type ExtensionField, type SchemaOverview, type SchemaVersion } from '../../api/client'
 import { errorMessage, fmtTime } from '../../lib/format'
@@ -136,12 +136,21 @@ export default function SchemaPage() {
 
   const draftDirty = editing && text !== JSON.stringify(draft?.fields ?? latestPublished?.fields ?? [], null, 2)
 
+  const fieldsTitle = editing
+    ? `Draft version ${draft?.version ?? (latestPublished ? latestPublished.version + 1 : 1)}`
+    : current
+      ? `Version ${current.version} fields`
+      : 'Fields'
+
   return (
-    <div className="split">
-      <div className="stack">
-        <section className="section" aria-labelledby="versions-heading">
-          <div className="section-head">
-            <h2 id="versions-heading">Output schema versions</h2>
+    <div className="panels">
+      <CollapsiblePanel title="Output schema versions" badge={rows.length ? String(rows.length) : undefined} persistKey="ot.panel.schemaVersions">
+        <div className="panel-body">
+          <div className="toolbar">
+            <span className="muted">
+              The output schema defines the attributes every published track carries and the fields of every card. A
+              published version never changes; edit a draft, then publish it.
+            </span>
             <span className="spacer" />
             {!editing && (
               <Button size="sm" icon={<TbPencil />} onClick={startEditing}>
@@ -156,34 +165,22 @@ export default function SchemaPage() {
             rowKey={(v) => String(v.version)}
             selectedKey={shownVersion === null ? null : String(shownVersion)}
             onRowClick={(v) => setSelected(v.version)}
-            empty="Loading…"
+            empty="LOADING…"
           />
-        </section>
-        <section className="section" aria-labelledby="core-heading">
-          <h2 id="core-heading">Always published</h2>
-          <p className="muted" style={{ margin: '0 0 8px' }}>
-            The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The output schema adds{' '}
-            <span className="mono">attributes</span>: each field is filled from the entity's card, else from a feed
-            mapping (<span className="mono">ext.&lt;field&gt;</span> in the mapping studio), or linked to an OpenTrack
-            value.
-          </p>
-          <div className="counts">
-            {(overview?.published_core ?? []).map((f) => (
-              <Badge key={f} color="grey" size="sm">
-                {f}
-              </Badge>
-            ))}
-          </div>
-        </section>
-      </div>
+        </div>
+      </CollapsiblePanel>
 
-      <section className="section" aria-labelledby="fields-heading">
-        <div className="section-head">
-          <h2 id="fields-heading">{editing ? `Draft version ${draft?.version ?? (latestPublished ? latestPublished.version + 1 : 1)}` : current ? `Version ${current.version}` : 'Fields'}</h2>
-          {current?.notes && !editing && <span className="muted">{current.notes}</span>}
-          <span className="spacer" />
+      <CollapsiblePanel title={fieldsTitle} badge={current?.notes && !editing ? current.notes : undefined} persistKey="ot.panel.schemaFields">
+        <div className="panel-body">
           {editing && (
-            <>
+            <div className="toolbar">
+              <span className="muted">
+                Each field: <span className="mono">key</span>, <span className="mono">type</span> (string, integer,
+                number, boolean, enum, timestamp, position, json) and <span className="mono">description</span> (notes);
+                optionally unit, enum_values, default, required, and <span className="mono">builtin</span> to fill it
+                from OpenTrack.
+              </span>
+              <span className="spacer" />
               <SaveButton size="sm" dirty={draftDirty} saving={saving} saved={saved} onSave={saveDraft} />
               {draft && (
                 <Button size="sm" variant="secondary" icon={<TbSend />} onClick={publish} disabled={draftDirty}>
@@ -197,41 +194,49 @@ export default function SchemaPage() {
                   Cancel
                 </Button>
               )}
+            </div>
+          )}
+          {error && <div className="error-text">{error}</div>}
+          {editing ? (
+            <>
+              <div className="counts">
+                {(overview?.builtins ?? []).map((b) => (
+                  <Badge key={b.name} color="grey" size="sm" title={`field type must be ${b.type}`}>
+                    {b.name} · {b.type}
+                  </Badge>
+                ))}
+              </div>
+              <CodeEditor aria-label="Draft fields" value={text} onChange={setText} minHeight={240} maxHeight={560} />
             </>
+          ) : (
+            <DataTable
+              aria-label="Output schema fields"
+              columns={FIELD_COLUMNS}
+              rows={current?.fields ?? []}
+              rowKey={(f) => f.key}
+              empty={current?.version === 1 ? 'Version 1 has no fields: tracks publish only the always-published set.' : 'No fields.'}
+            />
           )}
         </div>
-        {error && (
-          <div className="error-text" style={{ marginBottom: 8 }}>
-            {error}
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="Always published" persistKey="ot.panel.schemaCore">
+        <div className="panel-body">
+          <span className="muted">
+            The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The
+            output schema adds <span className="mono">attributes</span>: each field is filled from the entity's card,
+            else from a feed mapping (<span className="mono">ext.&lt;field&gt;</span> in the mapping studio), or linked
+            to an OpenTrack value.
+          </span>
+          <div className="counts">
+            {(overview?.published_core ?? []).map((f) => (
+              <Badge key={f} color="grey" size="sm">
+                {f}
+              </Badge>
+            ))}
           </div>
-        )}
-        {editing ? (
-          <div className="stack" style={{ gap: 6 }}>
-            <span className="muted">
-              Each field: <span className="mono">key</span>, <span className="mono">type</span> (string, integer, number,
-              boolean, enum, timestamp, position, json) and <span className="mono">description</span> (notes), and
-              optionally unit, enum_values, default, required. To fill a field from OpenTrack instead of a card or
-              feed, add <span className="mono">builtin</span>. Save the draft, then publish it.
-            </span>
-            <div className="counts">
-              {(overview?.builtins ?? []).map((b) => (
-                <Badge key={b.name} color="grey" size="sm" title={`field type must be ${b.type}`}>
-                  {b.name} · {b.type}
-                </Badge>
-              ))}
-            </div>
-            <CodeEditor aria-label="Draft fields" value={text} onChange={setText} minHeight={240} maxHeight={560} />
-          </div>
-        ) : (
-          <DataTable
-            aria-label="Extension fields"
-            columns={FIELD_COLUMNS}
-            rows={current?.fields ?? []}
-            rowKey={(f) => f.key}
-            empty={current?.version === 1 ? 'Version 1 is the core schema; it has no extension fields.' : 'No extension fields.'}
-          />
-        )}
-      </section>
+        </div>
+      </CollapsiblePanel>
     </div>
   )
 }

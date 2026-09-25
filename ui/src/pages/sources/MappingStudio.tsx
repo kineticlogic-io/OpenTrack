@@ -73,11 +73,11 @@ export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missi
   }, [spec, sampleSourceId])
 
   return (
-    <div className="grid-2" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
+    <div className="grid-2">
       <div className="stack" style={{ gap: 8 }}>
         {proposals && proposals.length > 0 && (
           <div>
-            <h3 style={{ marginTop: 0 }}>Suggested from the probe</h3>
+            <h3 className="subhead">Suggested from the probe</h3>
             <ul className="history">
               {proposals.map((p) => (
                 <li key={p.target}>
@@ -99,8 +99,8 @@ export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missi
         {parseError && <div className="error-text">The JSON does not parse yet; the preview shows the last valid version.</div>}
       </div>
       <div className="stack" style={{ gap: 8 }}>
-        <div className="section-head" style={{ marginBottom: 0 }}>
-          <h2>Live preview</h2>
+        <div className="toolbar">
+          <h3 className="subhead">Live preview</h3>
           <span className="muted">{running ? 'running…' : `samples of ${sampleSourceId}`}</span>
         </div>
         {previewError && <div className="error-text">{previewError}</div>}

@@ -1,8 +1,11 @@
-import { useState, type FormEvent } from 'react'
+import { lazy, Suspense, useState, type FormEvent } from 'react'
 import { TbAlertTriangle, TbId, TbSearch } from 'react-icons/tb'
-import { Badge, Button, Input, Label, useToast, type BadgeColor } from 'staresdk'
+import { Badge, Button, CollapsiblePanel, Input, Label, useToast, type BadgeColor } from 'staresdk'
 import { api, ApiError, type GraphEdge, type TrackResponse } from '../api/client'
 import { errorMessage } from '../lib/format'
+
+// React Flow loads only when a lineage is shown.
+const LineageGraph = lazy(() => import('./LineageGraph'))
 
 const STATE_COLOR: Record<string, BadgeColor> = {
   tentative: 'warning',
@@ -63,8 +66,8 @@ export function TrackLookup() {
   const m = result?.track?.message
   const show = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
   return (
-    <section className="section" aria-labelledby="lookup-heading">
-      <h2 id="lookup-heading">System track lookup</h2>
+    <CollapsiblePanel title="System track lookup" persistKey="ot.panel.lookup">
+      <div className="panel-body">
       <form className="lookup" onSubmit={lookup}>
         <div className="field">
           <Label htmlFor="uid">UID or track id</Label>
@@ -141,7 +144,7 @@ export function TrackLookup() {
 
       {t && (
         <>
-          <h3>Published attributes</h3>
+          <h3 className="subhead">Published attributes</h3>
           {Object.keys(t.attributes ?? {}).length === 0 ? (
             <p className="muted">None: the output schema has no field with a value for this track.</p>
           ) : (
@@ -166,7 +169,11 @@ export function TrackLookup() {
 
       {result && result.edges.length > 0 && (
         <>
-          <h2>Graph history</h2>
+          <h3 className="subhead">Lineage</h3>
+          <Suspense fallback={<span className="muted">LOADING…</span>}>
+            <LineageGraph uid={t?.uid ?? query.trim().replace(/^tms-/, '')} edges={result.edges} entityId={t?.entity_id} />
+          </Suspense>
+          <h3 className="subhead">Decisions</h3>
           <ul className="history">
             {result.edges.map((e) => (
               <li key={e.id} className={e.valid_to_ms === null ? '' : 'ended'}>
@@ -187,6 +194,7 @@ export function TrackLookup() {
           </ul>
         </>
       )}
-    </section>
+      </div>
+    </CollapsiblePanel>
   )
 }

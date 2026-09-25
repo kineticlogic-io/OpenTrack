@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TbActivity, TbCode, TbHistory, TbPlugConnected, TbTrash } from 'react-icons/tb'
+import { TbTrash } from 'react-icons/tb'
 import { Badge, Button, DataTable, SaveButton, TabPanel, Tabs, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type MetricsResponse, type SourceRow, type SourceSpec } from '../../api/client'
 import { ago, errorMessage, fmtCount, fmtTime } from '../../lib/format'
+import { DetailDrawer } from '../../lib/DetailDrawer'
 import { MappingStudio } from './MappingStudio'
 import { sourceState } from '../../lib/sourceState'
 import { TransportForm } from './TransportForm'
@@ -11,10 +12,10 @@ import { TransportForm } from './TransportForm'
 type Revision = Awaited<ReturnType<typeof api.revisions>>[number]
 
 const TABS = [
-  { id: 'status', label: 'Status', icon: <TbActivity /> },
-  { id: 'transport', label: 'Transport', icon: <TbPlugConnected /> },
-  { id: 'pipeline', label: 'Pipeline', icon: <TbCode /> },
-  { id: 'history', label: 'History', icon: <TbHistory /> },
+  { id: 'status', label: 'Status' },
+  { id: 'transport', label: 'Transport' },
+  { id: 'pipeline', label: 'Pipeline' },
+  { id: 'history', label: 'History' },
 ]
 
 const REVISION_COLUMNS: DataTableColumn<Revision>[] = [
@@ -55,7 +56,7 @@ function StatusTab({ source }: { source: SourceRow }) {
       {(link?.last_error || source.status?.last_error) && (
         <div className="error-text">{source.status?.last_error ?? link?.last_error}</div>
       )}
-      <h3>Last 60 minutes</h3>
+      <h3 className="subhead">Last 60 minutes</h3>
       <div className="counts">
         {totals.length === 0 && <span className="muted">No activity recorded.</span>}
         {totals.map(([k, v]) => (
@@ -91,7 +92,19 @@ function HistoryTab({ id, revision }: { id: string; revision: number }) {
   )
 }
 
-export function SourceDetail({ source, onChanged, onDeleted }: { source: SourceRow; onChanged: () => void; onDeleted: () => void }) {
+export function SourceDetail({
+  source,
+  open,
+  onClose,
+  onChanged,
+  onDeleted,
+}: {
+  source: SourceRow
+  open: boolean
+  onClose: () => void
+  onChanged: () => void
+  onDeleted: () => void
+}) {
   const { toast, confirm } = useToast()
   const [tab, setTab] = useState('status')
   const [draft, setDraft] = useState<SourceSpec>(source.spec)
@@ -140,39 +153,46 @@ export function SourceDetail({ source, onChanged, onDeleted }: { source: SourceR
   }
 
   return (
-    <section className="section" aria-labelledby="detail-heading">
-      <div className="section-head">
-        <h2 id="detail-heading">{source.name}</h2>
+    <DetailDrawer
+      open={open}
+      onClose={onClose}
+      label="Source detail"
+      storageKey="ot.sourceDetail.width"
+      width={760}
+      title={source.name}
+      status={
         <Badge color={state.color} size="sm" uppercase>
           {state.label}
         </Badge>
-        <span className="spacer" />
-        <label className="row" style={{ gap: 6 }}>
-          <span className="muted">Enabled</span>
-          <Toggle size="sm" value={source.enabled} onChange={toggle} aria-label="Enabled" />
-        </label>
-        <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
-        <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label="Delete source" title="Delete source" onClick={remove} />
+      }
+      actions={
+        <>
+          <label className="row" style={{ gap: 6 }}>
+            <span className="muted">Enabled</span>
+            <Toggle size="sm" value={source.enabled} onChange={toggle} aria-label="Enabled" />
+          </label>
+          <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
+          <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label="Delete source" title="Delete source" onClick={remove} />
+        </>
+      }
+    >
+      <Tabs aria-label="Source views" idPrefix="src" size="sm" value={tab} onChange={setTab} tabs={TABS} style={{ padding: '0 var(--space-md)' }} />
+      <div className="panel-body">
+        {saveError && <div className="error-text">{saveError}</div>}
+        <TabPanel id={tab} idPrefix="src">
+          {tab === 'status' && <StatusTab source={source} />}
+          {tab === 'transport' && (
+            <TransportForm
+              transport={draft.transport}
+              codec={draft.pipeline.codec}
+              onTransport={(transport) => setDraft({ ...draft, transport })}
+              onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
+            />
+          )}
+          {tab === 'pipeline' && <MappingStudio spec={draft} onChange={setDraft} sampleSourceId={source.id} />}
+          {tab === 'history' && <HistoryTab id={source.id} revision={source.revision} />}
+        </TabPanel>
       </div>
-      {saveError && (
-        <div className="error-text" style={{ marginBottom: 8 }}>
-          {saveError}
-        </div>
-      )}
-      <Tabs aria-label="Source views" idPrefix="src" size="sm" value={tab} onChange={setTab} tabs={TABS} style={{ marginBottom: 10 }} />
-      <TabPanel id={tab} idPrefix="src">
-        {tab === 'status' && <StatusTab source={source} />}
-        {tab === 'transport' && (
-          <TransportForm
-            transport={draft.transport}
-            codec={draft.pipeline.codec}
-            onTransport={(transport) => setDraft({ ...draft, transport })}
-            onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
-          />
-        )}
-        {tab === 'pipeline' && <MappingStudio spec={draft} onChange={setDraft} sampleSourceId={source.id} />}
-        {tab === 'history' && <HistoryTab id={source.id} revision={source.revision} />}
-      </TabPanel>
-    </section>
+    </DetailDrawer>
   )
 }

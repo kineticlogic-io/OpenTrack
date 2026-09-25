@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TbAlertTriangle, TbSearch } from 'react-icons/tb'
-import { Badge, DataTable, FieldSelect, Input, Label, SaveButton, type DataTableColumn } from 'staresdk'
+import { Badge, CollapsiblePanel, DataTable, FieldSelect, Input, Label, SaveButton, type DataTableColumn } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type CardView, type Entity, type ExtensionField } from '../../api/client'
+import { DetailDrawer } from '../../lib/DetailDrawer'
 import { ago, errorMessage, fmtTime } from '../../lib/format'
 
 type Hit = Entity & { has_card: boolean }
@@ -113,7 +114,7 @@ function FieldInput({ field, text, onChange }: { field: ExtensionField; text: st
   )
 }
 
-function CardEditor({ id }: { id: string }) {
+function CardEditor({ id, open, onClose }: { id: string; open: boolean; onClose: () => void }) {
   const [view, setView] = useState<CardView | null>(null)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
@@ -160,7 +161,11 @@ function CardEditor({ id }: { id: string }) {
   }
 
   if (!view) {
-    return <section className="section">{error ? <div className="error-text">{error}</div> : <span className="muted">Loading…</span>}</section>
+    return (
+      <DetailDrawer open={open} onClose={onClose} label="Card" storageKey="ot.cardDetail.width" title="Card">
+        <div className="panel-body">{error ? <div className="error-text">{error}</div> : <span className="muted">LOADING…</span>}</div>
+      </DetailDrawer>
+    )
   }
 
   const revisionColumns: DataTableColumn<Revision>[] = [
@@ -171,78 +176,84 @@ function CardEditor({ id }: { id: string }) {
   const linkedBuiltins = view.schema.fields.filter((f) => f.builtin)
 
   return (
-    <section className="section" aria-labelledby="card-heading">
-      <div className="section-head">
-        <h2 id="card-heading">{view.entity.name ?? view.entity.id}</h2>
-        <span className="muted mono">{view.entity.id}</span>
-        <span className="spacer" />
-        <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
-      </div>
-      <div className="counts" style={{ marginBottom: 10 }}>
-        {view.entity.identifiers.map((i) => (
-          <Badge key={`${i.scheme}:${i.value}`} color="grey" size="sm">
-            {i.scheme}:{i.value}
-          </Badge>
-        ))}
-      </div>
-      {error && (
-        <div className="error-text" style={{ marginBottom: 8 }}>
-          {error}
-        </div>
-      )}
-      {editable.length === 0 ? (
-        <p className="muted">
-          Output schema version {view.schema.version} has no fields a card can fill. Add fields in the Schema workspace.
-        </p>
-      ) : (
-        <div className="card-fields">
-          {editable.map((f) => (
-            <div key={f.key} className="field">
-              <Label htmlFor={`card-${f.key}`} size="sm">
-                {f.key}
-                {f.unit ? ` (${f.unit})` : ''}
-              </Label>
-              <FieldInput field={f} text={draft[f.key] ?? ''} onChange={(t) => setDraft({ ...draft, [f.key]: t })} />
-              {f.description && <span className="muted">{f.description}</span>}
-              {(differences[f.key] ?? []).map((d) => (
-                <span key={d.source} className="notice">
-                  <TbAlertTriangle aria-hidden /> {d.source} reports <span className="mono">{show(d.feed)}</span>; the card
-                  value is published.
-                </span>
-              ))}
-            </div>
+    <DetailDrawer
+      open={open}
+      onClose={onClose}
+      label="Card"
+      storageKey="ot.cardDetail.width"
+      title={view.entity.name ?? view.entity.id}
+      actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
+    >
+      <div className="panel-body">
+        <div className="counts">
+          <span className="muted mono">{view.entity.id}</span>
+          {view.entity.identifiers.map((i) => (
+            <Badge key={`${i.scheme}:${i.value}`} color="grey" size="sm">
+              {i.scheme}:{i.value}
+            </Badge>
           ))}
         </div>
-      )}
-      {linkedBuiltins.length > 0 && (
-        <p className="muted" style={{ marginTop: 8 }}>
-          Filled by OpenTrack, not the card: {linkedBuiltins.map((f) => f.key).join(', ')}.
-        </p>
-      )}
-      <h3>Live tracks using this card</h3>
-      <DataTable
-        aria-label="Live tracks using this card"
-        columns={TRACK_COLUMNS}
-        rows={view.tracks}
-        rowKey={(t) => t.uid}
-        maxHeight={200}
-        empty="No live track resolves to this entity right now."
-      />
-      <h3>History</h3>
-      <DataTable
-        aria-label="Card history"
-        columns={revisionColumns}
-        rows={view.revisions}
-        rowKey={(r) => String(r.id)}
-        maxHeight={200}
-        empty="Never edited."
-      />
-    </section>
+        {error && <div className="error-text">{error}</div>}
+        {editable.length === 0 ? (
+          <p className="muted">
+            Output schema version {view.schema.version} has no fields a card can fill. Add fields in the Schema workspace.
+          </p>
+        ) : (
+          <div className="card-fields">
+            {editable.map((f) => (
+              <div key={f.key} className="field">
+                <Label htmlFor={`card-${f.key}`} size="sm">
+                  {f.key}
+                  {f.unit ? ` (${f.unit})` : ''}
+                </Label>
+                <FieldInput field={f} text={draft[f.key] ?? ''} onChange={(t) => setDraft({ ...draft, [f.key]: t })} />
+                {f.description && <span className="muted">{f.description}</span>}
+                {(differences[f.key] ?? []).map((d) => (
+                  <span key={d.source} className="notice">
+                    <TbAlertTriangle aria-hidden /> {d.source} reports <span className="mono">{show(d.feed)}</span>; the card
+                    value is published.
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+        {linkedBuiltins.length > 0 && (
+          <p className="muted" style={{ margin: 0 }}>
+            Filled by OpenTrack, not the card: {linkedBuiltins.map((f) => f.key).join(', ')}.
+          </p>
+        )}
+        <h3 className="subhead">Live tracks using this card</h3>
+        <DataTable
+          aria-label="Live tracks using this card"
+          columns={TRACK_COLUMNS}
+          rows={view.tracks}
+          rowKey={(t) => t.uid}
+          maxHeight={200}
+          empty="No live track resolves to this entity right now."
+        />
+        <h3 className="subhead">History</h3>
+        <DataTable
+          aria-label="Card history"
+          columns={revisionColumns}
+          rows={view.revisions}
+          rowKey={(r) => String(r.id)}
+          maxHeight={200}
+          empty="Never edited."
+        />
+      </div>
+    </DetailDrawer>
   )
 }
 
 /** Find an entity and fill in its baseball card. */
 export default function CardsPage({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
+  // The drawer keeps showing the last card while it slides closed.
+  const [shownId, setShownId] = useState(selected)
+  const select = (id: string) => {
+    if (id) setShownId(id)
+    onSelect(id)
+  }
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<Hit[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -263,55 +274,48 @@ export default function CardsPage({ selected, onSelect }: { selected: string; on
     return () => clearTimeout(t)
   }, [query])
 
+  const open = !!selected
+  const shown = selected || shownId
   return (
-    <div className="split">
-      <section className="section" aria-labelledby="cards-heading">
-        <div className="section-head">
-          <h2 id="cards-heading">Cards</h2>
-        </div>
-        <div className="field" style={{ marginBottom: 8 }}>
-          <Label htmlFor="card-search" size="sm">
-            Name or identifier
-          </Label>
-          <Input
-            id="card-search"
-            value={query}
-            placeholder="e.g. TRUMAN, 338924210, NL504"
-            onChange={(e) => setQuery(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
+    <div className="panels">
+      <CollapsiblePanel title="Cards" persistKey="ot.panel.cards">
+        <div className="panel-body">
+          <span className="muted">
+            A card holds values for an entity that no feed provides. Card values are published in a track's attributes
+            and take precedence over what feeds report. To start a card for a live track, look it up on the Overview.
+          </span>
+          <div className="field" style={{ maxWidth: 480 }}>
+            <Label htmlFor="card-search">Name or identifier</Label>
+            <Input
+              id="card-search"
+              value={query}
+              placeholder="e.g. TRUMAN, 338924210, NL504"
+              onChange={(e) => setQuery(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          {error && <div className="error-text">{error}</div>}
+          <DataTable
+            aria-label="Entities"
+            columns={HIT_COLUMNS}
+            rows={query.trim().length < 2 ? [] : (hits ?? [])}
+            rowKey={(e) => e.id}
+            selectedKey={open ? selected : null}
+            onRowClick={(e) => select(e.id)}
+            empty={
+              query.trim().length < 2 ? (
+                <span className="muted">
+                  <TbSearch aria-hidden /> Search for a ship, aircraft or emitter.
+                </span>
+              ) : (
+                'No matching entity.'
+              )
+            }
           />
         </div>
-        {error && <div className="error-text">{error}</div>}
-        <DataTable
-          aria-label="Entities"
-          columns={HIT_COLUMNS}
-          rows={query.trim().length < 2 ? [] : (hits ?? [])}
-          rowKey={(e) => e.id}
-          selectedKey={selected || null}
-          onRowClick={(e) => onSelect(e.id)}
-          empty={
-            query.trim().length < 2 ? (
-              <span className="muted">
-                <TbSearch aria-hidden /> Search for a ship, aircraft or emitter. To start a card for a live track, look it up
-                on the Overview.
-              </span>
-            ) : (
-              'No matching entity.'
-            )
-          }
-        />
-      </section>
-      {selected ? (
-        <CardEditor key={selected} id={selected} />
-      ) : (
-        <section className="section">
-          <span className="muted">
-            Select an entity to fill in its card. Card values are published in a track's attributes and take
-            precedence over what feeds report.
-          </span>
-        </section>
-      )}
+      </CollapsiblePanel>
+      {shown && <CardEditor key={shown} id={shown} open={open} onClose={() => select('')} />}
     </div>
   )
 }

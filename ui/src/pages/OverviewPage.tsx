@@ -4,7 +4,7 @@ import { TrackLookup } from './TrackLookup'
 
 export function OverviewPage({ onStatus }: { onStatus: (s: ServerStatus | null) => void }) {
   return (
-    <div className="grid-2">
+    <div className="panels">
       <StatusPanel onStatus={onStatus} />
       <TrackLookup />
     </div>

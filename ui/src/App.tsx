@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { TbId, TbLayoutDashboard, TbMoon, TbPlugConnected, TbSchema, TbSun } from 'react-icons/tb'
-import { Badge, Button, Tabs, useTheme } from 'staresdk'
+import { TbMoon, TbSun } from 'react-icons/tb'
+import { Badge, Button, DockProvider, PageHeader, Tabs, useTheme } from 'staresdk'
 import { api, type ServerStatus } from './api/client'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
@@ -11,10 +11,10 @@ const SchemaPage = lazy(() => import('./pages/schema/SchemaPage'))
 const CardsPage = lazy(() => import('./pages/cards/CardsPage'))
 
 const VIEWS = [
-  { id: 'overview', label: 'Overview', icon: <TbLayoutDashboard /> },
-  { id: 'sources', label: 'Sources', icon: <TbPlugConnected /> },
-  { id: 'cards', label: 'Cards', icon: <TbId /> },
-  { id: 'schema', label: 'Schema', icon: <TbSchema /> },
+  { id: 'overview', label: 'Overview' },
+  { id: 'sources', label: 'Sources' },
+  { id: 'cards', label: 'Cards' },
+  { id: 'schema', label: 'Schema' },
 ]
 
 export default function App() {
@@ -28,40 +28,38 @@ export default function App() {
   }, [])
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <h1>OpenTrack</h1>
-        {status && (
-          <Badge color="grey" outline size="sm" title="GOLD site code">
-            site {status.site}
-          </Badge>
-        )}
-        <Tabs
-          aria-label="Workspaces"
-          size="sm"
-          value={active}
-          onChange={(id) => go(id)}
-          tabs={VIEWS}
-          style={{ borderBottom: 'none', height: '100%', marginLeft: 'var(--space-md)' }}
-        />
-        <span className="spacer" />
-        <Button
-          size="xs"
-          variant="ghost"
-          icon={theme === 'dark' ? <TbSun /> : <TbMoon />}
-          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-          title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-          onClick={() => commitTheme(theme === 'dark' ? 'light' : 'dark')}
-        />
-      </header>
-      <main className="workspace">
-        {active === 'overview' && <OverviewPage onStatus={onStatus} />}
-        <Suspense fallback={<span className="muted">Loading…</span>}>
-          {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
-          {active === 'cards' && <CardsPage selected={sub} onSelect={(id) => go('cards', id)} />}
-          {active === 'schema' && <SchemaPage />}
-        </Suspense>
-      </main>
-    </div>
+    <DockProvider>
+      <div className="page">
+        <PageHeader
+          title="OpenTrack"
+          appName="OpenTrack"
+          actions={
+            <Button
+              size="xs"
+              variant="ghost"
+              icon={theme === 'dark' ? <TbSun /> : <TbMoon />}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              onClick={() => commitTheme(theme === 'dark' ? 'light' : 'dark')}
+            />
+          }
+        >
+          {status && (
+            <Badge color="grey" size="sm" title="GOLD site code">
+              site {status.site}
+            </Badge>
+          )}
+        </PageHeader>
+        <Tabs variant="bar" aria-label="Workspaces" value={active} onChange={(id) => go(id)} tabs={VIEWS} />
+        <main className="content">
+          {active === 'overview' && <OverviewPage onStatus={onStatus} />}
+          <Suspense fallback={<span className="muted">LOADING…</span>}>
+            {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
+            {active === 'cards' && <CardsPage selected={sub} onSelect={(id) => go('cards', id)} />}
+            {active === 'schema' && <SchemaPage />}
+          </Suspense>
+        </main>
+      </div>
+    </DockProvider>
   )
 }
