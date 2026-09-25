@@ -23,8 +23,8 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* 8px rather than the contract's 24px, on operator direction. */
-  padding: var(--space-sm);
+  /* The contract's page spacing, as OpenStare. */
+  padding: var(--space-lg);
   margin-right: var(--assistant-width, 0px);
 }
 
