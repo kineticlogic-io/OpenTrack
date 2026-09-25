@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::{Path, State};
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
+use axum::http::header::CACHE_CONTROL;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -17,6 +19,7 @@ use ot_store::{Db, RedisStore};
 use serde_json::{Value, json};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeader;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Common;
@@ -61,11 +64,33 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .with_state(state);
 
     if let Some(dir) = ui_dir.filter(|d| d.join("index.html").is_file()) {
-        let index = dir.join("index.html");
-        app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+        app = app
+            .nest_service("/assets", assets(&dir))
+            .fallback_service(page(&dir));
     }
     app.layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+}
+
+/// The UI's content-hashed build files. A missing one is a 404, never the
+/// page: a browser still holding a page from before a deploy then gets a
+/// clean load error (and reloads) instead of HTML where it expects a script.
+fn assets(dir: &std::path::Path) -> SetResponseHeader<ServeDir, HeaderValue> {
+    SetResponseHeader::overriding(
+        ServeDir::new(dir.join("assets")),
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    )
+}
+
+/// The single-page app: any other path is the page, which is never cached so
+/// a deploy takes effect on the next load.
+fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValue> {
+    SetResponseHeader::overriding(
+        ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))),
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    )
 }
 
 async fn status(State(s): State<AppState>) -> Json<Value> {

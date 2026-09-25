@@ -12,6 +12,25 @@ import { ThemeProvider, ToastProvider } from 'staresdk'
 import './index.css'
 import App from './App.tsx'
 
+// After a deploy, a page loaded earlier asks for code chunks the server no longer has. Reload once
+// to pick up the new build (the guard stops a loop if loading keeps failing for another reason).
+window.addEventListener('vite:preloadError', (event) => {
+  let reloaded: string | null = null
+  try {
+    reloaded = sessionStorage.getItem('ot.reloadedForBuild')
+  } catch {
+    /* storage unavailable: reload anyway */
+  }
+  if (reloaded && Date.now() - Number(reloaded) < 30_000) return
+  try {
+    sessionStorage.setItem('ot.reloadedForBuild', String(Date.now()))
+  } catch {
+    /* ignore */
+  }
+  event.preventDefault()
+  window.location.reload()
+})
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>

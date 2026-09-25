@@ -663,6 +663,12 @@ mod tests {
     /// The router over an in-memory database and an isolated Redis
     /// namespace; `None` (test skipped) without `OT_TEST_REDIS_URL`.
     async fn app() -> Option<(axum::Router, ot_store::RedisStore)> {
+        app_with_ui(None).await
+    }
+
+    async fn app_with_ui(
+        ui: Option<std::path::PathBuf>,
+    ) -> Option<(axum::Router, ot_store::RedisStore)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
         let ns = format!(
             "ot-api-test-{}-{}",
@@ -695,7 +701,7 @@ mod tests {
             nats: common.connect_nats().await.unwrap(),
             common,
         };
-        Some((router(state, None), redis))
+        Some((router(state, ui), redis))
     }
 
     async fn call(
@@ -1181,6 +1187,49 @@ mod tests {
         assert_eq!(live["tracks"], 0);
         assert_eq!(live["cpu_milli"], 120);
         assert!(live["redis_bytes"].as_u64().unwrap() > 0);
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ui_assets_never_fall_back_to_the_page() {
+        let dir = std::env::temp_dir().join(format!("ot-ui-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>page</html>").unwrap();
+        std::fs::write(dir.join("assets/app-abc.js"), "console.log(1)").unwrap();
+        let Some((app, redis)) = app_with_ui(Some(dir.clone())).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let get = |uri: &str| {
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let res = app
+            .clone()
+            .oneshot(get("/assets/app-abc.js"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        // A chunk from an older build: 404, not the page.
+        let res = app
+            .clone()
+            .oneshot(get("/assets/app-old.js"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // Client-side routes get the page, uncached.
+        let res = app.clone().oneshot(get("/sources")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["cache-control"], "no-cache");
+        std::fs::remove_dir_all(dir).ok();
         redis.purge_namespace().await.unwrap();
     }
 }
