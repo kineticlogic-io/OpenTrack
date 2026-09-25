@@ -321,9 +321,15 @@ body {
   align-items: start;
 }
 
+/* A denser page (Track Database, on operator direction): panels 8px apart instead of 16. */
+.panels.tight,
+.panels.tight .workspace {
+  gap: var(--space-sm);
+}
+
 /* Fixed-height panel bodies in the workspace row, so both sides line up. */
 .workspace-body {
-  height: 420px;
+  height: 440px;
   min-height: 0;
   overflow-y: auto;
 }

@@ -175,7 +175,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const filtered = !!(query.trim() || state || domain || affiliation || source)
 
   return (
-    <div className="panels">
+    <div className="panels tight">
       <div className="workspace">
         <CollapsiblePanel title="Track map" badge={rows ? `${points.length.toLocaleString()} shown` : undefined} persistKey="ot.panel.trackmap">
           <div className="workspace-body map">
