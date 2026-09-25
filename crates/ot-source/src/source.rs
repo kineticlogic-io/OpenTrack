@@ -19,10 +19,31 @@ pub struct SourceSpec {
     /// Higher wins best-source selection (phase 3).
     #[serde(default = "default_priority")]
     pub priority: i64,
+    /// Whether the feed reports tracks (a key per object) or detections
+    /// (anonymous plots, associated with system tracks by the engine).
+    #[serde(default, skip_serializing_if = "Reports::is_tracks")]
+    pub reports: Reports,
 }
 
 fn default_priority() -> i64 {
     100
+}
+
+/// What a source's observations are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reports {
+    /// Each key is one object over time (AIS, ADS-B, TAK, a radar's tracks).
+    #[default]
+    Tracks,
+    /// Each report is a single detection with no identity of its own.
+    Detections,
+}
+
+impl Reports {
+    fn is_tracks(&self) -> bool {
+        *self == Reports::Tracks
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

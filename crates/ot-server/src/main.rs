@@ -100,6 +100,16 @@ struct EngineArgs {
     /// Hours without a report before a system track is dropped.
     #[arg(long, env = "OT_DROP_AFTER_HOURS", default_value_t = 6.0)]
     drop_after_hours: f64,
+    /// How tracks with no shared identifier pair: identifiers (never),
+    /// kinematics, or kinematics-metadata (kinematics, vetoed by conflicting
+    /// identifiers or domains).
+    #[arg(
+        long,
+        env = "OT_CORRELATION",
+        value_enum,
+        default_value = "kinematics-metadata"
+    )]
+    correlation: correlate::Approach,
 }
 
 impl EngineArgs {
@@ -108,6 +118,7 @@ impl EngineArgs {
             consumer: self.engine_consumer.clone(),
             confirm_after: self.confirm_after.max(1),
             drop_after: Duration::from_secs_f64(self.drop_after_hours.max(0.01) * 3600.0),
+            approach: self.correlation,
             ..Default::default()
         }
     }

@@ -10,6 +10,13 @@
 //! with several contributors shows the best of them, field group by field
 //! group (see [`crate::correlate::best_view`]).
 //!
+//! Source tracks with no shared identity pair kinematically: when a track's
+//! reports stay within the chi-square gate of another source's track for M of
+//! N comparisons, the two merge (vetoed by conflicting identifiers or
+//! domains, depending on the approach). Detection sources report anonymous
+//! plots: each scan is associated with the nearest system tracks inside the
+//! gate (one plot per track), and plots with no track are counted, not kept.
+//!
 //! The engine also owns the lifecycle (tentative → confirmed → lost →
 //! dropped) with per-domain stale times, and publishing through the outbox.
 //!
@@ -18,7 +25,7 @@
 //! feed disagrees), then the feed, then linked built-ins. Card and schema
 //! changes are picked up within seconds and republish the affected tracks.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -28,7 +35,9 @@ use ot_store::{Decision, RedisStore};
 use serde_json::{Map, Value, json};
 
 use crate::config::Common;
-use crate::correlate::{self, Contribution, GateSettings};
+use crate::correlate::{
+    self, Approach, Contribution, GateSettings, Grid, KinematicSettings, Persistence,
+};
 
 pub const GROUP: &str = "engine";
 
@@ -48,6 +57,10 @@ pub struct EngineSettings {
     pub freshness_secs: f64,
     /// Sanity gate on identifier matches.
     pub gate: GateSettings,
+    /// How tracks with no shared identity pair.
+    pub approach: Approach,
+    /// Kinematic pairing and detection association.
+    pub kinematic: KinematicSettings,
 }
 
 impl Default for EngineSettings {
@@ -62,6 +75,8 @@ impl Default for EngineSettings {
             drop_after: Duration::from_secs(6 * 3600),
             freshness_secs: 60.0,
             gate: GateSettings::default(),
+            approach: Approach::default(),
+            kinematic: KinematicSettings::default(),
         }
     }
 }
@@ -185,8 +200,14 @@ struct EngineCounts {
     created: u64,
     /// New source tracks paired onto an existing system track.
     paired: u64,
-    /// System tracks merged into another.
+    /// System tracks merged into another (shared identity).
     merged: u64,
+    /// System tracks merged into another on kinematic agreement.
+    kinematic_merged: u64,
+    /// Detections associated with a system track.
+    associated: u64,
+    /// Detections with no system track inside the gate.
+    unassociated: u64,
     /// Changes published at once rather than throttled.
     urgent: u64,
     out_of_order: u64,
@@ -202,6 +223,9 @@ impl EngineCounts {
             ("created", self.created),
             ("paired", self.paired),
             ("merged", self.merged),
+            ("kinematic_merged", self.kinematic_merged),
+            ("associated", self.associated),
+            ("unassociated", self.unassociated),
             ("urgent", self.urgent),
             ("out_of_order", self.out_of_order),
             ("unreadable", self.unreadable),
@@ -230,13 +254,40 @@ pub struct Engine {
     sources: Vec<String>,
     /// Source id → priority (higher wins best-source selection).
     priorities: HashMap<String, i64>,
+    /// Sources that report detections rather than tracks.
+    detection_sources: HashSet<String>,
+    /// Where each live system track is, for kinematic comparisons.
+    grid: Grid<Uid>,
+    /// Recent gate results per pair of system tracks (lower uid first).
+    candidates: HashMap<(Uid, Uid), Persistence>,
     attrs: Attributes,
+    /// Where each detection went, for scoring replays.
+    #[cfg(test)]
+    associations: Vec<(String, Option<Uid>)>,
 }
 
 const DEFAULT_PRIORITY: i64 = 100;
 
+/// The contributor key a detection source reports under on each system track
+/// it has plots associated with.
+pub const DETECTIONS: &str = "~detections";
+
 fn contributor_key(c: &Contributor) -> String {
     format!("{}/{}", c.source_id, c.source_track_key)
+}
+
+/// Where a contributor's latest report is kept: per source track, or per
+/// system track for a detection source (whose plots reach many tracks).
+fn latest_key(uid: Uid, source: &str, key: &str) -> String {
+    if key == DETECTIONS {
+        format!("{source}/{key}@{}", uid.doc_id())
+    } else {
+        format!("{source}/{key}")
+    }
+}
+
+fn pair_key(a: Uid, b: Uid) -> (Uid, Uid) {
+    if a < b { (a, b) } else { (b, a) }
 }
 
 impl Engine {
@@ -268,11 +319,18 @@ impl Engine {
             index: HashMap::new(),
             sources: Vec::new(),
             priorities: HashMap::new(),
+            detection_sources: HashSet::new(),
+            grid: Grid::default(),
+            candidates: HashMap::new(),
             attrs: Attributes::default(),
+            #[cfg(test)]
+            associations: Vec::new(),
         };
         let uids: Vec<Uid> = engine.tracks.keys().copied().collect();
         for uid in uids {
             engine.index_track(uid);
+            let p = engine.tracks[&uid].view.position;
+            engine.grid.put(uid, p.latitude, p.longitude);
         }
         Ok(engine)
     }
@@ -318,17 +376,23 @@ impl Engine {
 
     async fn refresh_sources(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let rows: Vec<(String, i64)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            Ok(c.open_db()?
-                .list_sources()?
-                .into_iter()
-                .filter(|s| s.enabled)
-                .map(|s| (s.id, s.priority))
-                .collect())
-        })
-        .await??;
-        self.priorities = rows.iter().cloned().collect();
-        let mut ids: Vec<String> = rows.into_iter().map(|(id, _)| id).collect();
+        let rows: Vec<(String, i64, bool)> =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                Ok(c.open_db()?
+                    .list_sources()?
+                    .into_iter()
+                    .filter(|s| s.enabled)
+                    .map(|s| {
+                        let detections =
+                            s.spec.get("reports").and_then(|r| r.as_str()) == Some("detections");
+                        (s.id, s.priority, detections)
+                    })
+                    .collect())
+            })
+            .await??;
+        self.priorities = rows.iter().map(|(id, p, _)| (id.clone(), *p)).collect();
+        self.detection_sources = rows.iter().filter(|r| r.2).map(|r| r.0.clone()).collect();
+        let mut ids: Vec<String> = rows.into_iter().map(|(id, _, _)| id).collect();
         ids.sort();
         if ids != self.sources {
             self.redis.ensure_obs_groups(&ids, GROUP).await?;
@@ -396,16 +460,32 @@ impl Engine {
         }
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
+        let mut reports = Vec::with_capacity(batch.len());
         for (source, id, obs) in batch {
             acks.entry(source.clone()).or_default().push(id.clone());
-            let obs = match obs {
-                Ok(o) => o,
+            match obs {
+                Ok(o) => reports.push(o),
                 Err(e) => {
                     tracing::warn!(%source, %id, error = %e, "unreadable observation skipped");
                     counts.unreadable += 1;
-                    continue;
                 }
-            };
+            }
+        }
+        // A batch holds each source's reports in turn: take them in time order.
+        reports.sort_by_key(|o| o.observed_at);
+        let mut reports = reports.into_iter().peekable();
+        while let Some(obs) = reports.next() {
+            if self.detection_sources.contains(&obs.source_id) {
+                // One scan: every plot of this source at this instant.
+                let mut scan = vec![obs];
+                while let Some(next) = reports.next_if(|o| {
+                    o.source_id == scan[0].source_id && o.observed_at == scan[0].observed_at
+                }) {
+                    scan.push(next);
+                }
+                self.associate(scan, &mut counts).await?;
+                continue;
+            }
             self.redis
                 .put_source_track(&obs, Duration::from_secs(24 * 3600))
                 .await?;
@@ -417,11 +497,12 @@ impl Engine {
                     .unwrap_or(uid),
                 None => self.place(&obs, &mut counts).await?,
             };
-            match self.observe(uid, obs).await? {
+            match self.observe(uid, obs.clone()).await? {
                 Some((track, urgent)) => {
                     counts.observations += 1;
                     counts.urgent += u64::from(urgent);
                     self.redis.put_system_track(&track, urgent).await?;
+                    self.pair_kinematically(uid, &obs, &mut counts).await?;
                 }
                 None => counts.out_of_order += 1,
             }
@@ -582,7 +663,35 @@ impl Engine {
         let Some(gone) = self.tracks.remove(&from) else {
             return Ok(());
         };
-        for c in &gone.contributors {
+        self.grid.remove(from);
+        self.candidates.retain(|(a, b), _| *a != from && *b != from);
+        let has_detections_from = |t: &SystemTrack, source: &str| {
+            t.contributors
+                .iter()
+                .any(|c| c.source_id == source && c.source_track_key == DETECTIONS)
+        };
+        let mut gone = gone;
+        let into_track = self.tracks.get(&into);
+        gone.contributors.retain(|c| {
+            if c.source_track_key != DETECTIONS {
+                return true;
+            }
+            // A detection source's plots on `from` count for `into` unless it has its own.
+            let old = latest_key(from, &c.source_id, DETECTIONS);
+            let keep = into_track.is_some_and(|t| !has_detections_from(t, &c.source_id));
+            if let Some(o) = self.latest.remove(&old)
+                && keep
+            {
+                self.latest
+                    .insert(latest_key(into, &c.source_id, DETECTIONS), o);
+            }
+            keep
+        });
+        for c in gone
+            .contributors
+            .iter()
+            .filter(|c| c.source_track_key != DETECTIONS)
+        {
             self.reports.insert(contributor_key(c), into);
         }
         for v in self.index.values_mut() {
@@ -616,7 +725,9 @@ impl Engine {
         let missing: Vec<(String, String)> = self.tracks[&uid]
             .contributors
             .iter()
-            .filter(|c| !self.latest.contains_key(&contributor_key(c)))
+            .filter(|c| {
+                c.source_track_key != DETECTIONS && !self.latest.contains_key(&contributor_key(c))
+            })
             .map(|c| (c.source_id.clone(), c.source_track_key.clone()))
             .collect();
         for (source, key) in missing {
@@ -635,7 +746,7 @@ impl Engine {
         uid: Uid,
         obs: Observation,
     ) -> anyhow::Result<Option<(SystemTrack, bool)>> {
-        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let key = latest_key(uid, &obs.source_id, &obs.source_track_key);
         if self
             .latest
             .get(&key)
@@ -649,41 +760,24 @@ impl Engine {
             resolve(&self.attrs, &mut t);
             self.tracks.insert(uid, t.clone());
             self.index_track(uid);
+            self.grid
+                .put(uid, t.view.position.latitude, t.view.position.longitude);
             return Ok(Some((t, true)));
         }
         let multi = self.tracks[&uid].contributors.len() > 1;
         if multi {
             self.load_missing(uid).await?;
         }
-        let best = multi.then(|| {
-            let t = &self.tracks[&uid];
-            let contribs: Vec<Contribution<'_>> = t
-                .contributors
-                .iter()
-                .filter_map(|c| {
-                    self.latest.get(&contributor_key(c)).map(|o| Contribution {
-                        obs: o,
-                        priority: self
-                            .priorities
-                            .get(&c.source_id)
-                            .copied()
-                            .unwrap_or(DEFAULT_PRIORITY),
-                    })
-                })
-                .collect();
-            correlate::best_view(&contribs, self.settings.freshness_secs)
-        });
+        let best = multi.then(|| self.best_of(uid)).flatten();
         let confirm = self.settings.confirm_after;
         let t = self.tracks.get_mut(&uid).expect("checked above");
         let before = t.entity_id.clone();
         let outcome = match best {
             Some((view, provenance)) => {
                 t.observation_count += 1;
-                if let Some(c) = t
-                    .contributors
-                    .iter_mut()
-                    .find(|c| contributor_key(c) == key)
-                {
+                if let Some(c) = t.contributors.iter_mut().find(|c| {
+                    c.source_id == obs.source_id && c.source_track_key == obs.source_track_key
+                }) {
                     c.last_report = c.last_report.max(obs.observed_at);
                 }
                 t.provenance = provenance;
@@ -698,7 +792,243 @@ impl Engine {
         let urgent = outcome == Applied::Significant || before != t.entity_id;
         let out = t.clone();
         self.index_track(uid);
+        self.grid
+            .put(uid, out.view.position.latitude, out.view.position.longitude);
         Ok(Some((out, urgent)))
+    }
+
+    /// The best view of a system track from its contributors' latest reports.
+    fn best_of(&self, uid: Uid) -> Option<(Observation, BTreeMap<String, String>)> {
+        let t = self.tracks.get(&uid)?;
+        let contribs: Vec<Contribution<'_>> = t
+            .contributors
+            .iter()
+            .filter_map(|c| {
+                self.latest
+                    .get(&latest_key(uid, &c.source_id, &c.source_track_key))
+                    .map(|o| Contribution {
+                        obs: o,
+                        priority: self
+                            .priorities
+                            .get(&c.source_id)
+                            .copied()
+                            .unwrap_or(DEFAULT_PRIORITY),
+                    })
+            })
+            .collect();
+        (!contribs.is_empty())
+            .then(|| correlate::best_view(&contribs, self.settings.freshness_secs))
+    }
+
+    /// Sources still reporting for a track (within the kinematic max age of
+    /// `at`) through source tracks of their own; not detections, which the
+    /// engine associated. A source's track that stopped reporting does not
+    /// block its next track of the same object (a sensor re-initiating).
+    fn track_sources(&self, uid: Uid, at: DateTime<Utc>) -> HashSet<&str> {
+        let max_age =
+            chrono::Duration::milliseconds((self.settings.kinematic.max_age_secs * 1000.0) as i64);
+        self.tracks
+            .get(&uid)
+            .map(|t| {
+                t.contributors
+                    .iter()
+                    .filter(|c| c.source_track_key != DETECTIONS && at - c.last_report <= max_age)
+                    .map(|c| c.source_id.as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Compare a system track's new report with its neighbours from other
+    /// sources; when one has agreed for M of the last N comparisons, merge
+    /// the two (the newer into the older) with the evidence.
+    async fn pair_kinematically(
+        &mut self,
+        uid: Uid,
+        obs: &Observation,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<()> {
+        if self.settings.approach == Approach::Identifiers || !self.tracks.contains_key(&uid) {
+            return Ok(());
+        }
+        let s = self.settings.kinematic;
+        let mine: HashSet<String> = self
+            .track_sources(uid, obs.observed_at)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let max_age = chrono::Duration::milliseconds((s.max_age_secs * 1000.0) as i64);
+        let mut ready: Option<(Uid, correlate::Kinematic, usize, usize)> = None;
+        for other in self
+            .grid
+            .near(obs.position.latitude, obs.position.longitude)
+        {
+            if other == uid {
+                continue;
+            }
+            let Some(t) = self.tracks.get(&other) else {
+                continue;
+            };
+            if (obs.observed_at - t.view.observed_at).abs() > max_age
+                || t.state == TrackState::Lost
+                || self
+                    .track_sources(other, obs.observed_at)
+                    .iter()
+                    .any(|x| mine.contains(*x))
+            {
+                continue;
+            }
+            if self.settings.approach == Approach::KinematicsMetadata
+                && correlate::veto(obs, &t.view).is_some()
+            {
+                continue;
+            }
+            let k = correlate::kinematic(obs, &t.view, &s);
+            let key = pair_key(uid, other);
+            if !k.pass && !self.candidates.contains_key(&key) {
+                continue;
+            }
+            let (hits, of) =
+                self.candidates
+                    .entry(key)
+                    .or_default()
+                    .record(obs.observed_at, k.pass, &s);
+            if hits >= s.m && ready.as_ref().is_none_or(|r| k.d2 < r.1.d2) {
+                ready = Some((other, k, hits, of));
+            }
+        }
+        // Forget pairs that stopped being compared.
+        let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
+        self.candidates
+            .retain(|_, p| p.last().is_some_and(|l| obs.observed_at - l <= window));
+        let Some((other, k, hits, of)) = ready else {
+            return Ok(());
+        };
+        let (from, into) = if self.tracks[&other].first_seen <= self.tracks[&uid].first_seen {
+            (uid, other)
+        } else {
+            (other, uid)
+        };
+        let evidence = json!({
+            "rule": "kinematic",
+            "approach": self.settings.approach,
+            "hits": hits, "of": of,
+            "chi2_gate": s.chi2_gate,
+            "last": k,
+        });
+        let decision = Decision::new("engine", "merge")
+            .reason(format!(
+                "{} and {} agreed kinematically in {hits} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
+                from.doc_id(),
+                into.doc_id(),
+                k.distance_m,
+                k.sigma_m
+            ))
+            .evidence(evidence);
+        let c = self.common.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
+        })
+        .await??;
+        self.absorb(from, into).await?;
+        counts.kinematic_merged += 1;
+        self.republish(into).await?;
+        Ok(())
+    }
+
+    /// Recompute a track's view from its contributors and publish it.
+    async fn republish(&mut self, uid: Uid) -> anyhow::Result<()> {
+        self.load_missing(uid).await?;
+        let best = self.best_of(uid);
+        let confirm = self.settings.confirm_after;
+        let Some(t) = self.tracks.get_mut(&uid) else {
+            return Ok(());
+        };
+        if let Some((view, provenance)) = best {
+            t.provenance = provenance;
+            apply_view(t, view, confirm);
+        }
+        resolve(&self.attrs, t);
+        let out = t.clone();
+        self.index_track(uid);
+        self.redis.put_system_track(&out, true).await?;
+        Ok(())
+    }
+
+    /// Associate one scan of a detection source with system tracks: every
+    /// plot/track pair inside the gate, taken nearest first, one plot per
+    /// track. Associated plots update their track as that source's report.
+    async fn associate(
+        &mut self,
+        scan: Vec<Observation>,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<()> {
+        let s = self.settings.kinematic;
+        let max_age = chrono::Duration::milliseconds((s.max_age_secs * 1000.0) as i64);
+        let mut pairs = Vec::new();
+        for (i, det) in scan.iter().enumerate() {
+            for uid in self
+                .grid
+                .near(det.position.latitude, det.position.longitude)
+            {
+                let Some(t) = self.tracks.get(&uid) else {
+                    continue;
+                };
+                // Only tracks another source keeps alive: plots do not hold a track up alone.
+                if (det.observed_at - t.view.observed_at).abs() > max_age
+                    || t.state == TrackState::Lost
+                    || self.track_sources(uid, det.observed_at).is_empty()
+                {
+                    continue;
+                }
+                let k = correlate::kinematic(det, &t.view, &s);
+                if k.pass {
+                    pairs.push((k.d2, i, uid));
+                }
+            }
+        }
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut taken: HashMap<usize, Uid> = HashMap::new();
+        let mut used = HashSet::new();
+        for (_, i, uid) in pairs {
+            if !taken.contains_key(&i) && used.insert(uid) {
+                taken.insert(i, uid);
+            }
+        }
+        for (i, mut det) in scan.into_iter().enumerate() {
+            let Some(&uid) = taken.get(&i) else {
+                counts.unassociated += 1;
+                #[cfg(test)]
+                self.associations
+                    .push((format!("{}/{}", det.source_id, det.source_track_key), None));
+                continue;
+            };
+            #[cfg(test)]
+            self.associations.push((
+                format!("{}/{}", det.source_id, det.source_track_key),
+                Some(uid),
+            ));
+            det.source_track_key = DETECTIONS.into();
+            if let Some(t) = self.tracks.get_mut(&uid)
+                && !t
+                    .contributors
+                    .iter()
+                    .any(|c| c.source_id == det.source_id && c.source_track_key == DETECTIONS)
+            {
+                t.contributors.push(Contributor {
+                    source_id: det.source_id.clone(),
+                    source_track_key: DETECTIONS.into(),
+                    pairing: PairingType::Auto,
+                    confidence: 1.0,
+                    last_report: det.observed_at,
+                });
+            }
+            if let Some((track, urgent)) = self.observe(uid, det).await? {
+                counts.associated += 1;
+                self.redis.put_system_track(&track, urgent).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn reap(&mut self) -> anyhow::Result<()> {
@@ -749,9 +1079,12 @@ impl Engine {
             self.redis.retire_system_track(uid, &reason).await?;
             if let Some(t) = self.tracks.remove(&uid) {
                 for c in &t.contributors {
-                    self.latest.remove(&contributor_key(c));
+                    self.latest
+                        .remove(&latest_key(uid, &c.source_id, &c.source_track_key));
                 }
             }
+            self.grid.remove(uid);
+            self.candidates.retain(|(a, b), _| *a != uid && *b != uid);
             self.reports.retain(|_, u| *u != uid);
         }
         Ok(())
@@ -1076,5 +1409,232 @@ mod tests {
         assert_eq!(t.provenance["classification"], "radar/t7");
         assert_eq!(t.view.name.as_deref(), Some("TED STEVENS"));
         e.redis.purge_namespace().await.unwrap();
+    }
+
+    // --- Autoferry: recorded radar and lidar against a track feed ---
+    //
+    // Fixtures from scripts/autoferry.py (Autoferry sensor fusion dataset,
+    // NTNU, CC0). Each report carries the ground-truth target it is nearest
+    // to (none for clutter), which scores where the engine put it.
+
+    #[derive(serde::Deserialize)]
+    struct Recorded {
+        feed: String,
+        truth: Option<u64>,
+        obs: Observation,
+    }
+
+    fn recorded(name: &str) -> Vec<Recorded> {
+        let path = format!(
+            "{}/tests/data/autoferry/{name}.jsonl",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{path}: {e}"))
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// Feed the reports a second of recorded time at a time, as they would arrive.
+    async fn replay(e: &mut Engine, rows: &[Recorded]) {
+        let mut i = 0;
+        while i < rows.len() {
+            let until = rows[i].obs.observed_at + chrono::Duration::seconds(1);
+            let j = rows[i..]
+                .iter()
+                .position(|r| r.obs.observed_at >= until)
+                .map_or(rows.len(), |n| i + n);
+            let chunk: Vec<Observation> = rows[i..j].iter().map(|r| r.obs.clone()).collect();
+            for r in &chunk {
+                e.redis
+                    .append_observations(&r.source_id, std::slice::from_ref(r))
+                    .await
+                    .unwrap();
+            }
+            e.pump(false).await.unwrap();
+            i = j;
+        }
+    }
+
+    /// Where each labelled source track ended: on its target's track, on
+    /// the other target's, or alone; and clutter tracks that ended on a
+    /// target's track. A track reported while another track of the same
+    /// sensor on the same target was live is a duplicate (a 30 m vessel can
+    /// hold several lidar tracks): the sensor says two objects, so it must
+    /// stay unpaired.
+    async fn autoferry_tracks(scenario: u32) {
+        let Some((mut e, _dir)) = engine(&["track", "lidar", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let rows = recorded(&format!("scenario{scenario}-tracks"));
+        replay(&mut e, &rows).await;
+        let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
+        assert_ne!(target(1), target(2), "the two targets stay apart");
+
+        let mut labels: BTreeMap<String, HashMap<Option<u64>, usize>> = BTreeMap::new();
+        let mut spans: HashMap<String, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+        for r in rows.iter().filter(|r| r.feed != "track") {
+            let key = format!("{}/{}", r.obs.source_id, r.obs.source_track_key);
+            *labels
+                .entry(key.clone())
+                .or_default()
+                .entry(r.truth)
+                .or_default() += 1;
+            let span = spans
+                .entry(key)
+                .or_insert((r.obs.observed_at, r.obs.observed_at));
+            span.1 = r.obs.observed_at;
+        }
+        // Clear cases only: at least 10 reports, four in five on one target.
+        let target_of = |key: &str| {
+            let counts = &labels[key];
+            let total: usize = counts.values().sum();
+            let (label, n) = counts.iter().max_by_key(|(_, n)| **n).unwrap();
+            (total >= 10 && *n * 5 >= total * 4)
+                .then_some(*label)
+                .flatten()
+        };
+        // The first of a sensor's overlapping tracks on a target is the track; the rest duplicates.
+        let duplicate = |key: &str, k: u64| {
+            let (source, (start, end)) = (key.split('/').next().unwrap(), spans[key]);
+            spans.iter().any(|(other, (s2, e2))| {
+                other != key
+                    && other.starts_with(&format!("{source}/"))
+                    && target_of(other) == Some(k)
+                    && *s2 < start
+                    && *e2 > start
+                    && *s2 < end
+            })
+        };
+        let (mut right, mut wrong, mut alone, mut clutter, mut duplicates) = (0, 0, 0, 0, 0);
+        for (key, counts) in &labels {
+            let total: usize = counts.values().sum();
+            let label = target_of(key);
+            let uid = e.reports[key];
+            match label {
+                Some(k) if duplicate(key, k) => {
+                    duplicates += 1;
+                    assert_ne!(
+                        uid,
+                        target(k),
+                        "{key} is a second lidar/radar track on target {k} at the same time"
+                    );
+                }
+                Some(k) => {
+                    let other = if k == 1 { 2 } else { 1 };
+                    if uid == target(k) {
+                        right += 1;
+                    } else if uid == target(other) {
+                        wrong += 1;
+                        eprintln!("{key} (target {k}) ended on target {other}");
+                    } else {
+                        alone += 1;
+                        eprintln!("{key} (target {k}, {total} reports) not paired");
+                    }
+                }
+                None if counts.get(&None).is_some_and(|n| n * 5 >= total * 4)
+                    && (uid == target(1) || uid == target(2)) =>
+                {
+                    clutter += 1;
+                    eprintln!("{key} (clutter, {total} reports) paired with a target");
+                }
+                _ => {}
+            }
+        }
+        eprintln!(
+            "scenario {scenario} tracks: {right} paired right, {wrong} wrong, {alone} unpaired, {duplicates} same-sensor duplicates kept apart, {clutter} clutter paired"
+        );
+        assert_eq!(wrong, 0);
+        assert_eq!(clutter, 0);
+        assert!(right * 10 >= (right + alone) * 8, "at least 80% paired");
+        let c = e.common.clone();
+        let t1 = target(1);
+        let edges = tokio::task::spawn_blocking(move || c.open_db().unwrap().explain(t1).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|x| x.kind.as_str() == "MERGED_INTO" && x.decision_op == "merge")
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// Where each labelled plot went: its target's track, the other
+    /// target's, or none; and how many clutter plots reached a track.
+    async fn autoferry_detections(scenario: u32) {
+        let Some((mut e, _dir)) = engine(&["track", "lidar-det", "radar-det"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.detection_sources = ["lidar-det", "radar-det"].map(String::from).into();
+        let rows = recorded(&format!("scenario{scenario}-detections"));
+        replay(&mut e, &rows).await;
+        let target = |k: u64| track_of(&e, "track", &format!("target-{k}"));
+        let went: HashMap<&str, Option<Uid>> = e
+            .associations
+            .iter()
+            .map(|(k, u)| (k.as_str(), *u))
+            .collect();
+        let (mut right, mut wrong, mut missed, mut clutter, mut noise) = (0, 0, 0, 0, 0);
+        for r in rows.iter().filter(|r| r.feed != "track") {
+            let key = format!("{}/{}", r.obs.source_id, r.obs.source_track_key);
+            let to = went[key.as_str()];
+            match r.truth {
+                Some(k) if to == Some(target(k)) => right += 1,
+                Some(_) if to.is_some() => wrong += 1,
+                Some(_) => missed += 1,
+                None if to.is_some() => clutter += 1,
+                None => noise += 1,
+            }
+        }
+        let on_target = right + wrong + missed;
+        eprintln!(
+            "scenario {scenario} detections: {right}/{on_target} to the right track, {wrong} wrong, {missed} missed; {clutter}/{} clutter associated",
+            clutter + noise
+        );
+        // Plots only update tracks another source keeps: none are created.
+        assert_eq!(e.tracks.len(), 2);
+        assert!(
+            right * 100 >= on_target * 85,
+            "at least 85% associated right"
+        );
+        assert!(
+            wrong * 100 <= on_target * 2,
+            "at most 2% to the wrong target"
+        );
+        assert!(
+            clutter * 10 <= clutter + noise,
+            "at most 10% of clutter associated"
+        );
+        let t = &e.tracks[&target(1)];
+        assert!(
+            t.contributors
+                .iter()
+                .any(|c| c.source_track_key == DETECTIONS)
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_2_tracks() {
+        autoferry_tracks(2).await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_16_tracks() {
+        autoferry_tracks(16).await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_2_detections() {
+        autoferry_detections(2).await;
+    }
+
+    #[tokio::test]
+    async fn replay_autoferry_16_detections() {
+        autoferry_detections(16).await;
     }
 }

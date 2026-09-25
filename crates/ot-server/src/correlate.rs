@@ -143,6 +143,211 @@ pub fn sanity_gate(obs: &Observation, view: &Observation, s: &GateSettings) -> G
     }
 }
 
+/// Settings of kinematic pairing (tracks with no shared identity) and of
+/// detection association.
+#[derive(Debug, Clone, Copy)]
+pub struct KinematicSettings {
+    /// Chi-square gate on the normalised distance (2 degrees of freedom;
+    /// 9.21 keeps 99% of true matches).
+    pub chi2_gate: f64,
+    /// Floor on a report's position standard deviation, for sources that
+    /// claim more precision than they have (or report none).
+    pub min_sigma_m: f64,
+    /// Position uncertainty growth per second of dead-reckoning (m/s).
+    pub drift_mps: f64,
+    /// Pair when `m` of the last `n` comparisons pass the gate...
+    pub m: usize,
+    pub n: usize,
+    /// ...within this many seconds.
+    pub window_secs: f64,
+    /// Views older than this are not compared.
+    pub max_age_secs: f64,
+}
+
+impl Default for KinematicSettings {
+    fn default() -> Self {
+        Self {
+            chi2_gate: 9.21,
+            min_sigma_m: 5.0,
+            drift_mps: 1.0,
+            m: 4,
+            n: 5,
+            window_secs: 30.0,
+            max_age_secs: 30.0,
+        }
+    }
+}
+
+/// How pairing decides, beyond shared identifiers (which always pair).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum Approach {
+    /// Only shared identifiers pair tracks.
+    Identifiers,
+    /// Kinematic agreement over time, whatever else the tracks report.
+    Kinematics,
+    /// Kinematic agreement, vetoed by conflicting identifiers or domains.
+    #[default]
+    KinematicsMetadata,
+}
+
+/// A report's position standard deviation per axis: its circular error
+/// (CEP = 1.1774 σ for a circular normal), no smaller than the floor.
+fn sigma_m(obs: &Observation, floor: f64) -> f64 {
+    obs.uncertainty
+        .and_then(|u| u.cep_m())
+        .map(|c| c / 1.1774)
+        .unwrap_or(floor)
+        .max(floor)
+}
+
+/// How well a report agrees with a view: the view dead-reckoned to the
+/// report's time, and the distance normalised by both uncertainties.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Kinematic {
+    pub distance_m: f64,
+    pub dt_s: f64,
+    /// Combined standard deviation per axis.
+    pub sigma_m: f64,
+    /// Squared normalised distance (chi-square, 2 degrees of freedom).
+    pub d2: f64,
+    pub pass: bool,
+}
+
+pub fn kinematic(obs: &Observation, view: &Observation, s: &KinematicSettings) -> Kinematic {
+    let (lat, lon) = dead_reckon(view, obs.observed_at, s.max_age_secs);
+    let distance = distance_m(obs.position.latitude, obs.position.longitude, lat, lon);
+    let dt = ((obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0).abs();
+    let var = sigma_m(obs, s.min_sigma_m).powi(2)
+        + sigma_m(view, s.min_sigma_m).powi(2)
+        + (s.drift_mps * dt).powi(2);
+    let d2 = distance * distance / var;
+    Kinematic {
+        distance_m: (distance * 10.0).round() / 10.0,
+        dt_s: (dt * 10.0).round() / 10.0,
+        sigma_m: (var.sqrt() * 10.0).round() / 10.0,
+        d2: (d2 * 100.0).round() / 100.0,
+        pass: d2 <= s.chi2_gate,
+    }
+}
+
+/// Why two tracks cannot be the same object whatever their kinematics:
+/// different values for the same identifier scheme, or different domains.
+pub fn veto(a: &Observation, b: &Observation) -> Option<String> {
+    for x in &a.identifiers {
+        let scheme = x.scheme.trim().to_lowercase();
+        for y in &b.identifiers {
+            if y.scheme.trim().to_lowercase() == scheme
+                && !x.value.trim().eq_ignore_ascii_case(y.value.trim())
+            {
+                return Some(format!("{scheme} {} vs {}", x.value.trim(), y.value.trim()));
+            }
+        }
+    }
+    match (
+        a.classification.effective_domain(),
+        b.classification.effective_domain(),
+    ) {
+        (Some(x), Some(y)) if x != y => Some(format!("domain {x:?} vs {y:?}")),
+        _ => None,
+    }
+}
+
+/// The recent gate results of one pair of tracks, for M-of-N persistence.
+#[derive(Debug, Clone, Default)]
+pub struct Persistence {
+    results: std::collections::VecDeque<(DateTime<Utc>, bool)>,
+}
+
+impl Persistence {
+    /// Record a comparison at `at`; returns (passes, comparisons) over the
+    /// last `n` within the window.
+    pub fn record(
+        &mut self,
+        at: DateTime<Utc>,
+        pass: bool,
+        s: &KinematicSettings,
+    ) -> (usize, usize) {
+        self.results.push_back((at, pass));
+        let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
+        let newest = self.results.iter().map(|r| r.0).max().unwrap_or(at);
+        self.results.retain(|r| newest - r.0 <= window);
+        while self.results.len() > s.n {
+            self.results.pop_front();
+        }
+        let hits = self.results.iter().filter(|r| r.1).count();
+        (hits, self.results.len())
+    }
+
+    /// The newest comparison, to forget pairs that stopped being compared.
+    pub fn last(&self) -> Option<DateTime<Utc>> {
+        self.results.back().map(|r| r.0)
+    }
+}
+
+/// A coarse spatial index of system tracks (0.05° cells, about 5 km of
+/// latitude), so pairing and association compare against neighbours only.
+#[derive(Debug)]
+pub struct Grid<K> {
+    cell_of: std::collections::HashMap<K, (i32, i32)>,
+    cells: std::collections::HashMap<(i32, i32), Vec<K>>,
+}
+
+impl<K> Default for Grid<K> {
+    fn default() -> Self {
+        Self {
+            cell_of: Default::default(),
+            cells: Default::default(),
+        }
+    }
+}
+
+const CELL_DEG: f64 = 0.05;
+
+fn cell(lat: f64, lon: f64) -> (i32, i32) {
+    (
+        (lat / CELL_DEG).floor() as i32,
+        (lon / CELL_DEG).floor() as i32,
+    )
+}
+
+impl<K: Copy + Eq + std::hash::Hash> Grid<K> {
+    pub fn put(&mut self, k: K, lat: f64, lon: f64) {
+        let c = cell(lat, lon);
+        if self.cell_of.get(&k) == Some(&c) {
+            return;
+        }
+        self.remove(k);
+        self.cell_of.insert(k, c);
+        self.cells.entry(c).or_default().push(k);
+    }
+
+    pub fn remove(&mut self, k: K) {
+        if let Some(c) = self.cell_of.remove(&k)
+            && let Some(v) = self.cells.get_mut(&c)
+        {
+            v.retain(|x| *x != k);
+            if v.is_empty() {
+                self.cells.remove(&c);
+            }
+        }
+    }
+
+    /// Everything in the cell of (lat, lon) and the eight around it.
+    pub fn near(&self, lat: f64, lon: f64) -> Vec<K> {
+        let (a, b) = cell(lat, lon);
+        let mut out = Vec::new();
+        for i in a - 1..=a + 1 {
+            for j in b - 1..=b + 1 {
+                if let Some(v) = self.cells.get(&(i, j)) {
+                    out.extend(v.iter().copied());
+                }
+            }
+        }
+        out
+    }
+}
+
 /// One contributor's latest report, for best-source selection.
 #[derive(Debug, Clone, Copy)]
 pub struct Contribution<'a> {
@@ -450,5 +655,71 @@ mod tests {
         );
         assert_eq!(p["identity"], "ais/366");
         assert_eq!(p["classification"], "ais/366");
+    }
+
+    #[test]
+    fn kinematic_gate_normalises_by_uncertainty_and_time() {
+        let s = KinematicSettings::default();
+        let mut view = obs("track", "1", 0, 63.44, 10.40);
+        view.uncertainty = Some(Uncertainty {
+            circular_error_m: Some(10.0),
+            ..Default::default()
+        });
+        // 20 m apart, both about 8.5 m sigma: d2 = 400 / 144 < 9.21.
+        let mut radar = obs("radar", "r", 0, 63.44018, 10.40);
+        radar.uncertainty = view.uncertainty;
+        let k = kinematic(&radar, &view, &s);
+        assert!(k.pass, "{k:?}");
+        // 60 m apart: outside.
+        radar.position.latitude = 63.44054;
+        assert!(!kinematic(&radar, &view, &s).pass);
+        // The same 60 m after 60 s without kinematics: the drift allowance admits it.
+        radar.observed_at = at(60);
+        assert!(kinematic(&radar, &view, &s).pass);
+    }
+
+    #[test]
+    fn vetoes_conflicting_identifiers_and_domains() {
+        let mut a = obs("ais", "1", 0, 0.0, 0.0);
+        let mut b = obs("tak", "2", 0, 0.0, 0.0);
+        assert_eq!(veto(&a, &b), None);
+        a.identifiers = vec![Identifier::new("mmsi", "366")];
+        b.identifiers = vec![Identifier::new("MMSI", "367")];
+        assert_eq!(veto(&a, &b).as_deref(), Some("mmsi 366 vs 367"));
+        b.identifiers = vec![Identifier::new("hull", "DDG-51")];
+        assert_eq!(veto(&a, &b), None);
+        a.classification.domain = Some(Domain::Surface);
+        b.classification.domain = Some(Domain::Air);
+        assert!(veto(&a, &b).is_some());
+    }
+
+    #[test]
+    fn persistence_counts_m_of_n_within_the_window() {
+        let s = KinematicSettings::default();
+        let mut p = Persistence::default();
+        assert_eq!(p.record(at(0), true, &s), (1, 1));
+        assert_eq!(p.record(at(2), false, &s), (1, 2));
+        p.record(at(4), true, &s);
+        p.record(at(6), true, &s);
+        assert_eq!(p.record(at(8), true, &s), (4, 5));
+        // Only the last five count.
+        assert_eq!(p.record(at(10), false, &s), (3, 5));
+        // Results older than the window fall out.
+        assert_eq!(p.record(at(60), true, &s), (1, 1));
+    }
+
+    #[test]
+    fn grid_finds_neighbours_across_cells() {
+        let mut g = Grid::default();
+        g.put(1, 63.449, 10.449);
+        g.put(2, 63.451, 10.451);
+        g.put(3, 64.0, 10.4);
+        let mut near = g.near(63.45, 10.45);
+        near.sort();
+        assert_eq!(near, [1, 2]);
+        g.put(2, 64.0, 10.4);
+        assert_eq!(g.near(63.45, 10.45), [1]);
+        g.remove(1);
+        assert!(g.near(63.45, 10.45).is_empty());
     }
 }
