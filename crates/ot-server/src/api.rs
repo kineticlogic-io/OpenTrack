@@ -536,13 +536,18 @@ async fn schema_overview(State(s): State<AppState>) -> Result<Json<Value>, ApiEr
         .max();
     let builtins: Vec<Value> = ot_source::schema::Builtin::ALL
         .iter()
-        .map(|b| json!({ "name": b, "type": b.kind() }))
+        .map(|b| json!({ "name": b, "type": b.kind(), "reads": b.reads() }))
         .collect();
     Ok(Json(json!({
         // Always published (the OTH-GOLD minimum); the schema adds `attributes`.
         "published_core": ["track_id", "class", "name", "domain", "affiliation", "force_code",
                            "track_type", "sidc", "time", "lat", "lon"],
         "builtins": builtins,
+        // Where each always-published field comes from, for the pipeline view.
+        "gold_sources": ot_core::wire::GOLD_SOURCES
+            .iter()
+            .map(|(k, v)| (k.to_string(), json!(v)))
+            .collect::<serde_json::Map<_, _>>(),
         "core": ot_source::mapping::target_fields().collect::<Vec<_>>(),
         "reserved_extension_keys": ot_source::schema::RESERVED_KEYS,
         "latest_published": latest,

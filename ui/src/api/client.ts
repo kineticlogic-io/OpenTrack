@@ -348,7 +348,9 @@ export interface SchemaOverview {
   /** Always published: the OTH-GOLD minimum. */
   published_core: string[]
   /** OpenTrack values a field can be linked to, with the type the field must have. */
-  builtins: { name: string; type: ExtensionField['type'] }[]
+  builtins: { name: string; type: ExtensionField['type']; reads?: string[] }[]
+  /** Which observation fields (mapping targets) fill each always-published field. */
+  gold_sources?: Record<string, string[]>
   core: string[]
   reserved_extension_keys: string[]
   latest_published: number | null

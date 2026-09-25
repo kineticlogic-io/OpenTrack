@@ -391,3 +391,33 @@ body {
 .search svg + * {
   width: 100%;
 }
+
+/* A source's pipeline: the flowchart beside the selected stage's detail, stacked when narrow. */
+.pipeline {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .pipeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Where a field is published: badges and notes that wrap. */
+.dest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.flowcell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 0;
+  min-width: 0;
+}

@@ -5,7 +5,7 @@ import { CodeEditor } from 'staresdk/code-editor'
 import { api, type MetricsResponse, type SourceRow, type SourceSpec } from '../../api/client'
 import { ago, errorMessage, fmtCount, fmtTime } from '../../lib/format'
 import { DetailDrawer } from '../../lib/DetailDrawer'
-import { MappingStudio } from './MappingStudio'
+import { PipelineView } from './PipelineView'
 import { sourceState } from '../../lib/sourceState'
 import { TransportForm } from './TransportForm'
 
@@ -189,7 +189,7 @@ export function SourceDetail({
               onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
             />
           )}
-          {tab === 'pipeline' && <MappingStudio spec={draft} onChange={setDraft} sampleSourceId={source.id} />}
+          {tab === 'pipeline' && <PipelineView spec={draft} onChange={setDraft} sourceId={source.id} />}
           {tab === 'history' && <HistoryTab id={source.id} revision={source.revision} />}
         </TabPanel>
       </div>

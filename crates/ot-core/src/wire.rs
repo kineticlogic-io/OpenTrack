@@ -130,6 +130,47 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Which observation fields (mapping targets) fill each OTH-GOLD field of
+/// the published message, in the order [`to_message`] tries them. Fields
+/// with none are fixed or computed (`track_id` from the UID).
+pub const GOLD_SOURCES: &[(&str, &[&str])] = &[
+    ("track_id", &[]),
+    ("class", &["platform.class"]),
+    ("name", &["name", "platform.name"]),
+    (
+        "domain",
+        &[
+            "classification.domain",
+            "classification.cot_type",
+            "classification.sidc",
+        ],
+    ),
+    (
+        "affiliation",
+        &[
+            "classification.affiliation",
+            "classification.cot_type",
+            "classification.sidc",
+        ],
+    ),
+    (
+        "force_code",
+        &["classification.domain", "classification.affiliation"],
+    ),
+    ("track_type", &["track_type"]),
+    (
+        "sidc",
+        &[
+            "classification.sidc",
+            "classification.affiliation",
+            "classification.cot_type",
+        ],
+    ),
+    ("time", &["observed_at"]),
+    ("lat", &["position.latitude"]),
+    ("lon", &["position.longitude"]),
+];
+
 /// Encode a system track as an `upsert`.
 pub fn to_message(
     track: &SystemTrack,
@@ -200,6 +241,36 @@ mod tests {
 
     fn at() -> DateTime<Utc> {
         "2026-09-25T00:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn gold_sources_cover_every_published_gold_field() {
+        let uid: Uid = "OTK000000001".parse().unwrap();
+        let v = serde_json::to_value(to_message(
+            &SystemTrack::from_first_observation(uid, sample()),
+            &ctx(),
+            at(),
+        ))
+        .unwrap();
+        let envelope = [
+            "schema",
+            "op",
+            "uid",
+            "attributes",
+            "publisher",
+            "published_at",
+        ];
+        let mut gold: Vec<&str> = v
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !envelope.contains(k))
+            .collect();
+        let mut listed: Vec<&str> = GOLD_SOURCES.iter().map(|(k, _)| *k).collect();
+        gold.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(gold, listed);
     }
 
     #[test]

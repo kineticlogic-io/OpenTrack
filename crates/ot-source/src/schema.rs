@@ -134,6 +134,39 @@ impl Builtin {
         }
     }
 
+    /// The observation fields (mapping targets) this built-in reads; empty
+    /// for values OpenTrack computes itself (state, sources, counts...).
+    pub fn reads(self) -> &'static [&'static str] {
+        use Builtin::*;
+        match self {
+            CotType => &[
+                "classification.cot_type",
+                "classification.domain",
+                "classification.affiliation",
+            ],
+            CourseDeg => &["kinematics.course_deg"],
+            SpeedMps => &["kinematics.speed_mps"],
+            HeadingDeg => &["kinematics.heading_deg"],
+            VerticalRateMps => &["kinematics.vertical_rate_mps"],
+            AltitudeHaeM => &["position.altitude_hae_m"],
+            CepM => &[
+                "uncertainty.circular_error_m",
+                "uncertainty.ellipse.semi_major_m",
+                "uncertainty.ellipse.semi_minor_m",
+            ],
+            Callsign => &["callsign"],
+            Identifiers => &["identifiers"],
+            PlatformType => &["platform.type_code"],
+            PlatformFlag => &["platform.flag"],
+            PlatformHull => &["platform.hull"],
+            SensorCode => &["provenance.sensor_code"],
+            Confidence => &["provenance.confidence"],
+            State | Sources | Contributors | ObservationCount | FirstSeen | LastSeen | EntityId => {
+                &[]
+            }
+        }
+    }
+
     /// The value for a track, if it has one.
     pub fn value(self, t: &SystemTrack) -> Option<Value> {
         use Builtin::*;

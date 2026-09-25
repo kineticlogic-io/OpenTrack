@@ -46,7 +46,7 @@ const COLUMNS: DataTableColumn<PreviewObservation>[] = [
 ]
 
 /** Counts, errors, observations and a map for a dry run. */
-export function PreviewResults({ result }: { result: PreviewResult }) {
+export function PreviewResults({ result, showMap = true }: { result: PreviewResult; showMap?: boolean }) {
   const [selected, setSelected] = useState<string | null>(null)
   const observations = useMemo(() => result.observations ?? [], [result])
   // Several observations of one track: keep the latest per key for table and map.
@@ -86,6 +86,7 @@ export function PreviewResults({ result }: { result: PreviewResult }) {
           {e}
         </div>
       ))}
+      {showMap && (
       <MapView
         aria-label="Preview map"
         points={points}
@@ -95,6 +96,7 @@ export function PreviewResults({ result }: { result: PreviewResult }) {
         fitKey={latest.length > 0 ? 'fit' : 'empty'}
         height={220}
       />
+      )}
       <DataTable
         aria-label="Preview observations"
         columns={COLUMNS}

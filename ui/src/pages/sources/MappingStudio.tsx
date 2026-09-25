@@ -14,13 +14,15 @@ interface Props {
   sampleSourceId: string
   proposals?: Proposal[]
   missing?: string[]
+  /** Show the preview's map (the onboarding wizard does; a source's Pipeline view does not). */
+  showMap?: boolean
 }
 
 /**
  * Mapping studio: edit the pipeline (codec, mapping, enrich stages) as JSON and see the result
  * live against the captured samples.
  */
-export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missing }: Props) {
+export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missing, showMap = true }: Props) {
   const [text, setText] = useState(() => JSON.stringify(spec.pipeline, null, 2))
   const [parseError, setParseError] = useState(false)
   const [preview, setPreview] = useState<PreviewResult | null>(null)
@@ -104,7 +106,7 @@ export function MappingStudio({ spec, onChange, sampleSourceId, proposals, missi
           <span className="muted">{running ? 'running…' : `samples of ${sampleSourceId}`}</span>
         </div>
         {previewError && <div className="error-text">{previewError}</div>}
-        {preview ? <PreviewResults result={preview} /> : !previewError && <span className="muted">Running the first preview…</span>}
+        {preview ? <PreviewResults result={preview} showMap={showMap} /> : !previewError && <span className="muted">Running the first preview…</span>}
       </div>
     </div>
   )
