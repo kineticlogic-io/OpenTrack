@@ -245,6 +245,44 @@ impl Db {
         })
     }
 
+    /// End a source track's link to its system track (its source said it
+    /// ended), recording the decision. Returns the decision id, or None when
+    /// it had no live link.
+    pub fn end_source_track(
+        &mut self,
+        source_id: &str,
+        source_track_key: &str,
+        decision: Decision,
+    ) -> Result<Option<i64>> {
+        self.write(|tx| {
+            let now = now_ms();
+            let key = graph::source_track_key(source_id, source_track_key);
+            let src: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM nodes WHERE kind = 'source_track' AND key = ?1",
+                    [&key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(src) = src else { return Ok(None) };
+            let live: i64 = tx.query_row(
+                "SELECT count(*) FROM edges WHERE src = ?1 AND kind = 'REPORTS_FOR' AND valid_to_ms IS NULL",
+                [src],
+                |r| r.get(0),
+            )?;
+            if live == 0 {
+                return Ok(None);
+            }
+            let decision_id = record_decision(tx, &decision, now)?;
+            tx.execute(
+                "UPDATE edges SET valid_to_ms = max(?2, valid_from_ms), ended_by = ?3
+                 WHERE src = ?1 AND kind = 'REPORTS_FOR' AND valid_to_ms IS NULL",
+                params![src, now, decision_id],
+            )?;
+            Ok(Some(decision_id))
+        })
+    }
+
     /// Merge system track `from` into `into`: every source track reporting
     /// for `from` now reports for `into`, `from` is retired and a live
     /// `MERGED_INTO` edge keeps it resolvable as an alias. One transaction;

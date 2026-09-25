@@ -74,6 +74,7 @@ impl Associate for Gnn {
                             kf: tr.kf.clone(),
                             domain: tr.life.domain(&self.spec),
                             plot: j,
+                            dropped: false,
                         });
                     }
                 }
@@ -81,7 +82,19 @@ impl Associate for Gnn {
             }
         }
         let spec = &self.spec;
-        self.tracks.retain(|tr| tr.life.alive(t, spec));
+        self.tracks.retain(|tr| {
+            let alive = tr.life.alive(t, spec);
+            if !alive && tr.life.confirmed && !plots.is_empty() {
+                reports.push(Report {
+                    id: tr.id,
+                    kf: tr.kf.clone(),
+                    domain: tr.life.domain(spec),
+                    plot: 0,
+                    dropped: true,
+                });
+            }
+            alive
+        });
         for (j, z) in plots.iter().enumerate() {
             if taken[j] {
                 continue;
@@ -96,6 +109,7 @@ impl Associate for Gnn {
                     kf: kf.clone(),
                     domain: life.domain(spec),
                     plot: j,
+                    dropped: false,
                 });
             }
             self.tracks.push(Track { id, kf, life });

@@ -511,6 +511,7 @@ async fn list_tracks(
                 "speed_mps": t.view.kinematics.speed_mps,
                 "last_seen": t.last_seen,
                 "observation_count": t.observation_count,
+                "published": t.is_published(),
                 "sources": t.contributors.iter().map(|c| format!("{}/{}", c.source_id, c.source_track_key)).collect::<Vec<_>>(),
                 "registry": t.view.ext.get("registry"),
             })

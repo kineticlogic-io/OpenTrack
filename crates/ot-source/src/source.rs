@@ -23,6 +23,19 @@ pub struct SourceSpec {
     /// (anonymous plots, associated with system tracks by the engine).
     #[serde(default, skip_serializing_if = "Reports::is_tracks")]
     pub reports: Reports,
+    /// Whether a system track this source alone reports for is published.
+    /// Unset: yes for track feeds, no for detections (a lone radar or lidar
+    /// track is kept inside OpenTrack until another source corroborates it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_alone: Option<bool>,
+}
+
+impl SourceSpec {
+    /// [`Self::publish_alone`] with its default applied.
+    pub fn publishes_alone(&self) -> bool {
+        self.publish_alone
+            .unwrap_or(self.reports == Reports::Tracks)
+    }
 }
 
 fn default_priority() -> i64 {
@@ -137,6 +150,19 @@ mod tests {
                 { "name": "event", "key": "event.@uid", "fields": {
                     "position.latitude": "event.point.@lat", "position.longitude": "event.point.@lon" } } ] } }
         })
+    }
+
+    #[test]
+    fn detection_feeds_do_not_publish_alone_by_default() {
+        let mut v = spec("radar");
+        let tracks: SourceSpec = serde_json::from_value(v.clone()).unwrap();
+        assert!(tracks.publishes_alone());
+        v["reports"] = json!("detections");
+        let plots: SourceSpec = serde_json::from_value(v.clone()).unwrap();
+        assert!(!plots.publishes_alone());
+        v["publish_alone"] = json!(true);
+        let chosen: SourceSpec = serde_json::from_value(v).unwrap();
+        assert!(chosen.publishes_alone());
     }
 
     #[test]

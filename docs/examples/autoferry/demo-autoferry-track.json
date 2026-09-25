@@ -34,7 +34,8 @@
             "kinematics.speed_mps": "speed",
             "classification.domain": {
               "const": "surface"
-            }
+            },
+            "state": "state"
           }
         }
       ]

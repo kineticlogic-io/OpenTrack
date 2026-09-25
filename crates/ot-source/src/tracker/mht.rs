@@ -40,6 +40,9 @@ struct Owner {
     kf: Kf,
 }
 
+// A dropped MHT track reports the stage's domain only: the tree that knew
+// its plots' domains may be gone.
+
 pub(super) struct Mht {
     spec: TrackerSpec,
     trees: BTreeMap<u64, Vec<Leaf>>,
@@ -295,13 +298,28 @@ impl Associate for Mht {
                     kf: l.kf.clone(),
                     domain: l.life.domain(&self.spec),
                     plot: j,
+                    dropped: false,
                 });
             }
         }
         self.prune(k, &chosen);
         self.dedupe(&chosen);
+        // A track number not reported for the drop time is over.
         let limit = secs(self.spec.drop_confirmed_secs);
-        self.owners.retain(|_, o| t - o.kf.t <= limit);
+        let spec = &self.spec;
+        self.owners.retain(|id, o| {
+            let alive = t - o.kf.t <= limit;
+            if !alive && !plots.is_empty() {
+                reports.push(Report {
+                    id: *id,
+                    kf: o.kf.clone(),
+                    domain: spec.domain,
+                    plot: 0,
+                    dropped: true,
+                });
+            }
+            alive
+        });
         let trees = &self.trees;
         self.labels.retain(|tree, _| trees.contains_key(tree));
         reports

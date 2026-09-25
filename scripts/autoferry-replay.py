@@ -4,7 +4,9 @@ happening now: the vessel track feed and the lidar and radar detections go to
 the demo sources in docs/examples/autoferry (UDP on localhost).
 
 Each loop renames the vessel keys (`r2-target-1`), so every run makes fresh
-tracks. Everything the demo sources publish is marked simulated training.
+tracks, and ends its vessel tracks (`state: dropped`) when it finishes; the
+trackers end their own. Everything the demo sources publish is marked
+simulated training.
 
 Usage: autoferry-replay.py [--loops N] [--scenarios 2 16] [--host 127.0.0.1]
 Needs the fixtures from scripts/autoferry.py (crates/ot-server/tests/data/autoferry).
@@ -67,6 +69,7 @@ def main():
         run += 1
         fs = frames(scenario, run)
         t0, start = fs[0][0], time.time()
+        last = {}
         print(f"run {run}: scenario {scenario}, {len(fs)} frames over {fs[-1][0] - t0:.0f} s", flush=True)
         for t, feed, payload in fs:
             due = start + (t - t0)
@@ -76,10 +79,15 @@ def main():
             now = iso(due)
             if feed == "track":
                 payload["t"] = now
+                last[payload["id"]] = payload
             else:
                 for p in payload["plots"]:
                     p["t"] = now
             sock.sendto(json.dumps(payload).encode(), (args.host, PORTS[feed]))
+        # The vessels' feed says their tracks are over.
+        for payload in last.values():
+            payload.update(t=iso(time.time()), state="dropped")
+            sock.sendto(json.dumps(payload).encode(), (args.host, PORTS["track"]))
         time.sleep(GAP_S)
 
 

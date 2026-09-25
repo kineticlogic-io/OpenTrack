@@ -253,7 +253,10 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
           ? 'Each plot updates the nearest system track inside the gate; plots with none are dropped.'
           : 'Each source track reports for one system track, paired with other sources’ tracks on a shared identifier or kinematic agreement.',
       },
-      { label: 'Published', value: 'The GOLD fields, plus the output schema’s attributes; see the field map on the Map stage.' },
+      {
+        label: 'Published',
+        value: 'Confirmed tracks that a feed allowed to stand alone reports for, or that two or more sources back: the GOLD fields plus the output schema’s attributes.',
+      },
     ],
   })
   return out

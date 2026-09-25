@@ -117,6 +117,26 @@ impl RedisStore {
         Ok(())
     }
 
+    /// Store a system track's state without publishing it (a track not yet
+    /// authoritative enough to leave OpenTrack).
+    pub async fn put_system_track_quietly(&self, track: &SystemTrack) -> Result<()> {
+        redis::cmd("SET")
+            .arg(self.keys.system_track(&track.uid.to_string()))
+            .arg(serde_json::to_string(track)?)
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a system track that was never published (no tombstone needed).
+    pub async fn forget_system_track(&self, uid: Uid) -> Result<()> {
+        redis::cmd("DEL")
+            .arg(self.keys.system_track(&uid.to_string()))
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_system_track(&self, uid: Uid) -> Result<Option<SystemTrack>> {
         let raw: Option<String> = redis::cmd("GET")
             .arg(self.keys.system_track(&uid.to_string()))

@@ -158,6 +158,37 @@ fn clustering_merges_one_objects_plots() {
 }
 
 #[test]
+fn every_tracker_says_when_it_drops_a_track() {
+    for algorithm in ["gnn", "mht"] {
+        let mut t = Tracker::new(spec(algorithm)).unwrap();
+        let mut out = run_all(&mut t, (0..6).map(loud_plot).collect());
+        // The boat vanishes; the sensor keeps scanning (one plot far away).
+        for s in 6..20 {
+            let mut far = loud_plot(s);
+            far.position.latitude += 0.05;
+            out.extend(run_all(&mut t, vec![far]));
+        }
+        let ends: Vec<&Observation> = out
+            .iter()
+            .filter(|o| o.state == Some(ot_core::TrackState::Dropped))
+            .collect();
+        assert_eq!(ends.len(), 1, "{algorithm}: {ends:?}");
+        let key = &out[0].source_track_key;
+        assert_eq!(&ends[0].source_track_key, key, "{algorithm}");
+        assert_eq!(
+            ends[0].classification.affiliation,
+            Some(Affiliation::Unknown)
+        );
+        // Nothing more under that key after its end.
+        let after = out.iter().skip_while(|o| o.state.is_none()).skip(1);
+        assert!(
+            after.filter(|o| &o.source_track_key == key).count() == 0,
+            "{algorithm}"
+        );
+    }
+}
+
+#[test]
 fn rejects_nonsense_settings() {
     let mut s = spec("mht");
     s.mht.detection_probability = 1.0;

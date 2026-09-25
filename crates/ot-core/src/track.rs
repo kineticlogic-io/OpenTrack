@@ -69,9 +69,20 @@ pub struct SystemTrack {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub observation_count: u64,
+    /// Whether it has been published: a track is kept inside OpenTrack until
+    /// it is confirmed and authoritative (see the engine's publish rule).
+    /// Absent on tracks stored before the rule, which were all published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published: Option<bool>,
 }
 
 impl SystemTrack {
+    /// Whether consumers have seen this track (tracks from before the
+    /// publish rule count as published).
+    pub fn is_published(&self) -> bool {
+        self.published != Some(false)
+    }
+
     /// A new tentative system track seeded from one observation.
     pub fn from_first_observation(uid: Uid, obs: Observation) -> Self {
         let contributor = Contributor {
@@ -95,6 +106,7 @@ impl SystemTrack {
             entity_id: None,
             attributes: Default::default(),
             notices: Vec::new(),
+            published: Some(false),
         }
     }
 }

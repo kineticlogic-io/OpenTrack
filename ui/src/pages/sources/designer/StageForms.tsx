@@ -258,7 +258,20 @@ export function TrackerForm({ value, onChange }: Props) {
 }
 
 /** What the source's observations are, which decides how correlation takes them. */
-export function PublishForm({ reports, tracker, onChange }: { reports?: string; tracker: boolean; onChange: (r: 'detections' | undefined) => void }) {
+export function PublishForm({
+  reports,
+  tracker,
+  publishAlone,
+  onChange,
+  onPublishAlone,
+}: {
+  reports?: string
+  tracker: boolean
+  publishAlone?: boolean
+  onChange: (r: 'detections' | undefined) => void
+  onPublishAlone: (v: boolean | undefined) => void
+}) {
+  const alone = publishAlone ?? reports !== 'detections'
   return (
     <div className="stack">
       <Row label="The feed reports">
@@ -275,8 +288,20 @@ export function PublishForm({ reports, tracker, onChange }: { reports?: string; 
           ? 'The tracker stage turns the plots into tracks; correlation pairs them with other sources.'
           : reports === 'detections'
             ? 'Each plot updates the nearest system track another source keeps; plots near none are dropped. Add a Tracker stage to form tracks instead.'
-            : 'Every observation that passes reaches correlation and is published on the TRACKS stream.'}
+            : 'Every observation that passes reaches correlation.'}
       </span>
+      <Row label="Publish its lone tracks" hint="A track only this source reports for. No: it stays inside OpenTrack until another source corroborates it.">
+        <FieldSelect
+          ariaLabel="Publish lone tracks"
+          fields={[{ name: 'yes' }, { name: 'no' }]}
+          value={alone ? 'yes' : 'no'}
+          onChange={(v) => {
+            const want = v === 'yes'
+            onPublishAlone(want === (reports !== 'detections') ? undefined : want)
+          }}
+          style={{ width: 160 }}
+        />
+      </Row>
     </div>
   )
 }

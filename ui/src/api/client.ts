@@ -64,6 +64,8 @@ export interface SystemTrack {
   first_seen: string
   last_seen: string
   observation_count: number
+  /** False while the track is kept inside OpenTrack (not yet authoritative). */
+  published?: boolean
 }
 
 export interface TrackResponse {
@@ -221,6 +223,8 @@ export interface SourceSpec {
   priority?: number
   /** Tracks (a key per object) or detections (anonymous plots). */
   reports?: 'tracks' | 'detections'
+  /** Whether a track this source alone reports for is published (default: track feeds only). */
+  publish_alone?: boolean
 }
 
 export interface LinkStatus {

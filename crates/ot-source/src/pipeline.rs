@@ -368,9 +368,11 @@ impl Pipeline {
         }
     }
 
-    /// Throttle, then ship.
+    /// Throttle, then ship. A source track's end always ships.
     fn emit(&mut self, obs: Observation, out: &mut Output) {
-        if let Some(t) = &self.spec.throttle {
+        if obs.state == Some(ot_core::TrackState::Dropped) {
+            self.throttle.remove(&obs.source_track_key);
+        } else if let Some(t) = &self.spec.throttle {
             let key = obs.source_track_key.clone();
             if !t.due(self.throttle.get(&key), &obs) {
                 self.counts.throttled += 1;

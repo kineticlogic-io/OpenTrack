@@ -122,6 +122,13 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
           <span className="mono muted">{m.track_id}</span>
         </div>
         <span className="spacer" />
+        {t.published === false && (
+          <span title="Kept inside OpenTrack: only a sensor that may not stand alone reports for it, or it is not confirmed yet.">
+            <Badge color="grey" size="sm" uppercase>
+              not published
+            </Badge>
+          </span>
+        )}
         <Badge color={STATE_COLOR[t.state] ?? 'grey'} size="sm" uppercase>
           {t.state}
         </Badge>

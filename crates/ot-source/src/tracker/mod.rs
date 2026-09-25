@@ -6,7 +6,8 @@
 //! is confirmed after `confirm_hits` plots within `confirm_within_secs`, and
 //! dropped after going `drop_tentative_secs` (unconfirmed) or
 //! `drop_confirmed_secs` without one. Only confirmed tracks are reported,
-//! each time a plot updates them.
+//! each time a plot updates them, and once more with `state: dropped` when
+//! the tracker gives up on them (so correlation can let them go).
 //!
 //! A tracker knows where something is and how it moves, not what it is. Its
 //! tracks carry no identity, and at most an unknown affiliation and a domain
@@ -253,14 +254,16 @@ pub struct Plot {
     pub domain: Option<TrackerDomain>,
 }
 
-/// A confirmed track updated by a plot in this scan.
+/// A confirmed track updated by a plot in this scan, or dropped.
 #[derive(Debug, Clone)]
 pub struct Report {
     pub id: u64,
     pub kf: Kf,
     pub domain: Option<TrackerDomain>,
-    /// Index of the plot that updated it.
+    /// Index of the plot that updated it (a dropped track: any plot of the scan).
     pub plot: usize,
+    /// The tracker gave up on it: reported once, with `state: dropped`.
+    pub dropped: bool,
 }
 
 /// A track's confirmation, age and the domains its plots reported.
@@ -489,7 +492,7 @@ impl Tracker {
             identifiers: Vec::new(),
             name: None,
             callsign: None,
-            observed_at: r.kf.t,
+            observed_at: if r.dropped { det.observed_at } else { r.kf.t },
             received_at: det.received_at,
             position: Position {
                 latitude: r.kf.lat,
@@ -508,7 +511,7 @@ impl Tracker {
             classification: tracker_classification(r.domain.map(TrackerDomain::domain)),
             platform: Default::default(),
             provenance: det.provenance.clone(),
-            state: None,
+            state: r.dropped.then_some(ot_core::TrackState::Dropped),
             track_type: det.track_type,
             ext: Default::default(),
         }
