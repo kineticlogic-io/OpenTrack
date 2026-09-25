@@ -22,7 +22,7 @@ use tokio::time::Instant;
 pub const GROUP: &str = "track-writer";
 
 /// Metrics bucket the writer counts under.
-const METRICS_SOURCE: &str = "_writer";
+const METRICS_SOURCE: &str = crate::metrics::WRITER;
 
 #[derive(Debug, Clone)]
 pub struct WriterSettings {

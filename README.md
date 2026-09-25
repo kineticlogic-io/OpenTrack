@@ -29,8 +29,10 @@ crates/
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
 docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
 docs/nats-output.md  the published track contract, for consumers
-ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview, Sources
-              (list, add-source wizard, mapping studio with live preview), Schema workspace
+ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview (status and
+              system metrics), Sources (topology, list, add-source wizard, mapping studio with live
+              preview), Track Database (map, baseball card with provenance, card editor, tracks
+              table), Schema workspace
 ```
 
 Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,

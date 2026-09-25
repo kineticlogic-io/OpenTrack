@@ -269,3 +269,118 @@ body {
   justify-content: flex-end;
   gap: var(--space-sm);
 }
+
+/* Overview metrics: a strip of figures, then charts that wrap to one column when narrow. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 64px;
+}
+
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: var(--space-md) var(--space-lg);
+}
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+  min-width: 0;
+}
+
+/* The workspace row (stareSDK DESIGN-CONTRACT §2): context on the left, the selected item on
+   the right, wrapping to one column when narrow. */
+.workspace {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: var(--space-md);
+  align-items: start;
+}
+
+/* Fixed-height panel bodies in the workspace row, so both sides line up. */
+.workspace-body {
+  height: 420px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.workspace-body.map {
+  overflow: hidden;
+  padding: 0;
+}
+
+/* The baseball card: symbol and name over the card's tabs. */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.card-head img {
+  flex-shrink: 0;
+  display: block;
+}
+
+.card-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.card-name strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.symbol-cell {
+  display: block;
+  height: 18px;
+  width: auto;
+}
+
+/* A compact search box for a panel's title row. */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 180px;
+}
+
+.search svg {
+  position: absolute;
+  left: 8px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.search svg + * {
+  width: 100%;
+}

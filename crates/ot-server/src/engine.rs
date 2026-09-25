@@ -171,6 +171,39 @@ fn resolve(attrs: &Attributes, t: &mut SystemTrack) -> bool {
     changed
 }
 
+/// Per-cycle counters, added to the `_engine` metrics.
+#[derive(Debug, Default)]
+struct EngineCounts {
+    /// Observations applied to a system track.
+    observations: u64,
+    /// System tracks created for new source tracks.
+    created: u64,
+    /// Changes published at once rather than throttled.
+    urgent: u64,
+    out_of_order: u64,
+    unreadable: u64,
+    lost: u64,
+    dropped: u64,
+}
+
+impl EngineCounts {
+    fn pairs(&self) -> Vec<(String, u64)> {
+        [
+            ("observations", self.observations),
+            ("created", self.created),
+            ("urgent", self.urgent),
+            ("out_of_order", self.out_of_order),
+            ("unreadable", self.unreadable),
+            ("lost", self.lost),
+            ("dropped", self.dropped),
+        ]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| (k.to_owned(), n))
+        .collect()
+    }
+}
+
 pub struct Engine {
     common: Common,
     settings: EngineSettings,
@@ -357,6 +390,7 @@ impl Engine {
             self.reports.extend(created);
         }
 
+        let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
         for (source, id, obs) in batch {
             acks.entry(source.clone()).or_default().push(id.clone());
@@ -364,6 +398,7 @@ impl Engine {
                 Ok(o) => o,
                 Err(e) => {
                     tracing::warn!(%source, %id, error = %e, "unreadable observation skipped");
+                    counts.unreadable += 1;
                     continue;
                 }
             };
@@ -378,6 +413,7 @@ impl Engine {
                 Some(t) => {
                     let outcome = apply(t, obs, self.settings.confirm_after);
                     if outcome == Applied::OutOfOrder {
+                        counts.out_of_order += 1;
                         continue;
                     }
                     let before = t.entity_id.clone();
@@ -390,24 +426,32 @@ impl Engine {
                     let mut t = SystemTrack::from_first_observation(uid, obs);
                     resolve(&self.attrs, &mut t);
                     self.tracks.insert(uid, t.clone());
+                    counts.created += 1;
                     (t, true)
                 }
             };
+            counts.observations += 1;
+            counts.urgent += u64::from(urgent);
             self.redis.put_system_track(&track, urgent).await?;
         }
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
         }
+        self.redis
+            .incr_metrics(crate::metrics::ENGINE, &counts.pairs())
+            .await?;
         Ok(())
     }
 
     async fn reap(&mut self) -> anyhow::Result<()> {
         let now = Utc::now();
         let mut dropped = Vec::new();
+        let mut lost = 0;
         for track in self.tracks.values_mut() {
             match lifecycle(track, now, &self.settings) {
                 Lifecycle::Keep => {}
                 Lifecycle::Lost => {
+                    lost += 1;
                     track.state = TrackState::Lost;
                     resolve(&self.attrs, track);
                     self.redis.put_system_track(track, true).await?;
@@ -415,6 +459,14 @@ impl Engine {
                 Lifecycle::Drop => dropped.push(track.uid),
             }
         }
+        let counts = EngineCounts {
+            lost,
+            dropped: dropped.len() as u64,
+            ..Default::default()
+        };
+        self.redis
+            .incr_metrics(crate::metrics::ENGINE, &counts.pairs())
+            .await?;
         if dropped.is_empty() {
             return Ok(());
         }

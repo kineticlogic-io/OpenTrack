@@ -1,3 +1,5 @@
+import type { BadgeColor } from 'staresdk'
+
 export const fmtTime = (t: number | string | null | undefined) =>
   t === null || t === undefined || t === '' ? '—' : new Date(t).toISOString().replace('T', ' ').slice(0, 19) + 'Z'
 
@@ -17,4 +19,15 @@ export function ago(iso: string | undefined | null): string {
 
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/** A value as text: strings as they are, anything else as JSON. */
+export const show = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v))
+
+/** Badge colour for a system track's state. */
+export const STATE_COLOR: Record<string, BadgeColor> = {
+  tentative: 'warning',
+  confirmed: 'success',
+  lost: 'grey',
+  dropped: 'danger',
 }

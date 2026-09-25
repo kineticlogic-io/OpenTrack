@@ -4,7 +4,9 @@
 //! revision changed. Each source is a supervised transport (reconnecting with
 //! backoff) feeding its pipeline, which appends observations to the source's
 //! Redis stream. The worker also persists the static-join cache, flushes
-//! per-source metrics, and publishes a live status the API reads.
+//! per-source metrics, and publishes a live status the API reads. A source
+//! with a raw-output subject (set with recorded consent) also publishes each
+//! of its observations, before correlation, as JSON on that NATS subject.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
@@ -72,6 +74,7 @@ impl Registry {
 
 struct Running {
     revision: i64,
+    raw_subject: Option<String>,
     handle: JoinHandle<()>,
 }
 
@@ -80,6 +83,8 @@ pub async fn run(
     shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
     let redis = common.open_redis().await?;
+    // Only raw output uses NATS here; the client connects in the background.
+    let nats = common.connect_nats().await?.client().clone();
     let registry = Arc::new(Registry::default());
     let mut running: BTreeMap<String, Running> = BTreeMap::new();
     let (mut config_version, mut registry_version) = (String::new(), String::new());
@@ -120,7 +125,7 @@ pub async fn run(
                 }).await?;
                 match res {
                     Ok(Some((v, rows, schemas))) => {
-                        reconcile(&mut running, rows, &schemas, &redis, &registry);
+                        reconcile(&mut running, rows, &schemas, &redis, &nats, &registry);
                         config_version = v;
                     }
                     Ok(None) => {}
@@ -166,6 +171,7 @@ fn reconcile(
     rows: Vec<ot_store::SourceRow>,
     schemas: &Schemas,
     redis: &RedisStore,
+    nats: &ot_nats::async_nats::Client,
     registry: &Arc<Registry>,
 ) {
     let wanted: BTreeMap<String, ot_store::SourceRow> = rows
@@ -174,7 +180,9 @@ fn reconcile(
         .map(|r| (r.id.clone(), r))
         .collect();
     running.retain(|id, r| {
-        let keep = wanted.get(id).is_some_and(|w| w.revision == r.revision);
+        let keep = wanted
+            .get(id)
+            .is_some_and(|w| w.revision == r.revision && w.raw_subject == r.raw_subject);
         if !keep {
             r.handle.abort();
             tracing::info!(source = %id, "stopped (disabled, removed or reconfigured)");
@@ -197,11 +205,16 @@ fn reconcile(
                 "mapping targets an unpublished schema version; not started");
             continue;
         };
+        let raw = row.raw_subject.clone().map(|subject| RawOutput {
+            client: nats.clone(),
+            subject,
+        });
         let handle = tokio::spawn(run_source(
             spec,
             schema,
             row.revision,
             redis.clone(),
+            raw,
             registry.clone(),
         ));
         tracing::info!(source = %id, revision = row.revision, "started");
@@ -209,10 +222,18 @@ fn reconcile(
             id,
             Running {
                 revision: row.revision,
+                raw_subject: row.raw_subject,
                 handle,
             },
         );
     }
+}
+
+/// Where a source's raw output goes.
+#[derive(Clone)]
+struct RawOutput {
+    client: ot_nats::async_nats::Client,
+    subject: String,
 }
 
 /// Run one source forever: a supervised transport and its pipeline.
@@ -221,6 +242,7 @@ async fn run_source(
     schema: ExtensionSchema,
     revision: i64,
     redis: RedisStore,
+    raw: Option<RawOutput>,
     registry: Arc<Registry>,
 ) {
     let id = spec.id.clone();
@@ -262,7 +284,20 @@ async fn run_source(
 
     let mut rx = rx;
     loop {
-        match pipeline_loop(&spec, &schema, revision, &mut rx, &redis, &registry, &link).await {
+        match pipeline_loop(
+            &spec,
+            &schema,
+            revision,
+            &mut rx,
+            Outputs {
+                redis: &redis,
+                raw: raw.as_ref(),
+            },
+            &registry,
+            &link,
+        )
+        .await
+        {
             Ok(()) => break,
             Err(e) => {
                 // Usually Redis; frames buffer in the channel meanwhile.
@@ -274,15 +309,22 @@ async fn run_source(
     supervisor.abort();
 }
 
+/// Where a pipeline writes: its Redis stream, and its raw feed if it has one.
+struct Outputs<'a> {
+    redis: &'a RedisStore,
+    raw: Option<&'a RawOutput>,
+}
+
 async fn pipeline_loop(
     spec: &SourceSpec,
     schema: &ExtensionSchema,
     revision: i64,
     rx: &mut mpsc::Receiver<Frame>,
-    redis: &RedisStore,
+    out: Outputs<'_>,
     registry: &Arc<Registry>,
     link: &SharedStatus,
 ) -> anyhow::Result<()> {
+    let Outputs { redis, raw } = out;
     let id = spec.id.as_str();
     let mut pipeline = Pipeline::new(id, spec.pipeline.clone())
         .context("invalid pipeline")?
@@ -302,12 +344,25 @@ async fn pipeline_loop(
     let mut flush = tokio::time::interval(FLUSH_EVERY);
     let mut last_error: Option<String> = None;
     let mut totals: HashMap<String, u64> = HashMap::new();
+    let (mut raw_published, mut raw_errors) = (0u64, 0u64);
     loop {
         tokio::select! {
             frame = rx.recv() => {
                 let Some(frame) = frame else { return Ok(()) };
                 let out = pipeline.process(&frame, registry.as_ref());
                 redis.append_observations(id, &out.observations).await?;
+                if let Some(raw) = raw {
+                    for obs in &out.observations {
+                        let body = serde_json::to_vec(obs)?;
+                        match raw.client.publish(raw.subject.clone(), body.into()).await {
+                            Ok(()) => raw_published += 1,
+                            Err(e) => {
+                                raw_errors += 1;
+                                last_error = Some(format!("raw output: {e}"));
+                            }
+                        }
+                    }
+                }
                 for (key, entry) in &out.statics {
                     redis.put_static(id, key, &serde_json::to_string(entry)?, static_ttl).await?;
                 }
@@ -316,7 +371,12 @@ async fn pipeline_loop(
                 }
             }
             _ = flush.tick() => {
-                let counts = pipeline.take_counts().pairs();
+                let mut counts = pipeline.take_counts().pairs();
+                for (k, n) in [("raw_published", &mut raw_published), ("raw_error", &mut raw_errors)] {
+                    if *n > 0 {
+                        counts.push((k.to_owned(), std::mem::take(n)));
+                    }
+                }
                 redis.incr_metrics(id, &counts).await?;
                 for (k, n) in &counts {
                     *totals.entry(k.clone()).or_default() += n;

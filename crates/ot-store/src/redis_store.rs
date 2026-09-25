@@ -29,6 +29,15 @@ pub struct OutboxEntry {
     pub op: OutboxOp,
 }
 
+/// Backlog of a stream consumer group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct GroupBacklog {
+    /// Delivered, not yet acknowledged.
+    pub pending: u64,
+    /// Not yet delivered.
+    pub lag: u64,
+}
+
 #[derive(Clone)]
 pub struct RedisStore {
     conn: ConnectionManager,
@@ -473,6 +482,82 @@ impl RedisStore {
         let maps: Vec<std::collections::HashMap<String, u64>> =
             pipe.query_async(&mut self.conn.clone()).await?;
         Ok(range.into_iter().zip(maps).collect())
+    }
+
+    /// Set gauges (last value wins) in this minute's bucket for `source`,
+    /// beside the counters, so charts get history for sampled values too.
+    pub async fn set_gauges(&self, source: &str, gauges: &[(&str, u64)]) -> Result<()> {
+        if gauges.is_empty() {
+            return Ok(());
+        }
+        let minute = Utc::now().timestamp() / 60;
+        let key = self.keys.metrics(source, minute);
+        let mut pipe = redis::pipe();
+        for (field, v) in gauges {
+            pipe.hset(&key, *field, *v).ignore();
+        }
+        pipe.expire(&key, 7 * 24 * 3600).ignore();
+        pipe.query_async::<()>(&mut self.conn.clone()).await?;
+        Ok(())
+    }
+
+    /// Backlog of one consumer group: entries delivered but not acknowledged
+    /// (`pending`) and entries not yet delivered (`lag`). Zeros when the
+    /// stream or group does not exist.
+    pub async fn group_backlog(&self, stream: &str, group: &str) -> Result<GroupBacklog> {
+        let res: redis::RedisResult<Vec<std::collections::HashMap<String, redis::Value>>> =
+            redis::cmd("XINFO")
+                .arg("GROUPS")
+                .arg(stream)
+                .query_async(&mut self.conn.clone())
+                .await;
+        let groups = match res {
+            Ok(g) => g,
+            // `ERR no such key`: nothing has been written to the stream yet.
+            Err(e) if e.code() == Some("ERR") => return Ok(GroupBacklog::default()),
+            Err(e) => return Err(e.into()),
+        };
+        let int = |v: Option<&redis::Value>| match v {
+            Some(redis::Value::Int(n)) => (*n).max(0) as u64,
+            _ => 0,
+        };
+        let name_is = |v: Option<&redis::Value>| match v {
+            Some(redis::Value::BulkString(b)) => b.as_slice() == group.as_bytes(),
+            Some(redis::Value::SimpleString(s)) => s == group,
+            _ => false,
+        };
+        Ok(groups
+            .iter()
+            .find(|g| name_is(g.get("name")))
+            .map(|g| GroupBacklog {
+                pending: int(g.get("pending")),
+                lag: int(g.get("lag")),
+            })
+            .unwrap_or_default())
+    }
+
+    /// Backlog of the writer on the outbox.
+    pub async fn outbox_backlog(&self, group: &str) -> Result<GroupBacklog> {
+        self.group_backlog(&self.keys.outbox(), group).await
+    }
+
+    /// Backlog of the engine on a source's observation stream.
+    pub async fn obs_backlog(&self, source: &str, group: &str) -> Result<GroupBacklog> {
+        self.group_backlog(&self.keys.obs_stream(source), group)
+            .await
+    }
+
+    /// Bytes Redis uses (`INFO memory` `used_memory`).
+    pub async fn used_memory(&self) -> Result<u64> {
+        let info: String = redis::cmd("INFO")
+            .arg("memory")
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(info
+            .lines()
+            .find_map(|l| l.strip_prefix("used_memory:"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0))
     }
 
     async fn scan(&self, pattern: &str) -> Result<Vec<String>> {

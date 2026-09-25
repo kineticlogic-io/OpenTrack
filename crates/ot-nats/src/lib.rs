@@ -9,6 +9,8 @@
 //! Every publish waits for the JetStream acknowledgement, so the writer only
 //! acknowledges its outbox once the server has stored the message.
 
+/// The NATS client, for roles that publish outside the tracks stream.
+pub use async_nats;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -104,6 +106,9 @@ pub struct NatsStatus {
     /// Messages in the stream (live tracks plus recent deletes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_messages: Option<u64>,
+    /// Bytes the stream stores.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_error: Option<String>,
 }
@@ -207,10 +212,10 @@ impl Nats {
     pub async fn status(&self) -> NatsStatus {
         let connected = self.client.connection_state() == async_nats::connection::State::Connected;
         let info = connected.then(|| self.client.server_info());
-        let (stream_messages, stream_error) = if connected {
+        let (stream_state, stream_error) = if connected {
             match self.js.get_stream(&self.settings.stream).await {
                 Ok(mut s) => match s.info().await {
-                    Ok(i) => (Some(i.state.messages), None),
+                    Ok(i) => (Some((i.state.messages, i.state.bytes)), None),
                     Err(e) => (None, Some(e.to_string())),
                 },
                 Err(e) => {
@@ -236,7 +241,8 @@ impl Nats {
             server_version: info.as_ref().map(|i| i.version.clone()),
             stream: self.settings.stream.clone(),
             tracks_subject: self.settings.tracks_subject.clone(),
-            stream_messages,
+            stream_messages: stream_state.map(|(m, _)| m),
+            stream_bytes: stream_state.map(|(_, b)| b),
             stream_error,
         }
     }

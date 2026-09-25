@@ -21,6 +21,7 @@ export interface ServerStatus {
     stream?: string
     tracks_subject?: string
     stream_messages?: number
+    stream_bytes?: number
   }
 }
 
@@ -101,6 +102,78 @@ export interface GraphEdge {
   decision_op: string
   decision_actor: string
   ended_by: number | null
+}
+
+/** A row of the live tracks list: GOLD fields as published plus what the table shows. */
+export interface TrackRow {
+  uid: string
+  track_id: string
+  entity_id: string | null
+  /** Card values that differ from what a feed reports. */
+  notices: number
+  state: SystemTrack['state']
+  class: string
+  gold_name: string
+  domain: string
+  affiliation: string
+  force_code: number
+  track_type: string
+  sidc: TrackMessage['sidc']
+  name?: string | null
+  callsign?: string | null
+  identifiers?: { scheme: string; value: string }[]
+  latitude: number
+  longitude: number
+  course_deg?: number | null
+  speed_mps?: number | null
+  last_seen: string
+  observation_count: number
+  sources: string[]
+}
+
+export interface Backlog {
+  pending: number
+  lag: number
+}
+
+/** `/metrics`: per-minute counters and gauges, plus live values. */
+export interface SystemMetrics {
+  minutes: number
+  recent_minutes: number
+  series: {
+    /** Unix minutes. */
+    minute: number
+    /** Pipeline stage counters summed over sources. */
+    ingest: Record<string, number>
+    emitted_by_source: Record<string, number>
+    engine: Record<string, number>
+    writer: Record<string, number>
+    /** Gauges sampled by the server (last value in the minute). */
+    system: Record<string, number>
+  }[]
+  /** Totals over the last `recent_minutes`. */
+  recent: {
+    sources: Record<string, Record<string, number>>
+    engine: Record<string, number>
+    writer: Record<string, number>
+  }
+  live: {
+    tracks: number
+    by_state: Record<string, number>
+    by_domain: Record<string, number>
+    with_card: number
+    notices: number
+    outbox: Backlog
+    observations: Backlog
+    redis_bytes: number
+    rss_bytes: number
+    threads: number
+    nats_messages: number | null
+    nats_bytes: number | null
+    sqlite_bytes: number
+    uptime_secs: number
+    cpu_milli: number | null
+  }
 }
 
 export class ApiError extends Error {
@@ -326,6 +399,8 @@ export interface CardView {
 
 export const api = {
   status: () => get<ServerStatus>('/status'),
+  systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
+  tracks: (limit = 10000) => get<{ total: number; tracks: TrackRow[] }>(`/tracks?limit=${limit}`),
   track: (uid: string) => get<TrackResponse>(`/tracks/${enc(uid)}`),
   explain: (uid: string) => get<{ uid: string; edges: GraphEdge[] }>(`/tracks/${enc(uid)}/explain`),
 

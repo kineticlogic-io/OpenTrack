@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import '@xyflow/react/dist/base.css'
 import { GraphView, type GraphViewEdge, type GraphViewNode } from 'staresdk/graph-view'
-import type { GraphEdge } from '../api/client'
+import type { GraphEdge } from '../../api/client'
 
 const UID_RE = /^[A-Z0-9]{3}\d{9}$/
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { TbPlus } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, type DataTableColumn } from 'staresdk'
 import { api, type SourceRow } from '../../api/client'
@@ -6,6 +6,9 @@ import { ago, errorMessage, fmtCount } from '../../lib/format'
 import { sourceState } from '../../lib/sourceState'
 import { AddSourceWizard } from './AddSourceWizard'
 import { SourceDetail } from './SourceDetail'
+
+// React Flow loads only with the Sources page's topology.
+const Topology = lazy(() => import('./Topology'))
 
 const REFRESH_MS = 5000
 
@@ -99,6 +102,13 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   const open = !!selected && !!shown
   return (
     <div className="panels">
+      <CollapsiblePanel title="Topology" persistKey="ot.panel.topology">
+        <div className="panel-body">
+          <Suspense fallback={<span className="muted">LOADING…</span>}>
+            {sources ? <Topology sources={sources} onSelect={select} /> : <span className="muted">LOADING…</span>}
+          </Suspense>
+        </div>
+      </CollapsiblePanel>
       <CollapsiblePanel title="Sources" badge={sources ? String(sources.length) : undefined} persistKey="ot.panel.sources">
         <div className="panel-body">
           <div className="toolbar">

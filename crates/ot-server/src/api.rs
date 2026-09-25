@@ -475,22 +475,35 @@ async fn list_tracks(
     }
     tracks.sort_by_key(|t| std::cmp::Reverse(t.last_seen));
     let total = tracks.len();
+    let ctx = s.common.publish_context();
+    let now = chrono::Utc::now();
     let items: Vec<Value> = tracks
         .into_iter()
         .take(q.limit.unwrap_or(500).min(10_000))
         .map(|t| {
+            // The GOLD fields exactly as published.
+            let m = ot_core::wire::to_message(&t, &ctx, now);
             json!({
                 "uid": t.uid,
-                "track_id": t.uid.doc_id(),
+                "track_id": m.track_id,
                 "entity_id": t.entity_id,
                 "notices": t.notices.len(),
                 "state": t.state,
+                "class": m.class,
+                "gold_name": m.name,
+                "domain": m.domain,
+                "affiliation": m.affiliation,
+                "force_code": m.force_code,
+                "track_type": m.track_type,
+                "sidc": m.sidc,
                 "name": t.view.name,
                 "callsign": t.view.callsign,
                 "classification": t.view.classification.cot_type_or_derived(),
                 "identifiers": t.view.identifiers,
                 "latitude": t.view.position.latitude,
                 "longitude": t.view.position.longitude,
+                "course_deg": t.view.kinematics.course_deg,
+                "speed_mps": t.view.kinematics.speed_mps,
                 "last_seen": t.last_seen,
                 "observation_count": t.observation_count,
                 "sources": t.contributors.iter().map(|c| format!("{}/{}", c.source_id, c.source_track_key)).collect::<Vec<_>>(),
@@ -1127,6 +1140,42 @@ mod tests {
                 .iter()
                 .any(|b| b["name"] == "state")
         );
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn system_metrics() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // One delete waiting for the writer, and some counted pipeline work.
+        redis
+            .ensure_outbox_group(crate::writer::GROUP)
+            .await
+            .unwrap();
+        let uid = ot_core::Uid::new(ot_core::SiteCode::new("TST").unwrap(), 7).unwrap();
+        redis.retire_system_track(uid, "test").await.unwrap();
+        redis
+            .incr_metrics(crate::metrics::ENGINE, &[("observations".into(), 5)])
+            .await
+            .unwrap();
+        redis
+            .set_gauges(crate::metrics::SYSTEM, &[("cpu_milli", 120)])
+            .await
+            .unwrap();
+
+        let (st, body) = call(&app, "GET", "/api/v1/metrics?minutes=10", None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let series = body["series"].as_array().unwrap();
+        assert_eq!(series.len(), 10);
+        assert_eq!(series[9]["engine"]["observations"], 5, "{body}");
+        assert_eq!(body["recent"]["engine"]["observations"], 5);
+        let live = &body["live"];
+        assert_eq!(live["outbox"], json!({"pending": 0, "lag": 1}), "{body}");
+        assert_eq!(live["tracks"], 0);
+        assert_eq!(live["cpu_milli"], 120);
+        assert!(live["redis_bytes"].as_u64().unwrap() > 0);
         redis.purge_namespace().await.unwrap();
     }
 }

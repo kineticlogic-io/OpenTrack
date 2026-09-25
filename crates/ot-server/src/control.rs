@@ -52,7 +52,8 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/tracks/{uid}", get(track))
         .route("/tracks/{uid}/explain", get(explain))
-        .merge(crate::api::routes());
+        .merge(crate::api::routes())
+        .merge(crate::metrics::routes());
 
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -141,7 +142,7 @@ fn parse_uid(raw: &str) -> Result<Uid, ApiError> {
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
-    message: String,
+    pub(crate) message: String,
 }
 
 impl ApiError {

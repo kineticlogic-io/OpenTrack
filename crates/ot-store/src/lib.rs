@@ -19,7 +19,7 @@ pub mod sqlite;
 pub use cards::{Card, CardRevision};
 pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;
-pub use redis_store::{OutboxEntry, OutboxOp, RedisStore};
+pub use redis_store::{GroupBacklog, OutboxEntry, OutboxOp, RedisStore};
 pub use registry::{RegistryEntity, RegistryIdentifier, RegistryRow};
 pub use schema::SchemaVersion;
 pub use sources::{SourceRevision, SourceRow, SourceWrite};

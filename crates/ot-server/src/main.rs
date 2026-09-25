@@ -13,6 +13,7 @@ mod cards;
 mod config;
 mod control;
 mod engine;
+mod metrics;
 mod probe;
 mod sources;
 mod synthetic;
@@ -113,6 +114,7 @@ impl EngineArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    metrics::mark_start();
     install_crypto();
     init_tracing();
     let cli = Cli::parse();
@@ -182,6 +184,7 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
     tracing::info!(addr = %args.bind, "control plane listening");
+    tokio::spawn(metrics::run_sampler(state.clone()));
     axum::serve(listener, control::router(state, Some(args.ui_dir)))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

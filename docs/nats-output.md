@@ -139,7 +139,11 @@ ages out, so a consumer that starts later still learns of it.
 
 Nothing else OpenTrack publishes falls under `tracks.>`. Per-source raw output, when an admin
 enables it with recorded consent, goes to `opentrack.raw.<source>` (or an admin-chosen subject
-outside `tracks.>`).
+outside `tracks.>`): core NATS (no stream, no acknowledgement), one message per observation as the
+source's pipeline produced it, before correlation, as JSON (`source_id`, `source_track_key`,
+`observed_at`, `position`, `kinematics`, `classification`, `identifiers`, `ext`, ...). It is a
+diagnostic and integration feed, not a contract: its shape follows OpenTrack's internal
+observation and can change between versions.
 
 ## Permissions OpenTrack needs
 

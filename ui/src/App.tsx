@@ -8,12 +8,12 @@ import { OverviewPage } from './pages/OverviewPage'
 // Code editor and map (CodeMirror, MapLibre) load only with the pages that use them.
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
 const SchemaPage = lazy(() => import('./pages/schema/SchemaPage'))
-const CardsPage = lazy(() => import('./pages/cards/CardsPage'))
+const TrackDbPage = lazy(() => import('./pages/trackdb/TrackDbPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'sources', label: 'Sources' },
-  { id: 'cards', label: 'Cards' },
+  { id: 'tracks', label: 'Track Database' },
   { id: 'schema', label: 'Schema' },
 ]
 
@@ -23,6 +23,10 @@ export default function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null)
   const onStatus = useCallback((s: ServerStatus | null) => setStatus(s), [])
   const active = VIEWS.some((v) => v.id === view) ? view : 'overview'
+  // Links from before the Track Database replaced the Cards workspace.
+  useEffect(() => {
+    if (view === 'cards') go('tracks')
+  }, [view, go])
   useEffect(() => {
     api.status().then(setStatus, () => setStatus(null))
   }, [])
@@ -55,7 +59,7 @@ export default function App() {
           {active === 'overview' && <OverviewPage onStatus={onStatus} />}
           <Suspense fallback={<span className="muted">LOADING…</span>}>
             {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}
-            {active === 'cards' && <CardsPage selected={sub} onSelect={(id) => go('cards', id)} />}
+            {active === 'tracks' && <TrackDbPage selected={sub} onSelect={(id) => go('tracks', id)} />}
             {active === 'schema' && <SchemaPage />}
           </Suspense>
         </main>

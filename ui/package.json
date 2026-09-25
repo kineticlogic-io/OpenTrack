@@ -27,12 +27,14 @@
     "framer-motion": "^12.43.0",
     "maplibre-gl": "^6.11.2",
     "mdast-util-find-and-replace": "^3.0.2",
+    "milsymbol": "^3.0.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-icons": "^5.7.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "staresdk": "file:vendor/staresdk-0.1.5.tgz"
+    "staresdk": "file:vendor/staresdk-0.1.6.tgz",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
