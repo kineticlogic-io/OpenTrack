@@ -603,3 +603,18 @@ body {
   text-transform: uppercase;
   border-radius: 2px;
 }
+
+/* Banner settings, laid out as OpenStare's (the preset and preview colours are
+   operator classification colours, not chrome). */
+.banner-settings { display: flex; flex-direction: column; gap: 12px; }
+.banner-toggle { display: flex; align-items: center; gap: 12px; }
+.banner-toggle > div { flex: 1; }
+.field-caps { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-secondary); margin-bottom: 4px; }
+.banner-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.banner-preset { padding: 4px 10px; border-radius: 3px; border: 1px solid var(--color-glass-border); font-family: var(--font-sans); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; }
+.banner-preset.selected { border: 2px solid var(--color-accent); }
+.banner-colours { display: flex; gap: 24px; }
+.banner-colours > div { flex: 1; }
+.banner-colour { display: flex; align-items: center; gap: 8px; }
+.banner-colour input[type='color'] { width: 36px; height: 36px; padding: 2px; background: none; border: 1px solid var(--color-glass-border); border-radius: 4px; cursor: pointer; }
+.banner-preview { height: 24px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-family: var(--font-sans); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }

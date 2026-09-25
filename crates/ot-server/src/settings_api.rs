@@ -1,8 +1,7 @@
 //! The Settings tab over the API: instance settings (site name,
 //! classification banner), data export, and purging the tracks.
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -34,38 +33,36 @@ pub struct AppSettings {
     pub banner: BannerSettings,
 }
 
-/// The classification banner: off, set here, or OpenStare's.
+/// The classification banner, as OpenStare configures its own: on or off,
+/// the marking and its colours. Each OpenTrack sets its own, whatever the
+/// classification of the OpenStare it feeds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BannerSettings {
-    pub mode: BannerMode,
+    pub enabled: bool,
     pub text: String,
     /// CSS colours, `#rrggbb`.
     pub background: String,
     pub color: String,
-    /// OpenStare's base URL, for `mode: openstare` (its `/api/public/banner`).
-    pub openstare_url: String,
+    /// Saved by an earlier build (off / manual / follow OpenStare): read
+    /// once as enabled or not, never written.
+    #[serde(skip_serializing)]
+    pub mode: Option<String>,
+    #[serde(skip_serializing)]
+    pub openstare_url: Option<String>,
 }
 
 impl Default for BannerSettings {
     fn default() -> Self {
         Self {
-            mode: BannerMode::Off,
+            enabled: false,
             text: "UNCLASSIFIED".into(),
-            background: "#007a33".into(),
+            background: "#006400".into(),
             color: "#ffffff".into(),
-            openstare_url: "http://127.0.0.1".into(),
+            mode: None,
+            openstare_url: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BannerMode {
-    #[default]
-    Off,
-    Manual,
-    Openstare,
 }
 
 fn hex_colour(s: &str) -> bool {
@@ -78,18 +75,11 @@ impl AppSettings {
             return Err("site_name is at most 64 characters".into());
         }
         let b = &self.banner;
-        if b.mode == BannerMode::Manual {
-            if b.text.trim().is_empty() || b.text.chars().count() > 128 {
-                return Err("banner text is 1 to 128 characters".into());
-            }
-            if !hex_colour(&b.background) || !hex_colour(&b.color) {
-                return Err("banner colours are #rrggbb".into());
-            }
+        if b.enabled && (b.text.trim().is_empty() || b.text.chars().count() > 128) {
+            return Err("banner text is 1 to 128 characters".into());
         }
-        if b.mode == BannerMode::Openstare
-            && !(b.openstare_url.starts_with("http://") || b.openstare_url.starts_with("https://"))
-        {
-            return Err("openstare_url is an http(s) URL".into());
+        if !hex_colour(&b.background) || !hex_colour(&b.color) {
+            return Err("banner colours are #rrggbb".into());
         }
         Ok(())
     }
@@ -97,7 +87,14 @@ impl AppSettings {
 
 async fn load(s: &AppState) -> Result<AppSettings, ApiError> {
     let v = s.with_db(|db| db.app_settings()).await?;
-    serde_json::from_value(v).map_err(|e| ApiError::internal(format!("saved settings: {e}")))
+    let mut settings: AppSettings = serde_json::from_value(v)
+        .map_err(|e| ApiError::internal(format!("saved settings: {e}")))?;
+    let b = &mut settings.banner;
+    if let Some(mode) = b.mode.take() {
+        b.enabled = mode != "off";
+        b.openstare_url = None;
+    }
+    Ok(settings)
 }
 
 async fn get_settings(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -120,74 +117,16 @@ async fn put_settings(
         actor(&headers),
     );
     s.with_db(move |db| db.put_app_settings(&v, &who)).await?;
-    *BANNER_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     get_settings(State(s)).await
 }
 
-/// The banner as OpenStare's `/api/public/banner` shapes it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Banner {
-    enabled: bool,
-    text: String,
-    background: String,
-    color: String,
-}
-
-/// OpenStare's banner, fetched at most once a minute.
-static BANNER_CACHE: Mutex<Option<(Instant, String, Banner)>> = Mutex::new(None);
-const BANNER_TTL: Duration = Duration::from_secs(60);
-
-/// The banner to show (unauthenticated, like OpenStare's): off, the one set
-/// here, or OpenStare's (with `source`, and `error` when it cannot be read).
+/// The banner to show, unauthenticated and shaped as OpenStare's
+/// `/api/public/banner`: `{enabled, text, background, color}`.
 async fn banner(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     let b = load(&s).await?.banner;
-    let off = json!({"enabled": false, "text": "", "background": b.background, "color": b.color});
-    match b.mode {
-        BannerMode::Off => Ok(Json(json!({"source": "off", "banner": off}))),
-        BannerMode::Manual => Ok(Json(json!({"source": "manual", "banner": {
-            "enabled": true, "text": b.text, "background": b.background, "color": b.color,
-        }}))),
-        BannerMode::Openstare => {
-            let url = format!(
-                "{}/api/public/banner",
-                b.openstare_url.trim_end_matches('/')
-            );
-            if let Some((at, u, cached)) = BANNER_CACHE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-                && u == url
-                && at.elapsed() < BANNER_TTL
-            {
-                return Ok(Json(json!({"source": "openstare", "banner": cached})));
-            }
-            let fetched = async {
-                let r = reqwest::Client::new()
-                    .get(&url)
-                    .timeout(Duration::from_secs(3))
-                    .send()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if !r.status().is_success() {
-                    return Err(format!("{url}: HTTP {}", r.status()));
-                }
-                r.json::<Banner>().await.map_err(|e| e.to_string())
-            }
-            .await;
-            match fetched {
-                Ok(banner) => {
-                    *BANNER_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some((Instant::now(), url, banner.clone()));
-                    Ok(Json(json!({"source": "openstare", "banner": banner})))
-                }
-                // Without OpenStare's answer, show the one set here rather
-                // than nothing: a banner that silently vanishes is worse.
-                Err(e) => Ok(Json(json!({"source": "manual", "error": e, "banner": {
-                    "enabled": true, "text": b.text, "background": b.background, "color": b.color,
-                }}))),
-            }
-        }
-    }
+    Ok(Json(json!({
+        "enabled": b.enabled, "text": b.text, "background": b.background, "color": b.color,
+    })))
 }
 
 #[derive(Deserialize)]

@@ -36,14 +36,14 @@ export default function App() {
   useEffect(() => {
     api.status().then(setStatus, () => setStatus(null))
   }, [])
-  // Site name and classification banner (Settings); the banner follows OpenStare's when set to.
+  // Site name and classification banner (Settings), this instance's own.
   const [siteName, setSiteName] = useState('')
   const [banner, setBanner] = useState<Banner | null>(null)
   const [settingsRev, setSettingsRev] = useState(0)
   useEffect(() => {
     const load = () => {
       api.appSettings().then((r) => setSiteName(r.settings.site_name), () => {})
-      api.banner().then((r) => setBanner(r.banner.enabled ? r.banner : null), () => {})
+      api.banner().then((b) => setBanner(b.enabled ? b : null), () => {})
     }
     load()
     const t = setInterval(load, 60_000)

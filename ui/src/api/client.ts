@@ -309,7 +309,7 @@ export interface Banner {
 
 export interface AppSettings {
   site_name: string
-  banner: { mode: 'off' | 'manual' | 'openstare'; text: string; background: string; color: string; openstare_url: string }
+  banner: Banner
 }
 
 export interface AppSettingsResponse {
@@ -616,7 +616,7 @@ export const api = {
 
   appSettings: () => get<AppSettingsResponse>('/settings'),
   saveAppSettings: (settings: AppSettings) => request<AppSettingsResponse>('PUT', '/settings', settings),
-  banner: () => get<{ source: string; error?: string; banner: Banner }>('/public/banner'),
+  banner: () => get<Banner>('/public/banner'),
   exportUrl: (what: 'tracks.geojson' | 'tracks.csv' | 'config') =>
     what === 'config' ? '/api/v1/export/config' : `/api/v1/export/tracks?format=${what === 'tracks.csv' ? 'csv' : 'geojson'}`,
   purge: (confirm: string, history: boolean) =>

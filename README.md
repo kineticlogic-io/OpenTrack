@@ -129,10 +129,10 @@ the entity its id or identifiers name or creates one, blank cells change nothing
 never taken from another entity, and nothing is written while any row has an error.
 
 The **Settings** tab sets the instance's display name (track UIDs keep the deployment's site code)
-and the **classification banner**, drawn top and bottom of every page as OpenStare draws it: off,
-set here (with the standard markings as presets), or following OpenStare's own banner
-(`<OpenStare>/api/public/banner`, read every minute; the marking set here stays up if OpenStare
-cannot be read). OpenTrack serves its banner the same way, at `GET /api/v1/public/banner`. It also
+and its **classification banner**, configured and drawn as OpenStare's (on or off, the marking and
+its colours, OpenStare's presets), top and bottom of every page. Each OpenTrack sets its own: several
+instances at different classifications can feed one OpenStare. It is served, shaped as OpenStare's,
+at `GET /api/v1/public/banner`. It also
 exports the live tracks (GeoJSON or CSV, as published, with state, confidence and sources) and
 the configuration (sources, schema versions, correlation and instance settings, as one JSON file),
 and **purges** the tracks: every live track is retired (published ones are deleted downstream),

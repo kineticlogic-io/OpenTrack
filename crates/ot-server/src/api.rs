@@ -1119,31 +1119,24 @@ mod tests {
         };
         let (st, body) = call(&app, "GET", "/api/v1/settings", None).await;
         assert_eq!(st, StatusCode::OK);
-        assert_eq!(body["settings"]["banner"]["mode"], "off");
+        assert_eq!(body["settings"]["banner"]["enabled"], false);
         assert_eq!(body["site_code"], "TST");
         let (_, b) = call(&app, "GET", "/api/v1/public/banner", None).await;
-        assert_eq!(b["banner"]["enabled"], false);
+        assert_eq!(b["enabled"], false);
 
-        let bad = json!({"banner": {"mode": "manual", "text": "SECRET", "background": "red"}});
+        let bad = json!({"banner": {"enabled": true, "text": "SECRET", "background": "red", "color": "#ffffff"}});
         let (st, _) = call(&app, "PUT", "/api/v1/settings", Some(bad)).await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "colours are #rrggbb");
-        let good = json!({"site_name": "Garden Island", "banner": {"mode": "manual", "text": "SECRET", "background": "#c8102e", "color": "#ffffff"}});
+        let good = json!({"site_name": "Garden Island", "banner": {"enabled": true, "text": "SECRET", "background": "#c8102e", "color": "#ffffff"}});
         let (st, body) = call(&app, "PUT", "/api/v1/settings", Some(good)).await;
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(body["settings"]["site_name"], "Garden Island");
+        // Shaped as OpenStare's /api/public/banner.
         let (_, b) = call(&app, "GET", "/api/v1/public/banner", None).await;
         assert_eq!(
-            (b["source"].as_str(), b["banner"]["text"].as_str()),
-            (Some("manual"), Some("SECRET"))
+            b,
+            json!({"enabled": true, "text": "SECRET", "background": "#c8102e", "color": "#ffffff"})
         );
-
-        // OpenStare unreachable: the banner set here stays up, with the error.
-        let os = json!({"banner": {"mode": "openstare", "text": "SECRET", "background": "#c8102e", "color": "#ffffff", "openstare_url": "http://127.0.0.1:9"}});
-        call(&app, "PUT", "/api/v1/settings", Some(os)).await;
-        let (_, b) = call(&app, "GET", "/api/v1/public/banner", None).await;
-        assert_eq!(b["banner"]["enabled"], true, "{b}");
-        assert!(b["error"].is_string(), "{b}");
-
         for (uri, starts) in [
             ("/api/v1/export/tracks?format=geojson", "{"),
             ("/api/v1/export/tracks?format=csv", "track_id,"),

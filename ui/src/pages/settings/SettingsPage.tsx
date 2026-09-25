@@ -1,24 +1,17 @@
 import { useEffect, useState } from 'react'
 import { TbDownload, TbTrash } from 'react-icons/tb'
-import { Button, CollapsiblePanel, FieldSelect, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
-import { api, type AppSettings, type AppSettingsResponse, type Banner } from '../../api/client'
+import { Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
+import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
-/** Standard US classification markings (text, background, text colour). */
-const PRESETS: { label: string; text: string; background: string; color: string }[] = [
-  { label: 'UNCLASSIFIED', text: 'UNCLASSIFIED', background: '#007a33', color: '#ffffff' },
-  { label: 'CUI', text: 'CUI', background: '#502b85', color: '#ffffff' },
-  { label: 'CONFIDENTIAL', text: 'CONFIDENTIAL', background: '#0033a0', color: '#ffffff' },
-  { label: 'SECRET', text: 'SECRET', background: '#c8102e', color: '#ffffff' },
-  { label: 'TOP SECRET', text: 'TOP SECRET', background: '#ff8c00', color: '#000000' },
-  { label: 'TOP SECRET//SCI', text: 'TOP SECRET//SCI', background: '#fce83a', color: '#000000' },
-]
-
-const MODES = [
-  { name: 'off', label: 'Off' },
-  { name: 'manual', label: 'Set here' },
-  { name: 'openstare', label: 'Follow OpenStare' },
+/** OpenStare's classification presets (background, text colour). */
+const PRESETS = [
+  { label: 'Unclassified', background: '#006400', color: '#ffffff' },
+  { label: 'CUI', background: '#502b85', color: '#ffffff' },
+  { label: 'Confidential', background: '#0033a0', color: '#ffffff' },
+  { label: 'Secret', background: '#c8102e', color: '#ffffff' },
+  { label: 'Top Secret', background: '#ff8300', color: '#000000' },
 ]
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -38,7 +31,6 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const { toast, confirm } = useToast()
   const [loaded, setLoaded] = useState<AppSettingsResponse | null>(null)
   const [draft, setDraft] = useState<AppSettings | null>(null)
-  const [effective, setEffective] = useState<{ source: string; error?: string; banner: Banner } | null>(null)
   const [purgeConfirm, setPurgeConfirm] = useState('')
   const [purgeHistory, setPurgeHistory] = useState(false)
   const [purging, setPurging] = useState(false)
@@ -53,7 +45,6 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
       },
       (e) => toast({ variant: 'error', title: 'Settings', message: errorMessage(e) }),
     )
-    api.banner().then(setEffective, () => setEffective(null))
   }, [toast])
 
   if (!draft || !loaded) return <span className="muted">LOADING…</span>
@@ -68,7 +59,6 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
       const r = await api.saveAppSettings(draft)
       setLoaded(r)
       setDraft(r.settings)
-      setEffective(await api.banner())
       onSaved()
       setSaved(true)
     } catch (e) {
@@ -96,59 +86,67 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
     }
   }
 
-  const preview = b.mode === 'manual' ? { enabled: true, text: b.text, background: b.background, color: b.color } : effective?.banner
   return (
     <div className="stack">
       <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
         <Row label="Site name" hint={`Shown in the header. Track UIDs keep the site code ${loaded.site_code} (set at deployment).`}>
           <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
         </Row>
-        <h4 className="subhead">Classification banner</h4>
-        <Row label="Banner" hint="Top and bottom of every page, as in OpenStare. Following OpenStare reads its banner every minute; if OpenStare cannot be reached, the banner set here stays up.">
-          <FieldSelect
-            ariaLabel="Banner mode"
-            fields={MODES.map((m) => ({ name: m.label }))}
-            value={MODES.find((m) => m.name === b.mode)?.label ?? 'Off'}
-            onChange={(label) => setB({ mode: (MODES.find((m) => m.label === label)?.name ?? 'off') as AppSettings['banner']['mode'] })}
-            style={{ width: 200 }}
-          />
-        </Row>
-        {b.mode === 'openstare' && (
-          <Row label="OpenStare URL">
-            <Input style={{ ...INPUT, width: 320 }} aria-label="OpenStare URL" value={b.openstare_url} onChange={(e) => setB({ openstare_url: e.target.value })} spellCheck={false} />
-          </Row>
-        )}
-        {b.mode !== 'off' && (
-          <>
-            <Row label={b.mode === 'openstare' ? 'Fallback marking' : 'Marking'}>
-              <div className="num-row">
-                {PRESETS.map((p) => (
-                  <Button key={p.label} size="xs" variant="ghost" onClick={() => setB({ text: p.text, background: p.background, color: p.color })}>
-                    {p.label}
-                  </Button>
-                ))}
-              </div>
-            </Row>
-            <Row label="Text">
-              <Input style={{ ...INPUT, width: 320 }} aria-label="Banner text" value={b.text} maxLength={128} onChange={(e) => setB({ text: e.target.value })} />
-            </Row>
-            <Row label="Colours">
-              <div className="num-row">
-                <input type="color" aria-label="Banner background" value={b.background} onChange={(e) => setB({ background: e.target.value })} />
-                <span className="muted">background</span>
-                <input type="color" aria-label="Banner text colour" value={b.color} onChange={(e) => setB({ color: e.target.value })} />
-                <span className="muted">text</span>
-              </div>
-            </Row>
-          </>
-        )}
-        {preview?.enabled && (
-          <Row label="Showing" hint={effective?.error ? `OpenStare could not be read (${effective.error}); showing the marking set here.` : undefined}>
-            <div className="classification-preview" style={{ background: preview.background, color: preview.color }}>
-              {preview.text}
+      </CollapsiblePanel>
+
+      {/* As OpenStare's Banner settings: this instance's own marking, whatever OpenStare shows. */}
+      <CollapsiblePanel title="Classification banner" persistKey="ot.panel.settings.banner" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
+        <div className="banner-settings">
+          <div className="banner-toggle">
+            <div>
+              <div className="field-caps">Classification banner</div>
+              <span className="muted">Displays a fixed bar at the top and bottom of every page.</span>
             </div>
-          </Row>
-        )}
+            <Toggle value={b.enabled} onChange={(enabled) => setB({ enabled })} aria-label="Classification Banner" />
+          </div>
+          <div>
+            <div className="field-caps">Classification text</div>
+            <Input style={{ width: '100%' }} value={b.text} maxLength={128} onChange={(e) => setB({ text: e.target.value })} placeholder="e.g. UNCLASSIFIED // FOR OFFICIAL USE ONLY" />
+          </div>
+          <div>
+            <div className="field-caps">Color preset</div>
+            <div className="banner-presets">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={b.background === p.background ? 'banner-preset selected' : 'banner-preset'}
+                  style={{ background: p.background, color: p.color }}
+                  onClick={() => setB({ background: p.background, color: p.color })}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="banner-colours">
+            {(
+              [
+                ['background', 'Background color', '#006400'],
+                ['color', 'Text color', '#ffffff'],
+              ] as const
+            ).map(([key, label, placeholder]) => (
+              <div key={key}>
+                <div className="field-caps">{label}</div>
+                <div className="banner-colour">
+                  <input type="color" aria-label={label} value={b[key]} onChange={(e) => setB({ [key]: e.target.value })} />
+                  <Input style={{ flex: 1 }} aria-label={`${label} hex`} value={b[key]} onChange={(e) => setB({ [key]: e.target.value })} placeholder={placeholder} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div className="field-caps">Preview</div>
+            <div className="banner-preview" style={{ background: b.background, color: b.color, opacity: b.enabled ? 1 : 0.35 }}>
+              {b.text || 'UNCLASSIFIED'}
+            </div>
+          </div>
+        </div>
       </CollapsiblePanel>
 
       <CollapsiblePanel title="Data export" persistKey="ot.panel.settings.export">
