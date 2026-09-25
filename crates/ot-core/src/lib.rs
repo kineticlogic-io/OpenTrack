@@ -7,6 +7,7 @@
 
 pub mod gold;
 pub mod schema;
+pub mod sidc;
 pub mod track;
 pub mod uid;
 pub mod wire;
@@ -15,6 +16,7 @@ pub use schema::{
     Affiliation, Classification, Domain, Ellipse, Identifier, Kinematics, Observation, Platform,
     Position, Provenance, TrackState, TrackType, Uncertainty, ValidationError,
 };
+pub use sidc::{Sidc, SidcStandard};
 pub use track::{AttributeNotice, Contributor, PairingType, SystemTrack};
 pub use uid::{SiteCode, Uid, UidError};
 

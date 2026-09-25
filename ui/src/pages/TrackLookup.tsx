@@ -104,6 +104,10 @@ export function TrackLookup() {
           </dd>
           <dt>Track type</dt>
           <dd className="mono">{m?.track_type}</dd>
+          <dt>SIDC</dt>
+          <dd className="mono">
+            {m?.sidc.code} <span className="muted">({m?.sidc.standard === 'cot' ? 'CoT' : `MIL-STD-${m?.sidc.standard.toUpperCase()}`})</span>
+          </dd>
           <dt>Position</dt>
           <dd className="mono">
             {t.view.position.latitude.toFixed(5)}, {t.view.position.longitude.toFixed(5)}

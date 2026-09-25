@@ -528,7 +528,7 @@ async fn schema_overview(State(s): State<AppState>) -> Result<Json<Value>, ApiEr
     Ok(Json(json!({
         // Always published (the OTH-GOLD minimum); the schema adds `attributes`.
         "published_core": ["track_id", "class", "name", "domain", "affiliation", "force_code",
-                           "track_type", "time", "lat", "lon"],
+                           "track_type", "sidc", "time", "lat", "lon"],
         "builtins": builtins,
         "core": ot_source::mapping::target_fields().collect::<Vec<_>>(),
         "reserved_extension_keys": ot_source::schema::RESERVED_KEYS,

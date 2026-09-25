@@ -167,6 +167,7 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
             cot_type: None,
             domain: Some(Domain::Surface),
             affiliation: Some(Affiliation::Pending),
+            sidc: None,
         },
         platform: Default::default(),
         provenance: Provenance {

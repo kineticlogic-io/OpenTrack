@@ -81,6 +81,8 @@ export interface TrackMessage {
   affiliation: string
   force_code: number
   track_type: string
+  /** Symbol identification code and its standard. */
+  sidc: { standard: '2525c' | '2525d' | 'cot'; code: string }
   time: string
   lat: number
   lon: number

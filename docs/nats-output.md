@@ -38,7 +38,8 @@ Two parts:
 
 * **The OTH-GOLD minimum**, always present. These are the fields OS-OTG Rev C makes mandatory
   in a contact report: the track number, class-name, force code and track type (CTC fields 1, 2,
-  11 and 13), and the position with its time (POS fields 1-4).
+  11 and 13), and the position with its time (POS fields 1-4). OpenTrack adds one more required
+  field, the symbol identification code (`sidc`).
 * **`attributes`**, defined by the administrator. It holds exactly the fields of the published
   output schema that have a value for this track, and nothing else. Which fields exist, their
   types and their notes are set in OpenTrack's Schema workspace, so the set changes when an admin
@@ -60,6 +61,7 @@ attribute without a value is omitted rather than sent as null.
   "affiliation": "unknown",
   "force_code": 30,
   "track_type": "tactical",
+  "sidc": { "standard": "cot", "code": "a-u-S" },
   "time": "2026-09-25T03:21:14.990Z",
   "lat": 32.701,
   "lon": -117.2,
@@ -84,8 +86,24 @@ attribute without a value is omitted rather than sent as null.
 | `affiliation` | CTC 11 | force code threat identity: `pending`, `unknown`, `assumed_friend`, `friend`, `neutral`, `suspect`, `hostile`, `joker`, `faker` or `none` |
 | `force_code` | CTC 11 | the GOLD force code (Table 5-1), e.g. 9 surface friend, 30 surface unknown |
 | `track_type` | CTC 13 | `tactical`, `live_training`, `simulated_training` or `demand_entry` |
+| `sidc` | | symbol identification code: `{ "standard", "code" }`, see below |
 | `time` | POS 1-2 | when the published position was observed |
 | `lat`, `lon` | POS 3-4 | degrees, WGS84 |
+
+### `sidc`
+
+Every track carries a symbol code with its standard, so the consumer knows how to draw it:
+
+| `standard` | `code` example | |
+|------------|----------------|-|
+| `2525c` | `SFSPCLDD-------` | MIL-STD-2525C, 15 characters (upper case, `-` padded) |
+| `2525d` | `10033000001211000000` | MIL-STD-2525D, 20 digits |
+| `cot` | `a-f-S-C-L` | Cursor-on-Target type |
+
+A feed may supply any of the three; OpenTrack recognises the standard from the code's shape. When
+no feed supplies one, it is the CoT type OpenTrack derives from `domain` and `affiliation`, so the
+field is always present. An affiliation set by policy or an operator is written into the code's
+standard identity, so `sidc`, `affiliation` and `force_code` always agree.
 
 ### Where attribute values come from
 

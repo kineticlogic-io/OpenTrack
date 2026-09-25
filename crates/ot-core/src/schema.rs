@@ -8,6 +8,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::sidc::{Sidc, SidcStandard};
+
 /// A named identifier a source reports for an object, e.g. `mmsi:338924210`,
 /// `icao:ae1234` or `cot-uid:ANDROID-1234`. Identifier matches always pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -179,25 +181,54 @@ pub struct Classification {
     pub domain: Option<Domain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affiliation: Option<Affiliation>,
+    /// Symbol identification code as a feed reports it: MIL-STD-2525C,
+    /// MIL-STD-2525D or a CoT type (see [`crate::sidc`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidc: Option<String>,
 }
 
 impl Classification {
-    /// Domain, falling back to the CoT type's battle dimension.
-    pub fn effective_domain(&self) -> Option<Domain> {
-        self.domain.or_else(|| {
-            cot_atoms(self.cot_type.as_deref()?)
-                .2
-                .and_then(Domain::from_cot_atom)
-        })
+    fn parsed_sidc(&self) -> Option<Sidc> {
+        Sidc::parse(self.sidc.as_deref()?)
     }
 
-    /// Affiliation, falling back to the CoT type's affiliation atom.
+    /// Domain, falling back to the CoT type's battle dimension, then the SIDC.
+    pub fn effective_domain(&self) -> Option<Domain> {
+        self.domain
+            .or_else(|| {
+                cot_atoms(self.cot_type.as_deref()?)
+                    .2
+                    .and_then(Domain::from_cot_atom)
+            })
+            .or_else(|| self.parsed_sidc()?.domain())
+    }
+
+    /// Affiliation, falling back to the CoT type's affiliation atom, then the
+    /// SIDC's standard identity.
     pub fn effective_affiliation(&self) -> Option<Affiliation> {
-        self.affiliation.or_else(|| {
-            cot_atoms(self.cot_type.as_deref()?)
-                .1
-                .and_then(Affiliation::from_cot_atom)
-        })
+        self.affiliation
+            .or_else(|| {
+                cot_atoms(self.cot_type.as_deref()?)
+                    .1
+                    .and_then(Affiliation::from_cot_atom)
+            })
+            .or_else(|| self.parsed_sidc()?.affiliation())
+    }
+
+    /// The SIDC to publish: the feed's (2525C, 2525D or CoT) with its
+    /// standard identity rewritten when an affiliation is set explicitly,
+    /// else the CoT type OpenTrack derives. Always present.
+    pub fn sidc_or_derived(&self) -> Sidc {
+        match self.parsed_sidc() {
+            Some(s) => match self.affiliation {
+                Some(a) => s.with_affiliation(a),
+                None => s,
+            },
+            None => Sidc {
+                standard: SidcStandard::Cot,
+                code: self.cot_type_or_derived(),
+            },
+        }
     }
 
     /// The CoT type to publish. An explicit type wins, with its affiliation
@@ -470,6 +501,7 @@ pub(crate) mod tests {
                 cot_type: None,
                 domain: Some(Domain::Surface),
                 affiliation: Some(Affiliation::Friend),
+                sidc: None,
             },
             platform: Platform::default(),
             provenance: Provenance {

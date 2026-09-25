@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 
 use crate::gold;
 use crate::schema::TrackType;
+use crate::sidc::Sidc;
 use crate::track::SystemTrack;
 use crate::uid::Uid;
 
@@ -91,6 +92,9 @@ pub struct TrackMessage {
     pub force_code: u8,
     /// GOLD CTC 13.
     pub track_type: TrackType,
+    /// Symbol identification code, with its standard (`2525c`, `2525d` or
+    /// `cot`). Always present: a CoT type is derived when no feed gives one.
+    pub sidc: Sidc,
     /// Time of the position (GOLD POS 1-2).
     pub time: DateTime<Utc>,
     /// Position (GOLD POS 3-4), degrees WGS84.
@@ -153,6 +157,7 @@ pub fn to_message(
             .unwrap_or_else(|| "unknown".into()),
         force_code: gold::force_code(domain, affiliation),
         track_type: v.track_type.unwrap_or_default(),
+        sidc: v.classification.sidc_or_derived(),
         time: v.observed_at,
         lat: v.position.latitude,
         lon: v.position.longitude,
@@ -224,6 +229,7 @@ mod tests {
                 "published_at",
                 "publisher",
                 "schema",
+                "sidc",
                 "time",
                 "track_id",
                 "track_type",
@@ -238,6 +244,7 @@ mod tests {
         assert_eq!(v["affiliation"], "friend");
         assert_eq!(v["force_code"], 9);
         assert_eq!(v["track_type"], "tactical");
+        assert_eq!(v["sidc"], json!({"standard": "cot", "code": "a-f-S"}));
         assert_eq!(v["time"], "2026-09-24T12:00:00Z");
         assert_eq!(v["attributes"], json!({"contact_phone": "+1 555 0100"}));
         let back: TrackMessage = serde_json::from_value(v).unwrap();
@@ -261,7 +268,34 @@ mod tests {
         assert_eq!(v["domain"], "unknown");
         assert_eq!(v["affiliation"], "unknown");
         assert_eq!(v["force_code"], 32);
+        assert_eq!(v["sidc"], json!({"standard": "cot", "code": "a-u"}));
         assert!(v.get("attributes").is_none());
+    }
+
+    #[test]
+    fn a_feed_sidc_is_published_and_drives_the_force_code() {
+        let mut obs = sample();
+        obs.classification = Default::default();
+        obs.classification.sidc = Some("10063000001211000000".into());
+        let uid: Uid = "OTK000000004".parse().unwrap();
+        let t = SystemTrack::from_first_observation(uid, obs.clone());
+        let v = serde_json::to_value(to_message(&t, &ctx(), at())).unwrap();
+        assert_eq!(
+            v["sidc"],
+            json!({"standard": "2525d", "code": "10063000001211000000"})
+        );
+        assert_eq!(
+            (v["domain"].as_str(), v["affiliation"].as_str()),
+            (Some("surface"), Some("hostile"))
+        );
+        assert_eq!(v["force_code"], 7);
+
+        // An explicit affiliation rewrites the SIDC's identity too.
+        obs.classification.affiliation = Some(crate::Affiliation::Friend);
+        let t = SystemTrack::from_first_observation(uid, obs);
+        let v = serde_json::to_value(to_message(&t, &ctx(), at())).unwrap();
+        assert_eq!(v["sidc"]["code"], "10033000001211000000");
+        assert_eq!(v["force_code"], 9);
     }
 
     #[test]

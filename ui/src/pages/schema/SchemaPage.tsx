@@ -162,7 +162,7 @@ export default function SchemaPage() {
         <section className="section" aria-labelledby="core-heading">
           <h2 id="core-heading">Always published</h2>
           <p className="muted" style={{ margin: '0 0 8px' }}>
-            The OTH-GOLD minimum (contact and position sets) is in every track message. The output schema adds{' '}
+            The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The output schema adds{' '}
             <span className="mono">attributes</span>: each field is filled from the entity's card, else from a feed
             mapping (<span className="mono">ext.&lt;field&gt;</span> in the mapping studio), or linked to an OpenTrack
             value.

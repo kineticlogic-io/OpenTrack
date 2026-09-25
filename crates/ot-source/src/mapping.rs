@@ -100,6 +100,7 @@ enum FieldType {
     Affiliation,
     State,
     TrackType,
+    Sidc,
 }
 
 /// Every core field a mapping may write. Extension fields are `ext.<key>`.
@@ -122,6 +123,7 @@ const TARGETS: &[(&str, FieldType)] = &[
     ("classification.cot_type", FieldType::Text),
     ("classification.domain", FieldType::Domain),
     ("classification.affiliation", FieldType::Affiliation),
+    ("classification.sidc", FieldType::Sidc),
     ("platform.type_code", FieldType::Text),
     ("platform.class", FieldType::Text),
     ("platform.name", FieldType::Text),
@@ -298,6 +300,11 @@ fn coerce(target: &str, v: Value) -> Value {
                 .and_then(|s| serde_json::to_value(s).ok())
                 .unwrap_or(Value::Null)
         }
+        // 2525C, 2525D or CoT; anything else is dropped (the track then
+        // publishes a derived CoT type).
+        Some(FieldType::Sidc) => ot_core::Sidc::parse(&as_string(&v))
+            .map(|s| Value::String(s.code))
+            .unwrap_or(Value::Null),
         Some(FieldType::TrackType) => {
             // GOLD codes (2, 3, 4) or names; a null entry means tactical.
             let s = as_string(&v).trim().to_lowercase().replace([' ', '-'], "_");
@@ -485,6 +492,37 @@ mod tests {
         assert_eq!(
             spec.apply(&json!({"MessageType": "Other"})),
             MapOutcome::Unmatched
+        );
+    }
+
+    #[test]
+    fn sidc_and_track_type_are_recognised_or_dropped() {
+        let spec: MappingSpec = serde_json::from_value(json!({"rules": [{"name": "p", "key": "id",
+            "fields": {"position.latitude": "lat", "position.longitude": "lon",
+                       "classification.sidc": "sidc", "track_type": "tt"}}]}))
+        .unwrap();
+        let run = |sidc: &str, tt: &str| {
+            let rec = json!({"id": "1", "lat": 1.0, "lon": 2.0, "sidc": sidc, "tt": tt});
+            let MapOutcome::Mapped(out) = spec.apply(&rec) else {
+                panic!("not mapped")
+            };
+            out[0].fields.clone()
+        };
+        let f = run("shsp*------****", "3");
+        assert_eq!(f["classification"]["sidc"], "SHSP-----------");
+        assert_eq!(f["track_type"], "simulated_training");
+        assert_eq!(
+            run("10033000001211000000", "")["classification"]["sidc"],
+            "10033000001211000000"
+        );
+        assert_eq!(
+            run("a-f-A-M-F", "demand entry")["track_type"],
+            "demand_entry"
+        );
+        let bad = run("not a symbol", "tactical");
+        assert!(
+            bad["classification"].get("sidc").is_none_or(Value::is_null),
+            "{bad}"
         );
     }
 

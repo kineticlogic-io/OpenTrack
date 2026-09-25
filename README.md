@@ -52,7 +52,8 @@ in [docs/nats-output.md](docs/nats-output.md).
 What a track message carries:
 
 * **The OTH-GOLD minimum**, always: track number, class-name, force code, track type, time and
-  position (the mandatory CTC and POS fields of OS-OTG Rev C).
+  position (the mandatory CTC and POS fields of OS-OTG Rev C), plus a required symbol code
+  (`sidc`: MIL-STD-2525C, 2525D or a CoT type, with its standard named).
 * **`attributes`**, designed by the admin in the Schema workspace as an output schema (field name,
   type, notes). A field's value comes from the entity's **card** (the baseball card an admin fills
   in on the Cards page, e.g. a ship's contact phone), else from a **feed** mapped to it at
