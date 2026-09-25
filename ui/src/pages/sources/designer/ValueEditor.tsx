@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { TbTable, TbX } from 'react-icons/tb'
 import { Button, FieldSelect, Input } from 'staresdk'
-import { describeValue, type ValueSpec } from '../../../lib/pipeline'
+import type { ValueSpec } from '../../../lib/pipeline'
 import { fromForm, INPUT, toForm, type Mode, type ValueForm } from '../../../lib/valueSpec'
 import { JsonField } from './JsonField'
 
@@ -40,7 +40,6 @@ export function ValueEditor({ label, value, onChange }: { label: string; value: 
     update({ mode, path: form.path || seed, first: form.first || seed })
   }
 
-  const current = form.mode === 'advanced' ? (json as ValueSpec) : fromForm(form)
   return (
     <div className="value-editor">
       <div className="value-row">
@@ -52,16 +51,16 @@ export function ValueEditor({ label, value, onChange }: { label: string; value: 
           style={{ width: 150 }}
         />
         {form.mode === 'path' && (
-          <Input style={INPUT} aria-label={`${label}: feed field`} placeholder="e.g. Message.PositionReport.Sog" value={form.path} onChange={(e) => update({ path: e.target.value })} spellCheck={false} />
+          <Input style={INPUT} aria-label={`${label}: feed field`} placeholder="feed field" value={form.path} onChange={(e) => update({ path: e.target.value })} spellCheck={false} />
         )}
         {form.mode === 'first' && (
-          <Input style={INPUT} aria-label={`${label}: fields to try`} placeholder="flight, r, hex (comma-separated, in order)" value={form.first} onChange={(e) => update({ first: e.target.value })} spellCheck={false} />
+          <Input style={INPUT} aria-label={`${label}: fields to try`} placeholder="flight, r, hex" value={form.first} onChange={(e) => update({ first: e.target.value })} spellCheck={false} />
         )}
         {form.mode === 'const' && (
-          <Input style={INPUT} aria-label={`${label}: value`} placeholder='surface, 42, true or JSON' value={form.constant} onChange={(e) => update({ constant: e.target.value })} spellCheck={false} />
+          <Input style={INPUT} aria-label={`${label}: value`} placeholder="value" value={form.constant} onChange={(e) => update({ constant: e.target.value })} spellCheck={false} />
         )}
         {form.mode === 'template' && (
-          <Input style={INPUT} aria-label={`${label}: template`} placeholder="a-{aff}-A  ({field} is replaced)" value={form.template} onChange={(e) => update({ template: e.target.value })} spellCheck={false} />
+          <Input style={INPUT} aria-label={`${label}: template`} placeholder="a-{aff}-A" value={form.template} onChange={(e) => update({ template: e.target.value })} spellCheck={false} />
         )}
       </div>
       {form.mode === 'advanced' ? (
@@ -80,20 +79,20 @@ export function ValueEditor({ label, value, onChange }: { label: string; value: 
               <Input
                 style={INPUT}
                 aria-label={`${label}: transforms`}
-                placeholder="transforms: trim, upper, knots_to_mps, round:2 …"
+                placeholder="transforms"
                 value={form.transforms}
                 onChange={(e) => update({ transforms: e.target.value })}
                 spellCheck={false}
               />
-              <Input style={INPUT} aria-label={`${label}: ignore`} placeholder="ignore values: 511, -1" value={form.nullIf} onChange={(e) => update({ nullIf: e.target.value })} spellCheck={false} />
-              <Input style={INPUT} aria-label={`${label}: default`} placeholder="default when empty" value={form.defaultValue} onChange={(e) => update({ defaultValue: e.target.value })} spellCheck={false} />
+              <Input style={INPUT} aria-label={`${label}: ignore`} placeholder="ignore values" value={form.nullIf} onChange={(e) => update({ nullIf: e.target.value })} spellCheck={false} />
+              <Input style={INPUT} aria-label={`${label}: default`} placeholder="default" value={form.defaultValue} onChange={(e) => update({ defaultValue: e.target.value })} spellCheck={false} />
             </div>
             {form.table ? (
               <div className="stack" style={{ gap: 4 }}>
                 <div className="value-row">
-                  <span className="muted">Look up the value in this table ({Object.keys(form.table).length} entries):</span>
+                  <span className="muted">Lookup table · {Object.keys(form.table).length}</span>
                   <span className="spacer" />
-                  <Input style={{ ...INPUT, width: 180 }} aria-label={`${label}: table default`} placeholder="else (not in table)" value={form.tableDefault} onChange={(e) => update({ tableDefault: e.target.value })} spellCheck={false} />
+                  <Input style={{ ...INPUT, width: 180 }} aria-label={`${label}: table default`} placeholder="otherwise" value={form.tableDefault} onChange={(e) => update({ tableDefault: e.target.value })} spellCheck={false} />
                   <Button size="xs" variant="ghost" icon={<TbX />} aria-label="Remove lookup table" title="Remove lookup table" onClick={() => update({ table: null, tableDefault: '' })} />
                 </div>
                 <JsonField
@@ -113,7 +112,6 @@ export function ValueEditor({ label, value, onChange }: { label: string; value: 
           </>
         )
       )}
-      <span className="muted">{describeValue(current)}</span>
     </div>
   )
 }

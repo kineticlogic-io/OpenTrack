@@ -512,3 +512,19 @@ body {
   gap: var(--space-sm);
   align-items: start;
 }
+
+/* The Map editor: the Source → Destination table beside the selected row's settings. */
+.map-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-md);
+  align-items: start;
+}
+
+.map-table > .map-field {
+  width: 320px;
+}
+
+.map-table .value-row.three {
+  grid-template-columns: minmax(0, 1fr);
+}

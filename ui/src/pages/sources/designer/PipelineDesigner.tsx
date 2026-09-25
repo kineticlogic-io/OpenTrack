@@ -5,7 +5,6 @@ import { api, type SchemaOverview, type SourceSpec } from '../../../api/client'
 import { errorMessage } from '../../../lib/format'
 import { pipelineStages } from '../../../lib/pipeline'
 import { usePreview } from '../../../lib/usePreview'
-import { TRANSFORMS } from '../../../lib/valueSpec'
 import { PreviewResults } from '../PreviewResults'
 import { MapEditor } from './MapEditor'
 import { AffiliationForm, DecodeForm, FilterForm, JoinForm, RegistryForm, RejectForm, ThrottleForm } from './StageForms'
@@ -140,10 +139,7 @@ export function PipelineDesigner({
       break
     case 'map':
       editor = schema ? (
-        <>
-          <span className="muted">Transforms: {TRANSFORMS.join(' · ')} (those ending in : take a value, e.g. round:2).</span>
-          <MapEditor mapping={p.mapping as Obj} schema={schema} onChange={(mapping) => setPipeline({ ...p, mapping: mapping as Pipeline['mapping'] })} />
-        </>
+        <MapEditor mapping={p.mapping as Obj} schema={schema} onChange={(mapping) => setPipeline({ ...p, mapping: mapping as Pipeline['mapping'] })} />
       ) : (
         <span className="muted">LOADING…</span>
       )
@@ -231,7 +227,7 @@ export function PipelineDesigner({
               {capturing ? 'Capturing…' : 'Capture samples'}
             </Button>
           </div>
-          <span className="muted">Samples are frames taken from the feed; capturing connects to it once for up to 15 s.</span>
+
           {previewError && <div className="error-text">{previewError}</div>}
           {preview ? <PreviewResults result={preview} showMap={false} /> : !previewError && <span className="muted">Running the first preview…</span>}
         </div>
