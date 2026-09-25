@@ -12,8 +12,8 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 |-------|-------|-------|
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, peat writer, UI shell | **done** |
 | 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
-| 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | next |
-| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | |
+| 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
+| 3. Correlation engine | Source vs system tracks, pairing approaches, best source | next |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
 | 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | |
 | 6. Migration and cutover | aisstream / adsb.lol examples, parallel run | |
@@ -29,7 +29,8 @@ crates/
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
 docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
 proto/        peat_sidecar.proto
-ui/           React + TypeScript (Vite) on openstare's stareSDK components
+ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview, Sources
+              (list, add-source wizard, mapping studio with live preview), Schema workspace
 ```
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
