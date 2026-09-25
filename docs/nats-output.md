@@ -90,6 +90,13 @@ attribute without a value is omitted rather than sent as null.
 | `time` | POS 1-2 | when the published position was observed |
 | `lat`, `lon` | POS 3-4 | degrees, WGS84 |
 
+`security`, present only when a source reporting for the track is labelled, is the track's
+security label in the shape OpenStare's ES index ICD reserves for its `stare-security` component
+template: `{"classification": "SECRET", "restrictions": ["NOFORN"], "sharing": "REL TO USA, FVEY"}`
+(`restrictions` and `sharing` optional; free text until the vocabularies are defined). An admin
+sets it per source; a track several labelled sources report for carries the label of the
+highest-priority one.
+
 `publisher` names the instance (`node_id`), its release (`version`) and the version of the
 correlation engine that produced the track (`correlation`; see
 [algorithms.md](algorithms.md)). Tracks that only sensors report for are never published:

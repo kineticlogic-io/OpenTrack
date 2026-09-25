@@ -382,6 +382,13 @@ async fn pipeline_loop(
                 continue;
             }
         };
+        let mut out = out;
+        // The source's security label goes on everything it reports.
+        if let Some(label) = &spec.security {
+            for o in &mut out.observations {
+                o.security = Some(label.clone());
+            }
+        }
         redis.append_observations(id, &out.observations).await?;
         if let Some(raw) = raw {
             for obs in &out.observations {

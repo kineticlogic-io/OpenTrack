@@ -289,6 +289,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const get = <T,>(path: string) => request<T>('GET', path)
 
+/** OpenStare's reserved `stare-security` fields; free text until vocabularies are defined. */
+export interface SecurityLabel {
+  classification: string
+  restrictions?: string[]
+  sharing?: string
+}
+
 /** What OpenTrack publishes (correlation settings `output`). */
 export interface OutputFilter {
   areas: { name: string; exclude: boolean; min_lat: number; min_lon: number; max_lat: number; max_lon: number }[]
@@ -378,6 +385,8 @@ export interface SourceSpec {
   reports?: 'tracks' | 'detections'
   /** Whether a track this source alone reports for is published (default: track feeds only). */
   publish_alone?: boolean
+  /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
+  security?: SecurityLabel
 }
 
 export interface LinkStatus {

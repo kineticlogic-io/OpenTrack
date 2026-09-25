@@ -1116,6 +1116,8 @@ pub fn best_view(
         }
     }
     view.identifiers = identifiers;
+    // The security label of the highest-priority source that has one.
+    view.security = by_priority.iter().find_map(|c| c.obs.security.clone());
     (view, provenance)
 }
 
@@ -1411,6 +1413,61 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_track_carries_its_best_labelled_sources_security_label() {
+        let label = |c: &str| ot_core::SecurityLabel {
+            classification: c.into(),
+            restrictions: vec!["NOFORN".into()],
+            sharing: Some("USA".into()),
+        };
+        let mut high = obs("gmti", "G1", 0, 32.0, -117.0);
+        high.security = Some(label("SECRET"));
+        let mut low = obs("gps", "TM01", 0, 32.0, -117.0);
+        low.security = Some(label("UNCLASSIFIED"));
+        let plain = obs("ais", "366", 0, 32.0, -117.0);
+        let (view, _) = best_view(
+            &[
+                Contribution {
+                    obs: &low,
+                    priority: 50,
+                },
+                Contribution {
+                    obs: &plain,
+                    priority: 200,
+                },
+                Contribution {
+                    obs: &high,
+                    priority: 100,
+                },
+            ],
+            60.0,
+        );
+        assert_eq!(
+            view.security.as_ref().map(|l| l.classification.as_str()),
+            Some("SECRET")
+        );
+        let mut t = ot_core::SystemTrack::from_first_observation(
+            "OTK000000001".parse().unwrap(),
+            plain.clone(),
+        );
+        t.view = view;
+        let ctx = ot_core::wire::PublishContext {
+            node_id: "n".into(),
+            version: "v".into(),
+            correlation: String::new(),
+        };
+        let m = serde_json::to_value(ot_core::wire::to_message(&t, &ctx, at(0))).unwrap();
+        assert_eq!(
+            m["security"],
+            json!({"classification": "SECRET", "restrictions": ["NOFORN"], "sharing": "USA"})
+        );
+        // Unlabelled: no security field at all.
+        t.view = plain;
+        let m = serde_json::to_value(ot_core::wire::to_message(&t, &ctx, at(0))).unwrap();
+        assert!(m.get("security").is_none());
+        assert!(label(" ").validate().is_err());
     }
 
     #[test]

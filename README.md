@@ -74,6 +74,10 @@ ground tracks with the GNN tracker, times the tracker by the revisit rate it mea
 (`auto_timing`), and publishes the sensor platform itself as a friendly track (`publish_platform`,
 symbol from the mission's platform type). A mapping rule of kind `track` bypasses the tracker.
 
+A source may carry a **security label** (pipeline → publish stage): classification, restrictions
+and sharing, the fields OpenStare's ICD reserves under `security.*`. Everything the source reports,
+and the tracks it makes, carry the label into the published message as `security`.
+
 An **output filter** (Correlation settings) decides what is published: include and exclude
 bounding boxes, allowed affiliations, domains and track types, a minimum confidence, and an
 optional rule over the track's fields. A track that fails stays inside OpenTrack, marked

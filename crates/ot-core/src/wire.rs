@@ -106,6 +106,10 @@ pub struct TrackMessage {
     /// The admin-designed output schema's fields that have a value.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub attributes: Map<String, Value>,
+    /// The track's security label (see [`crate::SecurityLabel`]), when its
+    /// sources carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<crate::SecurityLabel>,
     pub publisher: PublishContext,
     pub published_at: DateTime<Utc>,
 }
@@ -206,6 +210,7 @@ pub fn to_message(
         lat: v.position.latitude,
         lon: v.position.longitude,
         attributes: track.attributes.clone(),
+        security: track.view.security.clone(),
         publisher: ctx.clone(),
         published_at,
     }

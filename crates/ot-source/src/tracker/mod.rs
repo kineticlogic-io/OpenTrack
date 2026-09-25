@@ -803,6 +803,7 @@ impl Tracker {
                 confidence: Some((r.existence * 1e4).round() / 1e4),
                 ..det.provenance.clone()
             },
+            security: None,
             state: r.dropped.then_some(ot_core::TrackState::Dropped),
             track_type: det.track_type,
             ext: Default::default(),

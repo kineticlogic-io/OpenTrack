@@ -1,5 +1,6 @@
 import { TbPlus, TbTrash } from 'react-icons/tb'
 import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
+import type { SecurityLabel } from '../../../api/client'
 import { describeCondition, describeValue, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
@@ -346,6 +347,47 @@ export function ThrottleForm({ value, onChange }: Props) {
       {field('min_interval_secs', 'At most every (s)', 'Never more often than this per source track.', 0)}
       {field('min_move_m', 'Or after moving (m)', 'Between that and the heartbeat, only when the track moved this far.', 0)}
       {field('heartbeat_secs', 'Heartbeat (s)', 'Always pass a report after this long.', 600)}
+    </div>
+  )
+}
+
+/** An optional security label on everything the source reports, in the fields OpenStare's ICD
+ *  reserves (`security.classification`, `security.restrictions`, `security.sharing`). Free text. */
+export function SecurityForm({ value, onChange }: { value?: SecurityLabel; onChange: (v: SecurityLabel | undefined) => void }) {
+  const on = value !== undefined
+  const v = value ?? { classification: '' }
+  const set = (patch: Partial<SecurityLabel>) => onChange({ ...v, ...patch })
+  return (
+    <div className="stack">
+      <h4 className="subhead">Security label</h4>
+      <span className="muted">
+        Label everything this source reports: its tracks carry it into OpenTrack&apos;s output as <span className="mono">security</span>. A track several
+        labelled sources report for takes the label of the highest-priority one.
+      </span>
+      <Row label="Label this source">
+        <Toggle size="sm" aria-label="Label this source" value={on} onChange={(yes) => onChange(yes ? { classification: '' } : undefined)} />
+      </Row>
+      {on && (
+        <>
+          <Row label="Classification" hint="security.classification, e.g. SECRET">
+            <Input style={{ ...INPUT, width: 320 }} aria-label="Classification" value={v.classification} maxLength={256} onChange={(e) => set({ classification: e.target.value })} />
+          </Row>
+          <Row label="Restrictions" hint="security.restrictions: comma separated, e.g. NOFORN, ORCON">
+            <Input
+              style={{ ...INPUT, width: 320 }}
+              aria-label="Restrictions"
+              defaultValue={(v.restrictions ?? []).join(', ')}
+              onBlur={(e) => {
+                const r = e.target.value.split(',').map((x) => x.trim()).filter(Boolean)
+                set({ restrictions: r.length ? r : undefined })
+              }}
+            />
+          </Row>
+          <Row label="Sharing" hint="security.sharing: who the classification may be released to, e.g. REL TO USA, FVEY">
+            <Input style={{ ...INPUT, width: 320 }} aria-label="Sharing" value={v.sharing ?? ''} maxLength={256} onChange={(e) => set({ sharing: e.target.value || undefined })} />
+          </Row>
+        </>
+      )}
     </div>
   )
 }

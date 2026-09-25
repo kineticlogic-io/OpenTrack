@@ -175,6 +175,7 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
             confidence: Some(1.0),
             ..Default::default()
         },
+        security: None,
         state: None,
         // Generated, not real-world: GOLD's simulated training track.
         track_type: Some(ot_core::TrackType::SimulatedTraining),

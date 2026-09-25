@@ -14,7 +14,8 @@ pub mod wire;
 
 pub use schema::{
     Affiliation, Classification, Covariance, Domain, Ellipse, Identifier, Kinematics, Observation,
-    Platform, Position, Provenance, TrackState, TrackType, Uncertainty, ValidationError,
+    Platform, Position, Provenance, SecurityLabel, TrackState, TrackType, Uncertainty,
+    ValidationError,
 };
 pub use sidc::{Sidc, SidcStandard};
 pub use track::{AttributeNotice, Contributor, PairingType, SystemTrack};

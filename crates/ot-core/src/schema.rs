@@ -36,6 +36,37 @@ pub struct Position {
     pub altitude_hae_m: Option<f64>,
 }
 
+/// A security label, in the shape OpenStare's ES index ICD reserves for its
+/// `stare-security` component template: a nested `security` object with
+/// `classification`, `restrictions` and `sharing` (a releasability
+/// restriction, not the catalog's sharing tier). The vocabularies are not
+/// defined yet, so the values are free text as an admin enters them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityLabel {
+    pub classification: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restrictions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<String>,
+}
+
+impl SecurityLabel {
+    pub fn validate(&self) -> Result<(), String> {
+        let ok = |s: &str| !s.trim().is_empty() && s.chars().count() <= 256;
+        if !ok(&self.classification) {
+            return Err("security.classification is 1 to 256 characters".into());
+        }
+        if !self.restrictions.iter().all(|r| ok(r)) || self.restrictions.len() > 32 {
+            return Err("security.restrictions are up to 32 values of 1 to 256 characters".into());
+        }
+        if self.sharing.as_deref().is_some_and(|s| !ok(s)) {
+            return Err("security.sharing is 1 to 256 characters".into());
+        }
+        Ok(())
+    }
+}
+
 /// A GOLD XPOS-style uncertainty ellipse: semi-axes are one standard deviation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Ellipse {
@@ -420,6 +451,10 @@ pub struct Observation {
     pub platform: Platform,
     #[serde(default)]
     pub provenance: Provenance,
+    /// The security label of the source that reported it, when the source
+    /// has one (OpenStare's reserved `stare-security` shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<SecurityLabel>,
     /// State reported by the source, if it reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<TrackState>,
@@ -592,6 +627,7 @@ pub(crate) mod tests {
                 confidence: Some(0.9),
                 ..Default::default()
             },
+            security: None,
             state: None,
             track_type: None,
             ext: Default::default(),

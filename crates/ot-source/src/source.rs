@@ -28,6 +28,10 @@ pub struct SourceSpec {
     /// lidar track stays inside OpenTrack until such a source reports for it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_alone: Option<bool>,
+    /// A security label for everything this source reports: its reports and
+    /// the tracks they make carry it (OpenStare's `stare-security` shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<ot_core::SecurityLabel>,
 }
 
 impl SourceSpec {
@@ -85,6 +89,9 @@ pub enum SourceError {
 
 impl SourceSpec {
     pub fn validate(&self) -> Result<(), SourceError> {
+        if let Some(label) = &self.security {
+            label.validate().map_err(SourceError::Tracker)?;
+        }
         let id_ok = !self.id.is_empty()
             && self.id.len() <= 64
             && self
