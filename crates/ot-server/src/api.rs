@@ -410,3 +410,226 @@ async fn list_tracks(
         .collect();
     Ok(Json(json!({ "total": total, "tracks": items })))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    use crate::config::Common;
+    use crate::control::{AppState, router};
+
+    const AIS: &str = include_str!("../../../docs/examples/aisstream.json");
+    const ADSB: &str = include_str!("../../../docs/examples/adsb-lol.json");
+
+    #[test]
+    fn worked_examples_stay_valid() {
+        for (name, text) in [("aisstream", AIS), ("adsb-lol", ADSB)] {
+            let spec: ot_source::source::SourceSpec =
+                serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            spec.validate().unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+
+    /// The router over an in-memory database and an isolated Redis
+    /// namespace; `None` (test skipped) without `OT_TEST_REDIS_URL`.
+    async fn app() -> Option<(axum::Router, ot_store::RedisStore)> {
+        let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
+        let ns = format!(
+            "ot-api-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        );
+        let common = Common {
+            sqlite: ":memory:".into(),
+            redis: url.clone(),
+            redis_namespace: ns.clone(),
+            peat: "http://127.0.0.1:9".into(),
+            site: ot_core::SiteCode::new("TST").unwrap(),
+            tracks_collection: "tracks".into(),
+        };
+        let redis = ot_store::RedisStore::connect(&url, ot_store::Keys::new(ns))
+            .await
+            .unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(ot_store::Db::open_in_memory().unwrap())),
+            redis: redis.clone(),
+            peat: ot_peat::PeatClient::connect_lazy(&common.peat).unwrap(),
+            common,
+        };
+        Some((router(state, None), redis))
+    }
+
+    async fn call(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-opentrack-actor", "op:test");
+        let body = match body {
+            Some(b) => {
+                req = req.header("content-type", "application/json");
+                Body::from(b.to_string())
+            }
+            None => Body::empty(),
+        };
+        let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn source_lifecycle_through_the_api() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let spec: Value = serde_json::from_str(ADSB).unwrap();
+
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        assert_eq!(
+            (body["revision"].as_i64(), body["enabled"].as_bool()),
+            (Some(1), Some(false))
+        );
+        assert_eq!(body["transport"], "http_poll");
+
+        let (st, _) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::CONFLICT);
+
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/other-id", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+        let mut typo = spec.clone();
+        typo["pipeline"]["mapping"]["rules"][1]["fields"]["kinematic.speed_mps"] = json!("gs");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(typo)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("kinematic.speed_mps"),
+            "{body}"
+        );
+
+        let mut edited = spec.clone();
+        edited["name"] = json!("adsb.lol (edited)");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(edited)).await;
+        assert_eq!((st, body["revision"].as_i64()), (StatusCode::OK, Some(2)));
+
+        let (_, body) = call(&app, "POST", "/api/v1/sources/adsb-lol/enable", None).await;
+        assert_eq!(body["enabled"], true);
+        let (_, body) = call(&app, "GET", "/api/v1/sources/adsb-lol/revisions", None).await;
+        assert_eq!(body["revisions"].as_array().unwrap().len(), 2);
+        let (_, body) = call(&app, "GET", "/api/v1/sources", None).await;
+        assert_eq!(body["sources"][0]["name"], "adsb.lol (edited)");
+
+        // Raw output needs explicit consent and its own collection.
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/sources/adsb-lol/raw-output",
+            Some(json!({"collection": "tracks_raw_adsb", "consent": false})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/sources/adsb-lol/raw-output",
+            Some(json!({"collection": "tracks", "consent": true})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (st, body) = call(
+            &app,
+            "PUT",
+            "/api/v1/sources/adsb-lol/raw-output",
+            Some(json!({"collection": "tracks_raw_adsb", "consent": true})),
+        )
+        .await;
+        assert_eq!(
+            (st, body["raw_collection"].as_str()),
+            (StatusCode::OK, Some("tracks_raw_adsb"))
+        );
+
+        let (st, _) = call(&app, "DELETE", "/api/v1/sources/adsb-lol", None).await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let (st, _) = call(&app, "GET", "/api/v1/sources/adsb-lol", None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dry_run_and_registry_with_any_identifier_scheme() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, body) = call(&app, "POST", "/api/v1/registry/import", Some(json!({
+            "label": "test",
+            "entities": [{"id": "cvn75", "name": "USS HARRY S TRUMAN", "fields": {"cot": "a-f-S-C-A"},
+                "identifiers": [{"scheme": "mmsi", "value": "338000001"}, {"scheme": "imo", "value": "9876543"},
+                                {"scheme": "elnot", "value": "NL504"}]}]
+        }))).await;
+        assert_eq!(
+            (st, body["identifiers"].as_u64()),
+            (StatusCode::OK, Some(3)),
+            "{body}"
+        );
+        let (st, body) = call(
+            &app,
+            "GET",
+            "/api/v1/registry?scheme=elnot&value=NL504",
+            None,
+        )
+        .await;
+        assert_eq!((st, body["id"].as_str()), (StatusCode::OK, Some("cvn75")));
+
+        // Dry run: a CoT event carrying an ELNOT resolves through the registry.
+        let spec = json!({
+            "id": "cot-test", "name": "CoT test",
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "pipeline": {
+                "codec": {"type": "cot_xml"},
+                "mapping": {"rules": [{"name": "event", "key": "event.@uid",
+                    "identifiers": [{"scheme": "elnot", "value": "event.detail.elnot.@code"}],
+                    "fields": {"position.latitude": "event.point.@lat", "position.longitude": "event.point.@lon",
+                               "classification.cot_type": "event.@type", "name": "event.detail.contact.@callsign"}}]},
+                "registry": {"apply": {"classification.cot_type": "cot", "platform.name": "name"}}
+            }
+        });
+        let frame = r#"<event uid="E1" type="a-u-S" time="2026-09-25T00:00:00Z"><point lat="10" lon="20"/>
+            <detail><contact callsign="HARRY S TRUMAN"/><elnot code="NL504"/></detail></event>"#;
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/sources/validate",
+            Some(json!({"spec": spec, "samples": [frame]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let o = &body["observations"][0];
+        assert_eq!(
+            o["identifiers"][0],
+            json!({"scheme": "elnot", "value": "NL504"})
+        );
+        assert_eq!(o["ext"]["registry"]["scheme"], "elnot");
+        assert_eq!(o["ext"]["registry"]["grade"], "name");
+        assert_eq!(o["classification"]["cot_type"], "a-f-S-C-A");
+        redis.purge_namespace().await.unwrap();
+    }
+}

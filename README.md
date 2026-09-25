@@ -11,8 +11,8 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | Phase | Scope | State |
 |-------|-------|-------|
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, peat writer, UI shell | **done** |
-| 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **in progress** |
-| 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | |
+| 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
+| 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | next |
 | 3. Correlation engine | Source vs system tracks, pairing approaches, best source | |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
 | 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | |
