@@ -9,6 +9,8 @@ export interface DependencyStatus {
 export interface ServerStatus {
   service: string
   version: string
+  /** Versions of the correlation engine and trackers (see docs/algorithms.md). */
+  algorithms?: { correlation: string; trackers: Record<string, string> }
   site: string
   node_id: string
   sqlite: DependencyStatus & { schema_version?: number; path?: string }

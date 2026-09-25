@@ -288,6 +288,10 @@ pub struct Provenance {
     /// The source's own confidence in this report, 0 to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    /// The tracker (and its version) that formed this report from
+    /// detections, e.g. `mht-1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<String>,
 }
 
 /// OTH-GOLD track type (CTC field 13): whether the track is real-world

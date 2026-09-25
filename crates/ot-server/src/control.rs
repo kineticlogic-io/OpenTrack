@@ -120,6 +120,13 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
     Json(json!({
         "service": "opentrack",
         "version": env!("CARGO_PKG_VERSION"),
+        "algorithms": {
+            "correlation": crate::correlate::VERSION,
+            "trackers": {
+                "gnn": ot_source::tracker::GNN_VERSION,
+                "mht": ot_source::tracker::MHT_VERSION,
+            },
+        },
         "site": s.common.site.as_str(),
         "node_id": s.common.node_id(),
         "sqlite": sqlite,

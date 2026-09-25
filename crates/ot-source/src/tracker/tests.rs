@@ -69,8 +69,10 @@ fn every_tracker_classifies_no_higher_than_unknown_and_a_domain() {
             assert!(o.identifiers.is_empty() && o.name.is_none() && o.callsign.is_none());
             assert_eq!(o.platform, Default::default());
             assert!(o.ext.is_empty());
-            // Where the report came from is kept.
+            // Where the report came from is kept, and which tracker made it.
             assert_eq!(o.provenance.sensor_code.as_deref(), Some("R1"));
+            assert_eq!(o.provenance.tracker.as_deref(), Some(t.version()));
+            assert!(t.version().starts_with(algorithm));
             assert!(o.source_track_key.starts_with('T'));
             ot_core::Observation::validate(o).unwrap();
         }

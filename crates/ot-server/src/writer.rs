@@ -500,6 +500,7 @@ mod tests {
             let ctx = PublishContext {
                 node_id: "opentrack-OTK".into(),
                 version: "test".into(),
+                correlation: "correlation-test".into(),
             };
             let settings = WriterSettings {
                 consumer: "c1".into(),

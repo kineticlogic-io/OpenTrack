@@ -69,8 +69,12 @@ impl Decision {
         self
     }
 
+    /// Evidence for the decision; object keys add to what is already there.
     pub fn evidence(mut self, evidence: Value) -> Self {
-        self.evidence = evidence;
+        match (&mut self.evidence, evidence) {
+            (Value::Object(have), Value::Object(add)) => have.extend(add),
+            (slot, other) => *slot = other,
+        }
         self
     }
 

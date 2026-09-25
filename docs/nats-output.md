@@ -70,7 +70,7 @@ attribute without a value is omitted rather than sent as null.
     "destination": "LONG BEACH",
     "state": "confirmed"
   },
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0" },
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0", "correlation": "correlation-1" },
   "published_at": "2026-09-25T03:21:17.000676087Z"
 }
 ```
@@ -89,6 +89,11 @@ attribute without a value is omitted rather than sent as null.
 | `sidc` | | symbol identification code: `{ "standard", "code" }`, see below |
 | `time` | POS 1-2 | when the published position was observed |
 | `lat`, `lon` | POS 3-4 | degrees, WGS84 |
+
+`publisher` names the instance (`node_id`), its release (`version`) and the version of the
+correlation engine that produced the track (`correlation`; see
+[algorithms.md](algorithms.md)). Tracks that only sensors report for are never published:
+a message always has a feed that may stand alone behind it.
 
 ### `sidc`
 
@@ -131,7 +136,7 @@ ages out, so a consumer that starts later still learns of it.
   "uid": "OTK000000001",
   "reason": "no report for 21600s",
   "deleted_at": "2026-09-25T02:34:54.426550476Z",
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0" }
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0", "correlation": "correlation-1" }
 }
 ```
 

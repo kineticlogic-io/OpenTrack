@@ -49,6 +49,9 @@ pub struct PublishContext {
     pub node_id: String,
     /// OpenTrack version.
     pub version: String,
+    /// Version of the correlation engine that produced the track.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub correlation: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +239,7 @@ mod tests {
         PublishContext {
             node_id: "opentrack-OTK".into(),
             version: "0.1.0".into(),
+            correlation: "correlation-1".into(),
         }
     }
 

@@ -182,6 +182,11 @@ fn keep_identity(prev: &Observation, view: &mut Observation) {
     }
 }
 
+/// A decision by the engine, stamped with the correlation version.
+fn engine_decision(op: &str) -> Decision {
+    Decision::new("engine", op).evidence(json!({ "correlation_version": correlate::VERSION }))
+}
+
 /// Lifecycle verdict for a track at `now`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -669,7 +674,7 @@ impl Engine {
         let c = self.common.clone();
         if let Some((uid, evidence)) = self.find_match(obs, None) {
             let attrs = json!({ "pairing": "auto", "confidence": 1.0, "evidence": evidence });
-            let decision = Decision::new("engine", "pair")
+            let decision = engine_decision("pair")
                 .reason(format!(
                     "{key} shares {} with {}",
                     evidence["identity"].as_str().unwrap_or("an identity"),
@@ -700,7 +705,7 @@ impl Engine {
                 site,
                 &source,
                 &track_key,
-                Decision::new("engine", "create_system_track")
+                engine_decision("create_system_track")
                     .reason("new source track with no identity match"),
             )?)
         })
@@ -729,7 +734,7 @@ impl Engine {
             return Ok(None);
         };
         let (from, into) = self.merge_order(uid, other);
-        let decision = Decision::new("engine", "merge")
+        let decision = engine_decision("merge")
             .reason(format!(
                 "{} and {} share {}",
                 from.doc_id(),
@@ -886,7 +891,7 @@ impl Engine {
             c.open_db()?.end_source_track(
                 &source,
                 &track_key,
-                Decision::new("engine", "end_source_track").reason(reason),
+                engine_decision("end_source_track").reason(reason),
             )?;
             Ok(())
         })
@@ -908,7 +913,7 @@ impl Engine {
         counts.retired += 1;
         let c = self.common.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let d = Decision::new("engine", "retire_system_track")
+            let d = engine_decision("retire_system_track")
                 .reason("every source track reporting for it ended");
             match c.open_db()?.retire_system_track(uid, d) {
                 Ok(_) | Err(ot_store::StoreError::NotFound(_)) => Ok(()),
@@ -1124,14 +1129,21 @@ impl Engine {
             return Ok(());
         };
         let (from, into) = self.merge_order(uid, other);
+        let trackers: Vec<&str> = [from, into]
+            .iter()
+            .flat_map(|u| self.tracks[u].contributors.iter())
+            .filter_map(|c| self.latest.get(&contributor_key(c)))
+            .filter_map(|o| o.provenance.tracker.as_deref())
+            .collect();
         let evidence = json!({
             "rule": "kinematic",
+            "trackers": trackers,
             "approach": self.settings.approach,
             "hits": hits, "of": of,
             "chi2_gate": s.chi2_gate,
             "last": k,
         });
-        let decision = Decision::new("engine", "merge")
+        let decision = engine_decision("merge")
             .reason(format!(
                 "{} and {} agreed kinematically in {hits} of {of} comparisons ({:.0} m apart, σ {:.0} m)",
                 from.doc_id(),
@@ -1292,7 +1304,7 @@ impl Engine {
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             let mut db = c.open_db()?;
             for uid in to_retire {
-                let d = Decision::new("engine", "drop_system_track")
+                let d = engine_decision("drop_system_track")
                     .reason(format!("no report for {}s", drop_after.as_secs()));
                 match db.retire_system_track(uid, d) {
                     Ok(_) | Err(ot_store::StoreError::NotFound(_)) => {}
@@ -1555,6 +1567,20 @@ mod tests {
             .find(|x| x.src_key == "tak/uid-1")
             .expect("tak reports for the ship");
         assert_eq!(pair.decision_op, "pair");
+        // Which correlation version decided it.
+        let decision_id = pair.decision_id;
+        let c = e.common.clone();
+        let decision = tokio::task::spawn_blocking(move || {
+            c.open_db().unwrap().decision(decision_id).unwrap()
+        })
+        .await
+        .unwrap()
+        .expect("the pairing decision");
+        assert_eq!(
+            decision["evidence"]["correlation_version"],
+            correlate::VERSION
+        );
+        assert_eq!(decision["evidence"]["identity"], "mmsi:366");
         assert_eq!(pair.attrs["evidence"]["identity"], "mmsi:366");
         assert!(pair.attrs["evidence"]["gate"]["pass"].as_bool().unwrap());
         e.redis.purge_namespace().await.unwrap();
@@ -1760,6 +1786,21 @@ mod tests {
                 .unwrap();
         assert!(edges.iter().all(|x| x.valid_to_ms.is_some()), "{edges:?}");
         e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[test]
+    fn algorithm_versions_are_documented() {
+        let doc = include_str!("../../../docs/algorithms.md");
+        for v in [
+            correlate::VERSION,
+            ot_source::tracker::GNN_VERSION,
+            ot_source::tracker::MHT_VERSION,
+        ] {
+            assert!(
+                doc.contains(&format!("### {v} (")),
+                "docs/algorithms.md has no changelog entry for {v}"
+            );
+        }
     }
 
     #[tokio::test]

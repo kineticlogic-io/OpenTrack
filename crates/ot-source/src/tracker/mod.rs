@@ -26,6 +26,12 @@ use serde::{Deserialize, Serialize};
 
 use filter::Kf;
 
+/// Versions of the trackers' behaviour, stamped on every report as
+/// `provenance.tracker`. Bump one whenever what that tracker outputs for the
+/// same plots changes, and record it in docs/algorithms.md with its scores.
+pub const GNN_VERSION: &str = "gnn-1";
+pub const MHT_VERSION: &str = "mht-1";
+
 /// Settings of the tracker stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -370,6 +376,14 @@ impl Tracker {
         &self.spec
     }
 
+    /// The running algorithm's version (`gnn-1`, `mht-1`).
+    pub fn version(&self) -> &'static str {
+        match self.spec.algorithm {
+            Algorithm::Gnn => GNN_VERSION,
+            Algorithm::Mht => MHT_VERSION,
+        }
+    }
+
     /// Queue a detection.
     pub fn push(&mut self, obs: Observation, received_at: DateTime<Utc>) {
         self.buffer.push((obs, received_at));
@@ -514,7 +528,10 @@ impl Tracker {
             },
             classification: tracker_classification(r.domain.map(TrackerDomain::domain)),
             platform: Default::default(),
-            provenance: det.provenance.clone(),
+            provenance: ot_core::Provenance {
+                tracker: Some(self.version().to_owned()),
+                ..det.provenance.clone()
+            },
             state: r.dropped.then_some(ot_core::TrackState::Dropped),
             track_type: det.track_type,
             ext: Default::default(),

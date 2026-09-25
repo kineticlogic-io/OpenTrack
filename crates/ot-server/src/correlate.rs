@@ -13,6 +13,13 @@ use serde::Serialize;
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
+/// Version of the correlation engine's behaviour: pairing and merging rules,
+/// best-source selection, detection association, the lifecycle and the
+/// publish rule. Stamped on every engine decision and published message.
+/// Bump it whenever the same inputs would give different system tracks, and
+/// record it in docs/algorithms.md with its scores.
+pub const VERSION: &str = "correlation-1";
+
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry
 /// resolved it to an entity with corroboration. Two tracks sharing a key

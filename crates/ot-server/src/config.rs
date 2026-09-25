@@ -86,6 +86,7 @@ impl Common {
         ot_core::wire::PublishContext {
             node_id: self.node_id(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            correlation: crate::correlate::VERSION.to_owned(),
         }
     }
 

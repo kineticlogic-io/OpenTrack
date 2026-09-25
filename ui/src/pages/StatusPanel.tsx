@@ -58,6 +58,11 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
         detail={status ? `v${status.version} · ${status.node_id}` : ''}
       />
       <Dependency
+        name="Algorithms"
+        dep={status?.algorithms ? { ok: true } : undefined}
+        detail={status?.algorithms ? [status.algorithms.correlation, ...Object.values(status.algorithms.trackers)].join(' · ') : ''}
+      />
+      <Dependency
         name="SQLite"
         dep={status?.sqlite}
         detail={status ? `schema v${status.sqlite.schema_version} · ${status.sqlite.path}` : ''}
