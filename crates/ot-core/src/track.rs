@@ -1,4 +1,4 @@
-//! System tracks: the correlated picture published to peat-node.
+//! System tracks: the correlated picture OpenTrack publishes.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

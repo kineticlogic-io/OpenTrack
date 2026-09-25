@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(got, ["hi"]);
         // 300 = 0xAC 0x02 as a varint.
         let mut payload = vec![0xAC, 0x02];
-        payload.extend(std::iter::repeat_n(b'x', 300));
+        payload.extend([b'x'; 300]);
         let got = all(
             Framing::LengthPrefix {
                 width: PrefixWidth::Varint,

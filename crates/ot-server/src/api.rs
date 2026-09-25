@@ -236,9 +236,31 @@ async fn disable_source(
 
 #[derive(Deserialize)]
 struct RawOutput {
-    collection: String,
-    /// Must be true: the admin confirms this source's raw data goes to the mesh.
+    /// NATS subject for this source's raw tracks; `opentrack.raw.<source>`
+    /// when omitted.
+    #[serde(default)]
+    subject: Option<String>,
+    /// Must be true: the admin confirms this source's raw data is published.
     consent: bool,
+}
+
+/// A concrete (wildcard-free) NATS subject outside the system tracks prefix.
+fn check_raw_subject(subject: &str, tracks_prefix: &str) -> Result<(), String> {
+    let valid = !subject.is_empty()
+        && subject.split('.').all(|t| {
+            !t.is_empty() && t != "*" && t != ">" && !t.chars().any(|c| c.is_whitespace())
+        });
+    if !valid {
+        return Err(format!(
+            "{subject:?} is not a valid NATS subject (dot-separated tokens, no wildcards or spaces)"
+        ));
+    }
+    if subject == tracks_prefix || subject.starts_with(&format!("{tracks_prefix}.")) {
+        return Err(format!(
+            "raw output needs its own subject, outside the system tracks subjects ({tracks_prefix}.>)"
+        ));
+    }
+    Ok(())
 }
 
 async fn set_raw_output(
@@ -249,15 +271,14 @@ async fn set_raw_output(
 ) -> Result<Json<Value>, ApiError> {
     if !body.consent {
         return Err(ApiError::unprocessable(
-            "raw output sends this source's tracks to the mesh; set consent to true to confirm",
+            "raw output publishes this source's tracks as received; set consent to true to confirm",
         ));
     }
-    let c = body.collection.trim().to_owned();
-    if c.is_empty() || c == s.common.tracks_collection {
-        return Err(ApiError::unprocessable(
-            "raw output needs its own collection, not the authoritative tracks collection",
-        ));
-    }
+    let c = match body.subject.as_deref().map(str::trim) {
+        Some(sub) if !sub.is_empty() => sub.to_owned(),
+        _ => format!("opentrack.raw.{id}"),
+    };
+    check_raw_subject(&c, &s.common.nats.tracks_subject).map_err(ApiError::unprocessable)?;
     let actor = actor(&headers);
     let row = s
         .with_db(move |db| db.set_raw_output(&id, Some(&c), &actor))
@@ -617,9 +638,18 @@ mod tests {
             sqlite: ":memory:".into(),
             redis: url.clone(),
             redis_namespace: ns.clone(),
-            peat: "http://127.0.0.1:9".into(),
             site: ot_core::SiteCode::new("TST").unwrap(),
-            tracks_collection: "tracks".into(),
+            nats: crate::config::NatsArgs {
+                // Nothing listens here: status reports it, nothing blocks.
+                url: "nats://127.0.0.1:9".into(),
+                creds: None,
+                token: None,
+                user: None,
+                password: None,
+                stream: "TRACKS".into(),
+                tracks_subject: "tracks".into(),
+                max_age_hours: 24.0,
+            },
         };
         let redis = ot_store::RedisStore::connect(&url, ot_store::Keys::new(ns))
             .await
@@ -627,7 +657,7 @@ mod tests {
         let state = AppState {
             db: Arc::new(Mutex::new(ot_store::Db::open_in_memory().unwrap())),
             redis: redis.clone(),
-            peat: ot_peat::PeatClient::connect_lazy(&common.peat).unwrap(),
+            nats: common.connect_nats().await.unwrap(),
             common,
         };
         Some((router(state, None), redis))
@@ -723,34 +753,51 @@ mod tests {
         let (_, body) = call(&app, "GET", "/api/v1/sources", None).await;
         assert_eq!(body["sources"][0]["name"], "adsb.lol (edited)");
 
-        // Raw output needs explicit consent and its own collection.
-        let (st, _) = call(
-            &app,
-            "PUT",
-            "/api/v1/sources/adsb-lol/raw-output",
-            Some(json!({"collection": "tracks_raw_adsb", "consent": false})),
-        )
-        .await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        let (st, _) = call(
-            &app,
-            "PUT",
-            "/api/v1/sources/adsb-lol/raw-output",
-            Some(json!({"collection": "tracks", "consent": true})),
-        )
-        .await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // Raw output needs explicit consent and a subject outside `tracks.>`.
+        for bad in [
+            json!({"consent": false}),
+            json!({"subject": "tracks.raw", "consent": true}),
+            json!({"subject": "tracks", "consent": true}),
+            json!({"subject": "raw.*", "consent": true}),
+            json!({"subject": "raw..adsb", "consent": true}),
+        ] {
+            let (st, _) = call(
+                &app,
+                "PUT",
+                "/api/v1/sources/adsb-lol/raw-output",
+                Some(bad.clone()),
+            )
+            .await;
+            assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+        }
         let (st, body) = call(
             &app,
             "PUT",
             "/api/v1/sources/adsb-lol/raw-output",
-            Some(json!({"collection": "tracks_raw_adsb", "consent": true})),
+            Some(json!({"consent": true})),
         )
         .await;
         assert_eq!(
-            (st, body["raw_collection"].as_str()),
-            (StatusCode::OK, Some("tracks_raw_adsb"))
+            (st, body["raw_subject"].as_str()),
+            (StatusCode::OK, Some("opentrack.raw.adsb-lol"))
         );
+        let (st, body) = call(
+            &app,
+            "PUT",
+            "/api/v1/sources/adsb-lol/raw-output",
+            Some(json!({"subject": "raw.adsb", "consent": true})),
+        )
+        .await;
+        assert_eq!(
+            (st, body["raw_subject"].as_str()),
+            (StatusCode::OK, Some("raw.adsb"))
+        );
+
+        // Status reports NATS as down without blocking the API.
+        let (st, body) = call(&app, "GET", "/api/v1/status", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["nats"]["ok"], false);
+        assert_eq!(body["nats"]["stream"], "TRACKS");
 
         let (st, _) = call(&app, "DELETE", "/api/v1/sources/adsb-lol", None).await;
         assert_eq!(st, StatusCode::NO_CONTENT);

@@ -29,7 +29,7 @@ CREATE TABLE sources (
     settings        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(settings)),
     enabled         INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
     priority        INTEGER NOT NULL DEFAULT 100,
-    raw_collection  TEXT,                    -- opt-in raw output collection on peat-node
+    raw_collection  TEXT,                    -- opt-in raw output destination (renamed raw_subject in 0004)
     raw_consent     INTEGER REFERENCES decisions(id),
     revision        INTEGER NOT NULL DEFAULT 1,
     created_at_ms   INTEGER NOT NULL,

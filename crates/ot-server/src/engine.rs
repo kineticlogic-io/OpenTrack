@@ -325,10 +325,9 @@ impl Engine {
             Ok(())
         })
         .await??;
+        let reason = format!("no report for {}s", drop_after.as_secs());
         for uid in dropped {
-            self.redis
-                .retire_system_track(uid, &self.common.tracks_collection)
-                .await?;
+            self.redis.retire_system_track(uid, &reason).await?;
             self.tracks.remove(&uid);
             self.reports.retain(|_, u| *u != uid);
         }

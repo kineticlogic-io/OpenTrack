@@ -120,7 +120,7 @@ fn split_json(value: Value, records: Option<&Path>) -> Result<Vec<Value>, CodecE
 
 /// Parse XML into one tree per `record_element`, each as
 /// `{ "<record_element>": { "@attr": "..", "child": {..}, "#text": ".." } }`.
-/// Repeated child elements become arrays; attribute values stay strings.
+/// Child elements that recur become arrays; attribute values stay strings.
 fn decode_xml(bytes: &[u8], record_element: &str) -> Result<Vec<Value>, CodecError> {
     let mut reader = Reader::from_reader(bytes);
     // Text is kept untrimmed while an element is open, because entity

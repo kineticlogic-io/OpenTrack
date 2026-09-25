@@ -1,5 +1,5 @@
 //! Hot state in Redis: observation streams, live track state and the outbox
-//! the peat writer consumes.
+//! the track writer consumes.
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use redis::streams::StreamReadReply;
 use crate::keys::Keys;
 use crate::sqlite::{Result, StoreError};
 
-/// Work item for the peat writer.
+/// Work item for the track writer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxOp {
     /// Publish the current state of a system track (read from `sys:<uid>`
@@ -19,8 +19,8 @@ pub enum OutboxOp {
     /// bypasses the writer's minimum interval, for identity and
     /// classification changes.
     Publish { uid: Uid, urgent: bool },
-    /// Delete a document on peat-node (retired or merged-away track).
-    Tombstone { collection: String, doc_id: String },
+    /// Publish a delete for a retired (dropped, merged-away or deleted) track.
+    Tombstone { uid: Uid, reason: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +117,7 @@ impl RedisStore {
     }
 
     /// Remove a system track's live state and queue its tombstone.
-    pub async fn retire_system_track(&self, uid: Uid, collection: &str) -> Result<()> {
+    pub async fn retire_system_track(&self, uid: Uid, reason: &str) -> Result<()> {
         redis::pipe()
             .atomic()
             .del(self.keys.system_track(&uid.to_string()))
@@ -130,10 +130,10 @@ impl RedisStore {
             .arg("*")
             .arg("op")
             .arg("tombstone")
-            .arg("collection")
-            .arg(collection)
-            .arg("doc_id")
-            .arg(uid.doc_id())
+            .arg("uid")
+            .arg(uid.to_string())
+            .arg("reason")
+            .arg(reason)
             .ignore()
             .query_async::<()>(&mut self.conn.clone())
             .await?;
@@ -185,23 +185,24 @@ impl RedisStore {
         for key in reply.map(|r| r.keys).unwrap_or_default() {
             for entry in key.ids {
                 let field = |name: &str| entry.get::<String>(name);
-                let op = match field("op").as_deref() {
-                    Some("publish") => {
-                        field("uid")
-                            .and_then(|u| u.parse().ok())
-                            .map(|uid| OutboxOp::Publish {
-                                uid,
-                                urgent: field("urgent").as_deref() == Some("1"),
-                            })
-                    }
-                    Some("tombstone") => match (field("collection"), field("doc_id")) {
-                        (Some(collection), Some(doc_id)) => {
-                            Some(OutboxOp::Tombstone { collection, doc_id })
+                let op =
+                    match field("op").as_deref() {
+                        Some("publish") => {
+                            field("uid")
+                                .and_then(|u| u.parse().ok())
+                                .map(|uid| OutboxOp::Publish {
+                                    uid,
+                                    urgent: field("urgent").as_deref() == Some("1"),
+                                })
                         }
+                        Some("tombstone") => field("uid").and_then(|u| u.parse().ok()).map(|uid| {
+                            OutboxOp::Tombstone {
+                                uid,
+                                reason: field("reason").filter(|r| !r.is_empty()),
+                            }
+                        }),
                         _ => None,
-                    },
-                    _ => None,
-                };
+                    };
                 match op {
                     Some(op) => out.push(OutboxEntry { id: entry.id, op }),
                     None => {

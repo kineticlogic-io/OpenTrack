@@ -68,11 +68,11 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
         detail={status ? `namespace ${status.redis.namespace}` : ''}
       />
       <Dependency
-        name="peat-node"
-        dep={status?.peat}
+        name="NATS"
+        dep={status?.nats}
         detail={
-          status?.peat.ok
-            ? `${status.peat.node_id} · ${status.peat.connected_peers} peer(s) · writes to "${status.peat.tracks_collection}"`
+          status?.nats.ok
+            ? `${status.nats.server_name} · stream ${status.nats.stream} (${status.nats.stream_messages ?? 0} msgs) · ${status.nats.tracks_subject}.>`
             : ''
         }
       />

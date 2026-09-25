@@ -14,8 +14,11 @@ jobs:
         ports: ["6379:6379"]
     env:
       OT_TEST_REDIS_URL: redis://127.0.0.1:6379
+      OT_TEST_NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v4
+      # Service containers cannot take arguments, and JetStream needs `-js`.
+      - run: docker run -d --name nats -p 4222:4222 nats:2 -js
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

@@ -2,13 +2,13 @@
 //!
 //! Everything that crosses a process boundary lives here: the authoritative
 //! track schema every source is mapped into ([`schema`]), system track
-//! identity ([`uid`]), system tracks themselves ([`track`]) and their encoding
-//! as `peat.track.v1.Track` documents ([`peat`]).
+//! identity ([`uid`]), system tracks themselves ([`track`]) and the message
+//! they are published as ([`wire`]).
 
-pub mod peat;
 pub mod schema;
 pub mod track;
 pub mod uid;
+pub mod wire;
 
 pub use schema::{
     Affiliation, Classification, Domain, Ellipse, Identifier, Kinematics, Observation, Platform,

@@ -18,7 +18,7 @@ pub struct SourceRow {
     pub priority: i64,
     pub revision: i64,
     pub spec: Value,
-    pub raw_collection: Option<String>,
+    pub raw_subject: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -42,7 +42,7 @@ pub struct SourceWrite<'a> {
     pub spec: &'a Value,
 }
 
-const COLUMNS: &str = "id, name, transport, codec, enabled, priority, revision, settings, raw_collection, created_at_ms, updated_at_ms";
+const COLUMNS: &str = "id, name, transport, codec, enabled, priority, revision, settings, raw_subject, created_at_ms, updated_at_ms";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String)> {
     let spec: String = r.get(7)?;
@@ -56,7 +56,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String)> {
             priority: r.get(5)?,
             revision: r.get(6)?,
             spec: Value::Null,
-            raw_collection: r.get(8)?,
+            raw_subject: r.get(8)?,
             created_at_ms: r.get(9)?,
             updated_at_ms: r.get(10)?,
         },
@@ -161,28 +161,27 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("source {id}")))
     }
 
-    /// Set or clear the raw-output collection. Setting one records the
-    /// admin's consent to send this source's raw tracks to the mesh.
+    /// Set or clear the raw-output subject. Setting one records the admin's
+    /// consent to publish this source's raw tracks.
     pub fn set_raw_output(
         &mut self,
         id: &str,
-        collection: Option<&str>,
+        subject: Option<&str>,
         actor: &str,
     ) -> Result<SourceRow> {
         self.write(|tx| {
             let now = now_ms();
-            let op = if collection.is_some() {
+            let op = if subject.is_some() {
                 "consent_raw_output"
             } else {
                 "revoke_raw_output"
             };
-            let d = Decision::new(actor, op)
-                .evidence(json!({ "source": id, "collection": collection }));
+            let d = Decision::new(actor, op).evidence(json!({ "source": id, "subject": subject }));
             let decision_id = record_decision(tx, &d, now)?;
             let n = tx.execute(
-                "UPDATE sources SET raw_collection = ?2, raw_consent = ?3, updated_at_ms = ?4
+                "UPDATE sources SET raw_subject = ?2, raw_consent = ?3, updated_at_ms = ?4
                  WHERE id = ?1",
-                params![id, collection, collection.map(|_| decision_id), now],
+                params![id, subject, subject.map(|_| decision_id), now],
             )?;
             if n == 0 {
                 return Err(StoreError::NotFound(format!("source {id}")));
@@ -278,9 +277,9 @@ mod tests {
         assert_eq!(revs[1].spec, s1);
 
         let row = db
-            .set_raw_output("ais", Some("tracks_raw_ais"), "op:test")
+            .set_raw_output("ais", Some("opentrack.raw.ais"), "op:test")
             .unwrap();
-        assert_eq!(row.raw_collection.as_deref(), Some("tracks_raw_ais"));
+        assert_eq!(row.raw_subject.as_deref(), Some("opentrack.raw.ais"));
 
         db.delete_source("ais", "op:test").unwrap();
         assert!(db.get_source("ais").unwrap().is_none());

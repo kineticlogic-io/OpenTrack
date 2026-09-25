@@ -50,7 +50,7 @@ function StatusTab({ source }: { source: SourceRow }) {
           {source.revision} · saved {fmtTime(source.updated_at_ms)}
         </dd>
         <dt>Raw output</dt>
-        <dd className="mono">{source.raw_collection ?? 'off'}</dd>
+        <dd className="mono">{source.raw_subject ?? 'off'}</dd>
       </dl>
       {(link?.last_error || source.status?.last_error) && (
         <div className="error-text">{source.status?.last_error ?? link?.last_error}</div>

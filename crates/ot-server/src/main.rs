@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use ot_peat::PeatClient;
 
 mod api;
 mod config;
@@ -39,7 +38,7 @@ enum Command {
     Migrate,
     /// Run the control plane (REST API and UI).
     Serve(ServeArgs),
-    /// Run the peat writer (Redis outbox to peat-node).
+    /// Run the writer (Redis outbox to NATS).
     Writer(WriterArgs),
     /// Run every enabled source (transports and pipelines).
     Sources,
@@ -57,7 +56,7 @@ enum Command {
     /// Push synthetic tracks through the pipeline.
     Synthetic(synthetic::SyntheticArgs),
     /// Retire a system track: record the decision, close its graph links and
-    /// tombstone its peat-node document.
+    /// publish its delete.
     Retire {
         /// UID or `tms-<UID>` document id.
         uid: String,
@@ -153,15 +152,15 @@ async fn main() -> anyhow::Result<()> {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(
                 uid,
-                ot_store::Decision::new("cli", "retire_system_track").reason(reason),
+                ot_store::Decision::new("cli", "retire_system_track").reason(reason.clone()),
             )?;
             common
                 .open_redis()
                 .await?
-                .retire_system_track(uid, &common.tracks_collection)
+                .retire_system_track(uid, &reason)
                 .await?;
             println!(
-                "retired {} (decision {decision}); tombstone queued for the writer",
+                "retired {} (decision {decision}); delete queued for the writer",
                 uid.doc_id()
             );
             Ok(())
@@ -174,7 +173,7 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
     let state = control::AppState {
         db: Arc::new(Mutex::new(db)),
         redis: common.open_redis().await?,
-        peat: PeatClient::connect_lazy(&common.peat)?,
+        nats: common.connect_nats().await?,
         common,
     };
     let listener = tokio::net::TcpListener::bind(args.bind)
@@ -190,21 +189,16 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
 async fn run_writer(common: Common, args: WriterArgs) -> anyhow::Result<()> {
     let settings = writer::WriterSettings {
         consumer: args.consumer,
-        collection: common.tracks_collection.clone(),
+        tracks_subject: common.nats.tracks_subject.clone(),
         min_interval: Duration::from_secs_f64(args.min_interval_secs.max(0.0)),
         retry_after: Duration::from_secs(5),
         batch: 500,
     };
-    let peat = PeatClient::connect_lazy(&common.peat)?;
-    match peat.status().await {
-        Ok(s) => {
-            tracing::info!(node_id = %s.node_id, peers = s.connected_peers, "peat-node online")
-        }
-        Err(e) => tracing::warn!(%e, "peat-node not answering yet; writes will retry"),
-    }
+    let nats = common.connect_nats().await?;
+    tracing::info!(url = %common.nats.url, stream = %common.nats.stream, "publishing to NATS");
     let w = writer::Writer::new(
         common.open_redis().await?,
-        peat,
+        nats,
         common.publish_context(),
         settings,
     );

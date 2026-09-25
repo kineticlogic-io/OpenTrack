@@ -156,7 +156,7 @@ export default function SchemaPage() {
         <section className="section" aria-labelledby="core-heading">
           <h2 id="core-heading">Core fields</h2>
           <p className="muted" style={{ margin: '0 0 8px' }}>
-            Fixed: correlation and peat-node depend on them. Extensions are mapped as <span className="mono">ext.&lt;key&gt;</span>.
+            Fixed: correlation and published tracks depend on them. Extensions are mapped as <span className="mono">ext.&lt;key&gt;</span>.
           </p>
           <div className="counts">
             {(overview?.core ?? []).map((f) => (

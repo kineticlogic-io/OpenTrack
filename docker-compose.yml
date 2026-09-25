@@ -1,5 +1,6 @@
-# Runs OpenTrack beside an existing peat-node sidecar and Redis on the host
-# network (as data-services does today). Adjust OT_* to your deployment.
+# Runs OpenTrack beside Redis on the host network, publishing system tracks to
+# the NATS server OpenStare runs. Adjust OT_* to your deployment; see the
+# README for NATS auth (OT_NATS_CREDS, OT_NATS_TOKEN or OT_NATS_USER/PASSWORD).
 services:
   opentrack:
     build: .
@@ -11,12 +12,24 @@ services:
     environment:
       OT_BIND: ${OT_BIND:-0.0.0.0:8090}
       OT_REDIS_URL: ${OT_REDIS_URL:-redis://127.0.0.1:6379}
-      OT_PEAT_ADDR: ${OT_PEAT_ADDR:-http://127.0.0.1:50051}
+      OT_NATS_URL: ${OT_NATS_URL:-nats://127.0.0.1:4222}
+      OT_NATS_STREAM: ${OT_NATS_STREAM:-TRACKS}
+      OT_NATS_TRACKS_SUBJECT: ${OT_NATS_TRACKS_SUBJECT:-tracks}
       OT_SITE_CODE: ${OT_SITE_CODE:-OTK}
-      OT_TRACKS_COLLECTION: ${OT_TRACKS_COLLECTION:-tracks}
       OT_LOG: ${OT_LOG:-info}
     volumes:
       - opentrack-data:/data
 
+  # A local NATS with JetStream, for development only (`--profile dev-nats`).
+  # In deployment OpenTrack connects to OpenStare's server instead.
+  nats:
+    image: nats:2
+    profiles: ["dev-nats"]
+    command: ["-js", "-sd", "/data"]
+    network_mode: host
+    volumes:
+      - nats-data:/data
+
 volumes:
   opentrack-data:
+  nats-data:

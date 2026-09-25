@@ -20,30 +20,93 @@ pub struct Common {
     #[arg(long, env = "OT_REDIS_NAMESPACE", default_value = "tms")]
     pub redis_namespace: String,
 
-    /// peat-node sidecar gRPC address.
-    #[arg(long, env = "OT_PEAT_ADDR", default_value = "http://127.0.0.1:50051")]
-    pub peat: String,
-
     /// GOLD site code that prefixes every system track UID (3 chars, A-Z 0-9).
     #[arg(long, env = "OT_SITE_CODE", default_value = "OTK", value_parser = parse_site)]
     pub site: SiteCode,
 
-    /// peat-node collection for system tracks.
-    #[arg(long, env = "OT_TRACKS_COLLECTION", default_value = ot_core::peat::TRACKS_COLLECTION)]
-    pub tracks_collection: String,
+    #[command(flatten)]
+    pub nats: NatsArgs,
+}
+
+/// Where system tracks are published.
+#[derive(Debug, Clone, Args)]
+pub struct NatsArgs {
+    /// NATS server URL(s), comma separated.
+    #[arg(
+        long = "nats-url",
+        env = "OT_NATS_URL",
+        default_value = "nats://127.0.0.1:4222"
+    )]
+    pub url: String,
+
+    /// NATS credentials file (JWT + NKey).
+    #[arg(long = "nats-creds", env = "OT_NATS_CREDS")]
+    pub creds: Option<PathBuf>,
+
+    /// NATS auth token.
+    #[arg(long = "nats-token", env = "OT_NATS_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// NATS user (with `--nats-password`).
+    #[arg(long = "nats-user", env = "OT_NATS_USER")]
+    pub user: Option<String>,
+
+    #[arg(
+        long = "nats-password",
+        env = "OT_NATS_PASSWORD",
+        hide_env_values = true
+    )]
+    pub password: Option<String>,
+
+    /// JetStream stream that holds system tracks (created if missing).
+    #[arg(long = "nats-stream", env = "OT_NATS_STREAM", default_value = "TRACKS")]
+    pub stream: String,
+
+    /// Subject prefix: each track is published on `<prefix>.tms-<UID>`.
+    #[arg(long = "nats-tracks-subject", env = "OT_NATS_TRACKS_SUBJECT", default_value = ot_core::wire::TRACKS_SUBJECT)]
+    pub tracks_subject: String,
+
+    /// Hours a message stays in a stream OpenTrack creates without being
+    /// replaced. Live tracks are republished long before this.
+    #[arg(
+        long = "nats-max-age-hours",
+        env = "OT_NATS_MAX_AGE_HOURS",
+        default_value_t = 24.0
+    )]
+    pub max_age_hours: f64,
 }
 
 impl Common {
-    /// This instance's identity on the mesh, stamped into `source.node_id`.
+    /// This instance's identity, stamped into each message's `publisher`.
     pub fn node_id(&self) -> String {
         format!("opentrack-{}", self.site)
     }
 
-    pub fn publish_context(&self) -> ot_core::peat::PublishContext {
-        ot_core::peat::PublishContext {
+    pub fn publish_context(&self) -> ot_core::wire::PublishContext {
+        ot_core::wire::PublishContext {
             node_id: self.node_id(),
-            model_version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
         }
+    }
+
+    pub fn nats_settings(&self) -> ot_nats::NatsSettings {
+        let n = &self.nats;
+        ot_nats::NatsSettings {
+            url: n.url.clone(),
+            name: self.node_id(),
+            creds_file: n.creds.clone(),
+            token: n.token.clone(),
+            user: n.user.clone(),
+            password: n.password.clone(),
+            stream: n.stream.clone(),
+            tracks_subject: n.tracks_subject.clone(),
+            max_age: std::time::Duration::from_secs_f64(n.max_age_hours.max(0.1) * 3600.0),
+        }
+    }
+
+    /// Connect to NATS. Returns at once; the client reconnects in the background.
+    pub async fn connect_nats(&self) -> anyhow::Result<ot_nats::Nats> {
+        Ok(ot_nats::Nats::connect(self.nats_settings()).await?)
     }
 
     pub fn keys(&self) -> ot_store::Keys {

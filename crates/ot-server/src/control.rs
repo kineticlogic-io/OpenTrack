@@ -13,7 +13,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use ot_core::Uid;
-use ot_peat::PeatClient;
 use ot_store::{Db, RedisStore};
 use serde_json::{Value, json};
 use tower_http::compression::CompressionLayer;
@@ -27,7 +26,7 @@ pub struct AppState {
     pub common: Common,
     pub db: Arc<Mutex<Db>>,
     pub redis: RedisStore,
-    pub peat: PeatClient,
+    pub nats: ot_nats::Nats,
 }
 
 impl AppState {
@@ -78,15 +77,18 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         Ok(Err(e)) => json!({ "ok": false, "error": e.to_string() }),
         Err(_) => json!({ "ok": false, "error": "timed out" }),
     };
-    let peat = match tokio::time::timeout(Duration::from_secs(3), s.peat.status()).await {
-        Ok(Ok(n)) => json!({
-            "ok": true,
-            "node_id": n.node_id,
-            "connected_peers": n.connected_peers,
-            "sync_active": n.sync_active,
-            "tracks_collection": s.common.tracks_collection,
-        }),
-        Ok(Err(e)) => json!({ "ok": false, "error": e.to_string() }),
+    let nats = match tokio::time::timeout(Duration::from_secs(3), s.nats.status()).await {
+        Ok(n) => {
+            let mut v = json!(n);
+            v["ok"] = json!(n.connected && n.stream_error.is_none());
+            v["url"] = json!(s.common.nats.url);
+            if !n.connected {
+                v["error"] = json!(format!("not connected to {}", s.common.nats.url));
+            } else if let Some(e) = &n.stream_error {
+                v["error"] = json!(e);
+            }
+            v
+        }
         Err(_) => json!({ "ok": false, "error": "timed out" }),
     };
     Json(json!({
@@ -96,7 +98,7 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         "node_id": s.common.node_id(),
         "sqlite": sqlite,
         "redis": redis,
-        "peat": peat,
+        "nats": nats,
     }))
 }
 
@@ -112,7 +114,8 @@ async fn track(
         .ok_or_else(|| ApiError::not_found(format!("system track {uid}")))?;
     Ok(Json(json!({
         "track": track,
-        "document": ot_core::peat::to_document(&track, &s.common.publish_context()),
+        "message": ot_core::wire::to_message(&track, &s.common.publish_context(), chrono::Utc::now()),
+        "subject": ot_core::wire::subject(&s.common.nats.tracks_subject, uid),
     })))
 }
 
@@ -128,7 +131,7 @@ async fn explain(
     Ok(Json(json!({ "uid": uid, "edges": edges })))
 }
 
-/// Accepts a bare UID or a `tms-<UID>` document id.
+/// Accepts a bare UID or a `tms-<UID>` track id.
 fn parse_uid(raw: &str) -> Result<Uid, ApiError> {
     Uid::from_doc_id(raw)
         .or_else(|_| raw.parse())

@@ -13,11 +13,14 @@ export interface ServerStatus {
   node_id: string
   sqlite: DependencyStatus & { schema_version?: number; path?: string }
   redis: DependencyStatus & { namespace?: string }
-  peat: DependencyStatus & {
-    node_id?: string
-    connected_peers?: number
-    sync_active?: boolean
-    tracks_collection?: string
+  nats: DependencyStatus & {
+    url?: string
+    connected?: boolean
+    server_name?: string
+    server_version?: string
+    stream?: string
+    tracks_subject?: string
+    stream_messages?: number
   }
 }
 
@@ -51,7 +54,9 @@ export interface SystemTrack {
 
 export interface TrackResponse {
   track: SystemTrack
-  document: Record<string, unknown>
+  /** The `opentrack.track.v1` message as published. */
+  message: { classification?: { cot_type?: string } } & Record<string, unknown>
+  subject: string
 }
 
 export interface GraphEdge {
@@ -140,7 +145,7 @@ export interface SourceRow {
   priority: number
   revision: number
   spec: SourceSpec
-  raw_collection: string | null
+  raw_subject: string | null
   created_at_ms: number
   updated_at_ms: number
   /** Live worker status; null when no worker runs it (disabled or stopped). */

@@ -1,7 +1,7 @@
 //! The authoritative track schema.
 //!
 //! Every observation from every source is mapped into an [`Observation`]: a
-//! fixed core that correlation and peat-node depend on, plus admin-defined
+//! fixed core that correlation and published tracks depend on, plus admin-defined
 //! extension fields carried in [`Observation::ext`]. Units are SI throughout
 //! (metres, metres per second, degrees true).
 
@@ -44,8 +44,8 @@ pub struct Ellipse {
 }
 
 impl Ellipse {
-    /// Circular error probable approximated from the ellipse. peat-node only
-    /// carries a circular error, so this is what it receives.
+    /// Circular error probable approximated from the ellipse, for consumers
+    /// that only handle a circular error.
     pub fn cep_m(&self) -> f64 {
         0.59 * (self.semi_major_m + self.semi_minor_m)
     }
@@ -259,7 +259,7 @@ pub struct Provenance {
     pub confidence: Option<f64>,
 }
 
-/// Track lifecycle state. Numeric values match `peat.track.v1.TrackState`.
+/// Track lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackState {
@@ -267,17 +267,6 @@ pub enum TrackState {
     Confirmed,
     Lost,
     Dropped,
-}
-
-impl TrackState {
-    pub fn wire_value(self) -> i32 {
-        match self {
-            TrackState::Tentative => 1,
-            TrackState::Confirmed => 2,
-            TrackState::Lost => 3,
-            TrackState::Dropped => 4,
-        }
-    }
 }
 
 /// One report about one object from one source, in the authoritative schema.

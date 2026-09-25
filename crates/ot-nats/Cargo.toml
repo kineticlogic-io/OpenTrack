@@ -1,15 +1,18 @@
 [package]
-name = "ot-core"
-description = "OpenTrack core types: the authoritative track schema, system track UIDs and the published track message"
+name = "ot-nats"
+description = "OpenTrack NATS output: JetStream publisher for system tracks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-chrono.workspace = true
+async-nats.workspace = true
+bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

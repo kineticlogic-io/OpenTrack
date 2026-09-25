@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_registry.sql"),
     include_str!("../migrations/0003_schema_seed.sql"),
+    include_str!("../migrations/0004_raw_subject.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -281,9 +282,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 3);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 4);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 3);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 4);
     }
 
     #[test]
@@ -408,8 +409,8 @@ mod tests {
     fn raw_output_requires_recorded_consent() {
         let db = Db::open_in_memory().unwrap();
         let err = db.connection().execute(
-            "INSERT INTO sources (id, name, transport, codec, raw_collection, created_at_ms, updated_at_ms)
-             VALUES ('ais', 'AIS', 'websocket', 'json', 'tracks_raw_ais', 0, 0)",
+            "INSERT INTO sources (id, name, transport, codec, raw_subject, created_at_ms, updated_at_ms)
+             VALUES ('ais', 'AIS', 'websocket', 'json', 'opentrack.raw.ais', 0, 0)",
             [],
         );
         assert!(err.is_err());

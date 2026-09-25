@@ -1,8 +1,8 @@
 //! System track identity.
 //!
 //! Follows OTH-GOLD's UID: a 3-character site code followed by a 9-digit
-//! sequence, e.g. `OTK000000042`. On peat-node a system track's document id is
-//! `tms-<UID>`, stable for the life of the track.
+//! sequence, e.g. `OTK000000042`. A system track is published as `tms-<UID>`,
+//! stable for the life of the track.
 
 use std::fmt;
 use std::str::FromStr;
@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Largest sequence a 9-digit UID can carry.
 pub const MAX_SEQUENCE: u64 = 999_999_999;
 
-/// Prefix of a system track's peat-node document id.
+/// Prefix of a system track's published id.
 pub const DOC_ID_PREFIX: &str = "tms-";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -84,12 +84,12 @@ impl Uid {
         self.sequence
     }
 
-    /// The peat-node document id, `tms-<UID>`.
+    /// The published track id, `tms-<UID>`.
     pub fn doc_id(&self) -> String {
         format!("{DOC_ID_PREFIX}{self}")
     }
 
-    /// Parse a peat-node document id back into a UID.
+    /// Parse a published track id back into a UID.
     pub fn from_doc_id(doc_id: &str) -> Result<Self, UidError> {
         doc_id
             .strip_prefix(DOC_ID_PREFIX)

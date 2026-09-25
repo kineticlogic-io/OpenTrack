@@ -1,6 +1,6 @@
 [package]
 name = "ot-server"
-description = "OpenTrack server: control plane API, peat writer and operational commands"
+description = "OpenTrack server: control plane API, NATS writer and operational commands"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 ot-core.workspace = true
-ot-peat.workspace = true
+ot-nats.workspace = true
 ot-source.workspace = true
 ot-store.workspace = true
 anyhow.workspace = true
+bytes.workspace = true
 axum.workspace = true
 chrono.workspace = true
 clap.workspace = true

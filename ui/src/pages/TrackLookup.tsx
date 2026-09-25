@@ -51,7 +51,7 @@ export function TrackLookup() {
       <h2 id="lookup-heading">System track lookup</h2>
       <form className="lookup" onSubmit={lookup}>
         <div className="field">
-          <Label htmlFor="uid">UID or document id</Label>
+          <Label htmlFor="uid">UID or track id</Label>
           <Input
             id="uid"
             placeholder="OTK000000001 or tms-OTK000000001"
@@ -70,8 +70,8 @@ export function TrackLookup() {
 
       {t && (
         <dl className="facts">
-          <dt>Document id</dt>
-          <dd className="mono">tms-{t.uid}</dd>
+          <dt>Subject</dt>
+          <dd className="mono">{result?.track?.subject ?? `tms-${t.uid}`}</dd>
           <dt>State</dt>
           <dd>
             <Badge color={STATE_COLOR[t.state] ?? 'grey'} uppercase>
@@ -81,7 +81,7 @@ export function TrackLookup() {
           <dt>Name</dt>
           <dd>{t.view.name ?? t.view.callsign ?? '—'}</dd>
           <dt>Classification</dt>
-          <dd className="mono">{String(result?.track?.document.classification ?? '—')}</dd>
+          <dd className="mono">{result?.track?.message.classification?.cot_type ?? '—'}</dd>
           <dt>Position</dt>
           <dd className="mono">
             {t.view.position.latitude.toFixed(5)}, {t.view.position.longitude.toFixed(5)}

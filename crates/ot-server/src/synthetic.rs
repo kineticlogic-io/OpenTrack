@@ -1,6 +1,8 @@
 //! `opentrack synthetic`: push synthetic system tracks through the full
-//! pipeline (SQLite decision and graph, Redis state and outbox, peat writer,
-//! peat-node) and optionally verify they land. This is phase 0's exit test.
+//! pipeline (SQLite decision and graph, Redis state and outbox, writer, NATS
+//! stream) and optionally verify they land. Point it at a test stream and
+//! subject (`OT_NATS_STREAM`, `OT_NATS_TRACKS_SUBJECT`) to keep synthetic
+//! tracks out of the operational picture.
 
 use std::time::Duration;
 
@@ -11,7 +13,6 @@ use ot_core::{
     Affiliation, Classification, Domain, Kinematics, Observation, Position, Provenance,
     SystemTrack, TrackState, Uid,
 };
-use ot_peat::PeatClient;
 use ot_store::Decision;
 
 use crate::config::Common;
@@ -30,10 +31,10 @@ pub struct SyntheticArgs {
     /// Keep moving the tracks for this many seconds (one update per second).
     #[arg(long, default_value_t = 0)]
     pub move_secs: u64,
-    /// Wait until each track's document appears on peat-node.
+    /// Wait until each track's message is in the stream.
     #[arg(long)]
     pub verify: bool,
-    /// Afterwards retire the tracks and wait for their documents to go.
+    /// Afterwards retire the tracks and wait for their deletes.
     #[arg(long)]
     pub retire: bool,
     /// How long `--verify` / `--retire` wait.
@@ -43,7 +44,8 @@ pub struct SyntheticArgs {
 
 pub async fn run(common: &Common, args: SyntheticArgs) -> anyhow::Result<()> {
     let redis = common.open_redis().await?;
-    let peat = PeatClient::connect_lazy(&common.peat)?;
+    let nats = common.connect_nats().await?;
+    let prefix = common.nats.tracks_subject.clone();
     let site = common.site;
     let db_path = common.clone();
 
@@ -103,15 +105,11 @@ pub async fn run(common: &Common, args: SyntheticArgs) -> anyhow::Result<()> {
     let timeout = Duration::from_secs(args.timeout_secs);
     if args.verify {
         for t in &tracks {
-            let doc = wait_for(&peat, &common.tracks_collection, &t.uid, true, timeout).await?;
-            let doc: serde_json::Value = serde_json::from_str(&doc.unwrap_or_default())?;
+            let subject = ot_core::wire::subject(&prefix, t.uid);
+            let doc = wait_for(&nats, &subject, "upsert", timeout).await?;
             println!(
-                "verified {}/{} on peat-node: lat {} lon {} state {}",
-                common.tracks_collection,
-                t.uid.doc_id(),
-                doc["position"]["latitude"],
-                doc["position"]["longitude"],
-                doc["state"],
+                "verified {subject}: lat {} lon {} state {}",
+                doc["position"]["lat"], doc["position"]["lon"], doc["state"],
             );
         }
     }
@@ -127,13 +125,14 @@ pub async fn run(common: &Common, args: SyntheticArgs) -> anyhow::Result<()> {
             })
             .await??;
             redis
-                .retire_system_track(t.uid, &common.tracks_collection)
+                .retire_system_track(t.uid, "synthetic track retired")
                 .await?;
         }
         for t in &tracks {
-            wait_for(&peat, &common.tracks_collection, &t.uid, false, timeout).await?;
+            let subject = ot_core::wire::subject(&prefix, t.uid);
+            wait_for(&nats, &subject, "delete", timeout).await?;
             println!(
-                "retired {} and confirmed its document is gone",
+                "retired {} and confirmed its delete on {subject}",
                 t.uid.doc_id()
             );
         }
@@ -180,26 +179,23 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
     }
 }
 
-/// Poll peat-node until the document is present (or absent).
+/// Poll the stream until the subject's latest message is `op`; returns its body.
 async fn wait_for(
-    peat: &PeatClient,
-    collection: &str,
-    uid: &Uid,
-    present: bool,
+    nats: &ot_nats::Nats,
+    subject: &str,
+    op: &str,
     timeout: Duration,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let doc = peat.get(collection, &uid.doc_id()).await?;
-        if doc.is_some() == present {
-            return Ok(doc);
+        if let Ok(Some((_, body))) = nats.last_message(subject).await {
+            let doc: serde_json::Value = serde_json::from_slice(&body)?;
+            if doc["op"] == op {
+                return Ok(doc);
+            }
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!(
-                "{collection}/{} still {} after {timeout:?}; is `opentrack writer` running?",
-                uid.doc_id(),
-                if present { "missing" } else { "present" },
-            );
+            bail!("no {op} on {subject} after {timeout:?}; is `opentrack writer` running?");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

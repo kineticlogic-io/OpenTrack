@@ -2,7 +2,7 @@
 
 A source-agnostic track management server. OpenTrack onboards any number of track feeds, maps
 them into one authoritative track schema, correlates them into system tracks (OTH-GOLD style), gives
-operators pair, merge, split and delete tools, and publishes the result to peat-node.
+operators pair, merge, split and delete tools, and publishes the result to NATS JetStream.
 
 Design and roadmap: [Track Management Server — Design & Roadmap](https://claude.ai/code/artifact/3876ba1a-0e0f-49fd-9f70-47e1c2bb8e7d).
 
@@ -10,7 +10,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 
 | Phase | Scope | State |
 |-------|-------|-------|
-| 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, peat writer, UI shell | **done** |
+| 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
 | 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
 | 3. Correlation engine | Source vs system tracks, pairing approaches, best source | next |
@@ -22,13 +22,13 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 
 ```
 crates/
-  ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, peat-node wire format
+  ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, published message (opentrack.track.v1)
   ot-store    SQLite (decisions, config, temporal track graph) and Redis (streams, live state)
-  ot-peat     peat-node sidecar gRPC client (proto compiled with protox; no protoc needed)
+  ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
   ot-source   source framework: transports, framing, codecs, mapping, registry grading, filter, throttle
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
 docs/examples aisstream and adsb.lol as pure configuration (see docs/examples/README.md)
-proto/        peat_sidecar.proto
+docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview, Sources
               (list, add-source wizard, mapping studio with live preview), Schema workspace
 ```
@@ -37,35 +37,39 @@ Storage split: **SQLite** holds everything a person decided or configured (sourc
 mappings, the audit log, the track graph); **Redis** holds everything feeds produce
 (`tms:obs:*` streams, `tms:src:*` / `tms:sys:*` live state, the `tms:out` outbox, metrics).
 
-System tracks are published to peat-node's `tracks` collection as `tms-<UID>`, where the UID is a
-GOLD-style 3-character site code plus a 9-digit sequence (`tms-OTK000000042`).
+System tracks are published to NATS JetStream, one subject per track: `tracks.tms-<UID>`, where the
+UID is a GOLD-style 3-character site code plus a 9-digit sequence (`tracks.tms-OTK000000042`). The
+`TRACKS` stream keeps the latest message per track, so a consumer that starts late still gets the
+whole picture. Messages are JSON `opentrack.track.v1` (`upsert` or `delete`); the full contract is
+in [docs/nats-output.md](docs/nats-output.md).
 
 ## Running
 
-Requires Rust (stable), Node 22, Redis and a reachable peat-node sidecar.
+Requires Rust (stable), Node 22, Redis and a NATS server with JetStream enabled.
 
 ```sh
 cargo build --release
 (cd ui && npm ci && npm run build)
 
-# every role in one process: control plane (API + UI on :8090), sources, engine, peat writer
+# every role in one process: control plane (API + UI on :8090), sources, engine, writer
 ./target/release/opentrack all
 
 # add a source through the API, then enable it
 curl -X POST -H 'content-type: application/json' --data @docs/examples/adsb-lol.json localhost:8090/api/v1/sources
 curl -X POST localhost:8090/api/v1/sources/adsb-lol/enable
 
-# phase 0 exit check: push a synthetic track through, verify it on peat-node, then retire it
+# end-to-end check: push a synthetic track through, verify it in the stream, then retire it
 ./target/release/opentrack synthetic --verify --retire
 ```
 
-Use `OT_TRACKS_COLLECTION=opentrack_selftest` on both commands to exercise the pipeline without
-touching the authoritative `tracks` collection.
+Set `OT_NATS_STREAM=OPENTRACK_SELFTEST OT_NATS_TRACKS_SUBJECT=opentrack.selftest` (and a separate
+`OT_REDIS_NAMESPACE`) on both `writer` and `synthetic` to exercise the pipeline without touching the
+operational `tracks.>` subjects.
 
 UI development: `opentrack serve` plus `cd ui && npm run dev` (Vite proxies `/api` to :8090).
 
-Or with Docker: `docker compose up --build` (host networking, beside an existing Redis and
-sidecar).
+Or with Docker: `docker compose up --build` (host networking, beside an existing Redis, publishing
+to OpenStare's NATS). For a local NATS with JetStream: `docker compose --profile dev-nats up nats`.
 
 ### Configuration
 
@@ -75,9 +79,12 @@ sidecar).
 | `OT_SQLITE_PATH` | `data/opentrack.db` | created and migrated on start |
 | `OT_REDIS_URL` | `redis://127.0.0.1:6379` | |
 | `OT_REDIS_NAMESPACE` | `tms` | prefix for every Redis key |
-| `OT_PEAT_ADDR` | `http://127.0.0.1:50051` | peat-node sidecar gRPC |
 | `OT_SITE_CODE` | `OTK` | GOLD site code for UIDs |
-| `OT_TRACKS_COLLECTION` | `tracks` | where system tracks are published |
+| `OT_NATS_URL` | `nats://127.0.0.1:4222` | NATS server(s), comma separated |
+| `OT_NATS_CREDS` / `OT_NATS_TOKEN` / `OT_NATS_USER` + `OT_NATS_PASSWORD` | | NATS auth, if the server requires it |
+| `OT_NATS_STREAM` | `TRACKS` | JetStream stream (created if missing, never modified) |
+| `OT_NATS_TRACKS_SUBJECT` | `tracks` | subject prefix: tracks go to `<prefix>.tms-<UID>` |
+| `OT_NATS_MAX_AGE_HOURS` | `24` | message age limit for a stream OpenTrack creates |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | per-track write coalescing |
 | `OT_UI_DIR` | `ui/dist` | built UI served at `/` |
 | `OT_LOG`, `OT_LOG_FORMAT` | `info`, text | `OT_LOG_FORMAT=json` for JSON logs |
@@ -86,11 +93,13 @@ sidecar).
 
 ```sh
 cargo test                                              # unit tests
-OT_TEST_REDIS_URL=redis://127.0.0.1:6379 cargo test     # plus the Redis outbox-to-sink test
+OT_TEST_REDIS_URL=redis://127.0.0.1:6379 \
+OT_TEST_NATS_URL=nats://127.0.0.1:4222 cargo test       # plus the Redis and NATS tests
 cd ui && npm run lint && npm run build
 ```
 
-The Redis test runs in its own key namespace and deletes it afterwards.
+The Redis tests run in their own key namespace and the NATS tests in their own stream, and both
+clean up afterwards. The NATS tests need JetStream: `docker run -p 4222:4222 nats:2 -js`.
 
 ## UI components
 

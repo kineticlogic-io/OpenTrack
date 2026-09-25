@@ -1,40 +1,34 @@
-//! The peat writer role: drains the Redis outbox into peat-node.
+//! The writer role: drains the Redis outbox into NATS.
 //!
-//! Writes are coalesced per system track: at most one per minimum interval
-//! (default 5 s), immediately when the producer marks an update urgent
-//! (identity or classification changed). Outbox entries are acknowledged only
-//! once their write has landed, so a crash re-delivers them.
+//! Each system track is published on its own subject (see [`ot_core::wire`]).
+//! Writes are coalesced per track: at most one per minimum interval (default
+//! 5 s), immediately when the producer marks an update urgent (identity or
+//! classification changed). Outbox entries are acknowledged only once the
+//! stream has acknowledged the message, so a crash re-delivers them; the
+//! message id is the outbox entry id, so a re-delivered message is dropped by
+//! JetStream as a duplicate.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use bytes::Bytes;
 use ot_core::Uid;
-use ot_core::peat::{PublishContext, to_document};
-use ot_peat::DocumentSink;
+use ot_core::wire::{self, Op, PublishContext};
+use ot_nats::{Outgoing, TrackSink};
 use ot_store::{OutboxOp, RedisStore};
 use tokio::time::Instant;
 
 /// Consumer group every writer instance joins.
-pub const GROUP: &str = "peat-writer";
+pub const GROUP: &str = "track-writer";
 
 /// Metrics bucket the writer counts under.
 const METRICS_SOURCE: &str = "_writer";
 
-/// Attempts a background tombstone makes before leaving its entry pending
-/// (it is then re-read when the writer next starts).
-const TOMBSTONE_ATTEMPTS: u32 = 12;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TombstoneOutcome {
-    Deleted,
-    Rejected,
-    GaveUp,
-}
-
 #[derive(Debug, Clone)]
 pub struct WriterSettings {
     pub consumer: String,
-    pub collection: String,
+    /// Subject prefix; each track goes to `<prefix>.tms-<UID>`.
+    pub tracks_subject: String,
     pub min_interval: Duration,
     /// Delay before retrying a write that failed transiently.
     pub retry_after: Duration,
@@ -120,23 +114,28 @@ pub struct Tally {
     pub skipped: u64,
 }
 
+/// A delete waiting to be published: when, the outbox entries it settles,
+/// and the reason recorded with it.
+type PendingDelete = (Instant, Vec<String>, Option<String>);
+
 pub struct Writer<S> {
     redis: RedisStore,
     sink: S,
     ctx: PublishContext,
     settings: WriterSettings,
     schedule: Schedule,
-    /// Deletes in flight. They run beside the publish loop because peat-node
-    /// can take a full RPC timeout to settle one (see `ot_peat` delete).
-    tombstones: tokio::task::JoinSet<(String, String, TombstoneOutcome)>,
+    deletes: HashMap<Uid, PendingDelete>,
+    /// Set after a failed publish: check the destination before the next one.
+    needs_prepare: bool,
     pub tally: Tally,
 }
 
-impl<S: DocumentSink + Clone + 'static> Writer<S> {
+impl<S: TrackSink> Writer<S> {
     pub fn new(redis: RedisStore, sink: S, ctx: PublishContext, settings: WriterSettings) -> Self {
         Self {
             schedule: Schedule::new(settings.min_interval),
-            tombstones: tokio::task::JoinSet::new(),
+            deletes: HashMap::new(),
+            needs_prepare: true,
             redis,
             sink,
             ctx,
@@ -151,16 +150,20 @@ impl<S: DocumentSink + Clone + 'static> Writer<S> {
         shutdown: impl std::future::Future<Output = ()>,
     ) -> anyhow::Result<Tally> {
         self.redis.ensure_outbox_group(GROUP).await?;
-        tracing::info!(consumer = %self.settings.consumer, collection = %self.settings.collection, "peat writer started");
-        // First, anything this consumer was handed before a restart.
-        self.pump(true).await?;
+        tracing::info!(consumer = %self.settings.consumer,
+            subject = %format!("{}.>", self.settings.tracks_subject), "writer started");
         tokio::pin!(shutdown);
         let mut backoff = Duration::from_millis(500);
+        // First, anything this consumer was handed before a restart.
+        let mut pending = true;
         loop {
             tokio::select! {
                 _ = &mut shutdown => break,
-                res = self.pump(false) => match res {
-                    Ok(()) => backoff = Duration::from_millis(500),
+                res = self.pump(pending) => match res {
+                    Ok(()) => {
+                        pending = false;
+                        backoff = Duration::from_millis(500);
+                    }
                     Err(e) => {
                         // Redis hiccups must not kill the writer; unacknowledged
                         // entries are simply read again.
@@ -172,8 +175,7 @@ impl<S: DocumentSink + Clone + 'static> Writer<S> {
             }
         }
         // Deferred entries stay unacknowledged and are re-delivered on restart.
-        tracing::info!(tally = ?self.tally, waiting = self.schedule.waiting(),
-            tombstones_in_flight = self.tombstones_in_flight(), "peat writer stopped");
+        tracing::info!(tally = ?self.tally, waiting = self.waiting(), "writer stopped");
         Ok(self.tally)
     }
 
@@ -181,19 +183,17 @@ impl<S: DocumentSink + Clone + 'static> Writer<S> {
     /// unacknowledged entries instead of waiting for new ones.
     pub async fn pump(&mut self, pending: bool) -> anyhow::Result<()> {
         let now = Instant::now();
-        let block = self
-            .schedule
-            .next_due()
+        let next_due = [
+            self.schedule.next_due(),
+            self.deletes.values().map(|(at, ..)| *at).min(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let block = next_due
             .map(|at| at.saturating_duration_since(now))
             .unwrap_or(Duration::from_secs(1))
-            .clamp(
-                Duration::from_millis(1),
-                if self.tombstones.is_empty() {
-                    Duration::from_secs(1)
-                } else {
-                    Duration::from_millis(200)
-                },
-            );
+            .clamp(Duration::from_millis(1), Duration::from_secs(1));
         let entries = self
             .redis
             .read_outbox(
@@ -210,117 +210,143 @@ impl<S: DocumentSink + Clone + 'static> Writer<S> {
                 OutboxOp::Publish { uid, urgent } => {
                     self.schedule.offer(uid, entry.id, urgent, now)
                 }
-                OutboxOp::Tombstone { collection, doc_id } => {
-                    let sink = self.sink.clone();
-                    let retry_after = self.settings.retry_after;
-                    self.tombstones.spawn(async move {
-                        let outcome = tombstone(&sink, &collection, &doc_id, retry_after).await;
-                        (entry.id, doc_id, outcome)
-                    });
+                OutboxOp::Tombstone { uid, reason } => {
+                    let slot = self.deletes.entry(uid).or_insert((now, Vec::new(), None));
+                    slot.1.push(entry.id);
+                    slot.2 = reason.or(slot.2.take());
                 }
             }
         }
-        self.reap_tombstones().await?;
         self.flush().await
     }
 
-    /// Acknowledge finished tombstones without waiting for running ones.
-    async fn reap_tombstones(&mut self) -> anyhow::Result<()> {
-        while let Some(done) = self.tombstones.try_join_next() {
-            let (id, doc_id, outcome) = done?;
-            match outcome {
-                TombstoneOutcome::Deleted => self.tally.deleted += 1,
-                TombstoneOutcome::Rejected => self.tally.rejected += 1,
-                TombstoneOutcome::GaveUp => {
-                    // Stays pending; re-read on the next start.
-                    tracing::warn!(%doc_id, "tombstone still failing; left pending");
-                    self.tally.retried += 1;
-                    continue;
-                }
-            }
-            self.redis.ack_outbox(GROUP, &[id]).await?;
-        }
-        Ok(())
+    /// Messages still waiting (coalesced updates and deletes).
+    pub fn waiting(&self) -> usize {
+        self.schedule.waiting() + self.deletes.len()
     }
 
-    /// Tombstones still running.
-    pub fn tombstones_in_flight(&self) -> usize {
-        self.tombstones.len()
+    /// Publish one message. `Ok(true)` when stored, `Ok(false)` when the
+    /// destination refused it for good; `Err` when a retry could help.
+    async fn send(&mut self, msg: Outgoing) -> Result<bool, ot_nats::NatsError> {
+        if self.needs_prepare {
+            self.sink.prepare().await?;
+            self.needs_prepare = false;
+        }
+        match self.sink.publish(msg).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.is_transient() => {
+                self.needs_prepare = true;
+                Err(e)
+            }
+            Err(e) => {
+                tracing::error!(%e, "message refused");
+                Ok(false)
+            }
+        }
+    }
+
+    fn outgoing(&self, uid: Uid, op: Op, msg_id: &str, body: Vec<u8>) -> Outgoing {
+        Outgoing {
+            subject: wire::subject(&self.settings.tracks_subject, uid),
+            msg_id: format!("{}:{msg_id}", self.ctx.node_id),
+            headers: vec![
+                (wire::HEADER_OP, op.as_str().to_owned()),
+                (wire::HEADER_SCHEMA, wire::TRACK_SCHEMA.to_owned()),
+            ],
+            body: Bytes::from(body),
+        }
     }
 
     async fn flush(&mut self) -> anyhow::Result<()> {
         let now = Instant::now();
-        let (mut written, mut failed) = (0, 0);
+        let (mut written, mut deleted, mut failed) = (0, 0, 0);
+
+        let due: Vec<Uid> = self
+            .deletes
+            .iter()
+            .filter(|(_, (at, ..))| *at <= now)
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in due {
+            let Some((_, ids, reason)) = self.deletes.remove(&uid) else {
+                continue;
+            };
+            let body = wire::delete_message(uid, reason.clone(), &self.ctx, chrono::Utc::now());
+            let msg = self.outgoing(
+                uid,
+                Op::Delete,
+                ids.last().expect("non-empty"),
+                serde_json::to_vec(&body)?,
+            );
+            match self.send(msg).await {
+                Ok(stored) => {
+                    if stored {
+                        self.tally.deleted += 1;
+                        deleted += 1;
+                    } else {
+                        self.tally.rejected += 1;
+                        failed += 1;
+                    }
+                    self.redis.ack_outbox(GROUP, &ids).await?;
+                }
+                Err(e) => {
+                    tracing::warn!(%e, %uid, "delete failed, will retry");
+                    self.tally.retried += 1;
+                    failed += 1;
+                    self.deletes
+                        .insert(uid, (now + self.settings.retry_after, ids, reason));
+                }
+            }
+        }
+
         for (uid, ids) in self.schedule.take_due(now) {
             let Some(track) = self.redis.get_system_track(uid).await? else {
-                // Retired since it was queued; its tombstone is in the outbox.
+                // Retired since it was queued; its delete is in the outbox.
                 self.tally.skipped += 1;
                 self.redis.ack_outbox(GROUP, &ids).await?;
                 continue;
             };
-            let doc = to_document(&track, &self.ctx).to_string();
-            match self
-                .sink
-                .put(&self.settings.collection, &uid.doc_id(), &doc)
-                .await
-            {
-                Ok(()) => {
-                    self.schedule.written(uid, now);
-                    self.tally.written += 1;
-                    written += 1;
+            let body = wire::to_message(&track, &self.ctx, chrono::Utc::now());
+            let msg = self.outgoing(
+                uid,
+                Op::Upsert,
+                ids.last().expect("non-empty"),
+                serde_json::to_vec(&body)?,
+            );
+            match self.send(msg).await {
+                Ok(stored) => {
+                    if stored {
+                        self.schedule.written(uid, now);
+                        self.tally.written += 1;
+                        written += 1;
+                    } else {
+                        self.tally.rejected += 1;
+                        failed += 1;
+                    }
                     self.redis.ack_outbox(GROUP, &ids).await?;
                 }
-                Err(e) if e.is_transient() => {
+                Err(e) => {
                     tracing::warn!(%e, %uid, "write failed, will retry");
                     self.tally.retried += 1;
                     failed += 1;
                     self.schedule
                         .retry(uid, ids, now + self.settings.retry_after);
                 }
-                Err(e) => {
-                    tracing::error!(%e, %uid, "peat-node rejected track document");
-                    self.tally.rejected += 1;
-                    failed += 1;
-                    self.redis.ack_outbox(GROUP, &ids).await?;
-                }
             }
         }
-        if written > 0 {
-            self.redis
-                .incr_metric(METRICS_SOURCE, "written", written)
-                .await?;
-        }
-        if failed > 0 {
-            self.redis
-                .incr_metric(METRICS_SOURCE, "write_error", failed)
-                .await?;
+
+        for (metric, n) in [
+            ("written", written),
+            ("deleted", deleted),
+            ("write_error", failed),
+        ] {
+            if n > 0 {
+                self.redis.incr_metric(METRICS_SOURCE, metric, n).await?;
+            }
         }
         self.schedule.prune(now);
         Ok(())
     }
-}
-
-/// Delete one document, retrying transient failures in the background.
-async fn tombstone<S: DocumentSink>(
-    sink: &S,
-    collection: &str,
-    doc_id: &str,
-    retry_after: Duration,
-) -> TombstoneOutcome {
-    for attempt in 1..=TOMBSTONE_ATTEMPTS {
-        match sink.delete(collection, doc_id).await {
-            Ok(()) => return TombstoneOutcome::Deleted,
-            Err(e) if e.is_transient() => {
-                tracing::warn!(%e, %doc_id, attempt, "tombstone failed, will retry");
-                tokio::time::sleep(retry_after).await;
-            }
-            Err(e) => {
-                tracing::error!(%e, %doc_id, "tombstone rejected");
-                return TombstoneOutcome::Rejected;
-            }
-        }
-    }
-    TombstoneOutcome::GaveUp
 }
 
 #[cfg(test)]
@@ -380,30 +406,62 @@ mod tests {
     }
 
     /// End to end against a real Redis (set `OT_TEST_REDIS_URL`), with a fake
-    /// peat-node. Runs in its own key namespace and cleans up after itself.
+    /// sink. Runs in its own key namespace and cleans up after itself.
     mod redis_e2e {
         use super::*;
         use ot_core::SystemTrack;
-        use ot_peat::PeatError;
+        use ot_nats::NatsError;
         use std::sync::{Arc, Mutex};
 
         #[derive(Clone, Default)]
         struct FakeSink {
-            puts: Arc<Mutex<Vec<(String, String, String)>>>,
-            deletes: Arc<Mutex<Vec<(String, String)>>>,
+            sent: Arc<Mutex<Vec<Outgoing>>>,
+            /// Fail this many publishes (transiently) before accepting.
+            fail_next: Arc<Mutex<u32>>,
+            prepared: Arc<Mutex<u32>>,
         }
 
-        impl DocumentSink for FakeSink {
-            async fn put(&self, c: &str, id: &str, json: &str) -> Result<(), PeatError> {
-                self.puts
-                    .lock()
-                    .unwrap()
-                    .push((c.into(), id.into(), json.into()));
+        impl TrackSink for FakeSink {
+            async fn prepare(&self) -> Result<(), NatsError> {
+                *self.prepared.lock().unwrap() += 1;
                 Ok(())
             }
-            async fn delete(&self, c: &str, id: &str) -> Result<(), PeatError> {
-                self.deletes.lock().unwrap().push((c.into(), id.into()));
+            async fn publish(&self, msg: Outgoing) -> Result<(), NatsError> {
+                let mut fail = self.fail_next.lock().unwrap();
+                if *fail > 0 {
+                    *fail -= 1;
+                    return Err(NatsError::Publish {
+                        subject: msg.subject,
+                        message: "down".into(),
+                        transient: true,
+                    });
+                }
+                self.sent.lock().unwrap().push(msg);
                 Ok(())
+            }
+        }
+
+        impl FakeSink {
+            fn bodies(&self) -> Vec<(String, String, serde_json::Value)> {
+                self.sent
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|m| {
+                        let op = m
+                            .headers
+                            .iter()
+                            .find(|(k, _)| *k == wire::HEADER_OP)
+                            .unwrap()
+                            .1
+                            .clone();
+                        (
+                            m.subject.clone(),
+                            op,
+                            serde_json::from_slice(&m.body).unwrap(),
+                        )
+                    })
+                    .collect()
             }
         }
 
@@ -433,7 +491,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn outbox_to_sink_coalesces_and_tombstones() {
+        async fn outbox_to_sink_coalesces_retries_and_deletes() {
             let Some(redis) = store().await else {
                 eprintln!("skipped: OT_TEST_REDIS_URL not set");
                 return;
@@ -441,13 +499,13 @@ mod tests {
             let sink = FakeSink::default();
             let ctx = PublishContext {
                 node_id: "opentrack-OTK".into(),
-                model_version: "test".into(),
+                version: "test".into(),
             };
             let settings = WriterSettings {
                 consumer: "c1".into(),
-                collection: "tracks".into(),
+                tracks_subject: "tracks".into(),
                 min_interval: Duration::from_secs(60),
-                retry_after: Duration::from_secs(1),
+                retry_after: Duration::from_millis(10),
                 batch: 100,
             };
             let mut w = Writer::new(redis.clone(), sink.clone(), ctx, settings);
@@ -468,33 +526,42 @@ mod tests {
                 .await
                 .unwrap();
             w.pump(false).await.unwrap();
-            assert_eq!(sink.puts.lock().unwrap().len(), 1);
+            assert_eq!(sink.sent.lock().unwrap().len(), 1);
+            assert_eq!(*sink.prepared.lock().unwrap(), 1);
 
-            // An urgent update goes straight out with the latest state.
+            // An urgent update goes straight out with the latest state, after
+            // one transient failure (which re-checks the destination).
+            *sink.fail_next.lock().unwrap() = 1;
             redis.put_system_track(&track(1, 32.3), true).await.unwrap();
             w.pump(false).await.unwrap();
+            assert_eq!(w.tally.retried, 1);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            w.pump(false).await.unwrap();
+            assert_eq!(*sink.prepared.lock().unwrap(), 2);
             {
-                let puts = sink.puts.lock().unwrap();
-                assert_eq!(puts.len(), 2);
-                assert_eq!(puts[1].1, "tms-OTK000000001");
-                let doc: serde_json::Value = serde_json::from_str(&puts[1].2).unwrap();
-                assert_eq!(doc["position"]["latitude"], 32.3);
+                let bodies = sink.bodies();
+                assert_eq!(bodies.len(), 2);
+                let (subject, op, doc) = &bodies[1];
+                assert_eq!(subject, "tracks.tms-OTK000000001");
+                assert_eq!(op, "upsert");
+                assert_eq!(doc["position"]["lat"], 32.3);
+                assert_eq!(doc["schema"], "opentrack.track.v1");
+                let sent = sink.sent.lock().unwrap();
+                assert_ne!(sent[0].msg_id, sent[1].msg_id);
+                assert!(sent[1].msg_id.starts_with("opentrack-OTK:"));
             }
 
-            // Retiring tombstones the document; nothing is left unacknowledged.
-            redis.retire_system_track(uid(1), "tracks").await.unwrap();
+            // Retiring publishes a delete; nothing is left unacknowledged.
+            redis
+                .retire_system_track(uid(1), "no report for 6h")
+                .await
+                .unwrap();
             w.pump(false).await.unwrap();
-            // Tombstones run in the background; later cycles acknowledge them.
-            for _ in 0..50 {
-                if w.tombstones_in_flight() == 0 && w.tally.deleted == 1 {
-                    break;
-                }
-                w.pump(false).await.unwrap();
-            }
-            assert_eq!(
-                sink.deletes.lock().unwrap().as_slice(),
-                [("tracks".to_string(), "tms-OTK000000001".to_string())]
-            );
+            let bodies = sink.bodies();
+            let (subject, op, doc) = bodies.last().unwrap();
+            assert_eq!(subject, "tracks.tms-OTK000000001");
+            assert_eq!(op, "delete");
+            assert_eq!(doc["reason"], "no report for 6h");
             assert!(
                 redis
                     .read_outbox(GROUP, "c1", 100, Duration::from_millis(1), true)
@@ -504,6 +571,7 @@ mod tests {
             );
             assert_eq!(w.tally.written, 2);
             assert_eq!(w.tally.deleted, 1);
+            assert_eq!(w.waiting(), 0);
 
             redis.purge_namespace().await.unwrap();
         }
