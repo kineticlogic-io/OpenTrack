@@ -414,14 +414,6 @@ body {
   align-items: center;
 }
 
-.flowcell {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 3px 0;
-  min-width: 0;
-}
-
 /* The schema draft form: one grid row per field, notes and problems under it. */
 .field-form {
   display: flex;

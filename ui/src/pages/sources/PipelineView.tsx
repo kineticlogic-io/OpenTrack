@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { TbAlertTriangle, TbPencil } from 'react-icons/tb'
-import { Badge, Button, DataTable, TabPanel, Tabs, type DataTableColumn } from 'staresdk'
+import { TbPencil } from 'react-icons/tb'
+import { Button, DataTable, TabPanel, Tabs, type DataTableColumn } from 'staresdk'
 import { api, type SchemaOverview, type SourceSpec } from '../../api/client'
 import { errorMessage } from '../../lib/format'
-import { fieldMap, pipelineStages, ruleNotes, type FieldRow } from '../../lib/pipeline'
+import { fieldMap, pipelineStages, type FieldRow } from '../../lib/pipeline'
 import { MappingStudio } from './MappingStudio'
 import { PipelineDesigner } from './designer/PipelineDesigner'
 
@@ -16,100 +16,21 @@ const VIEWS = [
 ]
 
 const COLUMNS: DataTableColumn<FieldRow>[] = [
-  { key: 'stage', header: 'Set by', width: 110, render: (r) => r.stage, sortValue: (r) => r.stage },
-  {
-    key: 'field',
-    header: 'Feed field → OpenTrack field',
-    render: (r) => (
-      <div className="flowcell">
-        <span className="mono">
-          {r.from} <span className="muted">→</span> {r.target}
-        </span>
-        <span className="muted">{r.how}</span>
-      </div>
-    ),
-    sortValue: (r) => r.target,
-  },
-  {
-    key: 'published',
-    header: 'Published as',
-    render: (r) => (
-      <span className="dest">
-        {r.published.map((d) =>
-          d.kind === 'attribute' ? (
-            <Badge key={d.text} color="blue" size="sm">
-              {d.text}
-            </Badge>
-          ) : d.kind === 'gold' ? (
-            <Badge key={d.text} color="grey" size="sm" title="Always-published OTH-GOLD field">
-              GOLD {d.text}
-            </Badge>
-          ) : d.kind === 'none' ? (
-            <span key={d.text} className="notice" style={{ margin: 0 }}>
-              <TbAlertTriangle aria-hidden /> {d.text}
-            </span>
-          ) : (
-            <span key={d.text} className="muted">
-              {d.text}
-            </span>
-          ),
-        )}
-      </span>
-    ),
-    sortValue: (r) => (r.published.some((d) => d.kind === 'none') ? 0 : 1),
-  },
+  { key: 'from', header: 'Source', mono: true, render: (r) => r.from || '—', sortValue: (r) => r.from },
+  { key: 'target', header: 'Destination', mono: true, render: (r) => r.target, sortValue: (r) => r.target },
 ]
 
+/** Each value the mapping sets: the feed field it reads and the OpenTrack field it writes. */
 function MapDetail({ spec, schema }: { spec: SourceSpec; schema: SchemaOverview }) {
-  const rows = useMemo(() => fieldMap(spec, schema), [spec, schema])
-  const notes = useMemo(() => ruleNotes(spec), [spec])
-  // Values set but never published, by field (several rules can set the same one).
-  const lost = useMemo(() => {
-    const by = new Map<string, Set<string>>()
-    for (const r of rows.filter((r) => r.published.some((d) => d.kind === 'none'))) {
-      const from = by.get(r.target) ?? new Set<string>()
-      if (r.from) from.add(r.from)
-      by.set(r.target, from)
-    }
-    return [...by].map(([target, from]) => `${target} (from ${[...from].join(' / ')})`)
-  }, [rows])
-  return (
-    <div className="stack">
-      {lost.length > 0 && (
-        <div className="notice" style={{ margin: 0 }}>
-          <TbAlertTriangle aria-hidden /> {lost.length} value{lost.length === 1 ? ' is' : 's are'} set but never published:{' '}
-          {lost.join(', ')}. Add or link a field in the Schema workspace to
-          publish {lost.length === 1 ? 'it' : 'them'}.
-        </div>
-      )}
-      {notes.some((n) => n.notes.length > 0) && (
-        <dl className="facts">
-          {notes
-            .filter((n) => n.notes.length > 0)
-            .map((n) => (
-              <div key={n.stage} style={{ display: 'contents' }}>
-                <dt>{n.stage}</dt>
-                <dd>
-                  {n.notes.map((t) => (
-                    <div key={t} className="mono">
-                      {t}
-                    </div>
-                  ))}
-                </dd>
-              </div>
-            ))}
-        </dl>
-      )}
-      <DataTable
-        aria-label="Field map"
-        columns={COLUMNS}
-        rows={rows}
-        rowKey={(r) => r.id}
-        maxHeight={520}
-        empty="This mapping sets no fields."
-      />
-    </div>
-  )
+  // Several rules often set the same field from the same source; list each pair once.
+  const rows = useMemo(() => {
+    const seen = new Set<string>()
+    return fieldMap(spec, schema).filter((r) => {
+      const k = `${r.from}>${r.target}`
+      return !seen.has(k) && !!seen.add(k)
+    })
+  }, [spec, schema])
+  return <DataTable aria-label="Field map" columns={COLUMNS} rows={rows} rowKey={(r) => r.id} maxHeight={560} empty="This mapping sets no fields." />
 }
 
 /**

@@ -347,15 +347,3 @@ export function fieldMap(spec: SourceSpec, schema: SchemaOverview): FieldRow[] {
   }
   return rows
 }
-
-/** Rule headers for the field map: when each rule applies and what it binds. */
-export function ruleNotes(spec: SourceSpec): { stage: string; notes: string[] }[] {
-  const rules = (spec.pipeline.mapping.rules as Obj[]) ?? []
-  return rules.map((r, i) => {
-    const notes: string[] = []
-    if (r.when) notes.push(`only when ${describeCondition(r.when)}`)
-    for (const [name, v] of Object.entries((r.let as Obj) ?? {})) notes.push(`${name} = ${describeValue(v as ValueSpec)}`)
-    if (r.kind === 'static') notes.push('identity fields: cached and joined onto later position reports')
-    return { stage: `${String(r.name ?? `rule ${i + 1}`)}${r.kind === 'static' ? ' (identity)' : ''}`, notes }
-  })
-}
