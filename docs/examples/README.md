@@ -42,9 +42,18 @@ curl -X POST -H 'content-type: application/json' \
 
 ## The pipeline, in order
 
-1. **Transport** delivers frames (`websocket`, `http_poll`, `tcp_client`, `tcp_server`, `udp`), with framing for
-   stream transports (`lines`, `length_prefix`, `delimiter`, `end_tag`). String settings may reference
-   `${env:NAME}`; secrets are never stored.
+1. **Transport** delivers frames (`websocket`, `http_poll`, `tcp_client`, `tcp_server`, `udp`, `mqtt`), with framing
+   for stream transports (`lines`, `length_prefix`, `delimiter`, `end_tag`). String settings may reference
+   `${env:NAME}`; secrets are never stored. Transport metadata is added to every record under `_frame`; for MQTT
+   that is the message's `topic`, its `topic_levels` (split on `/`) and `retained` for retained messages:
+
+   ```json
+   "transport": { "type": "mqtt", "url": "mqtts://broker:8883", "topics": ["ais/+/position"], "qos": 1,
+                  "username": "opentrack", "password": "${env:MQTT_PASSWORD}" },
+   ...
+   "mapping": { "rules": [{ "name": "position", "key": "_frame.topic_levels[1]",
+                            "identifiers": [{ "scheme": "mmsi", "value": "_frame.topic_levels[1]" }], ... }] }
+   ```
 2. **Codec** turns a frame into records (`json`, `cot_xml`, `xml`).
 3. **Reject** rules drop records before mapping, counted per reason (`rejected:<reason>`).
 4. **Mapping** rules map records to the track schema. Every matching rule applies; `static` rules feed the static

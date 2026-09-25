@@ -67,15 +67,31 @@ impl Codec {
         &self.config
     }
 
-    /// Decode one frame into zero or more records.
+    /// Decode one frame into zero or more records. Transport metadata on the
+    /// frame is added to every record under `_frame`.
     pub fn decode(&self, frame: &Frame) -> Result<Vec<Value>, CodecError> {
-        match &self.config {
+        let mut records = match &self.config {
             CodecConfig::Json { records, context } => {
                 decode_json(&frame.bytes, records.as_ref(), context)
             }
             CodecConfig::CotXml => decode_xml(&frame.bytes, "event"),
             CodecConfig::Xml { record_element } => decode_xml(&frame.bytes, record_element),
+        }?;
+        if !frame.meta.is_empty() {
+            for rec in &mut records {
+                if let Value::Object(map) = rec {
+                    let ctx = map
+                        .entry("_frame")
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if let Value::Object(ctx) = ctx {
+                        for (k, v) in &frame.meta {
+                            ctx.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
         }
+        Ok(records)
     }
 }
 
@@ -309,6 +325,32 @@ mod tests {
         assert_eq!(e["detail"]["contact"]["@callsign"], "VIPER 1");
         assert_eq!(e["detail"]["remarks"]["#text"], "two & three");
         assert_eq!(e["detail"]["link"][1]["@uid"], "b");
+    }
+
+    #[test]
+    fn frame_meta_reaches_every_record() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("topic".into(), json!("ais/366123456/pos"));
+        let frame = Frame::new(&br#"{"now":1,"ac":[{"hex":"a"},{"hex":"b"}]}"#[..]).with_meta(meta);
+        let codec = Codec::new(CodecConfig::Json {
+            records: Some("ac".parse().unwrap()),
+            context: vec!["now".parse().unwrap()],
+        });
+        let recs = codec.decode(&frame).unwrap();
+        assert_eq!(recs.len(), 2);
+        // Merged with the JSON codec's own frame context.
+        assert_eq!(
+            recs[1]["_frame"],
+            json!({"now": 1, "topic": "ais/366123456/pos"})
+        );
+        let cot = Codec::new(CodecConfig::CotXml)
+            .decode(
+                &Frame::new(&br#"<event uid="x" type="a-f-G"/>"#[..]).with_meta(
+                    serde_json::Map::from_iter([("topic".to_string(), json!("cot/x"))]),
+                ),
+            )
+            .unwrap();
+        assert_eq!(cot[0]["_frame"]["topic"], "cot/x");
     }
 
     #[test]

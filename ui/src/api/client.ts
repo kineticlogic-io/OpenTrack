@@ -193,7 +193,15 @@ export interface ProbeResult {
   fields: FieldStat[]
   suggestion: { mapping: SourceSpec['pipeline']['mapping']; proposals: Proposal[]; identifiers: unknown[]; missing: string[] }
   samples_saved: number | null
-  sample_frames: { received_at: string; origin: string | null; bytes: number; text: string; truncated: boolean }[]
+  sample_frames: {
+    received_at: string
+    origin: string | null
+    bytes: number
+    /** Transport metadata, e.g. the MQTT `topic`; also under `_frame` in records. */
+    meta?: Record<string, unknown> | null
+    text: string
+    truncated: boolean
+  }[]
 }
 
 export interface PreviewObservation extends Observation {

@@ -11,7 +11,7 @@ Design and roadmap: [Track Management Server — Design & Roadmap](https://claud
 | Phase | Scope | State |
 |-------|-------|-------|
 | 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
-| 1. Source framework | Transports, JSON / CoT codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
+| 1. Source framework | Transports (TCP, UDP, HTTP poll, WebSocket, MQTT), JSON / CoT / XML codecs, mapping, enrich, filter, throttle, workers, 1:1 engine | **done** |
 | 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, schema workspace | **done** |
 | 3. Correlation engine | Source vs system tracks, pairing approaches, best source | next |
 | 4. Track management | Pair, unpair, merge, delete, groups, decision log with undo | |
@@ -32,6 +32,12 @@ docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview, Sources
               (list, add-source wizard, mapping studio with live preview), Schema workspace
 ```
+
+Sources: a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
+`mqtt`), a codec and a mapping. Transport metadata reaches the mapping under `_frame`: an MQTT
+message's topic is `_frame.topic`, and `_frame.topic_levels[1]` is its second level, so an id
+carried in the topic (`ais/366123456/pos`) can be the track key or an identifier. Secrets are
+written as `${env:NAME}` and resolved when the source starts.
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
 mappings, the audit log, the track graph); **Redis** holds everything feeds produce
@@ -94,12 +100,15 @@ to OpenStare's NATS). For a local NATS with JetStream: `docker compose --profile
 ```sh
 cargo test                                              # unit tests
 OT_TEST_REDIS_URL=redis://127.0.0.1:6379 \
-OT_TEST_NATS_URL=nats://127.0.0.1:4222 cargo test       # plus the Redis and NATS tests
+OT_TEST_NATS_URL=nats://127.0.0.1:4222 \
+OT_TEST_MQTT_URL=mqtt://127.0.0.1:1883 cargo test      # plus the Redis, NATS and MQTT tests
 cd ui && npm run lint && npm run build
 ```
 
-The Redis tests run in their own key namespace and the NATS tests in their own stream, and both
-clean up afterwards. The NATS tests need JetStream: `docker run -p 4222:4222 nats:2 -js`.
+The Redis tests run in their own key namespace, the NATS tests in their own stream and the MQTT
+tests on their own topics, and all clean up afterwards. The NATS tests need JetStream
+(`docker run -p 4222:4222 nats:2 -js`); for MQTT any broker works
+(`docker run -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf`).
 
 ## UI components
 

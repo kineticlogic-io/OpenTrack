@@ -135,10 +135,16 @@ pub async fn probe(
 
     let mut saved = None;
     if let Some(id) = req.save_as.clone() {
-        let bytes: Vec<Vec<u8>> = frames.iter().map(|f| f.bytes.to_vec()).collect();
+        let samples: Vec<(Vec<u8>, Option<Value>)> = frames
+            .iter()
+            .map(|f| {
+                let meta = (!f.meta.is_empty()).then(|| Value::Object(f.meta.clone()));
+                (f.bytes.to_vec(), meta)
+            })
+            .collect();
         let n = s
             .with_db(move |db| {
-                db.store_probe_samples(&id, &bytes, ot_store::probe::DEFAULT_SAMPLE_CAP)
+                db.store_probe_samples(&id, &samples, ot_store::probe::DEFAULT_SAMPLE_CAP)
             })
             .await?;
         saved = Some(n);
@@ -155,6 +161,7 @@ pub async fn probe(
                 end -= 1;
             }
             json!({ "received_at": f.received_at, "origin": f.origin, "bytes": f.bytes.len(),
+                    "meta": (!f.meta.is_empty()).then_some(&f.meta),
                     "text": &text[..end], "truncated": truncated })
         })
         .collect();
@@ -193,7 +200,10 @@ pub async fn samples(
     let rows = s.with_db(move |db| db.probe_samples(&id, limit)).await?;
     let frames: Vec<Value> = rows
         .into_iter()
-        .map(|(at, bytes)| json!({ "captured_at_ms": at, "text": String::from_utf8_lossy(&bytes) }))
+        .map(|s| {
+            json!({ "captured_at_ms": s.captured_at_ms, "meta": s.meta,
+                    "text": String::from_utf8_lossy(&s.bytes) })
+        })
         .collect();
     Ok(Json(json!({ "samples": frames })))
 }

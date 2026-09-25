@@ -351,16 +351,22 @@ async fn validate_source(
     Json(body): Json<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
     let (spec, normalised, schema) = parse_spec(&s, body.spec).await?;
-    let mut frames: Vec<Vec<u8>> = body
+    let mut frames: Vec<Frame> = body
         .samples
         .iter()
-        .map(|s| s.clone().into_bytes())
+        .map(|s| Frame::new(s.clone().into_bytes()))
         .collect();
     if let Some(id) = body.stored_samples_of.clone() {
         let stored = s
             .with_db(move |db| db.probe_samples(&id, ot_store::probe::DEFAULT_SAMPLE_CAP))
             .await?;
-        frames.extend(stored.into_iter().map(|(_, b)| b));
+        frames.extend(stored.into_iter().map(|s| {
+            let meta = match s.meta {
+                Some(Value::Object(m)) => m,
+                _ => Default::default(),
+            };
+            Frame::new(s.bytes).with_meta(meta)
+        }));
     }
     if frames.is_empty() {
         return Ok(Json(json!({ "valid": true, "spec": normalised })));
@@ -385,8 +391,8 @@ async fn validate_source(
         .with_schema(schema);
     let mut observations = Vec::new();
     let mut errors = Vec::new();
-    for sample in frames.into_iter().take(1000) {
-        let out = pipeline.process(&Frame::new(sample), &registry);
+    for frame in frames.iter().take(1000) {
+        let out = pipeline.process(frame, &registry);
         observations.extend(out.observations);
         if let Some(e) = out.last_error {
             errors.push(e);
@@ -904,6 +910,100 @@ mod tests {
         assert_eq!(o["ext"]["registry"]["scheme"], "elnot");
         assert_eq!(o["ext"]["registry"]["grade"], "name");
         assert_eq!(o["classification"]["cot_type"], "a-f-S-C-A");
+        redis.purge_namespace().await.unwrap();
+    }
+
+    /// Probe a live MQTT topic, keep the samples, and preview a mapping that
+    /// takes the track key from the topic. Needs `OT_TEST_MQTT_URL` too.
+    #[tokio::test]
+    async fn mqtt_probe_keeps_topics_for_the_preview() {
+        let Ok(mqtt) = std::env::var("OT_TEST_MQTT_URL") else {
+            eprintln!("skipped: OT_TEST_MQTT_URL not set");
+            return;
+        };
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let run_id = format!("otapi{}", chrono::Utc::now().timestamp_micros());
+        let (host, port) = mqtt
+            .trim_start_matches("mqtt://")
+            .rsplit_once(':')
+            .map(|(h, p)| (h.to_owned(), p.parse::<u16>().unwrap()))
+            .unwrap();
+        let (client, mut events) = rumqttc::AsyncClient::new(
+            rumqttc::MqttOptions::new(format!("{run_id}-pub"), host, port),
+            16,
+        );
+        let pump = tokio::spawn(async move { while events.poll().await.is_ok() {} });
+        let topic = format!("{run_id}/366123456/pos");
+        let publisher = tokio::spawn(async move {
+            loop {
+                let _ = client
+                    .publish(
+                        topic.clone(),
+                        rumqttc::QoS::AtMostOnce,
+                        false,
+                        r#"{"lat":32.7,"lon":-117.2}"#,
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        let transport = json!({"type": "mqtt", "url": mqtt, "topics": [format!("{run_id}/+/pos")]});
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/probe",
+            Some(json!({
+                "transport": transport, "codec": {"type": "json"},
+                "max_frames": 3, "max_secs": 10, "save_as": "mqtt-test"
+            })),
+        )
+        .await;
+        publisher.abort();
+        pump.abort();
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["frames"], 3, "{body}");
+        assert_eq!(body["samples_saved"], 3);
+        assert_eq!(
+            body["sample_frames"][0]["meta"]["topic_levels"][1],
+            "366123456"
+        );
+        // Inference sees the topic like any other field.
+        assert!(
+            body["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["path"] == "_frame.topic"),
+            "{body}"
+        );
+
+        let spec = json!({
+            "id": "mqtt-test", "name": "MQTT test", "transport": transport,
+            "pipeline": {
+                "codec": {"type": "json"},
+                "mapping": {"rules": [{"name": "pos", "key": "_frame.topic_levels[1]",
+                    "identifiers": [{"scheme": "mmsi", "value": "_frame.topic_levels[1]"}],
+                    "fields": {"position.latitude": "lat", "position.longitude": "lon"}}]}
+            }
+        });
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/sources/validate",
+            Some(json!({"spec": spec, "stored_samples_of": "mqtt-test"})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let o = &body["observations"][0];
+        assert_eq!(o["source_track_key"], "366123456", "{body}");
+        assert_eq!(
+            o["identifiers"][0],
+            json!({"scheme": "mmsi", "value": "366123456"})
+        );
         redis.purge_namespace().await.unwrap();
     }
 }

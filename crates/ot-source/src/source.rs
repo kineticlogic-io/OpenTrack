@@ -31,6 +31,8 @@ pub enum SourceError {
     BadId(String),
     #[error("source name must not be empty")]
     NoName,
+    #[error("{0}")]
+    Transport(String),
     #[error(transparent)]
     Mapping(#[from] crate::mapping::MappingError),
     #[error("framing: {0}")]
@@ -60,6 +62,7 @@ impl SourceSpec {
             return Err(SourceError::NoName);
         }
         self.pipeline.mapping.validate()?;
+        self.transport.check().map_err(SourceError::Transport)?;
         if let TransportConfig::TcpClient { framing, .. }
         | TransportConfig::TcpServer { framing, .. } = &self.transport
         {

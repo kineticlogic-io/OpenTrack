@@ -19,6 +19,7 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 quick-xml = "0.42"
 regex = "1"
+rumqttc = "0.25"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 socket2 = "0.6"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }

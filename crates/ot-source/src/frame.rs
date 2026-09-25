@@ -19,6 +19,9 @@ pub struct Frame {
     pub received_at: DateTime<Utc>,
     /// Where it came from, e.g. the peer address; for probes and debugging.
     pub origin: Option<String>,
+    /// Transport metadata (e.g. an MQTT `topic`), added to every decoded
+    /// record under `_frame` so mappings can use it.
+    pub meta: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Frame {
@@ -27,7 +30,13 @@ impl Frame {
             bytes: bytes.into(),
             received_at: Utc::now(),
             origin: None,
+            meta: Default::default(),
         }
+    }
+
+    pub fn with_meta(mut self, meta: serde_json::Map<String, serde_json::Value>) -> Self {
+        self.meta = meta;
+        self
     }
 }
 

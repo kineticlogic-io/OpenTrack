@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FieldSelect, Input, Label } from 'staresdk'
+import { FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import type { SourceSpec } from '../../api/client'
 
@@ -12,6 +12,12 @@ const TRANSPORTS: Record<string, { label: string; initial: Transport }> = {
   tcp_client: { label: 'TCP client', initial: { type: 'tcp_client', host: '', port: 0, framing: { type: 'lines' } } },
   tcp_server: { label: 'TCP server (listen)', initial: { type: 'tcp_server', bind: '0.0.0.0:8087', framing: { type: 'lines' } } },
   udp: { label: 'UDP (unicast or multicast)', initial: { type: 'udp', bind: '0.0.0.0:6969' } },
+  mqtt: { label: 'MQTT subscribe', initial: { type: 'mqtt', url: '', topics: [] } },
+}
+
+const QOS: Record<string, { label: string }> = {
+  '0': { label: '0 · at most once' },
+  '1': { label: '1 · at least once' },
 }
 
 const FRAMINGS: Record<string, { label: string; initial: Record<string, unknown> }> = {
@@ -110,6 +116,38 @@ function JsonSetting({ label, value, onChange }: { label: string; value: unknown
   )
 }
 
+/** A list edited as comma-separated text (e.g. MQTT topic filters). */
+function ListSetting({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: unknown
+  onChange: (v: string[]) => void
+  placeholder?: string
+}) {
+  const [text, setText] = useState(() => (Array.isArray(value) ? value.join(', ') : ''))
+  return (
+    <Text
+      label={label}
+      wide
+      value={text}
+      placeholder={placeholder}
+      onChange={(t) => {
+        setText(t)
+        onChange(
+          t
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        )
+      }}
+    />
+  )
+}
+
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s))
 
 /** Transport and codec settings for a source. */
@@ -195,6 +233,41 @@ export function TransportForm({
         <>
           <Text label="Multicast group" value={transport.multicast_group} onChange={(v) => set('multicast_group', v)} placeholder="optional, e.g. 239.2.3.1" />
           <Text label="Multicast interface" value={transport.multicast_interface} onChange={(v) => set('multicast_interface', v)} placeholder="optional" />
+        </>
+      )}
+      {transport.type === 'mqtt' && (
+        <>
+          <Text
+            label="Broker URL"
+            wide
+            value={transport.url}
+            onChange={(v) => set('url', v)}
+            placeholder="mqtt://host:1883 or mqtts://host:8883"
+          />
+          <ListSetting
+            label="Topics"
+            value={transport.topics}
+            onChange={(v) => onTransport({ ...transport, topics: v })}
+            placeholder="comma separated; + and # wildcards, e.g. ais/+/position"
+          />
+          <div className="field">
+            <Label size="sm">QoS</Label>
+            <Select ariaLabel="QoS" options={QOS} value={String(transport.qos ?? 0)} onChange={(id) => set('qos', Number(id))} />
+          </div>
+          <Text label="Client id" value={transport.client_id} onChange={(v) => set('client_id', v)} placeholder="default: unique per connection" />
+          <Text label="Username" value={transport.username} onChange={(v) => set('username', v)} placeholder="optional" />
+          <Text label="Password" value={transport.password} onChange={(v) => set('password', v)} placeholder="${env:NAME}" />
+          <Text label="Keepalive (s)" type="number" value={transport.keepalive_secs} onChange={(v) => set('keepalive_secs', num(v))} placeholder="30" />
+          <Text label="CA file (mqtts)" value={transport.ca_file} onChange={(v) => set('ca_file', v)} placeholder="default: system roots" />
+          <label className="field">
+            <Label size="sm">Persistent session</Label>
+            <Toggle
+              size="sm"
+              value={transport.clean_session === false}
+              onChange={(persistent) => set('clean_session', persistent ? false : undefined)}
+              aria-label="Persistent session"
+            />
+          </label>
         </>
       )}
       {(transport.type === 'tcp_client' || transport.type === 'tcp_server') && (

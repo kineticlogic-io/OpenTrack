@@ -82,6 +82,33 @@ pub enum TransportConfig {
         #[serde(default = "twenty")]
         ping_secs: f64,
     },
+    /// MQTT 3.1.1 client; one frame per PUBLISH. The message's topic is
+    /// available to mappings as `_frame.topic` (and `_frame.topic_levels`,
+    /// the topic split on `/`).
+    Mqtt {
+        /// `mqtt://host[:1883]` or `mqtts://host[:8883]` (TLS).
+        url: String,
+        /// Topic filters; `+` and `#` wildcards allowed.
+        topics: Vec<String>,
+        /// Subscription QoS: 0 (at most once) or 1 (at least once).
+        #[serde(default)]
+        qos: u8,
+        /// Defaults to a unique id per connection. Required for a persistent
+        /// session (`clean_session: false`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+        #[serde(default = "yes")]
+        clean_session: bool,
+        #[serde(default = "thirty")]
+        keepalive_secs: f64,
+        /// PEM file of the CA to trust for `mqtts://` (default: system roots).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_file: Option<String>,
+    },
 }
 
 fn lines() -> Framing {
@@ -98,6 +125,15 @@ fn twenty() -> f64 {
 fn get() -> String {
     "GET".into()
 }
+fn thirty() -> f64 {
+    30.0
+}
+fn yes() -> bool {
+    true
+}
+
+/// Largest MQTT message accepted, matching the frame ceiling.
+const MQTT_MAX_PACKET: usize = crate::frame::DEFAULT_MAX_FRAME;
 
 impl TransportConfig {
     pub fn kind(&self) -> &'static str {
@@ -107,7 +143,42 @@ impl TransportConfig {
             TransportConfig::Udp { .. } => "udp",
             TransportConfig::HttpPoll { .. } => "http_poll",
             TransportConfig::Websocket { .. } => "websocket",
+            TransportConfig::Mqtt { .. } => "mqtt",
         }
+    }
+
+    /// Settings that cannot be caught by the type alone.
+    pub fn check(&self) -> Result<(), String> {
+        if let TransportConfig::Mqtt {
+            url,
+            topics,
+            qos,
+            client_id,
+            clean_session,
+            ..
+        } = self
+        {
+            if !(url.starts_with("mqtt://")
+                || url.starts_with("mqtts://")
+                || url.starts_with("${env:"))
+            {
+                return Err(format!(
+                    "MQTT url must start with mqtt:// or mqtts://, got {url:?}"
+                ));
+            }
+            if topics.is_empty() || topics.iter().any(|t| t.trim().is_empty()) {
+                return Err("MQTT needs at least one topic filter".into());
+            }
+            if *qos > 1 {
+                return Err(format!("MQTT qos must be 0 or 1, got {qos}"));
+            }
+            if !clean_session && client_id.as_deref().is_none_or(|c| c.trim().is_empty()) {
+                return Err(
+                    "a persistent MQTT session (clean_session false) needs a client_id".into(),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Where it connects or listens, with secrets left unresolved.
@@ -117,9 +188,9 @@ impl TransportConfig {
             TransportConfig::TcpServer { bind, .. } | TransportConfig::Udp { bind, .. } => {
                 bind.clone()
             }
-            TransportConfig::HttpPoll { url, .. } | TransportConfig::Websocket { url, .. } => {
-                url.clone()
-            }
+            TransportConfig::HttpPoll { url, .. }
+            | TransportConfig::Websocket { url, .. }
+            | TransportConfig::Mqtt { url, .. } => url.clone(),
         }
     }
 }
@@ -351,6 +422,145 @@ pub async fn run(
                 }
             }
         }
+        TransportConfig::Mqtt { .. } => run_mqtt(config, &tx, &status).await,
+    }
+}
+
+/// Split `mqtt[s]://host[:port]` into (tls, host, port).
+fn mqtt_endpoint(url: &str) -> anyhow::Result<(bool, String, u16)> {
+    let (tls, rest) = if let Some(r) = url.strip_prefix("mqtts://") {
+        (true, r)
+    } else if let Some(r) = url.strip_prefix("mqtt://") {
+        (false, r)
+    } else {
+        bail!("MQTT url must start with mqtt:// or mqtts://");
+    };
+    let rest = rest.trim_end_matches('/');
+    let default_port = if tls { 8883 } else { 1883 };
+    // `[v6]:port`, `[v6]`, `host:port` or `host`.
+    let (host, port) = if let Some(v6) = rest.strip_prefix('[') {
+        let (h, after) = v6.split_once(']').context("MQTT url: unclosed [")?;
+        (h, after.strip_prefix(':'))
+    } else {
+        match rest.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (rest, None),
+        }
+    };
+    let port = match port {
+        Some(p) => p.parse().with_context(|| format!("MQTT port {p:?}"))?,
+        None => default_port,
+    };
+    if host.is_empty() {
+        bail!("MQTT url has no host");
+    }
+    Ok((tls, host.to_owned(), port))
+}
+
+async fn run_mqtt(
+    config: &TransportConfig,
+    tx: &mpsc::Sender<Frame>,
+    status: &SharedStatus,
+) -> anyhow::Result<()> {
+    use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, SubscribeReasonCode, Transport};
+    let TransportConfig::Mqtt {
+        url,
+        topics,
+        qos,
+        client_id,
+        username,
+        password,
+        clean_session,
+        keepalive_secs,
+        ca_file,
+    } = config
+    else {
+        unreachable!("run_mqtt called with another transport");
+    };
+    config.check().map_err(anyhow::Error::msg)?;
+    let url = resolve_env(url)?;
+    let (tls, host, port) = mqtt_endpoint(&url)?;
+    let id = match client_id {
+        Some(c) if !c.trim().is_empty() => resolve_env(c)?,
+        _ => format!(
+            "opentrack-{:x}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default() ^ i64::from(std::process::id())
+        ),
+    };
+    let mut opts = MqttOptions::new(id, host.clone(), port);
+    opts.set_keep_alive(Duration::from_secs_f64(keepalive_secs.max(5.0)))
+        .set_clean_session(*clean_session)
+        .set_max_packet_size(MQTT_MAX_PACKET, 64 * 1024);
+    if let Some(user) = username {
+        let pass = password.as_deref().map(resolve_env).transpose()?;
+        opts.set_credentials(resolve_env(user)?, pass.unwrap_or_default());
+    }
+    if tls {
+        opts.set_transport(match ca_file {
+            Some(path) => {
+                let path = resolve_env(path)?;
+                let ca = std::fs::read(&path).with_context(|| format!("reading CA file {path}"))?;
+                Transport::tls(ca, None, None)
+            }
+            None => Transport::tls_with_default_config(),
+        });
+    }
+    let qos = if *qos == 1 {
+        QoS::AtLeastOnce
+    } else {
+        QoS::AtMostOnce
+    };
+    let origin = format!("{}{host}:{port}", if tls { "mqtts://" } else { "mqtt://" });
+    let (client, mut events) = AsyncClient::new(opts, 64);
+    let filters: Vec<String> = topics.iter().map(|t| t.trim().to_owned()).collect();
+    loop {
+        // Any connection error ends the run; the supervisor reconnects with
+        // backoff (and re-subscribes, since each run starts afresh).
+        let event = events
+            .poll()
+            .await
+            .with_context(|| format!("MQTT {origin}"))?;
+        match event {
+            Event::Incoming(Packet::ConnAck(_)) => {
+                for f in &filters {
+                    client.subscribe(f.clone(), qos).await?;
+                }
+            }
+            Event::Incoming(Packet::SubAck(ack)) => {
+                if ack
+                    .return_codes
+                    .iter()
+                    .any(|c| matches!(c, SubscribeReasonCode::Failure))
+                {
+                    bail!(
+                        "MQTT broker refused a subscription ({})",
+                        filters.join(", ")
+                    );
+                }
+                connected(status);
+            }
+            Event::Incoming(Packet::Publish(p)) => {
+                let mut meta = serde_json::Map::new();
+                meta.insert(
+                    "topic_levels".into(),
+                    Value::Array(
+                        p.topic
+                            .split('/')
+                            .map(|l| Value::String(l.to_owned()))
+                            .collect(),
+                    ),
+                );
+                meta.insert("topic".into(), Value::String(p.topic));
+                if p.retain {
+                    meta.insert("retained".into(), Value::Bool(true));
+                }
+                let mut frame = Frame::new(p.payload).with_meta(meta);
+                frame.origin = Some(origin.clone());
+                emit(tx, status, frame).await?;
+            }
+            Event::Incoming(Packet::Disconnect) => return Ok(()),
+            _ => {}
+        }
     }
 }
 
@@ -516,5 +726,124 @@ mod tests {
         };
         assert_eq!(&frame.bytes[..], b"{\"id\":1}");
         task.abort();
+    }
+
+    #[test]
+    fn mqtt_config_urls_and_checks() {
+        let t: TransportConfig = serde_json::from_value(serde_json::json!({
+            "type": "mqtt", "url": "mqtt://broker.local", "topics": ["ais/+/pos"]
+        }))
+        .unwrap();
+        assert_eq!(t.kind(), "mqtt");
+        assert!(matches!(
+            &t,
+            TransportConfig::Mqtt { qos: 0, clean_session: true, keepalive_secs, .. } if *keepalive_secs == 30.0
+        ));
+        assert_eq!(t.check(), Ok(()));
+
+        assert_eq!(
+            mqtt_endpoint("mqtt://broker.local").unwrap(),
+            (false, "broker.local".into(), 1883)
+        );
+        assert_eq!(
+            mqtt_endpoint("mqtts://broker.local:9883/").unwrap(),
+            (true, "broker.local".into(), 9883)
+        );
+        assert_eq!(
+            mqtt_endpoint("mqtts://[::1]").unwrap(),
+            (true, "::1".into(), 8883)
+        );
+        assert_eq!(
+            mqtt_endpoint("mqtt://[::1]:1884").unwrap(),
+            (false, "::1".into(), 1884)
+        );
+        assert!(mqtt_endpoint("tcp://x").is_err());
+        assert!(mqtt_endpoint("mqtt://x:notaport").is_err());
+        assert!(mqtt_endpoint("mqtt://:1883").is_err());
+
+        let bad = |patch: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "type": "mqtt", "url": "mqtt://b", "topics": ["t"]
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            serde_json::from_value::<TransportConfig>(v)
+                .unwrap()
+                .check()
+                .unwrap_err()
+        };
+        assert!(bad(serde_json::json!({"topics": []})).contains("topic"));
+        assert!(bad(serde_json::json!({"qos": 2})).contains("qos"));
+        assert!(bad(serde_json::json!({"clean_session": false})).contains("client_id"));
+        assert!(bad(serde_json::json!({"url": "http://b"})).contains("mqtt://"));
+    }
+
+    /// Against a real broker: set `OT_TEST_MQTT_URL` (e.g. `mqtt://127.0.0.1:11883`).
+    #[tokio::test]
+    async fn mqtt_messages_are_frames_with_their_topic() {
+        let Ok(url) = std::env::var("OT_TEST_MQTT_URL") else {
+            eprintln!("skipped: OT_TEST_MQTT_URL not set");
+            return;
+        };
+        let run_id = format!("ottest{}", Utc::now().timestamp_micros());
+        let config = TransportConfig::Mqtt {
+            url: url.clone(),
+            topics: vec![format!("{run_id}/+/pos")],
+            qos: 1,
+            client_id: None,
+            username: None,
+            password: None,
+            clean_session: true,
+            keepalive_secs: 30.0,
+            ca_file: None,
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let status = SharedStatus::default();
+        let task_status = status.clone();
+        let task = tokio::spawn(async move { run(&config, tx, task_status).await });
+        for _ in 0..100 {
+            if status.lock().unwrap().connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(status.lock().unwrap().connected, "never subscribed");
+
+        let (_, host, port) = mqtt_endpoint(&url).unwrap();
+        let (client, mut events) = rumqttc::AsyncClient::new(
+            rumqttc::MqttOptions::new(format!("{run_id}-pub"), host, port),
+            16,
+        );
+        let publisher = tokio::spawn(async move { while events.poll().await.is_ok() {} });
+        client
+            .publish(
+                format!("{run_id}/other/vel"),
+                rumqttc::QoS::AtLeastOnce,
+                false,
+                "no",
+            )
+            .await
+            .unwrap();
+        client
+            .publish(
+                format!("{run_id}/366123456/pos"),
+                rumqttc::QoS::AtLeastOnce,
+                false,
+                r#"{"lat":32.7}"#,
+            )
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no frame")
+            .unwrap();
+        assert_eq!(&frame.bytes[..], br#"{"lat":32.7}"#);
+        assert_eq!(frame.meta["topic"], format!("{run_id}/366123456/pos"));
+        assert_eq!(frame.meta["topic_levels"][1], "366123456");
+        // The non-matching topic never arrived.
+        assert!(rx.try_recv().is_err());
+        task.abort();
+        publisher.abort();
     }
 }

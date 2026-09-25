@@ -49,6 +49,11 @@ function connectProblems(spec: SourceSpec): string[] {
   if (!spec.name.trim()) p.push('a name')
   const t = spec.transport
   if ((t.type === 'http_poll' || t.type === 'websocket') && !String(t.url ?? '').trim()) p.push('a URL')
+  if (t.type === 'mqtt') {
+    if (!/^mqtts?:\/\/./.test(String(t.url ?? '').trim())) p.push('a broker URL (mqtt:// or mqtts://)')
+    if (!Array.isArray(t.topics) || t.topics.length === 0) p.push('at least one topic')
+    if (t.clean_session === false && !String(t.client_id ?? '').trim()) p.push('a client id for a persistent session')
+  }
   if (t.type === 'tcp_client' && (!String(t.host ?? '').trim() || !t.port)) p.push('a host and port')
   if ((t.type === 'tcp_server' || t.type === 'udp') && !String(t.bind ?? '').trim()) p.push('a bind address')
   return p
@@ -227,6 +232,13 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
               {probe.sample_frames[0] && (
                 <>
                   <h3>First frame</h3>
+                  {probe.sample_frames[0].meta?.topic !== undefined && (
+                    <span className="muted">
+                      topic <span className="mono">{String(probe.sample_frames[0].meta.topic)}</span>, available to the
+                      mapping as <span className="mono">_frame.topic</span> and{' '}
+                      <span className="mono">_frame.topic_levels[n]</span>
+                    </span>
+                  )}
                   <pre className="frame">{probe.sample_frames[0].text}</pre>
                 </>
               )}
