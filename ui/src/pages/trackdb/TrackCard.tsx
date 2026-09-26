@@ -68,13 +68,21 @@ export function TrackCard({
   onEdit,
   editLabel = 'Edit',
   onHistory,
+  historyOnMap,
+  onHistoryOnMap,
+  onZoom,
   onChanged,
 }: {
   uid: string
   onEdit?: () => void
   editLabel?: string
-  /** The track's position history, whenever it is (re)loaded (the map draws it as a trail). */
+  /** The track's position history, whenever it is (re)loaded (the map draws it as a line when asked). */
   onHistory?: (points: HistoryPoint[]) => void
+  /** The history is drawn on the map (the map's owner holds this). */
+  historyOnMap?: boolean
+  onHistoryOnMap?: (on: boolean) => void
+  /** Move the map to the track. */
+  onZoom?: () => void
   /** A decision here changed the picture (an undo, a deleted point). */
   onChanged?: () => void
 }) {
@@ -91,7 +99,7 @@ export function TrackCard({
   const [history, setHistory] = useState<HistoryPoint[] | null>(null)
   const [historyRev, setHistoryRev] = useState(0)
 
-  // Position history: for the History tab and the map's trail.
+  // Position history: for the History tab and the map's line.
   useEffect(() => {
     let cancelled = false
     const load = () =>
@@ -377,6 +385,9 @@ export function TrackCard({
           <TrackHistory
             uid={t.uid}
             points={history}
+            onMap={historyOnMap}
+            onToggleMap={onHistoryOnMap}
+            onZoom={onZoom}
             onChanged={() => {
               setHistoryRev((n) => n + 1)
               onChanged?.()

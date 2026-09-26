@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { TbTrash } from 'react-icons/tb'
+import { TbEye, TbEyeOff, TbFocus2, TbTrash } from 'react-icons/tb'
 import { Button, DataTable, Input, Modal, useToast, type DataTableColumn } from 'staresdk'
 import { api, type HistoryPoint } from '../../api/client'
 import { useCan } from '../../auth/context'
@@ -59,8 +59,26 @@ function DeletePoint({ uid, point, onClose, onDone }: { uid: string; point: Hist
   )
 }
 
-/** A track's position history, newest first, with Delete point for a track manager. */
-export function TrackHistory({ uid, points, onChanged }: { uid: string; points: HistoryPoint[] | null; onChanged: () => void }) {
+/**
+ * A track's position history, newest first, with Delete point for a track manager. Above it, Show on
+ * map (the history as a line on the track map; off until asked) and Zoom to track.
+ */
+export function TrackHistory({
+  uid,
+  points,
+  onChanged,
+  onMap = false,
+  onToggleMap,
+  onZoom,
+}: {
+  uid: string
+  points: HistoryPoint[] | null
+  onChanged: () => void
+  /** The history is drawn on the map. */
+  onMap?: boolean
+  onToggleMap?: (on: boolean) => void
+  onZoom?: () => void
+}) {
   const canManage = useCan('track_manager')
   const [deleting, setDeleting] = useState<HistoryPoint | null>(null)
   const rows = points ? [...points].reverse() : []
@@ -82,6 +100,33 @@ export function TrackHistory({ uid, points, onChanged }: { uid: string; points: 
   ]
   return (
     <div className="stack">
+      {(onToggleMap || onZoom) && (
+        <div className="num-row">
+          {onToggleMap && (
+            <Button
+              size="sm"
+              variant="secondary"
+              active={onMap}
+              aria-pressed={onMap}
+              icon={onMap ? <TbEye /> : <TbEyeOff />}
+              disabled={!points || points.length === 0}
+              onClick={() => onToggleMap(!onMap)}
+            >
+              {onMap ? 'Shown on map' : 'Show on map'}
+            </Button>
+          )}
+          {onZoom && (
+            <Button size="sm" variant="secondary" icon={<TbFocus2 />} onClick={onZoom}>
+              Zoom to track
+            </Button>
+          )}
+          <InfoTip label="History on the map">
+            Show on map draws this history on the track map as a line in the track&apos;s colour, oldest to newest, ending at its current position. It is
+            off for each track until turned on. Zoom to track moves the map to the track: to the whole line when it is shown, otherwise to where the track
+            is now.
+          </InfoTip>
+        </div>
+      )}
       <h3 className="subhead num-row">
         Position history
         <InfoTip label="Position history">

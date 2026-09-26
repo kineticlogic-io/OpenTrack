@@ -3,7 +3,7 @@ import { TbArrowMerge, TbLink, TbSearch, TbTrash, TbUsersGroup, TbX } from 'reac
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, useToast, type DataTableColumn } from 'staresdk'
-import { MapView, type MapPoint } from 'staresdk/map-view'
+import { MapView, type MapFitTo, type MapLine, type MapPoint } from 'staresdk/map-view'
 import { api, type Entity, type TrackRow } from '../../api/client'
 import { ago, errorMessage, fmtNum, STATE_COLOR } from '../../lib/format'
 import { affiliationColor } from '../../lib/palette'
@@ -141,6 +141,10 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const { toast } = useToast()
   const [logRev, setLogRev] = useState(0)
   const [trail, setTrail] = useState<{ uid: string; points: HistoryPoint[] } | null>(null)
+  // The track whose history is drawn on the map: off until asked, and off again for the next track.
+  const [trailOn, setTrailOn] = useState<string | null>(null)
+  // Zoom to track requests: the key counts clicks, so each click moves the map once.
+  const [zoom, setZoom] = useState<{ uid: string; n: number } | null>(null)
   const canManage = useCan('track_manager')
   const [rows, setRows] = useState<TrackRow[] | null>(null)
   const [query, setQuery] = useState('')
@@ -204,17 +208,32 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     [shown],
   )
 
-  // The selected track's history, drawn as a trail of small dots behind it.
-  const mapPoints: MapPoint[] = useMemo(() => {
-    if (!trail || trail.uid !== selected || trail.points.length < 2) return points
-    const color = points.find((p) => p.id === selected)?.color
-    return [
-      ...trail.points.slice(0, -1).map((p) => ({ id: `trail:${p.t}`, latitude: p.lat, longitude: p.lon, color, label: '' })),
-      ...points,
-    ]
-  }, [points, trail, selected])
-
   const row = all.find((t) => t.uid === selected) ?? null
+  const here: [number, number] | null = row ? [row.longitude, row.latitude] : null
+
+  // The selected track's history as a line in its colour, oldest to newest, ending where it is now.
+  const trailCoords: [number, number][] = useMemo(() => {
+    if (!selected || trailOn !== selected || !trail || trail.uid !== selected) return []
+    const c = trail.points.map((p): [number, number] => [p.lon, p.lat])
+    const last = c[c.length - 1]
+    if (here && (!last || last[0] !== here[0] || last[1] !== here[1])) c.push(here)
+    return c
+    // `here` is a fresh array each render; its values are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, trailOn, trail, here?.[0], here?.[1]])
+  const trailColor = row ? affiliationColor(row.affiliation) : undefined
+  const lines: MapLine[] = useMemo(
+    () => (trailCoords.length >= 2 ? [{ id: 'history', coordinates: trailCoords, color: trailColor, width: 2.5 }] : []),
+    [trailCoords, trailColor],
+  )
+  const fitTo: MapFitTo | undefined = useMemo(() => {
+    if (!zoom || zoom.uid !== selected) return undefined
+    // The whole line when it is shown (close in if it is short), else where the track is now.
+    if (trailCoords.length) return { key: zoom.n, coordinates: trailCoords, maxZoom: 15, padding: 48 }
+    return here ? { key: zoom.n, coordinates: [here], maxZoom: 11 } : undefined
+    // Only a click moves the map; data changes under the same key are ignored by MapView anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom])
   const byId = useMemo(() => new Map(all.map((t) => [t.track_id, t])), [all])
   const ticked = checked.filter((id) => byId.has(id))
   const tickedRows = ticked.map((id) => byId.get(id)!)
@@ -292,8 +311,6 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     }
   }
   const select = (uid: string | null) => {
-    // A trail dot selects nothing of its own.
-    if (uid?.startsWith('trail:')) return
     setEditing(false)
     onSelect(uid ?? '')
   }
@@ -304,7 +321,17 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       <div className="workspace">
         <CollapsiblePanel title="Track map" badge={rows ? `${points.length.toLocaleString()} shown` : undefined} persistKey="ot.panel.trackmap">
           <div className="workspace-body map">
-            <MapView aria-label="Live tracks" points={mapPoints} selectedId={selected || null} onSelect={select} outlines={OUTLINES} fitKey="tracks" height="100%" />
+            <MapView
+              aria-label="Live tracks"
+              points={points}
+              lines={lines}
+              selectedId={selected || null}
+              onSelect={select}
+              outlines={OUTLINES}
+              fitKey="tracks"
+              fitTo={fitTo}
+              height="100%"
+            />
           </div>
         </CollapsiblePanel>
         <CollapsiblePanel
@@ -317,6 +344,9 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 key={selected}
                 uid={selected}
                 onHistory={(points) => setTrail({ uid: selected, points })}
+                historyOnMap={trailOn === selected}
+                onHistoryOnMap={(on) => setTrailOn(on ? selected : null)}
+                onZoom={() => setZoom((z) => ({ uid: selected, n: (z?.n ?? 0) + 1 }))}
                 onChanged={() => void reload()}
                 onEdit={
                   row
