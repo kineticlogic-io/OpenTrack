@@ -22,14 +22,12 @@ const SITE_CODE_INFO =
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="stage-row">
+    <div className="settings-row">
       <div className="row-label">
         <Label size="sm">{label}</Label>
         {hint && <InfoTip label={label}>{hint}</InfoTip>}
       </div>
-      <div className="stack" style={{ gap: 2 }}>
-        {children}
-      </div>
+      <div className="settings-row-control">{children}</div>
     </div>
   )
 }
