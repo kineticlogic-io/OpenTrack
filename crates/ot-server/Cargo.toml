@@ -20,6 +20,10 @@ argon2.workspace = true
 jsonwebtoken.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tower.workspace = true
+tokio-rustls.workspace = true
 samael = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
@@ -46,7 +50,6 @@ default = ["saml"]
 saml = ["dep:samael", "dep:flate2", "dep:url", "dep:base64"]
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rumqttc.workspace = true
 tempfile.workspace = true

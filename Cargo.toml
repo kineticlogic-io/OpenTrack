@@ -30,6 +30,9 @@ regex = "1"
 rumqttc = "0.25"
 # Named so the process can pick its TLS crypto provider (see ot-server main).
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
+tower = { version = "0.5", features = ["util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 # Default trust for feed TLS with a client certificate: the system roots.
 rustls-native-certs = "0.8"

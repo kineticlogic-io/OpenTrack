@@ -16,6 +16,7 @@ mod correlate;
 mod correlation_api;
 mod decisions_api;
 mod engine;
+mod https;
 mod manage_api;
 mod metrics;
 mod plugin_cli;
@@ -128,6 +129,15 @@ struct ServeArgs {
     /// needs it.
     #[arg(long, env = "OT_PUBLIC_URL")]
     public_url: Option<String>,
+    /// Serve over TLS with this PEM certificate (chain) and `--tls-key`.
+    #[arg(long, env = "OT_TLS_CERT", requires = "tls_key")]
+    tls_cert: Option<String>,
+    #[arg(long, env = "OT_TLS_KEY", requires = "tls_cert")]
+    tls_key: Option<String>,
+    /// With TLS: accept client certificates this CA (PEM) signed, as the
+    /// accounts Settings → Security maps them to.
+    #[arg(long, env = "OT_TLS_CLIENT_CA", requires = "tls_cert")]
+    tls_client_ca: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -278,7 +288,7 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
         auth: Arc::new(auth::Auth::new(
             secret,
             disabled,
-            false,
+            args.tls_cert.is_some(),
             args.public_url.clone(),
             auth_settings,
         )),
@@ -287,12 +297,23 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("binding {}", args.bind))?;
-    tracing::info!(addr = %args.bind, "control plane listening");
     tokio::spawn(metrics::run_sampler(state.clone()));
+    let app = control::router(state, Some(args.ui_dir));
+    if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
+        let acceptor = ot_source::tls::ServerTls {
+            cert_file: cert,
+            key_file: key,
+            client_ca_file: args.tls_client_ca,
+            client_cert_optional: true,
+        }
+        .acceptor()?;
+        tracing::info!(addr = %args.bind, "control plane listening (TLS)");
+        return https::serve(listener, app, acceptor, shutdown_signal()).await;
+    }
+    tracing::info!(addr = %args.bind, "control plane listening");
     axum::serve(
         listener,
-        control::router(state, Some(args.ui_dir))
-            .into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;

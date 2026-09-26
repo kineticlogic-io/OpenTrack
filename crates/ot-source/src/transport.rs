@@ -1240,6 +1240,7 @@ mod tests {
                 cert_file: self.path("server.pem"),
                 key_file: self.path("server.key"),
                 client_ca_file: mutual.then(|| self.path("ca.pem")),
+                client_cert_optional: false,
             }
         }
     }

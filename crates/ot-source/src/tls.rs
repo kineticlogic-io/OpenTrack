@@ -54,6 +54,10 @@ pub struct ServerTls {
     /// (mutual TLS); otherwise any client may connect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_ca_file: Option<String>,
+    /// With `client_ca_file`: also let clients without a certificate
+    /// connect (a certificate, when given, must still verify).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub client_cert_optional: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -155,13 +159,18 @@ impl ServerTls {
             .as_deref()
             .filter(|p| !p.trim().is_empty())
         {
-            Some(path) => builder.with_client_cert_verifier(
-                WebPkiClientVerifier::builder_with_provider(
+            Some(path) => {
+                let verifier = WebPkiClientVerifier::builder_with_provider(
                     Arc::new(roots("tls.client_ca_file", path)?),
                     provider,
-                )
-                .build()?,
-            ),
+                );
+                let verifier = if self.client_cert_optional {
+                    verifier.allow_unauthenticated()
+                } else {
+                    verifier
+                };
+                builder.with_client_cert_verifier(verifier.build()?)
+            }
             None => builder.with_no_client_auth(),
         };
         let config = builder
@@ -329,6 +338,14 @@ impl ServerCertVerifier for AcceptAny {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
     }
+}
+
+/// A certificate subject's common name.
+pub fn common_name(cert: &[u8]) -> Option<String> {
+    subject(cert)?
+        .split(", ")
+        .find_map(|p| p.strip_prefix("CN="))
+        .map(str::to_owned)
 }
 
 /// A certificate's subject as `CN=…, O=…`, for logs. Reads just enough DER
