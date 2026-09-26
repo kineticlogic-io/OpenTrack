@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { TbAlertTriangle, TbArrowsSplit } from 'react-icons/tb'
+import { TbAlertTriangle, TbArrowsSplit, TbPencil, TbUnlink } from 'react-icons/tb'
 import { Badge, Button, DataTable, TabPanel, Tabs, useToast, type DataTableColumn } from 'staresdk'
 import { api, type ExtensionField, type GraphEdge, type SystemTrack, type TrackResponse } from '../../api/client'
 import { ago, errorMessage, fmtNum, fmtTime, show, STATE_COLOR } from '../../lib/format'
@@ -57,7 +57,7 @@ function origin(f: ExtensionField, replaced: boolean): string {
  * MIL-STD-2525 symbol), then the output schema's attributes; and its provenance, the source
  * tracks and correlation decisions behind it.
  */
-export function TrackCard({ uid }: { uid: string }) {
+export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; onEdit?: () => void; editLabel?: string }) {
   const [tab, setTab] = useState('card')
   const [data, setData] = useState<TrackResponse | null>(null)
   const [missing, setMissing] = useState<string | null>(null)
@@ -214,6 +214,11 @@ export function TrackCard({ uid }: { uid: string }) {
         <Badge color={STATE_COLOR[t.state] ?? 'grey'} size="sm" uppercase>
           {t.state}
         </Badge>
+        {onEdit && (
+          <Button size="sm" variant="secondary" icon={<TbPencil />} onClick={onEdit}>
+            {editLabel}
+          </Button>
+        )}
       </div>
       <Tabs aria-label="Track card views" idPrefix="trk" size="sm" value={tab} onChange={setTab} tabs={TABS} />
       <TabPanel id={tab} idPrefix="trk">
@@ -248,6 +253,45 @@ export function TrackCard({ uid }: { uid: string }) {
               <dd className="mono">{data.subject}</dd>
               <dt>Entity</dt>
               <dd className="mono">{entityId ?? <span className="muted">none</span>}</dd>
+              {(t.members ?? []).length > 0 && (
+                <>
+                  <dt>Members</dt>
+                  <dd className="mono">{(t.members ?? []).map((u) => `tms-${u}`).join(', ')}</dd>
+                </>
+              )}
+              {(t.groups ?? []).length > 0 && (
+                <>
+                  <dt>Groups</dt>
+                  <dd className="mono">{(t.groups ?? []).join(', ')}</dd>
+                </>
+              )}
+              {(t.paired_with ?? []).length > 0 && (
+                <>
+                  <dt>Paired with</dt>
+                  <dd>
+                    {(t.paired_with ?? []).map((p) => (
+                      <span key={p} className="num-row">
+                        <span className="mono">tms-{p}</span>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          icon={<TbUnlink />}
+                          aria-label={`Unpair tms-${p}`}
+                          title="Unpair"
+                          onClick={async () => {
+                            try {
+                              await api.unpairTracks(m.track_id, `tms-${p}`)
+                              toast({ variant: 'success', title: 'Unpaired', message: `tms-${p}` })
+                            } catch (e) {
+                              toast({ variant: 'error', title: 'Not unpaired', message: errorMessage(e) })
+                            }
+                          }}
+                        />
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
             </dl>
             {(t.notices ?? []).length > 0 && (
               <div className="stack" style={{ gap: 4 }}>

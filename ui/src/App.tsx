@@ -17,7 +17,7 @@ const VIEWS = [
   { id: 'overview', label: 'Overview' },
   { id: 'sources', label: 'Sources' },
   { id: 'correlation', label: 'Correlation' },
-  { id: 'tracks', label: 'Track Database' },
+  { id: 'tracks', label: 'Track Management' },
   { id: 'registry', label: 'Registry' },
   { id: 'schema', label: 'Schema' },
   { id: 'settings', label: 'Settings' },

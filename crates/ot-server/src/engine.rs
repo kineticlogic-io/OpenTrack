@@ -44,6 +44,8 @@ use ot_store::{Decision, RedisStore};
 use serde_json::{Map, Value, json};
 
 use crate::config::Common;
+
+mod manage;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
 pub const GROUP: &str = "engine";
@@ -208,11 +210,107 @@ pub fn lifecycle(track: &SystemTrack, now: DateTime<Utc>, s: &EngineSettings) ->
     }
 }
 
-/// What attribute resolution needs: the latest published output schema.
+/// What attribute resolution needs: the latest published output schema, and
+/// the entities pinned to system tracks, with the versions they were loaded at.
 #[derive(Default)]
 struct Attributes {
     version: u32,
     schema: Option<ExtensionSchema>,
+    registry: String,
+    /// `tms-<UID>` → the entity pinned to that track (identifier `track:tms-<UID>`).
+    pins: HashMap<String, Pin>,
+}
+
+/// An entity pinned to one system track: a track manager's designation of a
+/// track no identifier resolves (a radar track, say). It applies to the
+/// track itself, whatever reports for it, and follows it through merges.
+#[derive(Debug, Clone, PartialEq)]
+struct Pin {
+    entity_id: String,
+    fields: Map<String, Value>,
+}
+
+/// The identifier scheme that pins an entity to a system track.
+pub const TRACK_SCHEME: &str = "track";
+
+/// Apply a pinned entity to a track's view: its OTH-GOLD minimum and its
+/// attributes (as `ext.<key>`), recording where it replaced another value.
+fn apply_pin(pin: &Pin, t: &mut SystemTrack) -> Vec<ot_core::AttributeNotice> {
+    let mut notices = Vec::new();
+    let source = "track manager".to_owned();
+    let mut note = |key: &str, was: Option<Value>, now: &Value| {
+        if let Some(was) = was.filter(|w| !w.is_null() && w != now) {
+            notices.push(ot_core::AttributeNotice {
+                key: key.to_owned(),
+                entity: now.clone(),
+                feed: was,
+                source_id: source.clone(),
+            });
+        }
+    };
+    let text = |v: &Value| v.as_str().map(str::to_owned);
+    let to_json = |v: Option<&String>| v.map(|s| Value::String(s.clone()));
+    for (k, v) in &pin.fields {
+        let view = &mut t.view;
+        match k.as_str() {
+            "name" => {
+                note("name", to_json(view.name.as_ref()), v);
+                view.name = text(v);
+            }
+            "class_name" => {
+                note("platform.class", to_json(view.platform.class.as_ref()), v);
+                view.platform.class = text(v);
+            }
+            "cot_type" => {
+                note(
+                    "classification.cot_type",
+                    to_json(view.classification.cot_type.as_ref()),
+                    v,
+                );
+                view.classification.cot_type = text(v);
+            }
+            "sidc" => {
+                note(
+                    "classification.sidc",
+                    to_json(view.classification.sidc.as_ref()),
+                    v,
+                );
+                view.classification.sidc = text(v);
+            }
+            "domain" => {
+                if let Ok(d) = serde_json::from_value(v.clone()) {
+                    note(
+                        "classification.domain",
+                        serde_json::to_value(view.classification.domain).ok(),
+                        v,
+                    );
+                    view.classification.domain = Some(d);
+                }
+            }
+            "affiliation" => {
+                if let Ok(a) = serde_json::from_value(v.clone()) {
+                    note(
+                        "classification.affiliation",
+                        serde_json::to_value(view.classification.affiliation).ok(),
+                        v,
+                    );
+                    view.classification.affiliation = Some(a);
+                }
+            }
+            "track_type" => {
+                if let Ok(tt) = serde_json::from_value(v.clone()) {
+                    note("track_type", serde_json::to_value(view.track_type).ok(), v);
+                    view.track_type = Some(tt);
+                }
+            }
+            "registry" | "entity" => {}
+            key => {
+                note(&format!("ext.{key}"), view.ext.get(key).cloned(), v);
+                view.ext.insert(key.to_owned(), v.clone());
+            }
+        }
+    }
+    notices
 }
 
 /// The entity a track's registry match points to, when it was corroborated
@@ -222,14 +320,22 @@ fn entity_of(t: &SystemTrack) -> Option<String> {
 }
 
 /// Re-resolve a track's entity, attributes and notices. True if any changed.
+/// An entity pinned to the track (or a track merged into it) applies first
+/// and is the track's entity.
 fn resolve(attrs: &Attributes, t: &mut SystemTrack) -> bool {
-    let entity = entity_of(t);
+    let pin = std::iter::once(t.uid)
+        .chain(t.aliases.iter().copied())
+        .find_map(|u| attrs.pins.get(&u.doc_id()))
+        .cloned();
+    let pinned = pin.as_ref().map(|p| apply_pin(p, t)).unwrap_or_default();
+    let entity = pin.map(|p| p.entity_id).or_else(|| entity_of(t));
     let entity_changed = entity != t.entity_id;
     t.entity_id = entity;
-    let (values, notices) = match &attrs.schema {
+    let (values, mut notices) = match &attrs.schema {
         Some(schema) => resolve_attributes(schema, t),
         None => (Map::new(), Vec::new()),
     };
+    notices.extend(pinned);
     let changed = entity_changed || values != t.attributes || notices != t.notices;
     t.attributes = values;
     t.notices = notices;
@@ -332,6 +438,11 @@ pub struct Engine {
     /// Recent gate results per pair of system tracks (lower uid first).
     candidates: HashMap<(Uid, Uid), Evidence>,
     attrs: Attributes,
+    /// Groups a track manager formed, published as tracks of their own
+    /// (kept apart from `tracks`: correlation never sees them).
+    groups: HashMap<Uid, manage::GroupState>,
+    /// Tracks changed by track management, saved on the next tick.
+    dirty: HashSet<Uid>,
     /// Where each detection went, for scoring replays.
     #[cfg(test)]
     associations: Vec<(String, Option<Uid>)>,
@@ -378,12 +489,12 @@ impl Engine {
             Ok(c.open_db()?.live_reports()?)
         })
         .await??;
-        let tracks: HashMap<Uid, SystemTrack> = redis
+        let (stored_groups, tracks): (Vec<SystemTrack>, Vec<SystemTrack>) = redis
             .list_system_tracks()
             .await?
             .into_iter()
-            .map(|t| (t.uid, t))
-            .collect();
+            .partition(|t| t.kind == ot_core::TrackKind::Group);
+        let tracks: HashMap<Uid, SystemTrack> = tracks.into_iter().map(|t| (t.uid, t)).collect();
         tracing::info!(
             links = reports.len(),
             tracks = tracks.len(),
@@ -411,6 +522,8 @@ impl Engine {
             grid: Grid::default(),
             candidates: HashMap::new(),
             attrs: Attributes::default(),
+            groups: HashMap::new(),
+            dirty: HashSet::new(),
             #[cfg(test)]
             associations: Vec::new(),
             #[cfg(test)]
@@ -426,6 +539,7 @@ impl Engine {
             let p = engine.tracks[&uid].view.position;
             engine.grid.put(uid, p.latitude, p.longitude);
         }
+        engine.load_groups(stored_groups).await?;
         Ok(engine)
     }
 
@@ -452,6 +566,9 @@ impl Engine {
                     }
                     if let Err(e) = self.refresh_attributes().await {
                         tracing::warn!(error = %format!("{e:#}"), "output schema refresh failed");
+                    }
+                    if let Err(e) = self.refresh_groups().await {
+                        tracing::warn!(error = %format!("{e:#}"), "group refresh failed");
                     }
                 }
                 _ = reap_tick.tick() => {
@@ -511,17 +628,45 @@ impl Engine {
     /// republish every live track whose attributes change as a result.
     async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let known = (self.attrs.version, self.attrs.schema.is_some());
+        let known = (
+            self.attrs.version,
+            self.attrs.schema.is_some(),
+            self.attrs.registry.clone(),
+        );
         let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Attributes>> {
             let db = c.open_db()?;
             let version = db.latest_published_schema()?;
-            if (version, true) == known {
+            let registry = db.registry_version()?;
+            if (version, true, registry.clone()) == known {
                 return Ok(None);
             }
             let schema = crate::sources::load_schemas(&db)?
                 .into_values()
                 .max_by_key(|s| s.version);
-            Ok(Some(Attributes { version, schema }))
+            let pins = db
+                .registry_rows()?
+                .into_iter()
+                .filter(|r| r.scheme == TRACK_SCHEME)
+                .map(|r| {
+                    let mut fields = r.fields;
+                    if let Some(n) = r.name {
+                        fields.insert("name".into(), Value::String(n));
+                    }
+                    (
+                        r.value,
+                        Pin {
+                            entity_id: r.entity_id,
+                            fields,
+                        },
+                    )
+                })
+                .collect();
+            Ok(Some(Attributes {
+                version,
+                schema,
+                registry,
+                pins,
+            }))
         })
         .await??;
         let Some(attrs) = loaded else {
@@ -540,8 +685,9 @@ impl Engine {
         }
         tracing::info!(
             schema = self.attrs.schema.as_ref().map(|s| s.version),
+            pins = self.attrs.pins.len(),
             republished,
-            "output schema loaded"
+            "output schema and pinned entities loaded"
         );
         Ok(())
     }
@@ -858,7 +1004,18 @@ impl Engine {
                 *v = into;
             }
         }
+        self.detach(from, Some(into));
         if let Some(t) = self.tracks.get_mut(&into) {
+            for g in &gone.groups {
+                if !t.groups.contains(g) {
+                    t.groups.push(g.clone());
+                }
+            }
+            for p in &gone.paired_with {
+                if *p != into && !t.paired_with.contains(p) {
+                    t.paired_with.push(*p);
+                }
+            }
             for c in gone.contributors {
                 if !t
                     .contributors
@@ -1043,6 +1200,14 @@ impl Engine {
         }
         let kin = self.settings.correlation.kinematic;
         let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        // A track manager's merge holds: correlation does not undo it.
+        if self.tracks.get(&uid).is_some_and(|t| {
+            t.contributors
+                .iter()
+                .any(|c| contributor_key(c) == key && c.pairing == PairingType::Manual)
+        }) {
+            return Ok(());
+        }
         let others: Vec<(String, String)> = match self.tracks.get(&uid) {
             Some(t) => t
                 .contributors
@@ -1435,11 +1600,32 @@ impl Engine {
                 let into = self
                     .operator_merge(from, into, &actor, reason, json!({}))
                     .await?;
+                // A track manager's merge (GOLD MRG) holds: every source
+                // track on the survivor is the manager's, which correlation
+                // does not split off.
+                if cmd["hold"].as_bool() == Some(true)
+                    && let Some(t) = self.tracks.get_mut(&into)
+                {
+                    for c in &mut t.contributors {
+                        c.pairing = PairingType::Manual;
+                    }
+                    self.save(into, true).await?;
+                }
                 Ok(json!({ "merged_into": into.doc_id() }))
             }
             // Retire every live track (published ones are tombstoned), and
             // with `history` delete the track graph too.
             "purge" => {
+                // Groups first: they are dissolved, not just retired.
+                let groups: Vec<Uid> = self.groups.keys().copied().collect();
+                for g in groups {
+                    self.manage(
+                        "group_dissolve",
+                        &json!({ "group": g.doc_id(), "reason": "the operator purged every track" }),
+                        &actor,
+                    )
+                    .await?;
+                }
                 let all = self.redis.list_system_tracks().await?;
                 let published: HashMap<Uid, bool> =
                     all.iter().map(|t| (t.uid, t.is_published())).collect();
@@ -1488,6 +1674,7 @@ impl Engine {
                 self.operator_do_not_pair(a, b, &actor, reason).await?;
                 Ok(json!({}))
             }
+            op if manage::OPS.contains(&op) => self.manage(op, cmd, &actor).await,
             other => anyhow::bail!("unknown command {other:?}"),
         }
     }
@@ -1586,6 +1773,7 @@ impl Engine {
 
     /// Drop a track from memory; returns whether it was published.
     fn forget(&mut self, uid: Uid) -> bool {
+        self.detach(uid, None);
         let published = match self.tracks.remove(&uid) {
             Some(t) => {
                 for c in &t.contributors {
@@ -2090,6 +2278,7 @@ mod tests {
         let attrs = Attributes {
             version: 2,
             schema: Some(schema),
+            ..Default::default()
         };
         let mut o = obs(t0(), "A", Domain::Surface);
         o.ext
@@ -2121,6 +2310,48 @@ mod tests {
         let mut stale = SystemTrack::from_first_observation(uid, o);
         resolve(&attrs, &mut stale);
         assert_eq!(stale.entity_id, None);
+    }
+
+    #[test]
+    fn an_entity_pinned_to_a_track_designates_it_through_merges() {
+        let pin = Pin {
+            entity_id: "ent-radar".into(),
+            fields: serde_json::from_value(serde_json::json!({
+                "affiliation": "hostile", "name": "BOGEY 1", "threat": "high"
+            }))
+            .unwrap(),
+        };
+        let attrs = Attributes {
+            pins: [("tms-OTK000000007".to_string(), pin)].into(),
+            ..Default::default()
+        };
+        let mut o = obs(t0(), "A", Domain::Air);
+        o.classification.affiliation = Some(ot_core::Affiliation::Unknown);
+        // The pinned track was merged into this one: the pin follows it.
+        let mut t = SystemTrack::from_first_observation("OTK000000001".parse().unwrap(), o);
+        t.aliases.push("OTK000000007".parse().unwrap());
+        assert!(resolve(&attrs, &mut t));
+        assert_eq!(t.entity_id.as_deref(), Some("ent-radar"));
+        assert_eq!(
+            t.view.classification.affiliation,
+            Some(ot_core::Affiliation::Hostile)
+        );
+        assert_eq!(t.view.name.as_deref(), Some("BOGEY 1"));
+        assert_eq!(t.view.ext["threat"], "high");
+        let ctx = ot_core::wire::PublishContext {
+            node_id: "test".into(),
+            version: "0".into(),
+            correlation: String::new(),
+        };
+        let m = ot_core::wire::to_message(&t, &ctx, t0());
+        assert_eq!(m.affiliation, "hostile");
+        assert!(
+            t.notices
+                .iter()
+                .any(|n| n.key == "classification.affiliation"
+                    && n.feed == "unknown"
+                    && n.source_id == "track manager")
+        );
     }
 
     // --- Replay: scripted reports through a real engine (Redis + SQLite) ---
@@ -2578,6 +2809,100 @@ mod tests {
     }
 
     /// Queue an operator command and run it; the engine's answer.
+    #[tokio::test]
+    async fn track_management_pairs_groups_merges_and_deletes() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // Four ships, far enough apart that correlation leaves them alone.
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "1", s, 32.0, -117.0, Some("1")),
+                    report("ais", "2", s, 32.05, -117.0, Some("2")),
+                    report("ais", "3", s, 32.10, -117.0, Some("3")),
+                    report("ais", "4", s, 32.15, -117.0, Some("4")),
+                ],
+            )
+            .await;
+        }
+        let t: Vec<Uid> = (1..=4)
+            .map(|i| track_of(&e, "ais", &i.to_string()))
+            .collect();
+        let id = |u: Uid| u.doc_id();
+
+        let a = operator(
+            &mut e,
+            json!({"op": "pair", "tracks": [id(t[0]), id(t[1])]}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(e.tracks[&t[0]].paired_with, [t[1]]);
+
+        // A battle group of three: published at their centre, with its members.
+        let a = operator(&mut e, json!({"op": "group_create", "members": [id(t[0]), id(t[1]), id(t[2])],
+            "spec": {"name": "CSG 12", "sidc": "SHSPGG----", "affiliation": "hostile", "echelon": "G"}}))
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        let g: Uid = a["result"]["group"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("tms-")
+            .parse()
+            .unwrap();
+        let group = e
+            .redis
+            .get_system_track(g)
+            .await
+            .unwrap()
+            .expect("the group is stored");
+        assert_eq!(group.kind, ot_core::TrackKind::Group);
+        assert_eq!(group.members, &t[..3]);
+        assert!((group.view.position.latitude - 32.05).abs() < 1e-3);
+        assert_eq!(
+            ot_core::wire::to_message(&group, &e.common.publish_context(), Utc::now()).affiliation,
+            "hostile"
+        );
+        assert_eq!(e.tracks[&t[2]].groups, [id(g)]);
+
+        // A track manager's merge holds, and carries the pairing and group.
+        let a = operator(
+            &mut e,
+            json!({"op": "merge", "from": id(t[1]), "into": id(t[3]), "hold": true}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        let into = &e.tracks[&t[3]];
+        assert!(
+            into.contributors
+                .iter()
+                .all(|c| c.pairing == PairingType::Manual)
+        );
+        assert_eq!(into.paired_with, [t[0]]);
+        assert_eq!(e.tracks[&t[0]].paired_with, [t[3]]);
+        assert!(e.groups[&g].track.members.contains(&t[3]));
+
+        // Delete a member; then dissolve the group by deleting it.
+        let a = operator(&mut e, json!({"op": "delete", "tracks": [id(t[2])]})).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(!e.tracks.contains_key(&t[2]));
+        assert!(!e.groups[&g].track.members.contains(&t[2]));
+        let a = operator(&mut e, json!({"op": "delete", "tracks": [id(g)]})).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(e.groups.is_empty());
+        assert!(e.tracks[&t[0]].groups.is_empty());
+        assert!(e.redis.get_system_track(g).await.unwrap().is_none());
+        let a = operator(
+            &mut e,
+            json!({"op": "pair", "tracks": [id(t[0]), "tms-OTK999999999"]}),
+        )
+        .await;
+        assert_eq!(a["ok"], false);
+        e.redis.purge_namespace().await.unwrap();
+    }
+
     async fn operator(e: &mut Engine, mut cmd: Value) -> Value {
         let id = format!("t{}", Utc::now().timestamp_micros());
         cmd["id"] = json!(id);

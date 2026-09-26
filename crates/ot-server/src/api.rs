@@ -52,6 +52,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::registry_api::routes())
         .merge(crate::settings_api::routes())
         .merge(crate::correlation_api::routes())
+        .merge(crate::manage_api::routes())
 }
 
 pub(crate) fn actor(headers: &HeaderMap) -> String {
@@ -491,6 +492,10 @@ async fn list_tracks(
             json!({
                 "uid": t.uid,
                 "track_id": m.track_id,
+                "kind": m.kind,
+                "members": m.members,
+                "groups": m.groups,
+                "paired_with": m.paired_with,
                 "entity_id": t.entity_id,
                 "notices": t.notices.len(),
                 "state": t.state,

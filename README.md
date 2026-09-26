@@ -91,6 +91,25 @@ sensors report for, even several agreeing with each other, stays inside OpenTrac
 marks it "not published") until a track feed reports for it too. A source ends a track with
 `state: dropped`; a system track no source reports for any more is retired at once.
 
+The **Track Management** tab is where a track manager works on the picture: a map, the selected
+track's card (its GOLD fields, attributes and provenance, with **Edit** for its entity) and the
+tracks table. Tick tracks in the table to act on them, as OTH-GOLD's track management sets do:
+
+* **Pair** (PAIR): the same object, kept as separate tracks; each lists the others.
+* **Merge** (MRG): one track survives with the others' history, sources, groups and pairings,
+  and correlation never splits it again.
+* **Group**: form a group (a carrier battle group, a flight of bombers, a convoy) published as a
+  track of its own at the centre of its live members, with a symbol built from a naval task
+  organisation or the members' shared function, the task-force indicator and an echelon; or add
+  tracks to a ticked group.
+* **Delete** (DEL): the track is deleted downstream (a group is dissolved; its members stay).
+
+**Edit** on a track with no identifier (a radar or GMTI track) creates an entity pinned to that
+track (identifier `track:tms-<UID>`), which applies to the track itself: designating a radar
+track hostile is Edit, affiliation `hostile`, Save. The same operations are API calls:
+`/api/v1/tracks/pair`, `/tracks/unpair`, `/tracks/delete`, `/tracks/merge` with `hold`, and
+`/api/v1/groups`.
+
 The **Correlation** workspace shows the engine's suggestions (pairings in suggest mode, and
 splits when a source track stops agreeing with its track) for an operator to accept or reject,
 the correlation settings (saved and applied while running), and every correlation decision with

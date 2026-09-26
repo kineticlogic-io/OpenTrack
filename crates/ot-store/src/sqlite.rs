@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_correlation.sql"),
     include_str!("../migrations/0008_app_settings.sql"),
     include_str!("../migrations/0009_entities.sql"),
+    include_str!("../migrations/0010_track_groups.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -324,6 +325,16 @@ impl Db {
             let from_node = live_system_node(tx, from)?;
             let into_node = live_system_node(tx, into)?;
             let decision_id = record_decision(tx, &decision, now)?;
+            // Groups and pairings follow the merge to the surviving track.
+            let carried: Vec<(String, i64)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT kind, CASE WHEN src = ?1 THEN dst ELSE src END FROM edges
+                     WHERE (src = ?1 OR dst = ?1) AND kind IN ('MEMBER_OF', 'PAIRED_WITH')
+                       AND valid_to_ms IS NULL",
+                )?;
+                stmt.query_map([from_node], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
             let moved: Vec<(i64, String)> = {
                 let mut stmt = tx.prepare(
                     "SELECT src, attrs FROM edges
@@ -358,6 +369,34 @@ impl Db {
                 &serde_json::json!({}),
                 now,
             )?;
+            for (kind, other) in carried {
+                let pairing = kind == "PAIRED_WITH";
+                if pairing && other == into_node {
+                    continue;
+                }
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM edges WHERE kind = ?1 AND valid_to_ms IS NULL
+                         AND ((src = ?2 AND dst = ?3) OR (src = ?3 AND dst = ?2)))",
+                    params![kind, into_node, other],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    let kind = if pairing {
+                        EdgeKind::PairedWith
+                    } else {
+                        EdgeKind::MemberOf
+                    };
+                    graph::add_edge(
+                        tx,
+                        kind,
+                        into_node,
+                        other,
+                        decision_id,
+                        &serde_json::json!({}),
+                        now,
+                    )?;
+                }
+            }
             tx.execute(
                 "UPDATE nodes SET retired_at_ms = ?2 WHERE id = ?1",
                 params![from_node, now],
@@ -405,7 +444,7 @@ impl Db {
 
 /// Allocate the next UID for `site`.
 /// The node id of a live system track.
-fn live_system_node(tx: &Transaction<'_>, uid: Uid) -> Result<i64> {
+pub(crate) fn live_system_node(tx: &Transaction<'_>, uid: Uid) -> Result<i64> {
     tx.query_row(
         "SELECT id FROM nodes WHERE kind = 'system_track' AND key = ?1 AND retired_at_ms IS NULL",
         [uid.to_string()],
@@ -459,9 +498,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 9);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 10);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 9);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 10);
     }
 
     #[test]

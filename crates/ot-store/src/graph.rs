@@ -49,6 +49,9 @@ pub enum EdgeKind {
     ResolvesTo,
     /// SystemTrack → Group.
     MemberOf,
+    /// SystemTrack → SystemTrack: an operator's GOLD PAIR (the same object,
+    /// kept as separate tracks); lower UID first.
+    PairedWith,
 }
 
 impl EdgeKind {
@@ -61,6 +64,7 @@ impl EdgeKind {
             EdgeKind::Carries => "CARRIES",
             EdgeKind::ResolvesTo => "RESOLVES_TO",
             EdgeKind::MemberOf => "MEMBER_OF",
+            EdgeKind::PairedWith => "PAIRED_WITH",
         }
     }
 
@@ -73,6 +77,7 @@ impl EdgeKind {
             "CARRIES" => EdgeKind::Carries,
             "RESOLVES_TO" => EdgeKind::ResolvesTo,
             "MEMBER_OF" => EdgeKind::MemberOf,
+            "PAIRED_WITH" => EdgeKind::PairedWith,
             _ => return None,
         })
     }
@@ -82,7 +87,7 @@ impl EdgeKind {
         use NodeKind::*;
         match self {
             EdgeKind::ReportsFor | EdgeKind::CandidateOf => (SourceTrack, SystemTrack),
-            EdgeKind::MergedInto => (SystemTrack, SystemTrack),
+            EdgeKind::MergedInto | EdgeKind::PairedWith => (SystemTrack, SystemTrack),
             EdgeKind::DoNotPair => (SourceTrack, SourceTrack),
             EdgeKind::Carries => (SourceTrack, Identifier),
             EdgeKind::ResolvesTo => (Identifier, Entity),

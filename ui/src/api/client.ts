@@ -54,6 +54,13 @@ export interface SystemTrack {
   view: Observation
   /** The registry entity this track resolves to. */
   entity_id?: string
+  kind?: 'track' | 'group'
+  /** A group's members (UIDs). */
+  members?: string[]
+  /** Groups it belongs to (`tms-<UID>`). */
+  groups?: string[]
+  /** Tracks paired with it (UIDs). */
+  paired_with?: string[]
   /** Published attributes, resolved from the track's values (feeds and entity links) and built-ins. */
   attributes?: Record<string, unknown>
   notices?: AttributeNotice[]
@@ -194,6 +201,14 @@ export interface DecisionRow {
 export interface TrackRow {
   uid: string
   track_id: string
+  /** `group` for a group a track manager formed; absent for a track. */
+  kind?: 'track' | 'group'
+  /** A group's members (`tms-<UID>`). */
+  members?: string[]
+  /** Groups this track belongs to (`tms-<UID>`). */
+  groups?: string[]
+  /** Tracks paired with this one (GOLD PAIR), `tms-<UID>`. */
+  paired_with?: string[]
   entity_id: string | null
   /** Track fields where the entity replaced what a feed reports. */
   notices: number
@@ -215,6 +230,7 @@ export interface TrackRow {
   last_seen: string
   observation_count: number
   sources: string[]
+  published?: boolean
 }
 
 export interface Backlog {
@@ -524,6 +540,33 @@ export interface SchemaOverview {
   sources: { source: string; enabled: boolean; schema_version: number }[]
 }
 
+// --- Track management ----------------------------------------------------------------------
+
+/** What a group is: name and symbol, plus the symbol's parts the editor keeps. */
+export interface GroupSpec {
+  name: string
+  sidc: string
+  affiliation?: string | null
+  domain?: string | null
+  description?: string | null
+  /** Group class published as the GOLD class-name, e.g. CARRIER STRIKE GROUP. */
+  class?: string | null
+  /** How the symbol was built (the editor's choices). */
+  base?: string | null
+  echelon?: string | null
+  task_force?: boolean
+  sidc_override?: boolean
+}
+
+export interface TrackGroup {
+  track_id: string
+  uid: string
+  spec: GroupSpec
+  members: string[]
+  created_at_ms: number
+  updated_at_ms: number
+}
+
 // --- Entities --------------------------------------------------------------------------
 
 export interface RegistryIdentifier {
@@ -586,7 +629,16 @@ export const api = {
   correlationDecisions: (limit = 100) => get<{ decisions: DecisionRow[] }>(`/correlation/decisions?limit=${limit}`),
   splitTrack: (uid: string, sourceTrack: string) =>
     request<{ new_track: string }>('POST', `/tracks/${enc(uid)}/split`, { source_track: sourceTrack }),
-  mergeTracks: (from: string, into: string) => request<{ merged_into: string }>('POST', '/tracks/merge', { from, into }),
+  /** Merge `from` into `into`; with `hold` (a track manager's merge, GOLD MRG) correlation never splits it. */
+  mergeTracks: (from: string, into: string, hold = false) => request<{ merged_into: string }>('POST', '/tracks/merge', { from, into, hold }),
+  pairTracks: (tracks: string[]) => request<{ paired: string[] }>('POST', '/tracks/pair', { tracks }),
+  unpairTracks: (a: string, b: string) => request<unknown>('POST', '/tracks/unpair', { a, b }),
+  deleteTracks: (tracks: string[]) => request<{ deleted: string[] }>('POST', '/tracks/delete', { tracks }),
+  groups: () => get<{ groups: TrackGroup[] }>('/groups').then((r) => r.groups),
+  createGroup: (spec: GroupSpec, members: string[]) => request<{ group: string }>('POST', '/groups', { spec, members }),
+  updateGroup: (id: string, spec: GroupSpec) => request<unknown>('PUT', `/groups/${enc(id)}`, { spec }),
+  groupMembers: (id: string, add: string[], remove: string[]) => request<unknown>('POST', `/groups/${enc(id)}/members`, { add, remove }),
+  dissolveGroup: (id: string) => request<unknown>('DELETE', `/groups/${enc(id)}`),
   doNotPair: (a: string, b: string) => request<Record<string, unknown>>('POST', '/tracks/do-not-pair', { a, b }),
 
   sources: () => get<{ sources: SourceRow[] }>('/sources').then((r) => r.sources),

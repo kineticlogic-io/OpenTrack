@@ -14,6 +14,7 @@ mod control;
 mod correlate;
 mod correlation_api;
 mod engine;
+mod manage_api;
 mod metrics;
 mod probe;
 mod registry_api;

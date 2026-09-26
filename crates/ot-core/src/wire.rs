@@ -111,6 +111,19 @@ pub struct TrackMessage {
     /// sources carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<crate::SecurityLabel>,
+    /// `group` for a group a track manager formed; absent for a track.
+    #[serde(default, skip_serializing_if = "crate::TrackKind::is_track")]
+    pub kind: crate::TrackKind,
+    /// A group's member tracks (`tms-<UID>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    /// The groups this track belongs to (`tms-<UID>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// Tracks paired with this one (GOLD PAIR: the same object, kept as
+    /// separate tracks), `tms-<UID>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paired_with: Vec<String>,
     pub publisher: PublishContext,
     pub published_at: DateTime<Utc>,
 }
@@ -212,6 +225,10 @@ pub fn to_message(
         lon: v.position.longitude,
         attributes: track.attributes.clone(),
         security: track.view.security.clone(),
+        kind: track.kind,
+        members: track.members.iter().map(|u| u.doc_id()).collect(),
+        groups: track.groups.clone(),
+        paired_with: track.paired_with.iter().map(|u| u.doc_id()).collect(),
         publisher: ctx.clone(),
         published_at,
     }

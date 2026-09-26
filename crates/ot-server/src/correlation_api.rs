@@ -119,7 +119,11 @@ async fn list_suggestions(
 }
 
 /// Queue a command for the engine and wait for its answer.
-async fn command(s: &AppState, headers: &HeaderMap, cmd: Value) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn command(
+    s: &AppState,
+    headers: &HeaderMap,
+    cmd: Value,
+) -> Result<Json<Value>, ApiError> {
     command_waiting(s, headers, cmd, Duration::from_secs(10)).await
 }
 
@@ -222,6 +226,9 @@ struct MergeBody {
     from: String,
     into: String,
     reason: Option<String>,
+    /// A track manager's merge (GOLD MRG): correlation never splits it.
+    #[serde(default)]
+    hold: bool,
 }
 
 async fn merge_tracks(
@@ -232,7 +239,7 @@ async fn merge_tracks(
     command(
         &s,
         &headers,
-        json!({ "op": "merge", "from": b.from, "into": b.into, "reason": b.reason }),
+        json!({ "op": "merge", "from": b.from, "into": b.into, "reason": b.reason, "hold": b.hold }),
     )
     .await
 }

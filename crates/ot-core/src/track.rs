@@ -49,10 +49,30 @@ pub struct AttributeNotice {
     pub source_id: String,
 }
 
+/// What a system track stands for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackKind {
+    /// One object, reported by sources.
+    #[default]
+    Track,
+    /// A group of tracks a track manager formed (a battle group, a flight, a
+    /// convoy): its position is its live members' centre.
+    Group,
+}
+
+impl TrackKind {
+    pub fn is_track(&self) -> bool {
+        *self == TrackKind::Track
+    }
+}
+
 /// Current state of one system track, as held in `tms:sys:<uid>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemTrack {
     pub uid: Uid,
+    #[serde(default, skip_serializing_if = "TrackKind::is_track")]
+    pub kind: TrackKind,
     pub state: TrackState,
     /// The best-source view of the object. Until best-source selection
     /// arrives with correlation (phase 3) this is the latest observation.
@@ -64,8 +84,16 @@ pub struct SystemTrack {
     /// UIDs merged into this track, still resolvable as aliases.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<Uid>,
+    /// Groups this track is a member of, by their track id (`tms-<UID>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// Tracks an operator paired with this one (GOLD PAIR): the same object,
+    /// kept as separate tracks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paired_with: Vec<Uid>,
+    /// A group's member tracks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<Uid>,
     /// Registry entity this track resolves to, when the
     /// registry match is corroborated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +156,7 @@ impl SystemTrack {
         };
         Self {
             uid,
+            kind: TrackKind::Track,
             state: TrackState::Tentative,
             first_seen: obs.observed_at,
             last_seen: obs.observed_at,
@@ -137,6 +166,8 @@ impl SystemTrack {
             contributors: vec![contributor],
             aliases: Vec::new(),
             groups: Vec::new(),
+            paired_with: Vec::new(),
+            members: Vec::new(),
             entity_id: None,
             attributes: Default::default(),
             notices: Vec::new(),

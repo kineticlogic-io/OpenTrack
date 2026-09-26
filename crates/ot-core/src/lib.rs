@@ -18,7 +18,7 @@ pub use schema::{
     ValidationError,
 };
 pub use sidc::{Sidc, SidcStandard};
-pub use track::{AttributeNotice, Contributor, PairingType, SystemTrack};
+pub use track::{AttributeNotice, Contributor, PairingType, SystemTrack, TrackKind};
 pub use uid::{SiteCode, Uid, UidError};
 
 /// Version of the core schema. Extension-field schema versions are separate

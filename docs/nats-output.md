@@ -102,6 +102,27 @@ correlation engine that produced the track (`correlation`; see
 [algorithms.md](algorithms.md)). Tracks that only sensors report for are never published:
 a message always has a feed that may stand alone behind it.
 
+### Track management
+
+These are present only when they apply:
+
+| Field | |
+|---|---|
+| `kind` | `group` for a group a track manager formed (a battle group, a flight, a convoy); absent for a track |
+| `members` | a group's member tracks (`tms-<UID>`) |
+| `groups` | the groups a track belongs to (`tms-<UID>`) |
+| `paired_with` | tracks a track manager paired with this one (GOLD PAIR: the same object, kept as separate tracks) |
+
+A group is a track of its own, with its own track number: it sits at the centre of its live
+members, with their mean course and speed and a `circular_error_m` that covers them all, and
+carries the symbol the track manager built for it (2525C: a naval task organisation such as
+`SHSPGG----` or the members' shared function, with the task-force indicator in position 11 and the
+echelon in position 12). Without live members it stays, `lost`. Dissolving it publishes a
+`delete`; its members stay.
+
+A track manager's merge (GOLD MRG) looks like any merge: the surviving track keeps its number and
+the other is deleted.
+
 ### `sidc`
 
 Every track carries a symbol code with its standard, so the consumer knows how to draw it:
