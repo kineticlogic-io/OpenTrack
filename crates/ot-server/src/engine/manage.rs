@@ -318,7 +318,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn db<T: Send + 'static>(
+    pub(super) async fn db<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut ot_store::Db) -> ot_store::sqlite::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {

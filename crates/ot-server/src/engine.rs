@@ -47,6 +47,7 @@ use crate::config::Common;
 
 pub(crate) mod bench;
 mod manage;
+mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
 pub const GROUP: &str = "engine";
@@ -1541,7 +1542,9 @@ impl Engine {
         );
         let new = tokio::task::spawn_blocking(move || -> anyhow::Result<Uid> {
             let mut db = c.open_db()?;
-            let (new, _) = db.split_source_track(c.site, &source, &track_key, decision)?;
+            let (new, split) = db.split_source_track(c.site, &source, &track_key, decision)?;
+            // Made with the split: undoing the split undoes it too.
+            let dnp = dnp.evidence(json!({ "with_decision": split }));
             db.do_not_pair(&[left], &rest_keys, dnp)?;
             Ok(new)
         })
@@ -1869,6 +1872,15 @@ impl Engine {
                     .to_owned();
                 self.operator_do_not_pair(a, b, &actor, reason).await?;
                 Ok(json!({}))
+            }
+            "undo" => {
+                let id = cmd["decision"]
+                    .as_i64()
+                    .ok_or_else(|| anyhow::anyhow!("decision is required"))?;
+                let reason = cmd["reason"]
+                    .as_str()
+                    .unwrap_or("undone by a track manager");
+                self.undo(id, &actor, reason).await
             }
             op if manage::OPS.contains(&op) => self.manage(op, cmd, &actor).await,
             other => anyhow::bail!("unknown command {other:?}"),
@@ -4156,5 +4168,93 @@ mod tests {
     #[tokio::test]
     async fn replay_autoferry_16_detections() {
         autoferry_detections(16).await;
+    }
+
+    /// The newest decision of `op`.
+    async fn last_decision(e: &Engine, op: &'static str) -> i64 {
+        e.db(move |db| db.decisions_by_op(&[op], 1)).await.unwrap()[0].id
+    }
+
+    #[tokio::test]
+    async fn track_management_is_undone_on_the_live_picture() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let ships = |s: i64| {
+            vec![
+                report("ais", "1", s, 32.0, -117.0, Some("1")),
+                report("ais", "2", s, 32.05, -117.0, Some("2")),
+                report("ais", "3", s, 32.10, -117.0, Some("3")),
+            ]
+        };
+        for s in 0..3 {
+            feed(&mut e, &ships(s)).await;
+        }
+        let t: Vec<Uid> = (1..=3)
+            .map(|i| track_of(&e, "ais", &i.to_string()))
+            .collect();
+        let id = |u: Uid| u.doc_id();
+        let undo = |d: i64| json!({"op": "undo", "decision": d, "actor": "bob@x.org"});
+
+        // A delete undone: the track is back under its UID, even though the
+        // feed went on and the engine made a new track for it meanwhile.
+        let a = operator(&mut e, json!({"op": "delete", "tracks": [id(t[2])]})).await;
+        assert_eq!(a["ok"], true, "{a}");
+        feed(&mut e, &[report("ais", "3", 3, 32.10, -117.0, Some("3"))]).await;
+        let meanwhile = track_of(&e, "ais", "3");
+        assert_ne!(meanwhile, t[2]);
+        let d = last_decision(&e, "delete_track").await;
+        let a = operator(&mut e, undo(d)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(track_of(&e, "ais", "3"), t[2]);
+        assert!(e.tracks.contains_key(&t[2]));
+        assert!(!e.tracks.contains_key(&meanwhile), "the stand-in retires");
+        assert!(e.redis.get_system_track(t[2]).await.unwrap().is_some());
+        // Reports keep coming to it.
+        feed(&mut e, &[report("ais", "3", 4, 32.10, -117.0, Some("3"))]).await;
+        assert_eq!(track_of(&e, "ais", "3"), t[2]);
+
+        // A merge undone: each track has its own source track again.
+        let a = operator(
+            &mut e,
+            json!({"op": "merge", "from": id(t[0]), "into": id(t[1])}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(!e.tracks.contains_key(&t[0]));
+        let merge = last_decision(&e, "merge").await;
+        let a = operator(&mut e, undo(merge)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(track_of(&e, "ais", "1"), t[0]);
+        assert_eq!(track_of(&e, "ais", "2"), t[1]);
+        assert_eq!(e.tracks[&t[1]].contributors.len(), 1);
+        // Not twice.
+        let a = operator(&mut e, undo(merge)).await;
+        assert_eq!(a["ok"], false, "{a}");
+
+        // A group formed and a pairing, undone.
+        let a = operator(&mut e, json!({"op": "group_create", "members": [id(t[0]), id(t[1])],
+            "spec": {"name": "TG 1", "sidc": "SFSPGG----", "affiliation": "friend", "echelon": "G"}}))
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(e.groups.len(), 1);
+        let d = last_decision(&e, "create_group").await;
+        let a = operator(&mut e, undo(d)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(e.groups.is_empty());
+        assert!(e.tracks[&t[0]].groups.is_empty());
+        let a = operator(
+            &mut e,
+            json!({"op": "pair", "tracks": [id(t[0]), id(t[2])]}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        let d = last_decision(&e, "pair_tracks").await;
+        let a = operator(&mut e, undo(d)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(e.tracks[&t[0]].paired_with.is_empty());
+        assert!(e.tracks[&t[2]].paired_with.is_empty());
+        e.redis.purge_namespace().await.unwrap();
     }
 }

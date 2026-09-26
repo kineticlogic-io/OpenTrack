@@ -1,3 +1,5 @@
+// Vendored (OpenStare's fork of samael 0.0.20): its own warnings are not ours to fix here.
+#![allow(warnings)]
 pub mod attribute;
 pub mod crypto;
 pub mod idp;
