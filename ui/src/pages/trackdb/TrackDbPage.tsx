@@ -12,6 +12,8 @@ import { EntityEditor } from '../registry/EntityEditor'
 import { InfoTip } from '../../components/InfoTip'
 import { GroupEditor } from './GroupEditor'
 import { TrackCard } from './TrackCard'
+import { ManagementLog } from './ManagementLog'
+import type { HistoryPoint } from '../../api/client'
 import { useCan } from '../../auth/context'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
@@ -137,6 +139,8 @@ const distinct = (rows: TrackRow[], pick: (t: TrackRow) => string[]) => [...new 
 /** Every live track on a map and in a table, with the selected one's details and entity. */
 export default function TrackDbPage({ selected, onSelect }: { selected: string; onSelect: (uid: string) => void }) {
   const { toast } = useToast()
+  const [logRev, setLogRev] = useState(0)
+  const [trail, setTrail] = useState<{ uid: string; points: HistoryPoint[] } | null>(null)
   const canManage = useCan('track_manager')
   const [rows, setRows] = useState<TrackRow[] | null>(null)
   const [query, setQuery] = useState('')
@@ -200,6 +204,16 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     [shown],
   )
 
+  // The selected track's history, drawn as a trail of small dots behind it.
+  const mapPoints: MapPoint[] = useMemo(() => {
+    if (!trail || trail.uid !== selected || trail.points.length < 2) return points
+    const color = points.find((p) => p.id === selected)?.color
+    return [
+      ...trail.points.slice(0, -1).map((p) => ({ id: `trail:${p.t}`, latitude: p.lat, longitude: p.lon, color, label: '' })),
+      ...points,
+    ]
+  }, [points, trail, selected])
+
   const row = all.find((t) => t.uid === selected) ?? null
   const byId = useMemo(() => new Map(all.map((t) => [t.track_id, t])), [all])
   const ticked = checked.filter((id) => byId.has(id))
@@ -229,7 +243,10 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     ],
     [checked],
   )
-  const reload = () => api.tracks().then((r) => setRows(r.tracks), () => {})
+  const reload = () => {
+    setLogRev((n) => n + 1)
+    return api.tracks().then((r) => setRows(r.tracks), () => {})
+  }
   const run = async (what: string, f: () => Promise<unknown>) => {
     setBusy(true)
     try {
@@ -275,6 +292,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     }
   }
   const select = (uid: string | null) => {
+    // A trail dot selects nothing of its own.
+    if (uid?.startsWith('trail:')) return
     setEditing(false)
     onSelect(uid ?? '')
   }
@@ -285,7 +304,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       <div className="workspace">
         <CollapsiblePanel title="Track map" badge={rows ? `${points.length.toLocaleString()} shown` : undefined} persistKey="ot.panel.trackmap">
           <div className="workspace-body map">
-            <MapView aria-label="Live tracks" points={points} selectedId={selected || null} onSelect={select} outlines={OUTLINES} fitKey="tracks" height="100%" />
+            <MapView aria-label="Live tracks" points={mapPoints} selectedId={selected || null} onSelect={select} outlines={OUTLINES} fitKey="tracks" height="100%" />
           </div>
         </CollapsiblePanel>
         <CollapsiblePanel
@@ -297,6 +316,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               <TrackCard
                 key={selected}
                 uid={selected}
+                onHistory={(points) => setTrail({ uid: selected, points })}
+                onChanged={() => void reload()}
                 onEdit={
                   row
                     ? () => (row.kind === 'group' ? setGrouping({ id: row.track_id, members: [] }) : setEditing(true))
@@ -409,6 +430,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
           empty={rows === null ? 'LOADING…' : filtered ? 'No track matches.' : 'No live tracks. Enable a source to start ingesting.'}
         />
       </CollapsiblePanel>
+
+      <ManagementLog rev={logRev} onChanged={() => void reload()} />
 
       {merging !== null && (
         <Modal title="Merge tracks" onClose={() => setMerging(null)} width={480} resizable={false}>

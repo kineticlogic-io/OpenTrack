@@ -1,10 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { TbAlertTriangle, TbArrowsSplit, TbPencil, TbUnlink } from 'react-icons/tb'
+import { TbAlertTriangle, TbArrowBackUp, TbArrowsSplit, TbPencil, TbUnlink } from 'react-icons/tb'
 import { Badge, Button, DataTable, TabPanel, Tabs, useToast, type DataTableColumn } from 'staresdk'
-import { api, type ExtensionField, type GraphEdge, type SystemTrack, type TrackResponse } from '../../api/client'
+import { api, type ExtensionField, type GraphEdge, type HistoryPoint, type SystemTrack, type TrackResponse } from '../../api/client'
 import { ago, errorMessage, fmtNum, fmtTime, show, STATE_COLOR } from '../../lib/format'
 import { standardName, symbolUrl } from '../../lib/symbol'
 import { useCan } from '../../auth/context'
+import { TrackHistory } from './TrackHistory'
+import { opLabel, undoable, useUndo } from './undo'
 
 // React Flow loads only when the Provenance tab is open.
 const LineageGraph = lazy(() => import('./LineageGraph'))
@@ -14,7 +16,10 @@ const REFRESH_MS = 5000
 const TABS = [
   { id: 'card', label: 'Details' },
   { id: 'provenance', label: 'Provenance' },
+  { id: 'history', label: 'History' },
 ]
+
+const HISTORY_REFRESH_MS = 15_000
 
 type Contributor = SystemTrack['contributors'][number]
 
@@ -58,7 +63,21 @@ function origin(f: ExtensionField, replaced: boolean): string {
  * MIL-STD-2525 symbol), then the output schema's attributes; and its provenance, the source
  * tracks and correlation decisions behind it.
  */
-export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; onEdit?: () => void; editLabel?: string }) {
+export function TrackCard({
+  uid,
+  onEdit,
+  editLabel = 'Edit',
+  onHistory,
+  onChanged,
+}: {
+  uid: string
+  onEdit?: () => void
+  editLabel?: string
+  /** The track's position history, whenever it is (re)loaded (the map draws it as a trail). */
+  onHistory?: (points: HistoryPoint[]) => void
+  /** A decision here changed the picture (an undo, a deleted point). */
+  onChanged?: () => void
+}) {
   const [tab, setTab] = useState('card')
   const canManage = useCan('track_manager')
   const [data, setData] = useState<TrackResponse | null>(null)
@@ -68,6 +87,31 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
   const [edgesRev, setEdgesRev] = useState(0)
   const [splitting, setSplitting] = useState<string | null>(null)
   const { toast, confirm } = useToast()
+  const undo = useUndo()
+  const [history, setHistory] = useState<HistoryPoint[] | null>(null)
+  const [historyRev, setHistoryRev] = useState(0)
+
+  // Position history: for the History tab and the map's trail.
+  useEffect(() => {
+    let cancelled = false
+    const load = () =>
+      api.trackHistory(uid).then(
+        (r) => {
+          if (cancelled) return
+          setHistory(r.points)
+          onHistory?.(r.points)
+        },
+        () => !cancelled && setHistory((h) => h ?? []),
+      )
+    load()
+    const t = setInterval(load, HISTORY_REFRESH_MS)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+    // onHistory is the parent's; a new function each render must not reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, historyRev])
 
   // Live state, refreshed.
   useEffect(() => {
@@ -329,6 +373,15 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
               </dl>
             )}
           </div>
+        ) : tab === 'history' ? (
+          <TrackHistory
+            uid={t.uid}
+            points={history}
+            onChanged={() => {
+              setHistoryRev((n) => n + 1)
+              onChanged?.()
+            }}
+          />
         ) : (
           <div className="stack">
             <h3 className="subhead">
@@ -372,6 +425,22 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
                         {fmtTime(e.valid_from_ms)}
                         {e.valid_to_ms !== null && ` – ${fmtTime(e.valid_to_ms)}`} · decision #{e.decision_id} (
                         {e.decision_op} by {e.decision_actor})
+                      {e.valid_to_ms === null && undoable({ op: e.decision_op, actor: e.decision_actor, undone_by: undefined }) && (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          icon={<TbArrowBackUp />}
+                          title={`Undo ${opLabel(e.decision_op)} (#${e.decision_id})`}
+                          aria-label={`Undo decision ${e.decision_id}`}
+                          disabled={!canManage}
+                          onClick={async () => {
+                            if (await undo({ id: e.decision_id, op: e.decision_op })) {
+                              setEdgesRev((n) => n + 1)
+                              onChanged?.()
+                            }
+                          }}
+                        />
+                      )}
                       </span>
                     </li>
                   ))}
