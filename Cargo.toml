@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*"]
 # Plugin SDKs and examples build for WebAssembly: their own workspace.
-exclude = ["sdk"]
+exclude = ["third_party", "sdk"]
 
 [workspace.package]
 version = "0.2.2"
@@ -55,6 +55,11 @@ sha2 = "0.10"
 argon2 = { version = "0.5.3", features = ["std"] }
 jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }
 uuid = { version = "1", features = ["v4"] }
+# SAML single sign-on (ot-server's `saml` feature): OpenStare's fork of
+# samael 0.0.20, which builds against libxmlsec1 1.2.41 and on arm64.
+samael = { path = "third_party/samael", features = ["xmlsec"] }
+flate2 = "1"
+url = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -24,6 +24,7 @@ const PUBLIC: &[&str] = &[
     "/auth/saml/acs",
     "/auth/saml/metadata",
     "/public/banner",
+    "/public/warning-banner",
 ];
 
 /// Paths any signed-in account may call, whatever its role.

@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings", get(get_settings).put(put_settings))
         .route("/public/banner", get(banner))
+        .route("/public/warning-banner", get(warning_banner))
         .route("/export/tracks", get(export_tracks))
         .route("/export/config", get(export_config))
         .route("/admin/purge", post(purge))
@@ -31,6 +32,17 @@ pub struct AppSettings {
     /// UIDs is fixed at deployment (`OT_SITE_CODE`).
     pub site_name: String,
     pub banner: BannerSettings,
+    pub warning: WarningSettings,
+}
+
+/// The warning users must accept after signing in, as OpenStare's warning
+/// banner (a notice and consent to monitoring, say): declining signs them
+/// out.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WarningSettings {
+    pub enabled: bool,
+    pub text: String,
 }
 
 /// The classification banner, as OpenStare configures its own: on or off,
@@ -81,6 +93,13 @@ impl AppSettings {
         if !hex_colour(&b.background) || !hex_colour(&b.color) {
             return Err("banner colours are #rrggbb".into());
         }
+        let w = &self.warning;
+        if w.enabled && w.text.trim().is_empty() {
+            return Err("warning: give the text users must accept".into());
+        }
+        if w.text.chars().count() > 20_000 {
+            return Err("warning text is at most 20,000 characters".into());
+        }
         Ok(())
     }
 }
@@ -127,6 +146,13 @@ async fn banner(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({
         "enabled": b.enabled, "text": b.text, "background": b.background, "color": b.color,
     })))
+}
+
+/// The warning to accept after signing in, unauthenticated and shaped as
+/// OpenStare's `/api/public/warning-banner`: `{enabled, text}`.
+async fn warning_banner(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let w = load(&s).await?.warning;
+    Ok(Json(json!({ "enabled": w.enabled, "text": w.text })))
 }
 
 #[derive(Deserialize)]
