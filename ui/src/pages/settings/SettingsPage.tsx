@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { TbDownload, TbInfoCircle, TbTrash } from 'react-icons/tb'
-import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, Tooltip, useToast } from 'staresdk'
+import { TbDownload, TbTrash } from 'react-icons/tb'
+import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
 import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
+import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
@@ -14,21 +15,6 @@ const PRESETS = [
   { label: 'Top Secret', background: '#ff8300', color: '#000000' },
 ]
 
-/** A small ⓘ that shows `text` on hover or focus. */
-function InfoTip({ label, text }: { label: string; text: string }) {
-  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
-  const show = (e: React.MouseEvent | React.FocusEvent) => {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setAt({ x: r.right + 6, y: r.top })
-  }
-  return (
-    <span className="info-tip" tabIndex={0} role="img" aria-label={`${label}: ${text}`} onMouseEnter={show} onMouseLeave={() => setAt(null)} onFocus={show} onBlur={() => setAt(null)}>
-      <TbInfoCircle aria-hidden />
-      {at && <Tooltip x={at.x} y={at.y} content={text} />}
-    </span>
-  )
-}
-
 const SITE_CODE_INFO =
   'Site code: the 3 characters (A–Z, 0–9) that begin every track number this instance issues, e.g. OTK000000042 — ' +
   "OTH-GOLD's track UID form, a site code then a 9-digit sequence. It keeps track numbers unique between the sites feeding one " +
@@ -37,10 +23,12 @@ const SITE_CODE_INFO =
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="stage-row">
-      <Label size="sm">{label}</Label>
+      <div className="row-label">
+        <Label size="sm">{label}</Label>
+        {hint && <InfoTip label={label}>{hint}</InfoTip>}
+      </div>
       <div className="stack" style={{ gap: 2 }}>
         {children}
-        {hint && <span className="muted">{hint}</span>}
       </div>
     </div>
   )
@@ -109,25 +97,27 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   return (
     <div className="stack">
       <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
-        <Row label="Site name">
-          <div className="num-row">
-            <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
-            <span className="muted">site code</span>
-            <Badge color="grey" size="sm">
-              {loaded.site_code}
-            </Badge>
-            <InfoTip label="Site code" text={SITE_CODE_INFO} />
-          </div>
-        </Row>
+        <div className="panel-body">
+          <Row label="Site name">
+            <div className="num-row">
+              <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
+              <span className="muted">site code</span>
+              <Badge color="grey" size="sm">
+                {loaded.site_code}
+              </Badge>
+              <InfoTip label="Site code">{SITE_CODE_INFO}</InfoTip>
+            </div>
+          </Row>
+        </div>
       </CollapsiblePanel>
 
       {/* As OpenStare's Banner settings: this instance's own marking, whatever OpenStare shows. */}
       <CollapsiblePanel title="Classification banner" persistKey="ot.panel.settings.banner" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
-        <div className="banner-settings">
+        <div className="panel-body banner-settings">
           <div className="banner-toggle">
-            <div>
-              <div className="field-caps">Classification banner</div>
-              <span className="muted">Displays a fixed bar at the top and bottom of every page.</span>
+            <div className="field-caps">
+              Classification banner
+              <InfoTip label="Classification banner">Displays a fixed bar at the top and bottom of every page.</InfoTip>
             </div>
             <Toggle value={b.enabled} onChange={(enabled) => setB({ enabled })} aria-label="Classification Banner" />
           </div>
@@ -177,43 +167,52 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
       </CollapsiblePanel>
 
       <CollapsiblePanel title="Data export" persistKey="ot.panel.settings.export">
-        <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
-          <div className="num-row">
-            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
-              GeoJSON
+        <div className="panel-body">
+          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
+            <div className="num-row">
+              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
+                GeoJSON
+              </Button>
+              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.csv'), '_self')}>
+                CSV
+              </Button>
+            </div>
+          </Row>
+          <Row label="Configuration" hint="Sources, output schema versions, correlation and instance settings, as one JSON file for backup.">
+            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
+              Configuration
             </Button>
-            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.csv'), '_self')}>
-              CSV
+          </Row>
+          <Row label="Registry" hint="Entities, identifiers and cards: export and import them on the Registry tab.">
+            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
+              Registry XLSX
             </Button>
-          </div>
-        </Row>
-        <Row label="Configuration" hint="Sources, output schema versions, correlation and instance settings, as one JSON file for backup.">
-          <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
-            Configuration
-          </Button>
-        </Row>
-        <Row label="Registry" hint="Entities, identifiers and cards: export and import them on the Registry tab.">
-          <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
-            Registry XLSX
-          </Button>
-        </Row>
+          </Row>
+        </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="Purge" persistKey="ot.panel.settings.purge">
-        <span className="muted">
-          Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry, cards and the decision log stay.
-        </span>
-        <Row label="Also delete history" hint="The track graph: how every track was formed, paired, merged and split.">
-          <Toggle size="sm" aria-label="Also delete history" value={purgeHistory} onChange={setPurgeHistory} />
-        </Row>
-        <Row label="Confirm" hint={`Type the site code, ${loaded.site_code}.`}>
-          <div className="num-row">
-            <Input style={{ ...INPUT, width: 120 }} aria-label="Site code to confirm" value={purgeConfirm} onChange={(e) => setPurgeConfirm(e.target.value)} spellCheck={false} />
-            <Button size="sm" variant="danger" icon={<TbTrash />} disabled={purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
-              Purge tracks
-            </Button>
-          </div>
-        </Row>
+      <CollapsiblePanel
+        title="Purge"
+        persistKey="ot.panel.settings.purge"
+        titleActions={
+          <InfoTip label="Purge">
+            Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry, cards and the decision log stay.
+          </InfoTip>
+        }
+      >
+        <div className="panel-body">
+          <Row label="Also delete history" hint="The track graph: how every track was formed, paired, merged and split.">
+            <Toggle size="sm" aria-label="Also delete history" value={purgeHistory} onChange={setPurgeHistory} />
+          </Row>
+          <Row label="Confirm" hint={`Type the site code, ${loaded.site_code}.`}>
+            <div className="num-row">
+              <Input style={{ ...INPUT, width: 120 }} aria-label="Site code to confirm" value={purgeConfirm} onChange={(e) => setPurgeConfirm(e.target.value)} spellCheck={false} />
+              <Button size="sm" variant="danger" icon={<TbTrash />} disabled={purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
+                Purge tracks
+              </Button>
+            </div>
+          </Row>
+        </div>
       </CollapsiblePanel>
     </div>
   )

@@ -6,6 +6,7 @@ import { api, type ExtensionField, type SchemaOverview, type SchemaVersion, type
 import { errorMessage, fmtTime } from '../../lib/format'
 import { unpublished, usedBy, type Unpublished } from '../../lib/schemaUsage'
 import { FieldForm } from './FieldForm'
+import { InfoTip } from '../../components/InfoTip'
 
 type VersionRow = SchemaVersion & { sources: string[] }
 type FieldRow = ExtensionField & { used: string[] }
@@ -211,13 +212,19 @@ export default function SchemaPage() {
 
   return (
     <div className="panels">
-      <CollapsiblePanel title="Output schema versions" badge={rows.length ? String(rows.length) : undefined} persistKey="ot.panel.schemaVersions">
+      <CollapsiblePanel
+        title="Output schema versions"
+        badge={rows.length ? String(rows.length) : undefined}
+        persistKey="ot.panel.schemaVersions"
+        titleActions={
+          <InfoTip label="Output schema versions">
+            The output schema defines the attributes every published track carries and the fields of every card. A published version never changes;
+            edit a draft, then publish it.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
           <div className="toolbar">
-            <span className="muted">
-              The output schema defines the attributes every published track carries and the fields of every card. A
-              published version never changes; edit a draft, then publish it.
-            </span>
             <span className="spacer" />
             {!editing && (
               <Button size="sm" icon={<TbPencil />} onClick={() => startEditing()}>
@@ -287,12 +294,18 @@ export default function SchemaPage() {
         </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="Set by feeds, not published" badge={missing.length ? String(missing.length) : undefined} persistKey="ot.panel.schemaMissing">
+      <CollapsiblePanel
+        title="Set by feeds, not published"
+        badge={missing.length ? String(missing.length) : undefined}
+        persistKey="ot.panel.schemaMissing"
+        titleActions={
+          <InfoTip label="Set by feeds, not published">
+            Values enabled sources set that no field of version {latestPublished?.version ?? '—'} publishes. Add one to the draft to publish it once the
+            draft is published.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
-          <span className="muted">
-            Values enabled sources set that no field of version {latestPublished?.version ?? '—'} publishes. Add one to
-            the draft to publish it once the draft is published.
-          </span>
           <DataTable
             aria-label="Values not published"
             columns={[
@@ -328,13 +341,18 @@ export default function SchemaPage() {
         </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="Always published" persistKey="ot.panel.schemaCore">
+      <CollapsiblePanel
+        title="Always published"
+        persistKey="ot.panel.schemaCore"
+        titleActions={
+          <InfoTip label="Always published">
+            The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The output schema adds{' '}
+            <span className="mono">attributes</span>: each field is filled from the entity&apos;s card, else from a feed mapping (
+            <span className="mono">ext.&lt;field&gt;</span>), or linked to an OpenTrack value.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
-          <span className="muted">
-            The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The
-            output schema adds <span className="mono">attributes</span>: each field is filled from the entity's card,
-            else from a feed mapping (<span className="mono">ext.&lt;field&gt;</span>), or linked to an OpenTrack value.
-          </span>
           <dl className="facts">
             {(overview?.published_core ?? []).map((f) => (
               <div key={f} style={{ display: 'contents' }}>

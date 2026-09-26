@@ -3,6 +3,7 @@ import { TbDownload, TbSearch, TbUpload } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, Input, useToast, type DataTableColumn } from 'staresdk'
 import { api, type RegistryListEntity, type SheetImport } from '../../api/client'
 import { errorMessage, fmtTime } from '../../lib/format'
+import { InfoTip } from '../../components/InfoTip'
 import { CardEditor } from '../trackdb/CardEditor'
 
 const PAGE = 200
@@ -106,17 +107,25 @@ export default function RegistryPage() {
         badge={rows ? (query.trim() ? `${rows.length.toLocaleString()} of ${total.toLocaleString()}` : total.toLocaleString()) : undefined}
         persistKey="ot.panel.registry"
         titleActions={
-          <div className="search">
-            <TbSearch aria-hidden />
-            <Input
-              aria-label="Search the registry"
-              placeholder="Name or identifier"
-              style={{ paddingLeft: 26 }}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
+          <div className="num-row">
+            <InfoTip label="Registry sheets">
+              One row per entity: <span className="mono">entity_id</span>, <span className="mono">name</span>, <span className="mono">status</span>,{' '}
+              <span className="mono">id:&lt;scheme&gt;</span> (several separated by ;), <span className="mono">registry:&lt;key&gt;</span> and{' '}
+              <span className="mono">card:&lt;field&gt;</span>. Export a sheet to start from. Blank cells leave values as they are; an identifier is
+              never taken from another entity.
+            </InfoTip>
+            <div className="search">
+              <TbSearch aria-hidden />
+              <Input
+                aria-label="Search the registry"
+                placeholder="Name or identifier"
+                style={{ paddingLeft: 26 }}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
           </div>
         }
         actions={
@@ -144,22 +153,18 @@ export default function RegistryPage() {
           </>
         }
       >
-        <span className="muted">
-          One row per entity: <span className="mono">entity_id</span>, <span className="mono">name</span>, <span className="mono">status</span>,{' '}
-          <span className="mono">id:&lt;scheme&gt;</span> (several separated by ;), <span className="mono">registry:&lt;key&gt;</span> and{' '}
-          <span className="mono">card:&lt;field&gt;</span>. Export a sheet to start from. Blank cells leave values as they are; an identifier is never
-          taken from another entity.
-        </span>
-        <DataTable
-          aria-label="Registry entities"
-          columns={COLUMNS}
-          rows={rows ?? []}
-          rowKey={(e) => e.id}
-          onRowClick={(e) => setEditing(e)}
-          empty={rows ? 'No entity matches.' : 'Loading…'}
-          maxHeight={560}
-        />
-        {rows && total > rows.length && <span className="muted">Showing the first {rows.length.toLocaleString()}; search to narrow.</span>}
+        <div className="panel-body">
+          <DataTable
+            aria-label="Registry entities"
+            columns={COLUMNS}
+            rows={rows ?? []}
+            rowKey={(e) => e.id}
+            onRowClick={(e) => setEditing(e)}
+            empty={rows ? 'No entity matches.' : 'Loading…'}
+            maxHeight={560}
+          />
+          {rows && total > rows.length && <span className="muted">Showing the first {rows.length.toLocaleString()}; search to narrow.</span>}
+        </div>
       </CollapsiblePanel>
 
       {plan && (
@@ -178,35 +183,37 @@ export default function RegistryPage() {
             </>
           }
         >
-          {plan.result.counts.error > 0 && <div className="error-text">Fix the rows with errors and import again: nothing is written while any row has one.</div>}
-          <DataTable
-            aria-label="Import plan"
-            columns={[
-              { key: 'row', header: 'Row', width: 56, align: 'right', render: (r) => r.row },
-              { key: 'action', header: 'Change', width: 96, render: (r) => <Badge size="sm" color={ACTION_COLOR[r.action]}>{r.action}</Badge> },
-              { key: 'entity', header: 'Entity', render: (r) => r.name ?? r.entity_id },
-              {
-                key: 'what',
-                header: 'What',
-                render: (r) =>
-                  r.errors?.length ? (
-                    <span className="error-text">{r.errors.join('; ')}</span>
-                  ) : (
-                    [
-                      r.identifiers_added?.length ? `+ ${r.identifiers_added.join(', ')}` : '',
-                      r.registry_fields?.length ? `registry ${r.registry_fields.join(', ')}` : '',
-                      r.card_fields?.length ? `card ${r.card_fields.join(', ')}` : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  ),
-              },
-            ]}
-            rows={planRows}
-            rowKey={(r) => String(r.row)}
-            empty="Nothing to change."
-            maxHeight={360}
-          />
+          <div className="panel-body">
+            {plan.result.counts.error > 0 && <div className="error-text">Fix the rows with errors and import again: nothing is written while any row has one.</div>}
+            <DataTable
+              aria-label="Import plan"
+              columns={[
+                { key: 'row', header: 'Row', width: 56, align: 'right', render: (r) => r.row },
+                { key: 'action', header: 'Change', width: 96, render: (r) => <Badge size="sm" color={ACTION_COLOR[r.action]}>{r.action}</Badge> },
+                { key: 'entity', header: 'Entity', render: (r) => r.name ?? r.entity_id },
+                {
+                  key: 'what',
+                  header: 'What',
+                  render: (r) =>
+                    r.errors?.length ? (
+                      <span className="error-text">{r.errors.join('; ')}</span>
+                    ) : (
+                      [
+                        r.identifiers_added?.length ? `+ ${r.identifiers_added.join(', ')}` : '',
+                        r.registry_fields?.length ? `registry ${r.registry_fields.join(', ')}` : '',
+                        r.card_fields?.length ? `card ${r.card_fields.join(', ')}` : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                    ),
+                },
+              ]}
+              rows={planRows}
+              rowKey={(r) => String(r.row)}
+              empty="Nothing to change."
+              maxHeight={360}
+            />
+          </div>
         </CollapsiblePanel>
       )}
 

@@ -3,6 +3,7 @@ import { TbPlus, TbTrash } from 'react-icons/tb'
 import { JsonField } from '../sources/designer/JsonField'
 import type { CorrelationSettings, OutputFilter } from '../../api/client'
 import { INPUT } from '../../lib/valueSpec'
+import { InfoTip } from '../../components/InfoTip'
 
 const APPROACHES = [{ name: 'kinematics_metadata' }, { name: 'kinematics' }, { name: 'identifiers' }]
 const MODES = [{ name: 'automatic' }, { name: 'suggest' }]
@@ -11,10 +12,12 @@ const YES_NO = [{ name: 'yes' }, { name: 'no' }]
 function Row({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <div className="stage-row">
-      <Label size="sm">{label}</Label>
+      <div className="row-label">
+        <Label size="sm">{label}</Label>
+        {hint && <InfoTip label={label}>{hint}</InfoTip>}
+      </div>
       <div className="stack" style={{ gap: 2 }}>
         {children}
-        {hint && <span className="muted">{hint}</span>}
       </div>
     </div>
   )
@@ -68,11 +71,13 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           style={{ width: 200 }}
         />
       </Row>
-      <h4 className="subhead">Kinematic pairing</h4>
-      <span className="muted">
-        Each comparison propagates the older report&apos;s position, velocity and their uncertainty to the newer one&apos;s time and weighs how
-        well they agree against another object being there. The probability of the same object builds from the prior over recent comparisons.
-      </span>
+      <h4 className="subhead">
+        Kinematic pairing
+        <InfoTip label="Kinematic pairing">
+          Each comparison propagates the older report&apos;s position, velocity and their uncertainty to the newer one&apos;s time and weighs how well
+          they agree against another object being there. The probability of the same object builds from the prior over recent comparisons.
+        </InfoTip>
+      </h4>
       <Row label="Pair at probability" hint={`From a prior of ${k.prior_probability}, after at least ${k.m} of the last ${k.n} comparisons within ${k.window_secs} s, at least ${k.min_interval_secs} s apart.`}>
         <div className="num-row">
           <Num width={70} label="Pair probability" value={k.pair_probability} onChange={(pair_probability) => setK({ pair_probability })} />
@@ -144,11 +149,13 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <Num width={70} label="Split gate probability" value={sp.gate_probability} onChange={(gate_probability) => setS({ gate_probability })} />
         </div>
       </Row>
-      <h4 className="subhead">Output filter</h4>
-      <span className="muted">
-        What OpenTrack publishes. A track that fails stays inside OpenTrack, marked filtered; a published track that stops passing is deleted
-        downstream until it passes again. Empty: everything.
-      </span>
+      <h4 className="subhead">
+        Output filter
+        <InfoTip label="Output filter">
+          What OpenTrack publishes. A track that fails stays inside OpenTrack, marked filtered; a published track that stops passing is deleted
+          downstream until it passes again. Empty: everything.
+        </InfoTip>
+      </h4>
       <Row label="Areas" hint="With any included area, a track must be inside one; it must be outside every excluded area. Degrees; a box may cross the antimeridian (min longitude above max).">
         <div className="stack" style={{ gap: 4 }}>
           {out.areas.map((a, i) => (

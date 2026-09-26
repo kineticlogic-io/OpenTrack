@@ -5,6 +5,7 @@ import { describeCondition, describeValue, type ValueSpec } from '../../../lib/p
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
+import { InfoTip } from '../../../components/InfoTip'
 
 type Obj = Record<string, unknown>
 type Props = { value: Obj; onChange: (v: Obj) => void }
@@ -19,10 +20,12 @@ const num = (s: string) => (s.trim() === '' ? undefined : Number(s))
 function Row({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <div className="stage-row">
-      <Label size="sm">{label}</Label>
+      <div className="row-label">
+        <Label size="sm">{label}</Label>
+        {hint && <InfoTip label={label}>{hint}</InfoTip>}
+      </div>
       <div className="stack" style={{ gap: 2 }}>
         {children}
-        {hint && <span className="muted">{hint}</span>}
       </div>
     </div>
   )
@@ -35,7 +38,7 @@ export function DecodeForm({ value, onChange }: Props) {
   const type = String(value.type ?? 'json')
   return (
     <div className="stack">
-      <Row label="Format">
+      <Row label="Format" hint={type === 'cot_xml' ? 'One record per Cursor-on-Target event.' : undefined}>
         <FieldSelect
           ariaLabel="Codec"
           fields={CODECS.map((name) => ({ name }))}
@@ -74,7 +77,6 @@ export function DecodeForm({ value, onChange }: Props) {
           <Input style={INPUT} aria-label="Record element" value={String(value.record_element ?? '')} onChange={(e) => onChange({ ...value, record_element: e.target.value })} spellCheck={false} />
         </Row>
       )}
-      {type === 'cot_xml' && <span className="muted">One record per Cursor-on-Target event.</span>}
     </div>
   )
 }
@@ -215,8 +217,10 @@ export function TrackerForm({ value, onChange }: Props) {
   const setAuto = (a: Obj) => onChange({ ...value, auto_timing: a })
   return (
     <div className="stack">
-      <span className="muted">Tracks get unknown affiliation and at most a domain, never an identity or type.</span>
-      <Row label="Algorithm" hint={value.algorithm === 'mht' ? 'Multiple hypotheses: fewer false tracks in clutter, more work.' : 'Global nearest neighbour: the best plot-to-track assignment each scan.'}>
+      <Row
+        label="Algorithm"
+        hint={`${value.algorithm === 'mht' ? 'Multiple hypotheses: fewer false tracks in clutter, more work.' : 'Global nearest neighbour: the best plot-to-track assignment each scan.'} Tracks get unknown affiliation and at most a domain, never an identity or type.`}
+      >
         <FieldSelect
           ariaLabel="Tracker algorithm"
           fields={ALGORITHMS}
@@ -231,11 +235,13 @@ export function TrackerForm({ value, onChange }: Props) {
       {field('measurement_sigma_m', 'Plot error σ (m)', 10)}
       {field('process_noise_mps2', 'Manoeuvre (m/s²)', 0.5)}
       {field('cluster_m', 'Merge plots within (m)', 0)}
-      <h4 className="subhead">Existence</h4>
-      <span className="muted">
-        Each track carries the probability that it is a real target: plots raise it by how well they fit against clutter, looks without one lower it.
-        It is published as the track&apos;s confidence.
-      </span>
+      <h4 className="subhead">
+        Existence
+        <InfoTip label="Existence">
+          Each track carries the probability that it is a real target: plots raise it by how well they fit against clutter, looks without one lower
+          it. It is published as the track&apos;s confidence.
+        </InfoTip>
+      </h4>
       {field('detection_probability', 'Detection probability', 0.9)}
       {field('clutter_density', 'False plots per m²', 1e-6)}
       {field('birth_density', 'New targets per m²', 1e-7)}
@@ -304,7 +310,16 @@ export function PublishForm({
   const alone = publishAlone ?? reports !== 'detections'
   return (
     <div className="stack">
-      <Row label="The feed reports">
+      <Row
+        label="The feed reports"
+        hint={
+          tracker
+            ? 'The tracker stage turns the plots into tracks; correlation pairs them with other sources.'
+            : reports === 'detections'
+              ? 'Each plot updates the nearest system track another source keeps; plots near none are dropped. Add a Tracker stage to form tracks instead.'
+              : 'Every observation that passes reaches correlation.'
+        }
+      >
         <FieldSelect
           ariaLabel="The feed reports"
           fields={[{ name: 'tracks' }, { name: 'detections' }]}
@@ -313,13 +328,6 @@ export function PublishForm({
           style={{ width: 160 }}
         />
       </Row>
-      <span className="muted">
-        {tracker
-          ? 'The tracker stage turns the plots into tracks; correlation pairs them with other sources.'
-          : reports === 'detections'
-            ? 'Each plot updates the nearest system track another source keeps; plots near none are dropped. Add a Tracker stage to form tracks instead.'
-            : 'Every observation that passes reaches correlation.'}
-      </span>
       <Row label="Publish its lone tracks" hint="No: its tracks stay inside OpenTrack until a source that may stand alone reports for them too.">
         <FieldSelect
           ariaLabel="Publish lone tracks"
@@ -359,11 +367,13 @@ export function SecurityForm({ value, onChange }: { value?: SecurityLabel; onCha
   const set = (patch: Partial<SecurityLabel>) => onChange({ ...v, ...patch })
   return (
     <div className="stack">
-      <h4 className="subhead">Security label</h4>
-      <span className="muted">
-        Label everything this source reports: its tracks carry it into OpenTrack&apos;s output as <span className="mono">security</span>. A track several
-        labelled sources report for takes the label of the highest-priority one.
-      </span>
+      <h4 className="subhead">
+        Security label
+        <InfoTip label="Security label">
+          Label everything this source reports: its tracks carry it into OpenTrack&apos;s output as <span className="mono">security</span>. A track
+          several labelled sources report for takes the label of the highest-priority one.
+        </InfoTip>
+      </h4>
       <Row label="Label this source">
         <Toggle size="sm" aria-label="Label this source" value={on} onChange={(yes) => onChange(yes ? { classification: '' } : undefined)} />
       </Row>
