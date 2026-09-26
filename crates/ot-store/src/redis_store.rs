@@ -42,6 +42,17 @@ pub struct GroupBacklog {
     pub lag: u64,
 }
 
+/// What [`RedisStore::write_batch`] does with a system track besides storing it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackWrite<'a> {
+    /// Stored only (not authoritative enough to leave OpenTrack).
+    Quiet,
+    /// Published.
+    Publish { urgent: bool },
+    /// Withdrawn downstream (consumers delete it), with the reason.
+    Withdraw { reason: &'a str },
+}
+
 #[derive(Clone)]
 pub struct RedisStore {
     conn: ConnectionManager,
@@ -156,6 +167,65 @@ impl RedisStore {
             .ignore()
             .query_async::<()>(&mut self.conn.clone())
             .await?;
+        Ok(())
+    }
+
+    /// Many writes in one round trip, in order and atomically: source
+    /// tracks' latest reports (with a TTL), then system tracks, each stored
+    /// and, when published or withdrawn, queued for the writer. The engine
+    /// uses it to write a whole batch of observations at once.
+    pub async fn write_batch(
+        &self,
+        sources: &[&Observation],
+        source_ttl: Duration,
+        tracks: &[(&SystemTrack, TrackWrite<'_>)],
+    ) -> Result<()> {
+        if sources.is_empty() && tracks.is_empty() {
+            return Ok(());
+        }
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for obs in sources {
+            pipe.cmd("SET")
+                .arg(
+                    self.keys
+                        .source_track(&obs.source_id, &obs.source_track_key),
+                )
+                .arg(serde_json::to_string(obs)?)
+                .arg("EX")
+                .arg(source_ttl.as_secs().max(1))
+                .ignore();
+        }
+        for (track, write) in tracks {
+            let uid = track.uid.to_string();
+            pipe.set(self.keys.system_track(&uid), serde_json::to_string(track)?)
+                .ignore();
+            let queued = match write {
+                TrackWrite::Quiet => None,
+                TrackWrite::Publish { urgent } => {
+                    Some(("publish", "urgent", u8::from(*urgent).to_string()))
+                }
+                TrackWrite::Withdraw { reason } => {
+                    Some(("tombstone", "reason", (*reason).to_owned()))
+                }
+            };
+            if let Some((op, key, value)) = queued {
+                pipe.cmd("XADD")
+                    .arg(self.keys.outbox())
+                    .arg("MAXLEN")
+                    .arg("~")
+                    .arg(self.outbox_maxlen)
+                    .arg("*")
+                    .arg("op")
+                    .arg(op)
+                    .arg("uid")
+                    .arg(&uid)
+                    .arg(key)
+                    .arg(value)
+                    .ignore();
+            }
+        }
+        pipe.query_async::<()>(&mut self.conn.clone()).await?;
         Ok(())
     }
 

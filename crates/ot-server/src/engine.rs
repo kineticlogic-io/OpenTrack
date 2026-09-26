@@ -408,6 +408,13 @@ impl EngineCounts {
     }
 }
 
+/// What saving a system track writes besides its state.
+enum Saved {
+    Quiet,
+    Publish { urgent: bool },
+    Withdraw { reason: String },
+}
+
 /// A scorer plugin as the engine holds it.
 struct OpenScorer {
     /// The settings it was opened for, and the plugin build (`<name>-<version>`).
@@ -477,6 +484,11 @@ pub struct Engine {
     pub(crate) sim_now: Option<DateTime<Utc>>,
     /// The correlation settings' scorer plugin, once opened.
     scorer: Option<OpenScorer>,
+    /// Processing a batch of observations: saves and source reports wait in
+    /// the two maps below and are written together when the batch ends.
+    defer: bool,
+    deferred_saves: HashMap<Uid, Saved>,
+    deferred_sources: HashMap<String, Observation>,
     /// How long a read waits for observations when none are queued (zero:
     /// not at all; Redis checks block timeouts only every 100 ms or so).
     pub(crate) read_block: Duration,
@@ -561,6 +573,9 @@ impl Engine {
             sim_now: None,
             read_block: Duration::from_secs(1),
             scorer: None,
+            defer: false,
+            deferred_saves: HashMap::new(),
+            deferred_sources: HashMap::new(),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -778,6 +793,11 @@ impl Engine {
 
     /// Process one batch of queued observations; how many were read.
     pub(crate) async fn pump(&mut self, pending: bool) -> anyhow::Result<usize> {
+        // A batch that failed part way leaves its writes deferred: write them first.
+        if self.defer {
+            self.defer = false;
+            self.flush_deferred().await?;
+        }
         if let Err(e) = self.process_commands().await {
             tracing::warn!(error = %format!("{e:#}"), "operator commands failed");
         }
@@ -822,6 +842,7 @@ impl Engine {
         }
         // A batch holds each source's reports in turn: take them in time order.
         reports.sort_by_key(|o| o.observed_at);
+        self.defer = true;
         let mut reports = reports.into_iter().peekable();
         while let Some(obs) = reports.next() {
             self.clock = Some(obs.observed_at);
@@ -840,9 +861,16 @@ impl Engine {
                 self.end_source_track(&obs, &mut counts).await?;
                 continue;
             }
-            self.redis
-                .put_source_track(&obs, Duration::from_secs(24 * 3600))
-                .await?;
+            if self.defer {
+                self.deferred_sources.insert(
+                    format!("{}/{}", obs.source_id, obs.source_track_key),
+                    obs.clone(),
+                );
+            } else {
+                self.redis
+                    .put_source_track(&obs, Duration::from_secs(24 * 3600))
+                    .await?;
+            }
             let key = format!("{}/{}", obs.source_id, obs.source_track_key);
             let uid = match self.reports.get(&key).copied() {
                 Some(uid) => self
@@ -872,6 +900,8 @@ impl Engine {
                 }));
             }
         }
+        self.defer = false;
+        self.flush_deferred().await?;
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
         }
@@ -1931,9 +1961,75 @@ impl Engine {
 
     /// Store a track's state; publish it if it is (or once was) authoritative.
     async fn save(&mut self, uid: Uid, urgent: bool) -> anyhow::Result<()> {
-        let Some(t) = self.tracks.get(&uid) else {
+        // Decided now (the published and filtered flags matter to what the
+        // batch does next); inside a batch, written once at its end.
+        let Some(decision) = self.decide_save(uid, urgent) else {
             return Ok(());
         };
+        if self.defer {
+            let merged = match (self.deferred_saves.remove(&uid), decision) {
+                // A withdrawal stands unless the track is published again.
+                (Some(Saved::Withdraw { reason }), Saved::Quiet) => Saved::Withdraw { reason },
+                (Some(Saved::Publish { urgent: a }), Saved::Publish { urgent: b }) => {
+                    Saved::Publish { urgent: a || b }
+                }
+                (Some(Saved::Publish { urgent: true }), Saved::Quiet) => {
+                    Saved::Publish { urgent: true }
+                }
+                (_, d) => d,
+            };
+            self.deferred_saves.insert(uid, merged);
+            return Ok(());
+        }
+        let t = &self.tracks[&uid];
+        match &decision {
+            Saved::Publish { urgent } => self.redis.put_system_track(t, *urgent).await?,
+            Saved::Withdraw { reason } => {
+                self.redis
+                    .withdraw_system_track(t, &format!("output filter: {reason}"))
+                    .await?;
+            }
+            Saved::Quiet => self.redis.put_system_track_quietly(t).await?,
+        }
+        Ok(())
+    }
+
+    /// Write every save and source report the batch deferred, in one round trip.
+    async fn flush_deferred(&mut self) -> anyhow::Result<()> {
+        let decisions: Vec<(Uid, Saved)> = std::mem::take(&mut self.deferred_saves)
+            .into_iter()
+            .collect();
+        let reasons: Vec<String> = decisions
+            .iter()
+            .map(|(_, d)| match d {
+                Saved::Withdraw { reason } => format!("output filter: {reason}"),
+                _ => String::new(),
+            })
+            .collect();
+        let tracks: Vec<(&SystemTrack, ot_store::TrackWrite<'_>)> = decisions
+            .iter()
+            .zip(&reasons)
+            .filter_map(|((uid, d), reason)| {
+                let w = match d {
+                    Saved::Publish { urgent } => ot_store::TrackWrite::Publish { urgent: *urgent },
+                    Saved::Withdraw { .. } => ot_store::TrackWrite::Withdraw { reason },
+                    Saved::Quiet => ot_store::TrackWrite::Quiet,
+                };
+                self.tracks.get(uid).map(|t| (t, w))
+            })
+            .collect();
+        let sources: Vec<&Observation> = self.deferred_sources.values().collect();
+        self.redis
+            .write_batch(&sources, Duration::from_secs(24 * 3600), &tracks)
+            .await?;
+        self.deferred_sources.clear();
+        Ok(())
+    }
+
+    /// Whether a track is published, withdrawn or only stored, with its
+    /// published and filtered flags set to match.
+    fn decide_save(&mut self, uid: Uid, urgent: bool) -> Option<Saved> {
+        let t = self.tracks.get(&uid)?;
         // A track manager's override on the track's entity comes first.
         let forced = t
             .entity_id
@@ -1949,19 +2045,18 @@ impl Engine {
         let publish = held.is_none() && (was || forced == Some(true) || self.authoritative(t));
         let t = self.tracks.get_mut(&uid).expect("checked above");
         t.filtered = held.clone();
-        if publish {
+        Some(if publish {
             t.published = Some(true);
-            self.redis.put_system_track(t, urgent || !was).await?;
+            Saved::Publish {
+                urgent: urgent || !was,
+            }
         } else if was && let Some(why) = held {
             // Published, and now filtered out: withdrawn downstream.
             t.published = Some(false);
-            self.redis
-                .withdraw_system_track(t, &format!("output filter: {why}"))
-                .await?;
+            Saved::Withdraw { reason: why }
         } else {
-            self.redis.put_system_track_quietly(t).await?;
-        }
-        Ok(())
+            Saved::Quiet
+        })
     }
 
     /// A source ended one of its tracks: end its link, and retire the

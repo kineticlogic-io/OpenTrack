@@ -203,6 +203,14 @@ def cmd_run(args):
                 print(f"{name}: failed\n{r.stderr[-2000:]}")
                 continue
             print(r.stderr.strip().splitlines()[-1] if r.stderr.strip() else name)
+            notes = json.loads((scenario / "scenario.json").read_text()).get("notes") or {}
+            if notes.get("load"):
+                run = json.loads((dest / "run.json").read_text())
+                t = run["timing_secs"]
+                print(f"  {run['observations'] / run['wall_secs']:.0f} observations/s overall; engine "
+                      f"{run['observations'] / max(t['engine'], 1e-9):.0f}/s ({t['engine']:.1f} s), pipelines "
+                      f"{t['pipelines']:.1f} s")
+                continue
             scores.append(scoring.score(scenario, dest))
             (dest / "scenario").write_text(str(scenario) + "\n")
     summarise(out, meta, scores)
