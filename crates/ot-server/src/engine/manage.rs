@@ -323,7 +323,7 @@ impl Engine {
         f: impl FnOnce(&mut ot_store::Db) -> ot_store::sqlite::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
         let c = self.common.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<T> { Ok(f(&mut c.open_db()?)?) })
+        tokio::task::spawn_blocking(move || -> anyhow::Result<T> { Ok(f(&mut *c.open_db()?)?) })
             .await?
     }
 

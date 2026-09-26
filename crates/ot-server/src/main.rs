@@ -235,7 +235,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
-    let db = common.open_db()?;
+    let db = common.open_new_db()?;
     plugins::start(&common).await;
     let state = control::AppState {
         db: Arc::new(Mutex::new(db)),

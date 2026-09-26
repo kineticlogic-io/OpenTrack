@@ -522,7 +522,10 @@ fn pair_key(a: Uid, b: Uid) -> (Uid, Uid) {
 }
 
 impl Engine {
-    pub async fn new(common: Common, settings: EngineSettings) -> anyhow::Result<Self> {
+    pub async fn new(mut common: Common, settings: EngineSettings) -> anyhow::Result<Self> {
+        // The engine writes a decision for every new, paired and ended track:
+        // keep one connection open for them.
+        common.share_db()?;
         let redis = common.open_redis().await?;
         let c = common.clone();
         let reports = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -2789,6 +2792,7 @@ mod tests {
                 max_age_hours: 24.0,
             },
             profiles_dir: "profiles/trackers".into(),
+            shared_db: Default::default(),
         };
         common.open_db().unwrap();
         let mut e = Engine::new(common, EngineSettings::default())

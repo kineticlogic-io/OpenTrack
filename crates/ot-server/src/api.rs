@@ -724,6 +724,7 @@ mod tests {
                 max_age_hours: 24.0,
             },
             profiles_dir: "profiles/trackers".into(),
+            shared_db: Default::default(),
         };
         let redis = ot_store::RedisStore::connect(&url, ot_store::Keys::new(ns))
             .await

@@ -2,6 +2,7 @@
 //! variables; docker compose is the one place a deployment declares them.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap::Args;
 use ot_core::SiteCode;
@@ -31,6 +32,52 @@ pub struct Common {
     /// imported in the UI go to `profiles/trackers` beside the database.
     #[arg(long, env = "OT_PROFILES_DIR", default_value = "profiles/trackers")]
     pub profiles_dir: PathBuf,
+
+    /// A connection a long-running role keeps open for `open_db` to hand out.
+    #[arg(skip)]
+    pub shared_db: SharedDb,
+}
+
+/// One SQLite connection kept open and shared. Opening a connection per
+/// write costs the open and migration check, and closing the last one
+/// checkpoints and deletes the WAL: about 6 ms, which capped the engine at
+/// some 150 new tracks a second.
+#[derive(Clone, Default)]
+pub struct SharedDb(Option<Arc<Mutex<ot_store::Db>>>);
+
+impl std::fmt::Debug for SharedDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "SharedDb(open)"
+        } else {
+            "SharedDb(none)"
+        })
+    }
+}
+
+/// A database connection from `open_db`: its own, or the shared one.
+pub enum DbHandle<'a> {
+    Own(ot_store::Db),
+    Shared(MutexGuard<'a, ot_store::Db>),
+}
+
+impl std::ops::Deref for DbHandle<'_> {
+    type Target = ot_store::Db;
+    fn deref(&self) -> &ot_store::Db {
+        match self {
+            Self::Own(db) => db,
+            Self::Shared(db) => db,
+        }
+    }
+}
+
+impl std::ops::DerefMut for DbHandle<'_> {
+    fn deref_mut(&mut self) -> &mut ot_store::Db {
+        match self {
+            Self::Own(db) => db,
+            Self::Shared(db) => db,
+        }
+    }
 }
 
 /// Where system tracks are published.
@@ -119,12 +166,34 @@ impl Common {
         ot_store::Keys::new(&self.redis_namespace)
     }
 
-    /// Open (and migrate) the SQLite database, creating its directory.
-    pub fn open_db(&self) -> anyhow::Result<ot_store::Db> {
+    /// The SQLite database: the shared connection when this role keeps one
+    /// (see [`Common::share_db`]), else a new one (opened, migrated, its
+    /// directory created).
+    pub fn open_db(&self) -> anyhow::Result<DbHandle<'_>> {
+        match &self.shared_db.0 {
+            Some(db) => Ok(DbHandle::Shared(
+                db.lock()
+                    .map_err(|_| anyhow::anyhow!("database lock poisoned"))?,
+            )),
+            None => Ok(DbHandle::Own(self.open_new_db()?)),
+        }
+    }
+
+    /// A new connection to the SQLite database.
+    pub fn open_new_db(&self) -> anyhow::Result<ot_store::Db> {
         if let Some(dir) = self.sqlite.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
         Ok(ot_store::Db::open(&self.sqlite)?)
+    }
+
+    /// Keep one connection open for every later `open_db` of this (and
+    /// every cloned) `Common`.
+    pub fn share_db(&mut self) -> anyhow::Result<()> {
+        if self.shared_db.0.is_none() {
+            self.shared_db = SharedDb(Some(Arc::new(Mutex::new(self.open_new_db()?))));
+        }
+        Ok(())
     }
 
     pub async fn open_redis(&self) -> anyhow::Result<ot_store::RedisStore> {
