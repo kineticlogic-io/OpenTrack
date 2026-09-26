@@ -7,8 +7,9 @@ correlator**, lets a track manager curate that picture (**track management**: de
 group and delete tracks), and publishes it to NATS JetStream in an OTH-GOLD-style message for
 OpenStare and any other consumer.
 
-Version **0.1.0 (alpha)**: interfaces, the published message (`opentrack.track.v2`) and the database
-schema may still change. Back up `data/opentrack.db` before upgrading; migrations run on start.
+Version **0.2.0 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
+interface (`opentrack:plugin@0.1.0`) and the database schema may still change. Back up
+`data/opentrack.db` before upgrading; migrations run on start. What changed: [CHANGELOG.md](CHANGELOG.md).
 
 Design and roadmap: [Track Management Server — Design & Roadmap](https://claude.ai/code/artifact/3876ba1a-0e0f-49fd-9f70-47e1c2bb8e7d).
 
@@ -76,7 +77,8 @@ flowchart TB
 
     serve["<b>serve</b> role<br/>REST API + React UI :8090"]
     cmds[("Redis<br/>command queue")]
-    sqlite[("SQLite<br/>sources · schema · registry · settings ·<br/>decision log · track graph")]
+    sqlite[("SQLite<br/>sources · schema · registry · settings · plugins ·<br/>decision log · track graph")]
+    plugins["<b>plugins</b><br/>WebAssembly (sandboxed, in process) · external (socket)"]
 
     feeds --> sources --> obs --> engine --> live --> writer --> nats --> consumers
     serve -- operator commands --> cmds --> engine
@@ -84,6 +86,8 @@ flowchart TB
     sqlite -. configuration and registry .-> sources
     engine -- decisions and track graph --> sqlite
     serve -- configuration and registry --> sqlite
+    plugins -. codecs and trackers .-> sources
+    plugins -. pairing scorers .-> engine
 ```
 
 * **Roles.** `opentrack all` runs every role in one process; `serve`, `sources`, `engine` and

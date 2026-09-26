@@ -1917,7 +1917,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ot-codec-stanag4607"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1927,7 +1927,7 @@ dependencies = [
 
 [[package]]
 name = "ot-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "ot-nats"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-nats",
  "bytes",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "ot-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "ot-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "ot-source"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "ot-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "ot-core",

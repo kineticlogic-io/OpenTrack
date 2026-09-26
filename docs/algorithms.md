@@ -11,6 +11,11 @@ scores on the benchmark.
 | Correlation engine: pairing and merging, best source, detection association, lifecycle, publish rule | `correlate::VERSION` (ot-server) | every engine decision in the track graph (`evidence.correlation_version`), every published message (`publisher.correlation`), `/api/v1/status` |
 | GNN tracker | `tracker::GNN_VERSION` (ot-source) | every track report it makes (`provenance.tracker`), kinematic merge evidence (`trackers`), `/api/v1/status` |
 | MHT tracker | `tracker::MHT_VERSION` (ot-source) | same as GNN |
+| Tracker and scorer plugins | the plugin's manifest `version` | `provenance.tracker` as `<plugin>-<version>`; a scorer's in kinematic merge evidence (`scorer.plugin`) |
+
+Plugins version themselves ([plugins.md](plugins.md)): a plugin changes what it outputs, it
+bumps its manifest version; the benchmark (`bench run --plugin`) scores it against the built-in
+trackers the same way.
 
 A test (`algorithm_versions_are_documented`) fails if a running version has no entry
 here, so a bump cannot ship without its notes.

@@ -1,6 +1,6 @@
 [project]
 name = "opentrack-plugin"
-version = "0.1.0"
+version = "0.2.0"
 description = "Write OpenTrack plugins (codecs, trackers, pairing scorers) in Python: served over a socket, or built as WebAssembly components"
 requires-python = ">=3.10"
 dependencies = []

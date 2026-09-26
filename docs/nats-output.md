@@ -70,7 +70,7 @@ attribute without a value is omitted rather than sent as null.
     "destination": "LONG BEACH",
     "state": "confirmed"
   },
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0", "correlation": "correlation-1" },
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.2.0", "correlation": "correlation-3" },
   "published_at": "2026-09-25T03:21:17.000676087Z"
 }
 ```
@@ -168,7 +168,7 @@ ages out, so a consumer that starts later still learns of it.
   "uid": "OTK000000001",
   "reason": "no report for 21600s",
   "deleted_at": "2026-09-25T02:34:54.426550476Z",
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.1.0", "correlation": "correlation-1" }
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.2.0", "correlation": "correlation-3" }
 }
 ```
 
