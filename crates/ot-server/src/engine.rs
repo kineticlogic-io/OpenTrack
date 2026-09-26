@@ -1462,13 +1462,37 @@ impl Engine {
         let (view, _) = correlate::best_view(&contribs, self.settings.correlation.freshness_secs);
         let k = correlate::kinematic(obs, &view, &kin);
         let far = k.d2 > correlate::chi2_quantile(split.gate_probability, k.dof);
-        let Some(tally) = self.misses.entry((uid, key.clone())).or_default().record(
-            (&key, obs.observed_at),
-            ("rest", view.observed_at),
-            k.ln_lr,
-            far,
-            (split.n, &kin),
-        ) else {
+        if self.recording {
+            self.trace.push(json!({
+                "t": obs.observed_at, "kind": "split_check", "key": key, "uid": uid.doc_id(),
+                "d": k.distance_m, "sigma": k.sigma_m, "d2": k.d2, "ln_lr": k.ln_lr, "far": far,
+                "view_age_s": (obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0,
+            }));
+        }
+        // The split's own window; the rest's last report may be reused,
+        // weighted, as pairing does (a slow feed would otherwise give too
+        // few comparisons to ever split).
+        let within = correlate::KinematicSettings {
+            window_secs: split.window_secs.max(kin.window_secs),
+            ..kin
+        };
+        let reuse = {
+            let (r, v) = (k.sigma_report_m.powi(2), k.sigma_view_m.powi(2));
+            (kin.reuse_views && r + v > 0.0).then(|| r / (r + v))
+        };
+        let Some(tally) = self
+            .misses
+            .entry((uid, key.clone()))
+            .or_default()
+            .record_reusing(
+                (&key, obs.observed_at),
+                ("rest", view.observed_at),
+                k.ln_lr,
+                far,
+                (split.n, &within),
+                reuse,
+            )
+        else {
             return Ok(());
         };
         // Paired at the pairing threshold; its comparisons since move it.
@@ -2364,7 +2388,28 @@ impl Engine {
         {
             return Ok(());
         }
-        let s = self.settings.correlation.kinematic;
+        let mut s = self.settings.correlation.kinematic;
+        let near = self
+            .grid
+            .near(obs.position.latitude, obs.position.longitude);
+        if s.local_density_radius_m > 0.0 {
+            let r = s.local_density_radius_m;
+            let count = near
+                .iter()
+                .filter(|o| **o != uid)
+                .filter_map(|o| self.tracks.get(o))
+                .filter(|t| {
+                    correlate::distance_m(
+                        obs.position.latitude,
+                        obs.position.longitude,
+                        t.view.position.latitude,
+                        t.view.position.longitude,
+                    ) <= r
+                })
+                .count();
+            let local = count as f64 / (std::f64::consts::PI * (r / 1000.0).powi(2));
+            s.object_density_per_km2 = s.object_density_per_km2.max(local);
+        }
         let mine: HashSet<String> = self
             .track_sources(uid, obs.observed_at)
             .into_iter()
@@ -2374,10 +2419,7 @@ impl Engine {
         // Every system track nearby that could be the same object, with the
         // kinematic comparison (or a scorer plugin's evidence in its place).
         let mut compared: Vec<(Uid, correlate::Kinematic)> = Vec::new();
-        for other in self
-            .grid
-            .near(obs.position.latitude, obs.position.longitude)
-        {
+        for other in near {
             if other == uid {
                 continue;
             }
@@ -4388,6 +4430,56 @@ mod tests {
         )
         .await;
         assert_eq!(a["ok"], false, "{a}");
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_radar_track_leaves_a_slow_ais_track_it_stopped_following() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.settings.correlation.split.automatic = true;
+        // AIS every 10 s, radar every 3 s, together for three minutes.
+        let at = |s: i64| {
+            let mut v = Vec::new();
+            if s % 10 == 0 {
+                v.push(report("ais", "1", s, 32.0, -117.0, Some("1")));
+            }
+            if s % 3 == 0 {
+                v.push(report("radar", "r1", s, 32.0, -117.0, None));
+            }
+            v
+        };
+        for s in 0..180 {
+            let r = at(s);
+            if !r.is_empty() {
+                feed(&mut e, &r).await;
+            }
+        }
+        assert_eq!(
+            track_of(&e, "radar", "r1"),
+            track_of(&e, "ais", "1"),
+            "paired"
+        );
+        // The radar track follows another vessel, 500 m off, from now on.
+        for s in 180..420 {
+            let mut r = Vec::new();
+            if s % 10 == 0 {
+                r.push(report("ais", "1", s, 32.0, -117.0, Some("1")));
+            }
+            if s % 3 == 0 {
+                r.push(report("radar", "r1", s, 32.0045, -117.0, None));
+            }
+            if !r.is_empty() {
+                feed(&mut e, &r).await;
+            }
+        }
+        assert_ne!(
+            track_of(&e, "radar", "r1"),
+            track_of(&e, "ais", "1"),
+            "split within four minutes"
+        );
         e.redis.purge_namespace().await.unwrap();
     }
 }

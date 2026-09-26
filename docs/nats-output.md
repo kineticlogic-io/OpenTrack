@@ -71,7 +71,7 @@ attribute without a value is omitted rather than sent as null.
     "destination": "LONG BEACH",
     "state": "confirmed"
   },
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" },
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-5" },
   "published_at": "2026-09-25T03:21:17.000676087Z"
 }
 ```
@@ -169,7 +169,7 @@ ages out, so a consumer that starts later still learns of it.
   "uid": "OTK000000001",
   "reason": "no report for 21600s",
   "deleted_at": "2026-09-25T02:34:54.426550476Z",
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" }
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-5" }
 }
 ```
 
@@ -193,7 +193,7 @@ replaces the track's own latest message, and the stream keeps every deletion unt
   "reason": "a GPS jump",
   "decision_id": 4812,
   "deleted_at": "2026-09-26T21:41:10.004Z",
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" }
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-5" }
 }
 ```
 

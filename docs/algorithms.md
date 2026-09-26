@@ -75,6 +75,41 @@ With gnn-2 (existence; the example's detection probability 0.5, clutter 3·10⁻
 
 ## Changelog
 
+### correlation-5 (2026-09-26)
+
+Fewer wrong pairings in crowded harbours. The benchmark's harbour gate is wrong pairings pooled
+over the Autoferry and Solent fusion scenarios. It was 5.4%, against a target under 2%. Two causes,
+from the comparison trace:
+
+- **Splits could not happen against a slow feed.** A split needs `m` of the last `n` comparisons
+  (5 of 6) outside its gate. They were counted only when both sides had a new report, and within
+  the pairing window (30 s). Against AIS every 10 s, at most three fell in the window, so a radar
+  track that followed another vessel stayed on the wrong track indefinitely. It was 500 m away for
+  nine minutes in one case.
+  - The split check now has its own window, `split.window_secs` (300 s).
+  - It may reuse the other side's last report, weighted as pairing does.
+- **A close approach counted the same in a harbour as at sea.** "Another object nearby" had a fixed
+  density, `object_density_per_km2` (1 per km²).
+  - The engine now counts the live tracks within `local_density_radius_m` (500 m) of the report and
+    uses their density when it is higher.
+  - Among moored vessels a radar track now needs more comparisons before it pairs.
+
+Also tried and dropped: requiring the best candidate to lead the next one by a margin, which did not
+help. Splitting after fewer misses did not help either (3 of 4 or 4 of 5): the extra splits paired
+again, wrongly.
+
+Benchmark against correlation-4, with splits proposed (the default):
+
+| Scenario | GOSPA | Pairing precision / recall | ID changes / truth hour | Fragmentation | Fused position RMS |
+|---|---|---|---|---|---|
+| solent-fusion | 7,151 → 9,805 | 95.6% / 78.2% → 98.8% / 73.2% | 89 → 59 | 14.5 → 8.5 | 44 → 35 m |
+| opensky-fusion | 6,862 → 7,070 | 100% / 90.4% → 100% / 89.4% | 12.5 → 12.7 | 1.51 → 1.51 | 146 → 142 m |
+| synthetic-crossing | 655 → 663 | 99.0% / 93.1% → 100% / 92.7% | 65 → 63 | 8.9 → 9.3 | 54 → 54 m |
+
+- **Harbour gate:** 5.36% → 3.21% wrong. With `split.automatic` on, it is 2.00%, recall 78.1%.
+- **The cost is GOSPA's false-track term.** Radar and AIS tracks of a crowded harbour now stay apart
+  more often, as two tracks, rather than pairing wrongly.
+
 ### correlation-4 (2026-09-26)
 
 Radar tracks now join their AIS or ADS-B track. The benchmark found about half of them never

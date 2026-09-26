@@ -271,8 +271,28 @@ def tracker_table(scores):
     return "\n".join(lines)
 
 
+# The roadmap's harbour gate: wrong pairings over the harbour fusion
+# scenarios (Autoferry in Trondheim harbour, and the Solent), pooled.
+HARBOUR = ("autoferry-", "solent-")
+
+
+def harbour(scores):
+    """Pooled pairing over the harbour fusion scenarios run, or None."""
+    right = wrong = missed = 0
+    for s in scores:
+        c = s.get("correlation")
+        if not c or not s["scenario"].endswith("-fusion") or not s["scenario"].startswith(HARBOUR):
+            continue
+        right, wrong, missed = right + c["pairs_right"], wrong + c["pairs_wrong"], missed + c["pairings_missed"]
+    if not right + wrong:
+        return None
+    return {"wrong": round(wrong / (right + wrong), 4), "recall": round(right / (right + missed), 4),
+            "pairs_right": right, "pairs_wrong": wrong}
+
+
 def summarise(out, meta, scores):
-    (out / "summary.json").write_text(json.dumps({"meta": meta, "scores": scores}, indent=2) + "\n")
+    gate = harbour(scores)
+    (out / "summary.json").write_text(json.dumps({"meta": meta, "scores": scores, "harbour": gate}, indent=2) + "\n")
     git = meta["git"]
     md = [
         f"# Benchmark {meta['run']}",
@@ -286,6 +306,8 @@ def summarise(out, meta, scores):
         "",
         table(scores),
         "",
+        *([f"Harbour gate (Autoferry and Solent fusion, pooled): {gate['wrong'] * 100:.2f}% wrong pairings "
+           f"(target under 2%), recall {gate['recall'] * 100:.1f}%.", ""] if gate else []),
         "## Tracker stages (each sensor's own tracks)",
         "",
         tracker_table(scores),
@@ -298,6 +320,8 @@ def summarise(out, meta, scores):
     (out / "summary.md").write_text("\n".join(md) + "\n")
     print()
     print(table(scores))
+    if gate:
+        print(f"\nHarbour gate: {gate['wrong'] * 100:.2f}% wrong pairings (target under 2%), recall {gate['recall'] * 100:.1f}%")
     print(f"\n{out / 'summary.md'}")
 
 

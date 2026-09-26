@@ -18,7 +18,7 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// publish rule. Stamped on every engine decision and published message.
 /// Bump it whenever the same inputs would give different system tracks, and
 /// record it in docs/algorithms.md with its scores.
-pub const VERSION: &str = "correlation-4";
+pub const VERSION: &str = "correlation-5";
 
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry
@@ -179,6 +179,11 @@ pub struct KinematicSettings {
     /// How many other objects per km² a report could be, and how spread their
     /// velocities are (m/s): the "another object nearby" of each comparison.
     pub object_density_per_km2: f64,
+    /// Count the live tracks within this radius of a report (metres) and use
+    /// their density when it is higher than `object_density_per_km2`: in a
+    /// crowded harbour a close approach is weaker evidence than at sea.
+    /// 0 turns it off.
+    pub local_density_radius_m: f64,
     pub velocity_spread_mps: f64,
     /// The velocity spread when either report is an aircraft: air traffic's
     /// velocities differ by far more than surface traffic's.
@@ -227,6 +232,7 @@ impl Default for KinematicSettings {
             process_noise_mps2: 0.3,
             speed_sigma_mps: 1.0,
             object_density_per_km2: 1.0,
+            local_density_radius_m: 500.0,
             velocity_spread_mps: 15.0,
             air_velocity_spread_mps: 60.0,
             prior_probability: 0.01,
@@ -301,6 +307,10 @@ pub struct SplitSettings {
     pub gate_probability: f64,
     pub m: usize,
     pub n: usize,
+    /// How far back those comparisons may reach (seconds). A slow feed (AIS
+    /// every 10 s, a moored vessel every few minutes) gives one comparison
+    /// per report, so this must hold `n` of them.
+    pub window_secs: f64,
     /// Before correlation-3: a chi-square distance counted as a miss. Read,
     /// no longer used.
     #[serde(skip_serializing)]
@@ -316,6 +326,7 @@ impl Default for SplitSettings {
             gate_probability: 0.9999,
             m: 5,
             n: 6,
+            window_secs: 300.0,
             chi2_gate: None,
         }
     }
@@ -952,6 +963,7 @@ impl Evidence {
     /// caller); returns the tally, or None when it is not new evidence: too
     /// soon after the last one, or with either side's report no newer than
     /// the one it gave the last counted comparison.
+    #[cfg(test)]
     pub fn record(
         &mut self,
         side: (&str, DateTime<Utc>),
