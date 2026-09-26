@@ -16,6 +16,9 @@ mod correlation_api;
 mod engine;
 mod manage_api;
 mod metrics;
+mod plugin_cli;
+mod plugins;
+mod plugins_api;
 mod probe;
 mod registry_api;
 mod registry_sheet;
@@ -66,6 +69,9 @@ enum Command {
     /// as they go, and write what the engine made of it (see
     /// scripts/benchmark/). Publishes nothing.
     Bench(BenchArgs),
+    /// Check, add and list plugins.
+    #[command(subcommand)]
+    Plugin(plugin_cli::PluginCommand),
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
     Retire {
@@ -87,6 +93,10 @@ struct BenchArgs {
     /// Correlation settings (JSON) to use instead of the scenario's.
     #[arg(long)]
     correlation: Option<PathBuf>,
+    /// Plugins to load for the run (a .wasm file or an external plugin's
+    /// address), for sources and settings that name them. Repeatable.
+    #[arg(long = "plugin")]
+    plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -169,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Writer(args) => run_writer(common, args).await,
         Command::Sources => {
             common.open_db()?;
+            plugins::start(&common).await;
             sources::run(common, shutdown_signal()).await
         }
         Command::Engine(args) => run_engine(common, args).await,
@@ -179,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             // Migrate once before the roles open the database concurrently.
             common.open_db()?;
+            plugins::start(&common).await;
             tokio::try_join!(
                 serve(common.clone(), s),
                 run_writer(common.clone(), w),
@@ -188,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Synthetic(args) => synthetic::run(&common, args).await,
+        Command::Plugin(cmd) => plugin_cli::run(&common, cmd),
         Command::Bench(args) => {
             engine::bench::run(
                 &common,
@@ -195,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
                     scenario: args.scenario,
                     out: args.out,
                     correlation: args.correlation,
+                    plugins: args.plugins,
                 },
             )
             .await
@@ -221,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
     let db = common.open_db()?;
+    plugins::start(&common).await;
     let state = control::AppState {
         db: Arc::new(Mutex::new(db)),
         redis: common.open_redis().await?,
@@ -260,6 +275,7 @@ async fn run_writer(common: Common, args: WriterArgs) -> anyhow::Result<()> {
 
 async fn run_engine(common: Common, args: EngineArgs) -> anyhow::Result<()> {
     common.open_db()?;
+    plugins::start(&common).await;
     engine::Engine::new(common, args.settings())
         .await?
         .run(shutdown_signal())

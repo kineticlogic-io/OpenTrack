@@ -408,6 +408,15 @@ impl EngineCounts {
     }
 }
 
+/// A scorer plugin as the engine holds it.
+struct OpenScorer {
+    /// The settings it was opened for, and the plugin build (`<name>-<version>`).
+    key: (correlate::ScorerRef, String),
+    scorer: Option<Box<dyn ot_source::plugin::PluginScorer>>,
+    /// A failure was logged (once, until it works again).
+    reported: bool,
+}
+
 pub struct Engine {
     common: Common,
     settings: EngineSettings,
@@ -466,6 +475,8 @@ pub struct Engine {
     /// Scenario time for a replay run faster than real time: lifecycle and
     /// timers follow it instead of the wall clock.
     pub(crate) sim_now: Option<DateTime<Utc>>,
+    /// The correlation settings' scorer plugin, once opened.
+    scorer: Option<OpenScorer>,
     /// How long a read waits for observations when none are queued (zero:
     /// not at all; Redis checks block timeouts only every 100 ms or so).
     pub(crate) read_block: Duration,
@@ -549,6 +560,7 @@ impl Engine {
             clock: None,
             sim_now: None,
             read_block: Duration::from_secs(1),
+            scorer: None,
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -1212,6 +1224,83 @@ impl Engine {
     }
 
     /// Whether an operator said two tracks are different objects.
+    /// Put the correlation settings' scorer plugin's evidence in place of
+    /// the kinematic comparisons (its ln likelihood ratio and gate), and
+    /// return the plugin (`<name>-<version>`) with what it said per
+    /// candidate. Without a scorer, or when it fails, the comparisons stand.
+    fn score_with_plugin(
+        &mut self,
+        obs: &Observation,
+        compared: &mut [(Uid, correlate::Kinematic)],
+    ) -> Option<(String, HashMap<Uid, Value>)> {
+        let r = self.settings.correlation.scorer.clone()?;
+        if compared.is_empty() {
+            return None;
+        }
+        let Some(plugin) = ot_source::plugin::plugin(&r.plugin) else {
+            if self.scorer.as_ref().is_none_or(|s| !s.reported) {
+                tracing::warn!(plugin = %r.plugin, "scorer plugin not loaded: kinematic scores used");
+                self.scorer = Some(OpenScorer {
+                    key: (r, String::new()),
+                    scorer: None,
+                    reported: true,
+                });
+            }
+            return None;
+        };
+        let version = format!("{}-{}", r.plugin, plugin.manifest().version);
+        let key = (r.clone(), version.clone());
+        if self.scorer.as_ref().is_none_or(|s| s.key != key) {
+            let opened = plugin.scorer(&r.options);
+            if let Err(e) = &opened {
+                tracing::warn!(plugin = %version, error = %e, "scorer plugin did not open: kinematic scores used");
+            }
+            self.scorer = Some(OpenScorer {
+                key,
+                scorer: opened.ok(),
+                reported: false,
+            });
+        }
+        let candidates: Vec<ot_source::plugin::ScoreCandidate> = compared
+            .iter()
+            .map(|(u, k)| ot_source::plugin::ScoreCandidate {
+                view: self
+                    .tracks
+                    .get(u)
+                    .and_then(|t| serde_json::to_value(&t.view).ok())
+                    .unwrap_or(Value::Null),
+                kinematic: serde_json::to_value(k).unwrap_or(Value::Null),
+            })
+            .collect();
+        let open = self.scorer.as_mut()?;
+        let scorer = open.scorer.as_mut()?;
+        match scorer.score(obs, &candidates) {
+            Ok(scores) if scores.len() == compared.len() => {
+                open.reported = false;
+                let mut by = HashMap::new();
+                for ((u, k), sc) in compared.iter_mut().zip(scores) {
+                    if sc.ln_lr.is_finite() {
+                        k.ln_lr = sc.ln_lr;
+                        k.pass = sc.pass;
+                    }
+                    by.insert(*u, sc.evidence);
+                }
+                Some((version, by))
+            }
+            other => {
+                if !open.reported {
+                    let why = match other {
+                        Ok(s) => format!("{} scores for {} candidates", s.len(), compared.len()),
+                        Err(e) => e,
+                    };
+                    tracing::warn!(plugin = %version, error = %why, "scorer plugin failed: kinematic scores used");
+                    open.reported = true;
+                }
+                None
+            }
+        }
+    }
+
     fn forbidden(&self, a: Uid, b: Uid) -> bool {
         !self.do_not_pair.is_empty() && self.keys_of(a).iter().any(|k| self.key_forbidden(k, b))
     }
@@ -2101,7 +2190,9 @@ impl Engine {
             .map(str::to_owned)
             .collect();
         let max_age = chrono::Duration::milliseconds((s.max_age_secs * 1000.0) as i64);
-        let mut ready: Option<(Uid, correlate::Kinematic, f64, usize)> = None;
+        // Every system track nearby that could be the same object, with the
+        // kinematic comparison (or a scorer plugin's evidence in its place).
+        let mut compared: Vec<(Uid, correlate::Kinematic)> = Vec::new();
         for other in self
             .grid
             .near(obs.position.latitude, obs.position.longitude)
@@ -2127,7 +2218,14 @@ impl Engine {
             {
                 continue;
             }
-            let k = correlate::kinematic(obs, &t.view, &s);
+            compared.push((other, correlate::kinematic(obs, &t.view, &s)));
+        }
+        let plugin_evidence = self.score_with_plugin(obs, &mut compared);
+        let mut ready: Option<(Uid, correlate::Kinematic, f64, usize)> = None;
+        for (other, k) in compared {
+            let Some(t) = self.tracks.get(&other) else {
+                continue;
+            };
             let key = pair_key(uid, other);
             if !k.pass && !self.candidates.contains_key(&key) {
                 continue;
@@ -2170,6 +2268,9 @@ impl Engine {
             "probability": p, "comparisons": of,
             "pair_probability": s.pair_probability,
             "last": k,
+            "scorer": plugin_evidence.as_ref().map(|(plugin, by)| json!({
+                "plugin": plugin, "evidence": by.get(&other).cloned().unwrap_or(Value::Null),
+            })),
         });
         let reason = format!(
             "{} and {} agreed kinematically: probability {p:.3} of the same object over {of} comparisons ({})",
@@ -3323,6 +3424,107 @@ mod tests {
         }
         assert_ne!(track_of(&e, "radar", "r1"), ship);
         assert!(suggestions(&e, "open").await.is_empty());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// A scorer plugin for tests: OpenTrack's kinematic evidence, or (with
+    /// `"veto": true`) a veto of every pair.
+    struct TestScorer {
+        manifest: ot_source::plugin::Manifest,
+    }
+
+    impl ot_source::plugin::Plugin for TestScorer {
+        fn manifest(&self) -> &ot_source::plugin::Manifest {
+            &self.manifest
+        }
+        fn scorer(
+            &self,
+            options: &Value,
+        ) -> Result<Box<dyn ot_source::plugin::PluginScorer>, String> {
+            Ok(Box::new(TestScorerRun(options["veto"] == true)))
+        }
+    }
+
+    struct TestScorerRun(bool);
+
+    impl ot_source::plugin::PluginScorer for TestScorerRun {
+        fn score(
+            &mut self,
+            _: &Observation,
+            candidates: &[ot_source::plugin::ScoreCandidate],
+        ) -> Result<Vec<ot_source::plugin::Score>, String> {
+            Ok(candidates
+                .iter()
+                .map(|c| ot_source::plugin::Score {
+                    ln_lr: if self.0 {
+                        -20.0
+                    } else {
+                        c.kinematic["ln_lr"].as_f64().unwrap()
+                    },
+                    pass: !self.0 && c.kinematic["pass"] == true,
+                    evidence: json!({ "veto": self.0 }),
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scorer_plugin_decides_the_pairing_evidence() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        ot_source::plugin::install(std::sync::Arc::new(TestScorer {
+            manifest: serde_json::from_value(json!({
+                "name": "test-scorer", "version": "7", "kinds": ["scorer"]
+            }))
+            .unwrap(),
+        }))
+        .unwrap();
+        let scorer = |veto: bool| {
+            Some(correlate::ScorerRef {
+                plugin: "test-scorer".into(),
+                options: json!({ "veto": veto }),
+            })
+        };
+        let pair = |e: &Engine| track_of(e, "ais", "367") == track_of(e, "radar", "r2");
+        let reports = |s: i64| {
+            [
+                report("ais", "367", s, 33.0, -117.0, Some("367")),
+                report("radar", "r2", s, 33.00001, -117.0, None),
+            ]
+        };
+        // The plugin vetoes: close as they are, they stay apart.
+        e.settings.correlation.scorer = scorer(true);
+        for s in 0..10 {
+            feed(&mut e, &reports(s)).await;
+        }
+        assert!(!pair(&e), "vetoed by the scorer");
+        // It passes the kinematic evidence on: they pair, and the decision
+        // names the plugin and what it said.
+        e.settings.correlation.scorer = scorer(false);
+        for s in 10..20 {
+            feed(&mut e, &reports(s)).await;
+        }
+        assert!(pair(&e), "paired on the scorer's evidence");
+        let c = e.common.clone();
+        let evidence: Vec<Value> = tokio::task::spawn_blocking(move || {
+            let db = c.open_db().unwrap();
+            let mut stmt = db
+                .connection()
+                .prepare("SELECT evidence FROM decisions WHERE op = 'merge'")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|v| serde_json::from_str(&v.unwrap()).unwrap())
+                .collect()
+        })
+        .await
+        .unwrap();
+        assert_eq!(evidence.len(), 1, "{evidence:?}");
+        assert_eq!(evidence[0]["scorer"]["plugin"], "test-scorer-7");
+        assert_eq!(evidence[0]["scorer"]["evidence"]["veto"], false);
+        ot_source::plugin::uninstall("test-scorer");
         e.redis.purge_namespace().await.unwrap();
     }
 

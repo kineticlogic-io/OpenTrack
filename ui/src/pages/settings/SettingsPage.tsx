@@ -3,6 +3,7 @@ import { TbDownload, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
 import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
+import { PluginsPanel } from './PluginsPanel'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
@@ -32,7 +33,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   )
 }
 
-/** Instance settings: site name, classification banner, data export, purge. */
+/** Instance settings: site name, classification banner, plugins, data export, purge. */
 export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const { toast, confirm } = useToast()
   const [loaded, setLoaded] = useState<AppSettingsResponse | null>(null)
@@ -163,6 +164,8 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
           </div>
         </div>
       </CollapsiblePanel>
+
+      <PluginsPanel />
 
       <CollapsiblePanel title="Data export" persistKey="ot.panel.settings.export">
         <div className="panel-body">

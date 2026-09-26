@@ -47,6 +47,13 @@ OTH-GOLD's track management sets do:
   members' shared function, the task-force indicator and an echelon.
 * **Delete** (DEL): the track is deleted downstream (a group is dissolved; its members stay).
 
+**Plugins.** Codecs, trackers and pairing scorers of your own, beside the built-in ones. They are
+WebAssembly components run sandboxed inside OpenTrack, with only the memory, time, files and
+network an operator grants them. Or they are external programs serving the same interface over a
+socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → Plugins and
+written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
+test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
+
 **Entities.** One registry of real-world objects: identifiers of any scheme (`mmsi`, `icao`,
 `elnot`...), a status, the OTH-GOLD minimum (name, class name, domain, affiliation, track type, CoT
 type, SIDC) and typed free-form attributes. Each source's pipeline links entity fields and track
@@ -100,16 +107,20 @@ crates/
   ot-core     authoritative schema (Observation), system tracks, GOLD UIDs, OTH-GOLD minimum, SIDC, the published message
   ot-store    SQLite (decisions, config, registry, groups, temporal track graph) and Redis (streams, live state, outbox)
   ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
-  ot-source   source framework: transports, framing, codecs and codec plugins, mapping, entity stage, filter, tracker (GNN/MHT), throttle
+  ot-source   source framework: transports, framing, codecs, the plugin registry, mapping, entity stage, filter, tracker (GNN/MHT), throttle
+  ot-plugin   plugin hosts: WebAssembly components (wasmtime, grants) and external plugins over a socket
   ot-codec-stanag4607  STANAG 4607 (Edition 3) GMTI decoder: every segment type, typed and as JSON records
-  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | bench | retire
+  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | bench | plugin | retire
 docs/
   nats-output.md   the published track contract, for consumers
   algorithms.md    tracker and correlation algorithms, versions and scores
+  plugins.md       the plugin interface, grants, SDKs and the external protocol
   examples/        aisstream, adsb.lol, STANAG 4607 GMTI, a GPS feed and the Autoferry demo as pure configuration
 scripts/benchmark/   the tracker and correlation benchmark (bench.py: scenarios, scoring), and
              replay/ tools that feed a running OpenTrack: gmti-rebroadcast.py (4607 recordings over TCP),
              gmti-gps-replay.py (GMTI and GPS logs of one exercise on one clock), autoferry-replay.py
+sdk/         plugin SDKs: rust/ (WebAssembly components) and python/ (external plugins or components), with examples
+wit/         the plugin interface (plugin.wit)
 ui/          React + TypeScript (Vite) on stareSDK
 ```
 
@@ -125,7 +136,8 @@ The UI's tabs:
 * **Registry**: entities (identifiers, minimum, attributes, publish override, history), spreadsheet
   export and import.
 * **Schema**: the output schema's versions (drafted, then published).
-* **Settings**: site name, classification banner, data export, purge.
+* **Settings**: site name, classification banner, plugins (add, enable, grant, check, delete), data
+  export, purge.
 
 ## Sources and pipelines
 
@@ -142,9 +154,8 @@ rule of kind `track` bypasses the tracker. A mapping can send a value straight t
 with an `entity.<key>` destination.
 
 **Codec plugins** decode formats beyond JSON and XML (`"codec": {"type": "plugin", "plugin":
-"stanag4607", "options": {...}}`); each describes its options and framing at `GET /api/v1/plugins`.
-Plugins are compiled in; the interface is the one a sandboxed (WebAssembly) plugin will implement.
-**STANAG 4607** GMTI streams over TCP; [docs/examples/stanag4607.json](docs/examples/stanag4607.json)
+"stanag4607", "options": {...}}`), and **tracker plugins** run as a tracker stage (see Plugins
+below). **STANAG 4607** GMTI streams over TCP; [docs/examples/stanag4607.json](docs/examples/stanag4607.json)
 turns every dwell target into a detection with a ground error ellipse from the radar geometry, forms
 ground tracks with the GNN tracker timed by the measured revisit rate, and publishes the sensor
 platform itself as a friendly track.
@@ -187,7 +198,8 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 
 | | |
 |---|---|
-| Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics`, `/plugins` |
+| Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics` |
+| Plugins | `GET/POST /plugins`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
 | Status | `GET /status`, `/metrics`, `/healthz` |
 | Tracks | `GET /tracks`, `GET /tracks/{uid}`, `GET /tracks/{uid}/explain` |
 | Track management | `POST /tracks/pair`, `/tracks/unpair`, `/tracks/merge` (`hold` for a track manager's merge), `/tracks/delete`, `GET/POST /groups`, `PUT/DELETE /groups/{id}`, `POST /groups/{id}/members` |

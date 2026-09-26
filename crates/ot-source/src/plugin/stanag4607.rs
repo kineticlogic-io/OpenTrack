@@ -14,82 +14,93 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
-use super::{CodecPlugin, OptionKind, PluginDecoder, PluginOption, StreamHints};
+use super::{Kind, Manifest, OptionKind, Plugin, PluginDecoder, PluginOption, StreamHints};
 use crate::frame::{Endian, Framing, PrefixWidth};
 
-pub struct Stanag4607;
+pub struct Stanag4607 {
+    manifest: Manifest,
+}
 
 /// How far a shifted time may be from the clock before the shift is retaken.
 const REANCHOR: chrono::TimeDelta = chrono::TimeDelta::seconds(10);
 
-impl CodecPlugin for Stanag4607 {
-    fn name(&self) -> &'static str {
-        "stanag4607"
-    }
-
-    fn version(&self) -> &'static str {
-        ot_codec_stanag4607::VERSION
-    }
-
-    fn description(&self) -> &'static str {
-        "STANAG 4607 GMTI (Edition 3): one record per dwell target report, or per segment"
-    }
-
-    fn options(&self) -> Vec<PluginOption> {
-        vec![
-            PluginOption {
-                name: "emit",
-                label: "Records",
-                help: "targets: one per dwell target report; segments: one per segment; all: both",
-                kind: OptionKind::Choice {
-                    choices: &["targets", "segments", "all"],
-                    default: "targets",
-                },
-            },
-            PluginOption {
-                name: "publish_platform",
-                label: "Publish platform as track",
-                help: "The sensor platform's position from dwell and platform location segments, as `platform` records for a track rule (a friendly track that bypasses the tracker)",
-                kind: OptionKind::Bool { default: false },
-            },
-            PluginOption {
-                name: "range_sigma_m",
-                label: "Range error σ (m)",
-                help: "One-sigma slant range error, for each target's ground error ellipse. Applies only when the target reports and job definitions give no accuracy",
-                kind: OptionKind::Number {
-                    default: Some(20.0),
-                    unit: "m",
-                    min: Some(0.0),
-                },
-            },
-            PluginOption {
-                name: "cross_range_sigma_deg",
-                label: "Cross-range error σ (°)",
-                help: "One-sigma cross-range (azimuth) error, for each target's ground error ellipse. Applies only when the target reports and job definitions give no accuracy",
-                kind: OptionKind::Number {
-                    default: Some(0.2),
-                    unit: "°",
-                    min: Some(0.0),
-                },
-            },
-            PluginOption {
-                name: "shift_to_now",
-                label: "Replay as live",
-                help: "Shift record times so the stream starts now (for recordings)",
-                kind: OptionKind::Bool { default: false },
-            },
-        ]
-    }
-
-    fn framing(&self) -> Option<Framing> {
+impl Stanag4607 {
+    pub fn new() -> Self {
         // The packet header's size field: a big-endian u32 at byte 2, counting the whole packet.
-        Some(Framing::LengthField {
+        let framing = Some(Framing::LengthField {
             offset: 2,
             width: PrefixWidth::U32,
             endian: Endian::Big,
             adjust: 0,
             max_len: crate::frame::DEFAULT_MAX_FRAME,
-        })
+        });
+        let options = {
+            vec![
+            PluginOption {
+                name: "emit".into(),
+                label: "Records".into(),
+                help: "targets: one per dwell target report; segments: one per segment; all: both".into(),
+                kind: OptionKind::Choice {
+                    choices: ["targets", "segments", "all"].map(String::from).to_vec(),
+                    default: "targets".into(),
+                },
+            },
+            PluginOption {
+                name: "publish_platform".into(),
+                label: "Publish platform as track".into(),
+                help: "The sensor platform's position from dwell and platform location segments, as `platform` records for a track rule (a friendly track that bypasses the tracker)".into(),
+                kind: OptionKind::Bool { default: false },
+            },
+            PluginOption {
+                name: "range_sigma_m".into(),
+                label: "Range error σ (m)".into(),
+                help: "One-sigma slant range error, for each target's ground error ellipse. Applies only when the target reports and job definitions give no accuracy".into(),
+                kind: OptionKind::Number {
+                    default: Some(20.0),
+                    unit: "m".into(),
+                    min: Some(0.0),
+                },
+            },
+            PluginOption {
+                name: "cross_range_sigma_deg".into(),
+                label: "Cross-range error σ (°)".into(),
+                help: "One-sigma cross-range (azimuth) error, for each target's ground error ellipse. Applies only when the target reports and job definitions give no accuracy".into(),
+                kind: OptionKind::Number {
+                    default: Some(0.2),
+                    unit: "°".into(),
+                    min: Some(0.0),
+                },
+            },
+            PluginOption {
+                name: "shift_to_now".into(),
+                label: "Replay as live".into(),
+                help: "Shift record times so the stream starts now (for recordings)".into(),
+                kind: OptionKind::Bool { default: false },
+            },
+        ]
+        };
+        Self {
+            manifest: Manifest {
+                name: "stanag4607".into(),
+                version: ot_codec_stanag4607::VERSION.into(),
+                description: "STANAG 4607 GMTI (Edition 3): one record per dwell target report, or per segment".into(),
+                kinds: vec![Kind::Codec],
+                options,
+                framing,
+            },
+        }
+    }
+}
+
+impl Default for Stanag4607 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Plugin for Stanag4607 {
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
     }
 
     fn decoder(&self, options: &Value) -> Result<Box<dyn PluginDecoder>, String> {
@@ -150,7 +161,7 @@ struct Decoder {
 }
 
 impl PluginDecoder for Decoder {
-    fn decode(&mut self, bytes: &[u8]) -> Result<Vec<Value>, String> {
+    fn decode(&mut self, bytes: &[u8], _received_at: DateTime<Utc>) -> Result<Vec<Value>, String> {
         let mut records = self.inner.decode(bytes).map_err(|e| e.to_string())?;
         if self.shift {
             for r in &mut records {
@@ -192,10 +203,10 @@ mod tests {
 
     #[test]
     fn sigma_options_have_defaults_and_are_checked() {
-        let d = super::super::default_options(&Stanag4607);
+        let d = super::super::default_options(Stanag4607::new().manifest());
         assert_eq!(d["range_sigma_m"], 20.0);
         assert_eq!(d["cross_range_sigma_deg"], 0.2);
-        let described = super::super::describe(&Stanag4607);
+        let described = super::super::describe(&Stanag4607::new());
         let range = described["options"]
             .as_array()
             .unwrap()
@@ -206,20 +217,20 @@ mod tests {
         assert_eq!(range["default"], 20.0);
         assert_eq!(range["unit"], "m");
 
-        assert!(Stanag4607.decoder(&d).is_ok());
+        assert!(Stanag4607::new().decoder(&d).is_ok());
         assert!(
-            Stanag4607
+            Stanag4607::new()
                 .decoder(&json!({ "range_sigma_m": null }))
                 .is_ok()
         );
         for bad in [json!("20"), json!(0), json!(-1.5), json!(true)] {
-            let e = Stanag4607
+            let e = Stanag4607::new()
                 .decoder(&json!({ "range_sigma_m": bad }))
                 .err()
                 .unwrap();
             assert!(e.contains("range_sigma_m must be a positive number"), "{e}");
         }
-        let e = Stanag4607
+        let e = Stanag4607::new()
             .decoder(&json!({ "cross_range_sigma_deg": "x" }))
             .err()
             .unwrap();

@@ -673,3 +673,21 @@ body {
 .radio-row { display: flex; align-items: center; gap: var(--space-sm); cursor: pointer; }
 /* The entity editor's publish override, in its title bar. */
 .publish-pick { display: inline-flex; align-items: center; gap: 4px; }
+
+/* A multi-line field that matches stareSDK's Input. */
+.plain-textarea {
+  width: 100%;
+  max-width: 360px;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font: 12px var(--font-mono, monospace);
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  background: var(--surface-layer-2);
+  border: 1px solid var(--color-glass-border);
+  border-radius: 4px;
+  resize: vertical;
+}
+.plain-textarea:disabled {
+  opacity: 0.5;
+}

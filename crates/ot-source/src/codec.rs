@@ -75,7 +75,7 @@ impl Codec {
         let plugin = match &config {
             CodecConfig::Plugin { plugin, options } => Some(
                 crate::plugin::plugin(plugin)
-                    .ok_or_else(|| CodecError::Plugin(format!("no codec plugin {plugin:?}")))?
+                    .ok_or_else(|| CodecError::Plugin(format!("no plugin {plugin:?}")))?
                     .decoder(options)
                     .map_err(CodecError::Plugin)?,
             ),
@@ -101,7 +101,7 @@ impl Codec {
                 .plugin
                 .as_mut()
                 .expect("a plugin codec has a decoder")
-                .decode(&frame.bytes)
+                .decode(&frame.bytes, frame.received_at)
                 .map_err(CodecError::Plugin),
             CodecConfig::Json { records, context } => {
                 decode_json(&frame.bytes, records.as_ref(), context)

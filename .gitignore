@@ -7,3 +7,4 @@ node_modules
 *.db-shm
 .env
 __pycache__/
+sdk/rust/target/

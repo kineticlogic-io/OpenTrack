@@ -12,6 +12,8 @@ FROM rust:1-bookworm AS server
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
+# The plugin interface the WebAssembly host is generated from.
+COPY wit ./wit
 RUN cargo build --release --locked --bin opentrack
 
 FROM debian:bookworm-slim

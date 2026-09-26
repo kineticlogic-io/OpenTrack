@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_entities.sql"),
     include_str!("../migrations/0010_track_groups.sql"),
     include_str!("../migrations/0011_entity_publish.sql"),
+    include_str!("../migrations/0012_plugins.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -499,9 +500,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 11);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 12);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 11);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 12);
     }
 
     #[test]

@@ -212,6 +212,8 @@ pub struct Counts {
     /// Detections handed to the tracker, and those too late for their scan.
     pub plots: u64,
     pub late_plots: u64,
+    /// Runs of a tracker plugin that failed.
+    pub tracker_errors: u64,
     pub throttled: u64,
     pub emitted: u64,
     pub grades: HashMap<&'static str, u64>,
@@ -230,6 +232,7 @@ impl Counts {
             ("filtered", self.filtered),
             ("plots", self.plots),
             ("late_plots", self.late_plots),
+            ("tracker_error", self.tracker_errors),
             ("throttled", self.throttled),
             ("emitted", self.emitted),
         ]
@@ -280,8 +283,41 @@ pub struct Pipeline {
     /// The last value sent to each (entity, field), so a feed repeating a
     /// value writes it once, not until the registry snapshot catches up.
     entity_sent: HashMap<(String, String), Value>,
-    tracker: Option<crate::tracker::Tracker>,
+    tracker: Option<Stage>,
     keep_plots: bool,
+}
+
+/// The tracker stage: OpenTrack's own tracker, or a plugin's.
+enum Stage {
+    Builtin(Box<crate::tracker::Tracker>),
+    Plugin {
+        tracker: Box<dyn crate::plugin::PluginTracker>,
+        /// `<plugin>-<version>`, stamped as `provenance.tracker`.
+        version: String,
+    },
+}
+
+impl Stage {
+    fn new(spec: crate::tracker::TrackerSpec) -> Result<Self, String> {
+        if spec.algorithm != crate::tracker::Algorithm::Plugin {
+            return crate::tracker::Tracker::new(spec).map(|t| Stage::Builtin(Box::new(t)));
+        }
+        spec.validate()?;
+        let name = spec.plugin.as_deref().unwrap_or_default();
+        let plugin = crate::plugin::plugin(name).ok_or_else(|| format!("no plugin {name:?}"))?;
+        let version = format!("{name}-{}", plugin.manifest().version);
+        Ok(Stage::Plugin {
+            tracker: plugin.tracker(&spec.options)?,
+            version,
+        })
+    }
+
+    fn push(&mut self, obs: Observation, received_at: DateTime<Utc>) {
+        match self {
+            Stage::Builtin(t) => t.push(obs, received_at),
+            Stage::Plugin { tracker, .. } => tracker.push(obs, received_at),
+        }
+    }
 }
 
 impl Pipeline {
@@ -290,7 +326,7 @@ impl Pipeline {
         let tracker = spec
             .tracker
             .clone()
-            .map(crate::tracker::Tracker::new)
+            .map(Stage::new)
             .transpose()
             .map_err(PipelineError::Tracker)?;
         Ok(Self {
@@ -320,6 +356,10 @@ impl Pipeline {
     pub fn with_schema(mut self, schema: crate::schema::ExtensionSchema) -> Self {
         self.schema = Some(schema);
         self
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
     }
 
     pub fn spec(&self) -> &PipelineSpec {
@@ -362,7 +402,7 @@ impl Pipeline {
             }
         };
         // A tracker timed by the sensor follows what the codec has learnt.
-        if let Some(t) = self.tracker.as_mut()
+        if let Some(Stage::Builtin(t)) = self.tracker.as_mut()
             && let Some(h) = self.codec.hints()
         {
             t.set_revisit(h.revisit_secs, h.revisit_source);
@@ -377,7 +417,10 @@ impl Pipeline {
     /// The windows a tracker with `auto_timing` is using, once it knows the
     /// sensor's revisit period.
     pub fn tracker_timing(&self) -> Option<&crate::tracker::Timing> {
-        self.tracker.as_ref()?.timing()
+        match self.tracker.as_ref()? {
+            Stage::Builtin(t) => t.timing(),
+            Stage::Plugin { .. } => None,
+        }
     }
 
     /// Run the tracker on scans still waiting (plots grouped by time wait
@@ -390,13 +433,31 @@ impl Pipeline {
     }
 
     fn run_tracker(&mut self, now: DateTime<Utc>, force: bool, out: &mut Output) {
-        let Some(t) = self.tracker.as_mut() else {
-            return;
+        let reports = match self.tracker.as_mut() {
+            None => return,
+            Some(Stage::Builtin(t)) => {
+                let force = force || t.spec().scans == crate::tracker::ScanGrouping::Frame;
+                let reports = t.run(now, force);
+                self.counts.late_plots += std::mem::take(&mut t.late);
+                reports.into_iter().map(|(obs, _)| obs).collect()
+            }
+            Some(Stage::Plugin { tracker, version }) => match tracker.run(now, force) {
+                Ok(tracks) => {
+                    let mut tracks: Vec<Observation> = tracks;
+                    for t in &mut tracks {
+                        t.source_id = self.source_id.clone();
+                        t.provenance.tracker = Some(version.clone());
+                    }
+                    tracks
+                }
+                Err(e) => {
+                    self.counts.tracker_errors += 1;
+                    out.last_error = Some(format!("tracker plugin: {e}"));
+                    Vec::new()
+                }
+            },
         };
-        let force = force || t.spec().scans == crate::tracker::ScanGrouping::Frame;
-        let reports = t.run(now, force);
-        self.counts.late_plots += std::mem::take(&mut t.late);
-        for (obs, _) in reports {
+        for obs in reports {
             self.emit(obs, out);
         }
     }

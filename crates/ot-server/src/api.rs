@@ -28,7 +28,6 @@ pub fn routes() -> Router<AppState> {
             "/sources/{id}",
             get(get_source).put(put_source).delete(delete_source),
         )
-        .route("/plugins", get(list_plugins))
         .route("/sources/{id}/enable", post(enable_source))
         .route("/sources/{id}/disable", post(disable_source))
         .route(
@@ -53,6 +52,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::settings_api::routes())
         .merge(crate::correlation_api::routes())
         .merge(crate::manage_api::routes())
+        .merge(crate::plugins_api::routes())
 }
 
 pub(crate) fn actor(headers: &HeaderMap) -> String {
@@ -67,15 +67,6 @@ pub(crate) fn actor(headers: &HeaderMap) -> String {
 /// Parse and validate a source spec, including against the published
 /// extension schema version its mapping targets. Returns the spec, its
 /// normalised JSON (defaults filled in) and that schema.
-/// The codec plugins this build has, with their options.
-async fn list_plugins() -> Json<Value> {
-    let plugins: Vec<Value> = ot_source::plugin::plugins()
-        .into_iter()
-        .map(ot_source::plugin::describe)
-        .collect();
-    Json(json!({ "plugins": plugins }))
-}
-
 async fn parse_spec(
     s: &AppState,
     body: Value,

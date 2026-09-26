@@ -265,7 +265,9 @@ fn gmti_plots_carry_ground_error_ellipses() {
         .unwrap()
         .decoder(&replay_options())
         .unwrap();
-    let records = decoder.decode(&std::fs::read(&path).unwrap()).unwrap();
+    let records = decoder
+        .decode(&std::fs::read(&path).unwrap(), chrono::Utc::now())
+        .unwrap();
     let received = chrono::Utc::now();
     let (mut plots, mut located) = (0, 0);
     for r in &records {

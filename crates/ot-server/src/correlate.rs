@@ -457,6 +457,20 @@ pub struct CorrelationSettings {
     pub split: SplitSettings,
     /// What gets published.
     pub output: OutputFilter,
+    /// A scorer plugin: its evidence (ln likelihood ratio and gate) takes the
+    /// place of the kinematic comparison's in the pairing test. The test,
+    /// its thresholds and every decision stay the engine's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scorer: Option<ScorerRef>,
+}
+
+/// A scorer plugin, by name, with its options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScorerRef {
+    pub plugin: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub options: serde_json::Value,
 }
 
 impl Default for CorrelationSettings {
@@ -469,12 +483,20 @@ impl Default for CorrelationSettings {
             freshness_secs: 60.0,
             split: SplitSettings::default(),
             output: OutputFilter::default(),
+            scorer: None,
         }
     }
 }
 
 impl CorrelationSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(s) = &self.scorer {
+            let p = ot_source::plugin::plugin(&s.plugin)
+                .ok_or_else(|| format!("scorer: no plugin {:?}", s.plugin))?;
+            if !p.manifest().provides(ot_source::plugin::Kind::Scorer) {
+                return Err(format!("scorer: plugin {} is not a scorer", s.plugin));
+            }
+        }
         let k = &self.kinematic;
         let positive = [
             ("kinematic.min_sigma_m", k.min_sigma_m),

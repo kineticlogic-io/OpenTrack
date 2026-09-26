@@ -109,6 +109,12 @@ pub struct TrackerSpec {
     /// (a scan may be one dwell that never looked at it).
     #[serde(skip)]
     pub revisit_secs: Option<f64>,
+    /// With `algorithm: plugin`: the plugin, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// With `algorithm: plugin`: the plugin's options.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub options: serde_json::Value,
 }
 
 impl TrackerSpec {
@@ -173,6 +179,9 @@ pub enum Algorithm {
     Gnn,
     /// Multiple hypothesis tracking: competing assignments kept for a few scans.
     Mht,
+    /// A tracker plugin (`plugin`, with its `options`); the other settings
+    /// here do not apply to it.
+    Plugin,
 }
 
 /// The domains a tracker may assign.
@@ -320,6 +329,12 @@ fn d_branches() -> usize {
 
 impl TrackerSpec {
     pub fn validate(&self) -> Result<(), String> {
+        if self.algorithm == Algorithm::Plugin {
+            return match self.plugin.as_deref() {
+                Some(p) if !p.is_empty() => Ok(()),
+                _ => Err("algorithm plugin needs `plugin`: the tracker plugin's name".into()),
+            };
+        }
         let positive = [
             ("measurement_sigma_m", self.measurement_sigma_m),
             ("process_noise_mps2", self.process_noise_mps2),
@@ -578,6 +593,9 @@ impl Tracker {
         let inner: Box<dyn Associate> = match spec.algorithm {
             Algorithm::Gnn => Box::new(gnn::Gnn::new(spec.clone())),
             Algorithm::Mht => Box::new(mht::Mht::new(spec.clone())),
+            Algorithm::Plugin => {
+                return Err("a plugin tracker is started from its plugin".into());
+            }
         };
         Ok(Self {
             spec,
@@ -599,6 +617,7 @@ impl Tracker {
         match self.spec.algorithm {
             Algorithm::Gnn => GNN_VERSION,
             Algorithm::Mht => MHT_VERSION,
+            Algorithm::Plugin => "plugin",
         }
     }
 

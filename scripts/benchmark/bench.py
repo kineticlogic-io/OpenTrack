@@ -5,7 +5,7 @@
     bench.py build [NAME... | all]        fetch the data and build scenarios
     bench.py run [NAME... | all]          run them through OpenTrack and score
         [--label L] [--correlation settings.json] [--set SOURCE.path=VALUE]...
-        [--redis URL] [--no-build]
+        [--plugin FILE_OR_ADDRESS]... [--redis URL] [--no-build]
     bench.py score RUN                    score a run again
     bench.py compare RUN_A RUN_B          the measures side by side
 
@@ -168,6 +168,7 @@ def cmd_run(args):
     out = results_dir() / run_id
     out.mkdir(parents=True)
     meta = {"run": run_id, "git": git_describe(), "correlation": args.correlation, "set": args.set or [],
+            "plugins": args.plugin or [],
             "scenarios": names}
     (out / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
     scores = []
@@ -180,6 +181,8 @@ def cmd_run(args):
             cmd = [str(exe), "--redis", url, "bench", str(scenario), "--out", str(dest)]
             if args.correlation:
                 cmd += ["--correlation", str(Path(args.correlation).resolve())]
+            for plugin in args.plugin or []:
+                cmd += ["--plugin", str(Path(plugin).resolve()) if Path(plugin).exists() else plugin]
             r = subprocess.run(cmd, env={"RUST_LOG": "warn", "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"{name}: failed\n{r.stderr[-2000:]}")
@@ -253,7 +256,8 @@ def summarise(out, meta, scores):
         "",
         f"OpenTrack {git['commit']}{' (uncommitted changes)' if git['dirty'] else ''}"
         + (f", correlation settings {meta['correlation']}" if meta.get("correlation") else "")
-        + (f", with {'; '.join(meta['set'])}" if meta.get("set") else ""),
+        + (f", with {'; '.join(meta['set'])}" if meta.get("set") else "")
+        + (f", plugins {', '.join(Path(p).name for p in meta['plugins'])}" if meta.get("plugins") else ""),
         "",
         "## System tracks (after correlation)",
         "",
@@ -322,6 +326,8 @@ def main():
     p.add_argument("--correlation", help="correlation settings JSON to use instead of each scenario's")
     p.add_argument("--set", action="append", metavar="SOURCE.path=VALUE",
                    help="change a source spec field for this run (repeatable), e.g. gmti.pipeline.tracker.confirm_hits=5")
+    p.add_argument("--plugin", action="append", metavar="FILE_OR_ADDRESS",
+                   help="load a plugin for the run (.wasm or an external plugin's address); repeatable")
     p.add_argument("--redis", help="Redis URL (default: a throwaway Redis in Docker)")
     p.add_argument("--no-build", action="store_true", help="use target/release/opentrack as it is")
     p.set_defaults(fn=cmd_run)

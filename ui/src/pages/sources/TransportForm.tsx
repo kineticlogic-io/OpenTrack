@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
-import { api, type CodecPlugin, type SourceSpec } from '../../api/client'
+import { api, type PluginInfo, type SourceSpec } from '../../api/client'
+import { PluginOptions, PluginPicker } from '../../components/PluginOptions'
 
 type Transport = SourceSpec['transport']
 type Codec = SourceSpec['pipeline']['codec']
@@ -171,18 +172,13 @@ export function TransportForm({
     if (v === undefined || v === '') delete next[k]
     onTransport(next)
   }
-  const [plugins, setPlugins] = useState<CodecPlugin[]>([])
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
   useEffect(() => {
     if (codec.type !== 'plugin') return
     api.plugins().then(setPlugins, () => setPlugins([]))
   }, [codec.type])
   const plugin = plugins.find((p) => p.name === codec.plugin)
   const pluginOptions = (codec.options as Record<string, unknown> | undefined) ?? {}
-  const setOption = (k: string, v: unknown) => {
-    const options = { ...pluginOptions, [k]: v }
-    if (v === undefined) delete options[k]
-    onCodec({ ...codec, options })
-  }
   const choosePlugin = (name: string) => {
     const p = plugins.find((x) => x.name === name)
     if (!p) return
@@ -226,41 +222,19 @@ export function TransportForm({
         <>
           <div className="field">
             <Label size="sm">Plugin</Label>
-            <Select
-              ariaLabel="Plugin"
-              options={Object.fromEntries(plugins.map((p) => [p.name, { label: `${p.name} (${p.version})` }]))}
-              value={String(codec.plugin ?? '')}
-              onChange={choosePlugin}
-            />
+            <PluginPicker plugins={plugins} kind="codec" value={codec.plugin as string | undefined} onChange={(p) => choosePlugin(p.name)} width={220} />
           </div>
-          {plugin?.options.map((o) =>
-            o.type === 'bool' ? (
-              <label key={o.name} className="field" title={o.help}>
-                <Label size="sm">{o.label}</Label>
-                <Toggle size="sm" value={pluginOptions[o.name] === true} onChange={(v) => setOption(o.name, v)} aria-label={o.label} />
-              </label>
-            ) : o.type === 'number' ? (
-              <Text
-                key={o.name}
-                label={o.label}
-                help={o.help}
-                type="number"
-                value={pluginOptions[o.name]}
-                placeholder="not set"
-                onChange={(v) => setOption(o.name, num(v))}
-              />
-            ) : (
-              <div key={o.name} className="field" title={o.help}>
-                <Label size="sm">{o.label}</Label>
-                <Select
-                  ariaLabel={o.label}
-                  options={Object.fromEntries(o.choices.map((c) => [c, { label: c }]))}
-                  value={String(pluginOptions[o.name] ?? o.default)}
-                  onChange={(v) => setOption(o.name, v)}
-                />
+          <PluginOptions
+            plugin={plugin}
+            value={pluginOptions}
+            onChange={(options) => onCodec({ ...codec, options })}
+            row={(key, label, help, control) => (
+              <div key={key} className="field" title={help}>
+                <Label size="sm">{label}</Label>
+                {control}
               </div>
-            ),
-          )}
+            )}
+          />
         </>
       )}
       {codec.type === 'xml' && (

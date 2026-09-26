@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Plugin SDKs and examples build for WebAssembly: their own workspace.
+exclude = ["sdk"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +16,7 @@ ot-store = { path = "crates/ot-store" }
 ot-nats = { path = "crates/ot-nats" }
 ot-source = { path = "crates/ot-source" }
 ot-codec-stanag4607 = { path = "crates/ot-codec-stanag4607" }
+ot-plugin = { path = "crates/ot-plugin" }
 anyhow = "1"
 async-nats = "0.50"
 bytes = "1"
@@ -43,6 +46,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 tower-http = { version = "0.7", features = ["fs", "trace", "compression-gzip", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Plugins: WebAssembly components (wit/plugin.wit), sandboxed with WASI.
+wasmtime = { version = "49", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std", "parallel-compilation", "cache"] }
+wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }
+base64 = "0.22"
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react'
 import { Button, FieldSelect, Input, Label } from 'staresdk'
 import { TbPlus, TbTrash } from 'react-icons/tb'
 import { JsonField } from '../sources/designer/JsonField'
-import type { CorrelationSettings, OutputFilter } from '../../api/client'
+import { api, type CorrelationSettings, type OutputFilter, type PluginInfo } from '../../api/client'
+import { PluginOptions, PluginPicker } from '../../components/PluginOptions'
 import { INPUT } from '../../lib/valueSpec'
 import { InfoTip } from '../../components/InfoTip'
 
@@ -51,6 +53,13 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
       .filter(Boolean)
   const setArea = (i: number, patch: Partial<OutputFilter['areas'][number]>) =>
     setO({ areas: out.areas.map((a, j) => (j === i ? { ...a, ...patch } : a)) })
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
+  useEffect(() => {
+    api.plugins().then(setPlugins, () => setPlugins([]))
+  }, [])
+  const scorers = plugins.filter((p) => p.kinds.includes('scorer'))
+  const scorer = value.scorer ?? null
+  const scorerPlugin = plugins.find((p) => p.name === scorer?.plugin)
   return (
     <div className="stack">
       <Row label="Pair on" hint="Shared identifiers always pair. Kinematics: agreeing motion too; with metadata, vetoed by conflicting identifiers or domains.">
@@ -120,6 +129,45 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
       <Row label="Compare views up to (s)">
         <Num label="Maximum view age" value={k.max_age_secs} onChange={(max_age_secs) => setK({ max_age_secs })} />
       </Row>
+      <Row
+        label="Scorer"
+        hint={
+          scorers.length
+            ? "A scorer plugin's evidence (its likelihood ratio and gate) in place of each kinematic comparison's. The test above, its thresholds and every decision stay OpenTrack's."
+            : 'Add a scorer plugin in Settings → Plugins to score pairs your own way.'
+        }
+      >
+        <div className="num-row">
+          <FieldSelect
+            ariaLabel="Pair scorer"
+            fields={[{ name: 'kinematic' }, { name: 'plugin', disabled: !scorers.length && !scorer, disabledReason: 'no scorer plugins' }]}
+            value={scorer ? 'plugin' : 'kinematic'}
+            onChange={(v) => onChange({ ...value, scorer: v === 'plugin' ? { plugin: scorers[0]?.name ?? '', options: structuredClone(scorers[0]?.default_options ?? {}) } : null })}
+            style={{ width: 130 }}
+          />
+          {scorer && (
+            <PluginPicker
+              plugins={plugins}
+              kind="scorer"
+              value={scorer.plugin}
+              onChange={(p) => onChange({ ...value, scorer: { plugin: p.name, options: structuredClone(p.default_options) } })}
+              width={200}
+            />
+          )}
+        </div>
+      </Row>
+      {scorer && (
+        <PluginOptions
+          plugin={scorerPlugin}
+          value={scorer.options ?? {}}
+          onChange={(options) => onChange({ ...value, scorer: { ...scorer, options } })}
+          row={(key, label, help, control) => (
+            <Row key={key} label={label} hint={help}>
+              {control}
+            </Row>
+          )}
+        />
+      )}
       <h4 className="subhead">Identifier pairing</h4>
       <Row label="Sanity gate (m)" hint="Plus the domain's top speed × time apart; a farther identifier match is refused.">
         <Num label="Sanity gate" value={value.gate.base_m} onChange={(base_m) => onChange({ ...value, gate: { ...value.gate, base_m } })} />

@@ -1,0 +1,11 @@
+[package]
+name = "alpha-beta-tracker"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+opentrack-plugin = { path = "../../opentrack-plugin" }

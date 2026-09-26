@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { TbPlus, TbTrash, TbX } from 'react-icons/tb'
 import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
-import { api, type SecurityLabel } from '../../../api/client'
+import { api, type PluginInfo, type SecurityLabel } from '../../../api/client'
 import { DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
 import { InfoTip } from '../../../components/InfoTip'
+import { PluginOptions, PluginPicker } from '../../../components/PluginOptions'
 
 type Obj = Record<string, unknown>
 type Props = { value: Obj; onChange: (v: Obj) => void }
@@ -274,7 +275,7 @@ export function FilterForm({ value, onChange }: Props) {
   )
 }
 
-const ALGORITHMS = [{ name: 'gnn' }, { name: 'mht' }]
+const ALGORITHMS = [{ name: 'gnn' }, { name: 'mht' }, { name: 'plugin' }]
 const DOMAINS = ['surface', 'ground', 'air', 'subsurface']
 
 /** Turn detections into tracks. Tracks leave with no identity and unknown affiliation. */
@@ -288,20 +289,58 @@ export function TrackerForm({ value, onChange }: Props) {
   const setMht = (m: Obj) => onChange({ ...value, mht: m })
   const auto = (value.auto_timing as Obj | undefined) ?? {}
   const setAuto = (a: Obj) => onChange({ ...value, auto_timing: a })
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
+  useEffect(() => {
+    if (value.algorithm !== 'plugin') return
+    api.plugins().then(setPlugins, () => setPlugins([]))
+  }, [value.algorithm])
+  const algorithmHint =
+    value.algorithm === 'plugin'
+      ? 'A tracker plugin (Settings → Plugins): its own algorithm and options.'
+      : value.algorithm === 'mht'
+        ? 'Multiple hypotheses: fewer false tracks in clutter, more work.'
+        : 'Global nearest neighbour: the best plot-to-track assignment each scan.'
+  const algorithm = (
+    <Row label="Algorithm" hint={`${algorithmHint} Tracks get unknown affiliation and at most a domain, never an identity or type.`}>
+      <FieldSelect
+        ariaLabel="Tracker algorithm"
+        fields={ALGORITHMS}
+        value={String(value.algorithm ?? 'gnn')}
+        onChange={(a) => onChange(a === 'plugin' ? { algorithm: 'plugin', plugin: undefined, options: {} } : { ...value, algorithm: a ?? 'gnn', plugin: undefined, options: undefined })}
+        style={{ width: 160 }}
+      />
+    </Row>
+  )
+  if (value.algorithm === 'plugin') {
+    const plugin = plugins.find((p) => p.name === value.plugin)
+    return (
+      <div className="stack">
+        {algorithm}
+        <Row label="Plugin" hint="The enabled plugins that provide a tracker.">
+          <PluginPicker
+            plugins={plugins}
+            kind="tracker"
+            value={value.plugin as string | undefined}
+            onChange={(p) => onChange({ algorithm: 'plugin', plugin: p.name, options: structuredClone(p.default_options) })}
+          />
+        </Row>
+        {plugin?.description && <p className="muted small">{plugin.description}</p>}
+        <PluginOptions
+          plugin={plugin}
+          value={(value.options as Obj | undefined) ?? {}}
+          onChange={(options) => onChange({ ...value, options })}
+          row={(key, label, help, control) => (
+            <Row key={key} label={label} hint={help}>
+              {control}
+            </Row>
+          )}
+        />
+      </div>
+    )
+  }
   return (
     <div className="stack">
-      <Row
-        label="Algorithm"
-        hint={`${value.algorithm === 'mht' ? 'Multiple hypotheses: fewer false tracks in clutter, more work.' : 'Global nearest neighbour: the best plot-to-track assignment each scan.'} Tracks get unknown affiliation and at most a domain, never an identity or type.`}
-      >
-        <FieldSelect
-          ariaLabel="Tracker algorithm"
-          fields={ALGORITHMS}
-          value={String(value.algorithm ?? 'gnn')}
-          onChange={(a) => onChange({ ...value, algorithm: a ?? 'gnn' })}
-          style={{ width: 160 }}
-        />
-      </Row>
+      {algorithm}
       <Row label="Domain" hint="Everything this sensor sees. Empty: what most of a track's plots report, if any.">
         <FieldSelect ariaLabel="Tracker domain" allowNone fields={DOMAINS.map((name) => ({ name }))} value={(value.domain as string) ?? null} onChange={(d) => onChange({ ...value, domain: d ?? undefined })} style={{ width: 160 }} />
       </Row>

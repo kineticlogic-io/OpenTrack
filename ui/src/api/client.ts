@@ -151,6 +151,8 @@ export interface CorrelationSettings {
   freshness_secs: number
   split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number }
   output: OutputFilter
+  /** A scorer plugin whose evidence takes the kinematic comparison's place. */
+  scorer?: { plugin: string; options?: Record<string, unknown> } | null
 }
 
 export interface CorrelationSettingsResponse {
@@ -359,18 +361,56 @@ export interface SheetImport {
 }
 
 /** A codec plugin and the options it takes. */
-export interface CodecPlugin {
+/** One option a plugin takes, as its manifest describes it. */
+export type PluginOption =
+  | { name: string; label: string; help: string; type: 'bool'; default: boolean }
+  | { name: string; label: string; help: string; type: 'choice'; choices: string[]; default: string }
+  | { name: string; label: string; help: string; type: 'number'; default: number | null; unit: string; min: number | null }
+  | { name: string; label: string; help: string; type: 'text'; default: string | null }
+
+export type PluginKind = 'codec' | 'tracker' | 'scorer'
+
+/** Plugin grants: what it may use beyond computing (WebAssembly plugins). */
+export interface PluginGrants {
+  memory_mb: number
+  call_timeout_ms: number
+  dirs: { path: string; guest?: string; write?: boolean }[]
+  network: string[]
+  env: Record<string, string>
+}
+
+/** A plugin: built in, a WebAssembly component, or an external program. */
+export interface PluginInfo {
   name: string
   version: string
   description: string
-  options: (
-    | { name: string; label: string; help: string; type: 'bool'; default: boolean }
-    | { name: string; label: string; help: string; type: 'choice'; choices: string[]; default: string }
-    | { name: string; label: string; help: string; type: 'number'; default: number | null; unit: string; min: number | null }
-  )[]
+  kinds: PluginKind[]
+  options: PluginOption[]
   default_options: Record<string, unknown>
   framing: Record<string, unknown> | null
+  builtin: boolean
+  runtime: 'builtin' | 'wasm' | 'external'
+  enabled: boolean
+  status: 'loaded' | 'loading' | 'error' | 'disabled'
+  error?: string
+  sha256?: string | null
+  size?: number | null
+  address?: string | null
+  grants?: PluginGrants
+  updated_at_ms?: number
+  used_by: { source?: string; name?: string; as: PluginKind; enabled?: boolean; correlation?: boolean }[]
 }
+
+/** What `check` found: whether the plugin loads and opens each kind. */
+export interface PluginCheck {
+  ok: boolean
+  error?: string
+  load_ms?: number
+  kinds?: Record<string, 'ok' | { error: string }>
+}
+
+/** @deprecated the codec plugins are PluginInfo with kind `codec`. */
+export type CodecPlugin = PluginInfo
 const enc = encodeURIComponent
 
 // --- Sources -------------------------------------------------------------------------------
@@ -658,7 +698,25 @@ export const api = {
       `/sources/${enc(id)}/revisions`,
     ).then((r) => r.revisions),
 
-  plugins: () => get<{ plugins: CodecPlugin[] }>('/plugins').then((r) => r.plugins),
+  plugins: () => get<{ plugins: PluginInfo[] }>('/plugins').then((r) => r.plugins),
+  /** Add a WebAssembly component (or, with replace, a new build of one). */
+  addPluginWasm: async (file: File, replace = false): Promise<PluginInfo> => {
+    const res = await fetch(`/api/v1/plugins${replace ? '?replace=true' : ''}`, {
+      method: 'POST',
+      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/wasm' },
+      body: file,
+    })
+    const text = await res.text()
+    const parsed = text ? JSON.parse(text) : {}
+    if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText)
+    return parsed as PluginInfo
+  },
+  addPluginExternal: (address: string, replace = false) =>
+    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address }),
+  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants }) =>
+    request<PluginInfo>('PUT', `/plugins/${enc(name)}`, body),
+  deletePlugin: (name: string, force = false) => request<unknown>('DELETE', `/plugins/${enc(name)}${force ? '?force=true' : ''}`),
+  checkPlugin: (name: string) => request<PluginCheck>('POST', `/plugins/${enc(name)}/check`),
 
   probe: (body: {
     transport: SourceSpec['transport']

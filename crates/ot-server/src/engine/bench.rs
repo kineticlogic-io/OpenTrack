@@ -146,6 +146,8 @@ pub struct BenchOptions {
     pub out: PathBuf,
     /// Correlation settings to use instead of the scenario's (for sweeps).
     pub correlation: Option<PathBuf>,
+    /// Plugins to load first (files or addresses).
+    pub plugins: Vec<String>,
 }
 
 struct Writers {
@@ -169,6 +171,15 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
     )
     .context("scenario.json")?;
     std::fs::create_dir_all(&opts.out)?;
+    let mut plugins = Vec::new();
+    for arg in &opts.plugins {
+        let source = crate::plugin_cli::source_arg(arg)?;
+        let p = ot_plugin::load(&source, &ot_plugin::Grants::default())
+            .with_context(|| format!("plugin {arg}"))?;
+        plugins
+            .push(json!({"name": p.manifest().name, "version": p.manifest().version, "from": arg}));
+        ot_source::plugin::install(p).map_err(anyhow::Error::msg)?;
+    }
 
     // Sources, their pipelines and their frames, in one timeline.
     let mut specs = Vec::new();
@@ -274,7 +285,7 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
     .await;
     let _ = e.redis.purge_namespace().await;
     let _ = std::fs::remove_dir_all(&tmp);
-    let (frames, observations, timing) = result?;
+    let (frames, observations, timing, errors) = result?;
 
     let mut associations = writer(&opts.out, "associations.jsonl")?;
     for (key, uid) in &e.associations {
@@ -310,6 +321,8 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
             "tracker": s.pipeline.tracker.as_ref().map(|t| serde_json::to_value(t).unwrap_or(Value::Null)),
         })).collect::<Vec<_>>(),
         "correlation": correlation_used,
+        "plugins": plugins,
+        "errors": errors.iter().map(|(s, (n, last))| (s.clone(), json!({"count": n, "last": last}))).collect::<serde_json::Map<_, _>>(),
     });
     std::fs::write(
         opts.out.join("run.json"),
@@ -325,6 +338,10 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
 }
 
 const REAP_EVERY_SECS: i64 = 10;
+
+fn specs_id(p: &Pipeline) -> String {
+    p.source_id().to_owned()
+}
 
 /// Wall time spent in each part of a run.
 #[derive(Default)]
@@ -343,7 +360,7 @@ async fn replay(
     first: DateTime<Utc>,
     last: DateTime<Utc>,
     out: &Path,
-) -> anyhow::Result<(usize, usize, Timing)> {
+) -> anyhow::Result<(usize, usize, Timing, BTreeMap<String, (u64, String)>)> {
     let registry = BTreeMap::new();
     let mut w = Writers {
         tracks: writer(out, "tracks.jsonl")?,
@@ -357,6 +374,7 @@ async fn replay(
     let (mut now, mut next_sample, mut next_reap) = (first, first, first);
     let (mut i, mut observations) = (0, 0);
     let mut timing = Timing::default();
+    let mut errors: BTreeMap<String, (u64, String)> = BTreeMap::new();
     while now <= last + tail {
         now += step;
         let clock = Instant::now();
@@ -367,6 +385,11 @@ async fn replay(
             frame.received_at = *t;
             let p = pipelines.get_mut(src).expect("pipeline");
             let out = p.process(&frame, &registry);
+            if let Some(e) = &out.last_error {
+                let entry = errors.entry(specs_id(p)).or_insert((0, String::new()));
+                entry.0 += 1;
+                entry.1.clone_from(e);
+            }
             for o in &out.plots {
                 writeln!(
                     w.plots,
@@ -382,7 +405,13 @@ async fn replay(
         }
         let end = now > last;
         for p in pipelines.values_mut() {
-            batch.extend(p.flush(now, end).observations);
+            let out = p.flush(now, end);
+            if let Some(e) = &out.last_error {
+                let entry = errors.entry(specs_id(p)).or_insert((0, String::new()));
+                entry.0 += 1;
+                entry.1.clone_from(e);
+            }
+            batch.extend(out.observations);
         }
         for o in &batch {
             writeln!(
@@ -427,7 +456,10 @@ async fn replay(
     w.tracks.flush()?;
     w.source_tracks.flush()?;
     w.plots.flush()?;
-    Ok((timeline.len(), observations, timing))
+    for (source, (n, last)) in &errors {
+        eprintln!("{source}: {n} errors; the last: {last}");
+    }
+    Ok((timeline.len(), observations, timing, errors))
 }
 
 fn sample_tracks(e: &Engine, t: DateTime<Utc>, w: &mut impl Write) -> anyhow::Result<()> {

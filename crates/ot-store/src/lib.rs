@@ -11,6 +11,7 @@ pub mod correlation;
 pub mod graph;
 pub mod groups;
 pub mod keys;
+pub mod plugins;
 pub mod probe;
 pub mod redis_store;
 pub mod registry;
@@ -22,6 +23,7 @@ pub use correlation::{DecisionRow, Suggestion};
 pub use graph::{EdgeKind, NodeKind};
 pub use groups::{Group, GroupSpec};
 pub use keys::Keys;
+pub use plugins::{PluginRow, PluginWrite};
 pub use redis_store::{GroupBacklog, OutboxEntry, OutboxOp, RedisStore};
 pub use registry::{
     AttrType, Attribute, Entity, EntityRevision, Publish, RegistryIdentifier, RegistryRow,
