@@ -221,6 +221,9 @@ struct Attributes {
     pins: HashMap<String, Pin>,
     /// Entity id → a track manager's publish override: always (true) or never.
     publish: HashMap<String, bool>,
+    /// Every active identifier → its entity, to re-apply sources' entity
+    /// links when an entity is saved.
+    lookup: BTreeMap<(String, String), ot_source::registry::RegistryEntry>,
 }
 
 /// An entity pinned to one system track: a track manager's designation of a
@@ -426,6 +429,8 @@ pub struct Engine {
     /// Source id → reports a new track needs from it to be confirmed (unset:
     /// the engine's default).
     confirm: HashMap<String, u64>,
+    /// Source id → its pipeline's entity stage, to re-apply entity links.
+    stages: HashMap<String, ot_source::registry::RegistryStage>,
     /// Correlation settings from the command line, used until saved ones exist.
     default_correlation: CorrelationSettings,
     /// Version of the saved settings and "do not pair" decisions loaded.
@@ -519,6 +524,7 @@ impl Engine {
             detection_sources: HashSet::new(),
             alone: HashMap::new(),
             confirm: HashMap::new(),
+            stages: HashMap::new(),
             default_correlation,
             correlation_version: String::new(),
             do_not_pair: HashSet::new(),
@@ -596,7 +602,14 @@ impl Engine {
 
     async fn refresh_sources(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        type Row = (String, i64, bool, bool, Option<u64>);
+        type Row = (
+            String,
+            i64,
+            bool,
+            bool,
+            Option<u64>,
+            ot_source::registry::RegistryStage,
+        );
         let rows: Vec<Row> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             Ok(c.open_db()?
                 .list_sources()?
@@ -614,7 +627,10 @@ impl Engine {
                             .ok();
                     let alone = spec.as_ref().is_none_or(|spec| spec.publishes_alone());
                     let confirm = spec.as_ref().and_then(|spec| spec.confirms_after());
-                    (s.id, s.priority, detections, alone, confirm)
+                    let stage = spec
+                        .and_then(|spec| spec.pipeline.registry)
+                        .unwrap_or_default();
+                    (s.id, s.priority, detections, alone, confirm, stage)
                 })
                 .collect())
         })
@@ -624,6 +640,7 @@ impl Engine {
             .iter()
             .filter_map(|r| r.4.map(|n| (r.0.clone(), n)))
             .collect();
+        self.stages = rows.iter().map(|r| (r.0.clone(), r.5.clone())).collect();
         self.alone = rows.iter().map(|r| (r.0.clone(), r.3)).collect();
         self.detection_sources = rows.iter().filter(|r| r.2).map(|r| r.0.clone()).collect();
         let mut ids: Vec<String> = rows.into_iter().map(|r| r.0).collect();
@@ -656,6 +673,20 @@ impl Engine {
                 .into_values()
                 .max_by_key(|s| s.version);
             let rows = db.registry_rows()?;
+            let lookup = rows
+                .iter()
+                .map(|r| {
+                    (
+                        (r.scheme.clone(), r.value.clone()),
+                        ot_source::registry::RegistryEntry {
+                            entity_id: r.entity_id.clone(),
+                            name: r.name.clone(),
+                            expected_name: r.expected_name.clone(),
+                            fields: r.fields.clone(),
+                        },
+                    )
+                })
+                .collect();
             let publish = rows
                 .iter()
                 .filter_map(|r| match r.fields.get("publish").and_then(Value::as_str) {
@@ -687,13 +718,21 @@ impl Engine {
                 registry,
                 pins,
                 publish,
+                lookup,
             }))
         })
         .await??;
         let Some(attrs) = loaded else {
             return Ok(());
         };
+        let registry_changed = attrs.registry != self.attrs.registry;
         self.attrs = attrs;
+        if registry_changed {
+            let n = self.reapply_entities().await?;
+            if n > 0 {
+                tracing::info!(tracks = n, "entity changes applied to live tracks");
+            }
+        }
         let mut changed = Vec::new();
         for track in self.tracks.values_mut() {
             if resolve(&self.attrs, track) {
@@ -1698,6 +1737,66 @@ impl Engine {
             op if manage::OPS.contains(&op) => self.manage(op, cmd, &actor).await,
             other => anyhow::bail!("unknown command {other:?}"),
         }
+    }
+
+    /// An entity was saved: re-apply each source's entity links to the
+    /// latest report of every source track that resolved to an entity, with
+    /// what its feed reported put back first, and republish the tracks that
+    /// change. An edit shows at once, not at the object's next report.
+    async fn reapply_entities(&mut self) -> anyhow::Result<usize> {
+        // After a restart the latest reports are loaded on demand.
+        let with_entity: Vec<Uid> = self
+            .tracks
+            .values()
+            .filter(|t| t.entity_id.is_some())
+            .map(|t| t.uid)
+            .collect();
+        for uid in with_entity {
+            self.load_missing(uid).await?;
+        }
+        let keys: Vec<String> = self
+            .latest
+            .iter()
+            .filter(|(k, o)| !k.contains('@') && o.ext.contains_key("registry"))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut touched = HashSet::new();
+        for key in keys {
+            let o = &self.latest[&key];
+            let stage = self.stages.get(&o.source_id).cloned().unwrap_or_default();
+            let mut v = serde_json::to_value(o)?;
+            let overrides = v
+                .pointer("/ext/registry/overrides")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for ov in overrides {
+                if let (Some(field), Some(reported)) = (ov["field"].as_str(), ov.get("reported"))
+                    && let Ok(path) = field.parse::<ot_source::path::Path>()
+                {
+                    path.set(&mut v, reported.clone());
+                }
+            }
+            if let Some(ext) = v.get_mut("ext").and_then(Value::as_object_mut) {
+                ext.remove("registry");
+            }
+            stage.run(&mut v, &self.attrs.lookup);
+            let Ok(new) = serde_json::from_value::<Observation>(v) else {
+                continue;
+            };
+            if new == *o {
+                continue;
+            }
+            if let Some(uid) = self.reports.get(&key).copied() {
+                touched.insert(uid);
+            }
+            self.latest.insert(key, new);
+        }
+        let n = touched.len();
+        for uid in touched {
+            self.republish(uid).await?;
+        }
+        Ok(n)
     }
 
     /// Reports a track needs to be confirmed: the fewest any of its sources
@@ -2909,6 +3008,56 @@ mod tests {
         feed(&mut e, &[report("radar", "r", 5, 33.0, -117.0, None)]).await;
         assert_eq!(e.tracks[&r].state, TrackState::Tentative);
         assert!(e.tracks[&r].is_published());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_saved_entity_reaches_its_tracks_without_a_new_report() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let stage: ot_source::registry::RegistryStage =
+            serde_json::from_value(json!({"apply_grades": ["exact", "stale"]})).unwrap();
+        e.stages.insert("ais".into(), stage);
+        let entry = |name: &str| ot_source::registry::RegistryEntry {
+            entity_id: "ent-omaha".into(),
+            name: Some(name.into()),
+            expected_name: None,
+            fields: serde_json::from_value(json!({"class_name": "INDEPENDENCE"})).unwrap(),
+        };
+        e.attrs.lookup = [(("mmsi".to_string(), "1".to_string()), entry("USS OMAHA"))].into();
+        let mut r = named(
+            report("ais", "1", 0, 32.0, -117.0, Some("1")),
+            "US GOV VESSEL",
+        );
+        r.ext.insert(
+            "registry".into(),
+            json!({"entity_id": "ent-omaha", "corroborated": true, "applied": true, "grade": "stale"}),
+        );
+        feed(&mut e, &[r]).await;
+        let t = track_of(&e, "ais", "1");
+        assert_eq!(e.tracks[&t].view.name.as_deref(), Some("US GOV VESSEL"));
+
+        // The entity is saved: its name reaches the track at once.
+        assert_eq!(e.reapply_entities().await.unwrap(), 1);
+        let v = &e.tracks[&t].view;
+        assert_eq!(v.name.as_deref(), Some("USS OMAHA"));
+        assert_eq!(v.platform.class.as_deref(), Some("INDEPENDENCE"));
+        // Renamed again: the feed's own name is put back before re-applying,
+        // so the recorded difference is still against what the feed reported.
+        e.attrs.lookup = [(
+            ("mmsi".to_string(), "1".to_string()),
+            entry("OMAHA (LCS-12)"),
+        )]
+        .into();
+        e.reapply_entities().await.unwrap();
+        let v = &e.tracks[&t].view;
+        assert_eq!(v.name.as_deref(), Some("OMAHA (LCS-12)"));
+        assert_eq!(
+            v.ext["registry"]["overrides"][0]["reported"],
+            "US GOV VESSEL"
+        );
         e.redis.purge_namespace().await.unwrap();
     }
 
