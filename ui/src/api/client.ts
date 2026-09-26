@@ -202,6 +202,35 @@ export interface DecisionRow {
   op: string
   reason: string | null
   evidence: Record<string, unknown> | null
+  /** The decision that undid this one. */
+  undone_by?: number
+  /** The decision this `undo` undid. */
+  undoes?: number
+}
+
+/** Track management decisions an undo can reverse (ot_store::undo::UNDOABLE). */
+export const UNDOABLE_OPS = [
+  'pair_tracks',
+  'unpair_tracks',
+  'delete_track',
+  'merge',
+  'split',
+  'do_not_pair',
+  'create_group',
+  'update_group',
+  'group_members',
+  'dissolve_group',
+] as const
+
+/** A system track's position at one time, as published. */
+export interface HistoryPoint {
+  /** Observed at (Unix ms). */
+  t: number
+  lat: number
+  lon: number
+  alt?: number
+  course?: number
+  speed?: number
 }
 
 /** A row of the live tracks list: GOLD fields as published plus what the table shows. */
@@ -348,6 +377,10 @@ export interface AppSettings {
   site_name: string
   banner: Banner
   warning: WarningBanner
+  /** Hours of position history kept per track (0: none; unset: 12). */
+  history_hours?: number | null
+  /** At most one history point per track this often, in seconds (0: every update; unset: 10). */
+  history_interval_secs?: number | null
 }
 
 // --- Sign-in ---------------------------------------------------------------------------------
@@ -771,6 +804,11 @@ export const api = {
   suggestions: (status = 'open') => get<{ suggestions: Suggestion[] }>(`/correlation/suggestions?status=${enc(status)}`),
   decideSuggestion: (id: number, decision: 'accept' | 'reject') =>
     request<Record<string, unknown>>('POST', `/correlation/suggestions/${id}/${decision}`),
+  decisions: (ops: readonly string[], limit = 200) => get<{ decisions: DecisionRow[] }>(`/decisions?op=${enc(ops.join(','))}&limit=${limit}`).then((r) => r.decisions),
+  undoDecision: (id: number, reason?: string) => request<Record<string, unknown>>('POST', `/decisions/${id}/undo`, reason ? { reason } : {}),
+  trackHistory: (uid: string, limit = 5000) => get<{ track_id: string; points: HistoryPoint[] }>(`/tracks/${enc(uid)}/history?limit=${limit}`),
+  deleteHistoryPoint: (uid: string, t: number, reason?: string) =>
+    request<{ decision: number; deleted: HistoryPoint; stepped_back: boolean }>('POST', `/history/${enc(uid)}/delete`, { t, ...(reason ? { reason } : {}) }),
   correlationDecisions: (limit = 100) => get<{ decisions: DecisionRow[] }>(`/correlation/decisions?limit=${limit}`),
   splitTrack: (uid: string, sourceTrack: string) =>
     request<{ new_track: string }>('POST', `/tracks/${enc(uid)}/split`, { source_track: sourceTrack }),

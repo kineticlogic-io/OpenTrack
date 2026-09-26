@@ -64,6 +64,11 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const w = draft.warning ?? { enabled: false, text: '' }
   const setW = (patch: Partial<AppSettings['warning']>) => setDraft({ ...draft, warning: { ...w, ...patch } })
   const dirty = JSON.stringify(draft) !== JSON.stringify(loaded.settings)
+  const hours = draft.history_hours ?? 12
+  const interval = draft.history_interval_secs ?? 10
+  const perThousand = interval > 0 ? (1000 * hours * 3600 * 130) / interval : null
+  const historyEstimate =
+    perThousand == null || hours <= 0 ? null : perThousand >= 1e9 ? `${(perThousand / 1e9).toFixed(1)} GB` : `${Math.round(perThousand / 1e6)} MB`
 
   const save = async () => {
     setSaving(true)
@@ -111,6 +116,40 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
                 {loaded.site_code}
               </Badge>
               <InfoTip label="Site code">{SITE_CODE_INFO}</InfoTip>
+            </div>
+          </Row>
+          <Row label="Position history">
+            <div className="num-row">
+              <Input
+                style={{ ...INPUT, width: 90 }}
+                type="number"
+                min={0}
+                max={720}
+                step="any"
+                aria-label="History hours"
+                placeholder="12"
+                value={draft.history_hours ?? ''}
+                onChange={(e) => setDraft({ ...draft, history_hours: e.target.value === '' ? null : Number(e.target.value) })}
+              />
+              <span className="muted">hours, a point every</span>
+              <Input
+                style={{ ...INPUT, width: 90 }}
+                type="number"
+                min={0}
+                max={3600}
+                step="any"
+                aria-label="History interval seconds"
+                placeholder="10"
+                value={draft.history_interval_secs ?? ''}
+                onChange={(e) => setDraft({ ...draft, history_interval_secs: e.target.value === '' ? null : Number(e.target.value) })}
+              />
+              <span className="muted">s</span>
+              <InfoTip label="Position history">
+                How long each track&apos;s positions are kept (0: none, at most 720; empty: 12 h), and at most one point per track this often (0: every
+                update, at most 3600; empty: 10 s). Memory in Redis is about 130 bytes a point; points per track = hours × 3600 ÷ interval. For example
+                2,000 tracks for 12 h every 10 s take about 1.1 GB; 16,000 tracks about 9 GB.
+              </InfoTip>
+              {historyEstimate && <span className="muted">≈ {historyEstimate} per 1,000 tracks</span>}
             </div>
           </Row>
         </div>
