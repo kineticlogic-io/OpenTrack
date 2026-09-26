@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (alpha), 2026-09-26
 
 ### Tracker profiles
 

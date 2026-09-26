@@ -7,7 +7,7 @@ correlator**, lets a track manager curate that picture (**track management**: de
 group and delete tracks), and publishes it to NATS JetStream in an OTH-GOLD-style message for
 OpenStare and any other consumer.
 
-Version **0.2.0 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
+Version **0.2.1 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
 interface (`opentrack:plugin@0.1.0`) and the database schema may still change. Back up
 `data/opentrack.db` before upgrading; migrations run on start. What changed: [CHANGELOG.md](CHANGELOG.md).
 
