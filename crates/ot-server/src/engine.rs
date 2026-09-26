@@ -46,6 +46,7 @@ use serde_json::{Map, Value, json};
 use crate::config::Common;
 
 pub(crate) mod bench;
+mod history;
 mod manage;
 mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
@@ -490,6 +491,12 @@ pub struct Engine {
     defer: bool,
     deferred_saves: HashMap<Uid, Saved>,
     deferred_sources: HashMap<String, Observation>,
+    /// How long each track's position history is kept (Settings; None: none).
+    history_keep: Option<Duration>,
+    /// At most one history point per track this often (ms), and when each
+    /// track's last one was.
+    history_every_ms: i64,
+    history_last: HashMap<Uid, i64>,
     /// How long a read waits for observations when none are queued (zero:
     /// not at all; Redis checks block timeouts only every 100 ms or so).
     pub(crate) read_block: Duration,
@@ -580,6 +587,11 @@ impl Engine {
             defer: false,
             deferred_saves: HashMap::new(),
             deferred_sources: HashMap::new(),
+            history_keep: Some(Duration::from_secs_f64(
+                crate::settings_api::DEFAULT_HISTORY_HOURS * 3600.0,
+            )),
+            history_every_ms: (crate::settings_api::DEFAULT_HISTORY_INTERVAL_SECS * 1000.0) as i64,
+            history_last: HashMap::new(),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -694,6 +706,15 @@ impl Engine {
     /// Reload the output schema when a new version is published, and
     /// republish every live track whose attributes change as a result.
     pub(crate) async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
+        let c = self.common.clone();
+        let (hours, every) = tokio::task::spawn_blocking(move || -> anyhow::Result<(f64, f64)> {
+            Ok(crate::settings_api::history_retention(
+                &c.open_db()?.app_settings()?,
+            ))
+        })
+        .await??;
+        self.history_keep = (hours > 0.0).then(|| Duration::from_secs_f64(hours * 3600.0));
+        self.history_every_ms = (every * 1000.0) as i64;
         let c = self.common.clone();
         let known = (
             self.attrs.version,
@@ -1873,6 +1894,16 @@ impl Engine {
                 self.operator_do_not_pair(a, b, &actor, reason).await?;
                 Ok(json!({}))
             }
+            "delete_history_point" => {
+                let track = uid("track")?;
+                let t = cmd["t"]
+                    .as_i64()
+                    .ok_or_else(|| anyhow::anyhow!("t (Unix ms) is required"))?;
+                let reason = cmd["reason"]
+                    .as_str()
+                    .unwrap_or("a bad position, deleted by a track manager");
+                self.delete_history_point(track, t, &actor, reason).await
+            }
             "undo" => {
                 let id = cmd["decision"]
                     .as_i64()
@@ -1996,17 +2027,37 @@ impl Engine {
             self.deferred_saves.insert(uid, merged);
             return Ok(());
         }
+        let reason = match &decision {
+            Saved::Withdraw { reason } => format!("output filter: {reason}"),
+            _ => String::new(),
+        };
+        let write = match &decision {
+            Saved::Publish { urgent } => ot_store::TrackWrite::Publish { urgent: *urgent },
+            Saved::Withdraw { .. } => ot_store::TrackWrite::Withdraw { reason: &reason },
+            Saved::Quiet => ot_store::TrackWrite::Quiet,
+        };
+        let due = self.history_due(uid);
         let t = &self.tracks[&uid];
-        match &decision {
-            Saved::Publish { urgent } => self.redis.put_system_track(t, *urgent).await?,
-            Saved::Withdraw { reason } => {
-                self.redis
-                    .withdraw_system_track(t, &format!("output filter: {reason}"))
-                    .await?;
-            }
-            Saved::Quiet => self.redis.put_system_track_quietly(t).await?,
-        }
+        self.redis
+            .write_batch(&[], Duration::ZERO, &[(t, write, due)], self.history_keep)
+            .await?;
         Ok(())
+    }
+
+    /// Whether a track's position is due a history point: its first, one
+    /// at least `history_every_ms` after the last, or one out of order.
+    fn history_due(&mut self, uid: Uid) -> bool {
+        let Some(t) = self.tracks.get(&uid) else {
+            return false;
+        };
+        let at = t.view.observed_at.timestamp_millis();
+        match self.history_last.get(&uid) {
+            Some(&last) if at >= last && at - last < self.history_every_ms => false,
+            _ => {
+                self.history_last.insert(uid, at);
+                true
+            }
+        }
     }
 
     /// Write every save and source report the batch deferred, in one round trip.
@@ -2021,7 +2072,12 @@ impl Engine {
                 _ => String::new(),
             })
             .collect();
-        let tracks: Vec<(&SystemTrack, ot_store::TrackWrite<'_>)> = decisions
+        let due: HashSet<Uid> = decisions
+            .iter()
+            .map(|(u, _)| *u)
+            .filter(|u| self.history_due(*u))
+            .collect();
+        let tracks: Vec<(&SystemTrack, ot_store::TrackWrite<'_>, bool)> = decisions
             .iter()
             .zip(&reasons)
             .filter_map(|((uid, d), reason)| {
@@ -2030,12 +2086,17 @@ impl Engine {
                     Saved::Withdraw { .. } => ot_store::TrackWrite::Withdraw { reason },
                     Saved::Quiet => ot_store::TrackWrite::Quiet,
                 };
-                self.tracks.get(uid).map(|t| (t, w))
+                self.tracks.get(uid).map(|t| (t, w, due.contains(uid)))
             })
             .collect();
         let sources: Vec<&Observation> = self.deferred_sources.values().collect();
         self.redis
-            .write_batch(&sources, Duration::from_secs(24 * 3600), &tracks)
+            .write_batch(
+                &sources,
+                Duration::from_secs(24 * 3600),
+                &tracks,
+                self.history_keep,
+            )
             .await?;
         self.deferred_sources.clear();
         Ok(())
@@ -2145,6 +2206,7 @@ impl Engine {
             None => false,
         };
         self.grid.remove(uid);
+        self.history_last.remove(&uid);
         self.candidates.retain(|(a, b), _| *a != uid && *b != uid);
         self.reports.retain(|_, u| *u != uid);
         published
@@ -4255,6 +4317,67 @@ mod tests {
         assert_eq!(a["ok"], true, "{a}");
         assert!(e.tracks[&t[0]].paired_with.is_empty());
         assert!(e.tracks[&t[2]].paired_with.is_empty());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_bad_history_point_is_deleted_and_the_track_steps_back() {
+        let Some((mut e, _dir)) = engine(&["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // Every update a point (the default keeps one per 10 s).
+        e.history_every_ms = 0;
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[report(
+                    "ais",
+                    "1",
+                    s,
+                    32.0 + 0.001 * s as f64,
+                    -117.0,
+                    Some("1"),
+                )],
+            )
+            .await;
+        }
+        // A bad fix, far off.
+        feed(&mut e, &[report("ais", "1", 3, 33.0, -117.0, Some("1"))]).await;
+        let t = track_of(&e, "ais", "1");
+        let points = e.redis.track_history(t, None, None, 100).await.unwrap();
+        assert_eq!(points.len(), 4, "{points:?}");
+        let bad = points.last().unwrap().t;
+        assert!((e.tracks[&t].view.position.latitude - 33.0).abs() < 1e-9);
+
+        let a = operator(
+            &mut e,
+            json!({"op": "delete_history_point", "track": t.doc_id(), "t": bad,
+                   "actor": "ann@x.org", "reason": "a GPS jump"}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(a["result"]["stepped_back"], true);
+        let points = e.redis.track_history(t, None, None, 100).await.unwrap();
+        assert_eq!(points.len(), 3);
+        assert!((e.tracks[&t].view.position.latitude - 32.002).abs() < 1e-9);
+        // The deletion is queued for NATS.
+        e.redis.ensure_outbox_group("w").await.unwrap();
+        let out = e
+            .redis
+            .read_outbox("w", "w1", 1000, std::time::Duration::ZERO, false)
+            .await;
+        let deleted = out
+            .map(|v| v.into_iter().any(|o| matches!(o.op, ot_store::OutboxOp::HistoryDelete { point, .. } if point.t == bad)))
+            .unwrap_or(false);
+        assert!(deleted, "a history_delete in the outbox");
+        // No point there any more.
+        let a = operator(
+            &mut e,
+            json!({"op": "delete_history_point", "track": t.doc_id(), "t": bad}),
+        )
+        .await;
+        assert_eq!(a["ok"], false, "{a}");
         e.redis.purge_namespace().await.unwrap();
     }
 }

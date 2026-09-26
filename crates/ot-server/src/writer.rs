@@ -125,6 +125,8 @@ pub struct Writer<S> {
     settings: WriterSettings,
     schedule: Schedule,
     deletes: HashMap<Uid, PendingDelete>,
+    /// Deleted history points to publish: (when, outbox entry, message).
+    history: Vec<(Instant, String, wire::HistoryDeleteMessage)>,
     /// Set after a failed publish: check the destination before the next one.
     needs_prepare: bool,
     pub tally: Tally,
@@ -135,6 +137,7 @@ impl<S: TrackSink> Writer<S> {
         Self {
             schedule: Schedule::new(settings.min_interval),
             deletes: HashMap::new(),
+            history: Vec::new(),
             needs_prepare: true,
             redis,
             sink,
@@ -215,6 +218,30 @@ impl<S: TrackSink> Writer<S> {
                     slot.1.push(entry.id);
                     slot.2 = reason.or(slot.2.take());
                 }
+                OutboxOp::HistoryDelete {
+                    uid,
+                    point,
+                    reason,
+                    decision,
+                } => {
+                    let msg = wire::HistoryDeleteMessage {
+                        schema: wire::TRACK_SCHEMA.into(),
+                        op: Op::DeleteHistoryPoint,
+                        track_id: uid.doc_id(),
+                        uid,
+                        observed_at: chrono::DateTime::from_timestamp_millis(point.t)
+                            .unwrap_or_default(),
+                        position: wire::HistoryPosition {
+                            latitude: point.lat,
+                            longitude: point.lon,
+                        },
+                        reason,
+                        decision_id: decision,
+                        deleted_at: chrono::Utc::now(),
+                        publisher: self.ctx.clone(),
+                    };
+                    self.history.push((now, entry.id, msg));
+                }
             }
         }
         self.flush().await
@@ -222,7 +249,7 @@ impl<S: TrackSink> Writer<S> {
 
     /// Messages still waiting (coalesced updates and deletes).
     pub fn waiting(&self) -> usize {
-        self.schedule.waiting() + self.deletes.len()
+        self.schedule.waiting() + self.deletes.len() + self.history.len()
     }
 
     /// Publish one message. `Ok(true)` when stored, `Ok(false)` when the
@@ -295,6 +322,39 @@ impl<S: TrackSink> Writer<S> {
                     failed += 1;
                     self.deletes
                         .insert(uid, (now + self.settings.retry_after, ids, reason));
+                }
+            }
+        }
+
+        for (at, id, body) in std::mem::take(&mut self.history) {
+            if at > now {
+                self.history.push((at, id, body));
+                continue;
+            }
+            let t = body.observed_at.timestamp_millis();
+            let mut msg = self.outgoing(
+                body.uid,
+                Op::DeleteHistoryPoint,
+                &id,
+                serde_json::to_vec(&body)?,
+            );
+            msg.subject = wire::history_subject(&self.settings.tracks_subject, body.uid, t);
+            match self.send(msg).await {
+                Ok(stored) => {
+                    if !stored {
+                        self.tally.rejected += 1;
+                        failed += 1;
+                    }
+                    self.redis
+                        .ack_outbox(GROUP, std::slice::from_ref(&id))
+                        .await?;
+                }
+                Err(e) => {
+                    tracing::warn!(%e, uid = %body.uid, "history point delete failed, will retry");
+                    self.tally.retried += 1;
+                    failed += 1;
+                    self.history
+                        .push((now + self.settings.retry_after, id, body));
                 }
             }
         }
@@ -572,6 +632,35 @@ mod tests {
             );
             assert_eq!(w.tally.written, 2);
             assert_eq!(w.tally.deleted, 1);
+            assert_eq!(w.waiting(), 0);
+
+            // A deleted history point goes out on a subject of its own.
+            let t = track(2, 33.0);
+            redis
+                .write_batch(
+                    &[],
+                    Duration::ZERO,
+                    &[(&t, ot_store::TrackWrite::Quiet, true)],
+                    Some(Duration::from_secs(3600)),
+                )
+                .await
+                .unwrap();
+            let at = t.view.observed_at.timestamp_millis();
+            let point = redis
+                .delete_history_point(uid(2), at, "a GPS jump", 42)
+                .await
+                .unwrap();
+            assert_eq!(point.map(|p| p.lat), Some(33.0));
+            w.pump(false).await.unwrap();
+            let bodies = sink.bodies();
+            let (subject, op, doc) = bodies.last().unwrap();
+            assert_eq!(subject, &format!("tracks.history.tms-OTK000000002.{at}"));
+            assert_eq!(op, "delete_history_point");
+            assert_eq!(
+                (doc["reason"].as_str(), doc["decision_id"].as_i64()),
+                (Some("a GPS jump"), Some(42))
+            );
+            assert_eq!(doc["position"]["latitude"], 33.0);
             assert_eq!(w.waiting(), 0);
 
             redis.purge_namespace().await.unwrap();

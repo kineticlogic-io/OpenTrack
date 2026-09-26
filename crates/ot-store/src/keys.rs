@@ -8,6 +8,7 @@
 //! | `<ns>:src:<source>:<key>`         | current state of a source track                |
 //! | `<ns>:sys:<uid>`                  | current state of a system track                |
 //! | `<ns>:hist:<source>:<key>`        | capped report history of a source track        |
+//! | `<ns>:thist:<uid>`                | a system track's positions (by time, retained) |
 //! | `<ns>:out`                        | stream of publish/tombstone work for the writer |
 //! | `<ns>:metrics:<source>:<minute>`  | per-source, per-minute counters                |
 //! | `<ns>:cache:*`, `<ns>:throttle:*` | static-join cache and write throttles (TTL)    |
@@ -58,6 +59,10 @@ impl Keys {
     /// The engine's answer to one command.
     pub fn command_result(&self, id: &str) -> String {
         format!("{}:cmdres:{id}", self.ns)
+    }
+
+    pub fn track_history(&self, uid: &str) -> String {
+        format!("{}:thist:{uid}", self.ns)
     }
 
     pub fn outbox(&self) -> String {

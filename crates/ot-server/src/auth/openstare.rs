@@ -68,7 +68,8 @@ async fn ask(s: &AppState, cookie: Option<&str>, bearer: Option<&str>) -> Option
         return None;
     }
     let me: Me = resp.json().await.ok()?;
-    let Some(role) = AuthSettings::map_role(&settings.role_mapping, &[me.role.clone()], None)
+    let Some(role) =
+        AuthSettings::map_role(&settings.role_mapping, std::slice::from_ref(&me.role), None)
     else {
         tracing::info!(email = %me.email, role = %me.role, "OpenStare user's role has no OpenTrack role");
         return None;

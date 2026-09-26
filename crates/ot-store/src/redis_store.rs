@@ -16,7 +16,7 @@ use crate::sqlite::{Result, StoreError};
 pub const TRIMMED: &str = "trimmed before it was read";
 
 /// Work item for the track writer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutboxOp {
     /// Publish the current state of a system track (read from `sys:<uid>`
     /// at publish time, so bursts of updates coalesce naturally). `urgent`
@@ -25,9 +25,75 @@ pub enum OutboxOp {
     Publish { uid: Uid, urgent: bool },
     /// Publish a delete for a retired (dropped, merged-away or deleted) track.
     Tombstone { uid: Uid, reason: Option<String> },
+    /// Publish that a point of a track's history was deleted.
+    HistoryDelete {
+        uid: Uid,
+        point: HistoryPoint,
+        reason: Option<String>,
+        decision: Option<i64>,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A system track's position at one time, as published.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryPoint {
+    /// Observed at (Unix ms).
+    pub t: i64,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub course: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
+
+impl HistoryPoint {
+    /// Stored compactly (`t,lat,lon,alt,course,speed`, blanks for none,
+    /// positions to 1e-6°): a point costs about half its JSON in Redis.
+    fn encode(&self) -> String {
+        let opt =
+            |v: Option<f64>, digits: usize| v.map_or(String::new(), |v| format!("{v:.digits$}"));
+        format!(
+            "{},{:.6},{:.6},{},{},{}",
+            self.t,
+            self.lat,
+            self.lon,
+            opt(self.alt, 1),
+            opt(self.course, 1),
+            opt(self.speed, 2)
+        )
+    }
+
+    fn decode(s: &str) -> Option<Self> {
+        let mut f = s.split(',');
+        let mut next = || f.next();
+        let opt = |v: Option<&str>| v.filter(|x| !x.is_empty()).and_then(|x| x.parse().ok());
+        Some(Self {
+            t: next()?.parse().ok()?,
+            lat: next()?.parse().ok()?,
+            lon: next()?.parse().ok()?,
+            alt: opt(next()),
+            course: opt(next()),
+            speed: opt(next()),
+        })
+    }
+
+    pub fn of(track: &SystemTrack) -> Self {
+        let v = &track.view;
+        Self {
+            t: v.observed_at.timestamp_millis(),
+            lat: v.position.latitude,
+            lon: v.position.longitude,
+            alt: v.position.altitude_hae_m,
+            course: v.kinematics.course_deg,
+            speed: v.kinematics.speed_mps,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutboxEntry {
     pub id: String,
     pub op: OutboxOp,
@@ -178,7 +244,8 @@ impl RedisStore {
         &self,
         sources: &[&Observation],
         source_ttl: Duration,
-        tracks: &[(&SystemTrack, TrackWrite<'_>)],
+        tracks: &[(&SystemTrack, TrackWrite<'_>, bool)],
+        history: Option<Duration>,
     ) -> Result<()> {
         if sources.is_empty() && tracks.is_empty() {
             return Ok(());
@@ -196,10 +263,17 @@ impl RedisStore {
                 .arg(source_ttl.as_secs().max(1))
                 .ignore();
         }
-        for (track, write) in tracks {
+        for (track, write, record) in tracks {
             let uid = track.uid.to_string();
             pipe.set(self.keys.system_track(&uid), serde_json::to_string(track)?)
                 .ignore();
+            if let Some(keep) = history
+                && *record
+                && !matches!(write, TrackWrite::Withdraw { .. })
+                && track.kind != ot_core::TrackKind::Group
+            {
+                self.add_history(&mut pipe, track, keep)?;
+            }
             let queued = match write {
                 TrackWrite::Quiet => None,
                 TrackWrite::Publish { urgent } => {
@@ -227,6 +301,109 @@ impl RedisStore {
         }
         pipe.query_async::<()>(&mut self.conn.clone()).await?;
         Ok(())
+    }
+
+    /// Record a track's position: one point per time (a later write at the
+    /// same time replaces it), trimmed to `keep` before this point (so a
+    /// replay of old data keeps its history too); the key expires `keep`
+    /// after the track's last write.
+    fn add_history(
+        &self,
+        pipe: &mut redis::Pipeline,
+        track: &SystemTrack,
+        keep: Duration,
+    ) -> Result<()> {
+        let key = self.keys.track_history(&track.uid.to_string());
+        let p = HistoryPoint::of(track);
+        let keep_ms = keep.as_millis().max(1) as i64;
+        pipe.cmd("ZREMRANGEBYSCORE")
+            .arg(&key)
+            .arg(p.t)
+            .arg(p.t)
+            .ignore();
+        pipe.cmd("ZADD").arg(&key).arg(p.t).arg(p.encode()).ignore();
+        pipe.cmd("ZREMRANGEBYSCORE")
+            .arg(&key)
+            .arg("-inf")
+            .arg(format!("({}", p.t - keep_ms))
+            .ignore();
+        pipe.cmd("PEXPIRE").arg(&key).arg(keep_ms).ignore();
+        Ok(())
+    }
+
+    /// A track's history between two times (Unix ms), oldest first, at
+    /// most `limit` points (the newest of them).
+    pub async fn track_history(
+        &self,
+        uid: Uid,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryPoint>> {
+        let key = self.keys.track_history(&uid.to_string());
+        let lo = since_ms.map_or("-inf".to_owned(), |t| t.to_string());
+        let hi = until_ms.map_or("+inf".to_owned(), |t| t.to_string());
+        let raw: Vec<String> = redis::cmd("ZREVRANGEBYSCORE")
+            .arg(&key)
+            .arg(&hi)
+            .arg(&lo)
+            .arg("LIMIT")
+            .arg(0)
+            .arg(limit)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        let mut out: Vec<HistoryPoint> =
+            raw.iter().filter_map(|s| HistoryPoint::decode(s)).collect();
+        out.reverse();
+        Ok(out)
+    }
+
+    /// Delete a track's history point at `t_ms` and queue its publication;
+    /// the point deleted, if there was one.
+    pub async fn delete_history_point(
+        &self,
+        uid: Uid,
+        t_ms: i64,
+        reason: &str,
+        decision: i64,
+    ) -> Result<Option<HistoryPoint>> {
+        let key = self.keys.track_history(&uid.to_string());
+        let raw: Vec<String> = redis::cmd("ZRANGEBYSCORE")
+            .arg(&key)
+            .arg(t_ms)
+            .arg(t_ms)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        let Some(point) = raw.first().and_then(|s| HistoryPoint::decode(s)) else {
+            return Ok(None);
+        };
+        redis::pipe()
+            .atomic()
+            .cmd("ZREMRANGEBYSCORE")
+            .arg(&key)
+            .arg(t_ms)
+            .arg(t_ms)
+            .ignore()
+            .cmd("XADD")
+            .arg(self.keys.outbox())
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(self.outbox_maxlen)
+            .arg("*")
+            .arg("op")
+            .arg("history_delete")
+            .arg("uid")
+            .arg(uid.to_string())
+            .arg("point")
+            .arg(serde_json::to_string(&point)?)
+            .arg("reason")
+            .arg(reason)
+            .arg("decision")
+            .arg(decision)
+            .ignore()
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(Some(point))
     }
 
     /// Queue a command for the engine.
@@ -376,6 +553,15 @@ impl RedisStore {
                                 reason: field("reason").filter(|r| !r.is_empty()),
                             }
                         }),
+                        Some("history_delete") => field("uid")
+                            .and_then(|u| u.parse().ok())
+                            .zip(field("point").and_then(|p| serde_json::from_str(&p).ok()))
+                            .map(|(uid, point)| OutboxOp::HistoryDelete {
+                                uid,
+                                point,
+                                reason: field("reason").filter(|r| !r.is_empty()),
+                                decision: field("decision").and_then(|d| d.parse().ok()),
+                            }),
                         _ => None,
                     };
                 match op {
@@ -797,5 +983,28 @@ impl RedisStore {
 impl From<redis::RedisError> for StoreError {
     fn from(e: redis::RedisError) -> Self {
         StoreError::Redis(e)
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn history_points_round_trip_compactly() {
+        let p = HistoryPoint {
+            t: 1_790_000_000_123,
+            lat: 32.712_345_678,
+            lon: -117.162_345_678,
+            alt: None,
+            course: Some(123.44),
+            speed: Some(7.2),
+        };
+        let s = p.encode();
+        assert_eq!(s, "1790000000123,32.712346,-117.162346,,123.4,7.20");
+        let back = HistoryPoint::decode(&s).unwrap();
+        assert_eq!((back.t, back.alt, back.course), (p.t, None, Some(123.4)));
+        assert!((back.lat - p.lat).abs() < 1e-6);
+        assert!(HistoryPoint::decode("x").is_none());
     }
 }

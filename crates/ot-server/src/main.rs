@@ -16,6 +16,7 @@ mod correlate;
 mod correlation_api;
 mod decisions_api;
 mod engine;
+mod history_api;
 mod https;
 mod manage_api;
 mod metrics;

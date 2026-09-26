@@ -60,6 +60,8 @@ pub struct PublishContext {
 pub enum Op {
     Upsert,
     Delete,
+    /// A track manager deleted a point of the track's history.
+    DeleteHistoryPoint,
 }
 
 impl Op {
@@ -67,6 +69,7 @@ impl Op {
         match self {
             Op::Upsert => "upsert",
             Op::Delete => "delete",
+            Op::DeleteHistoryPoint => "delete_history_point",
         }
     }
 }
@@ -74,6 +77,40 @@ impl Op {
 /// The subject a track is published on.
 pub fn subject(prefix: &str, uid: Uid) -> String {
     format!("{prefix}.{}", uid.doc_id())
+}
+
+/// The subject a deleted history point is published on: one per point, so
+/// the stream keeps every deletion (until it ages out), never in place of
+/// the track's own latest message.
+pub fn history_subject(prefix: &str, uid: Uid, t_ms: i64) -> String {
+    format!("{prefix}.history.{}.{t_ms}", uid.doc_id())
+}
+
+/// A deleted history point: consumers drop the track's point at
+/// `observed_at` from what they show of its history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryDeleteMessage {
+    pub schema: String,
+    pub op: Op,
+    pub track_id: String,
+    pub uid: Uid,
+    /// The point's time, the key consumers match it by.
+    pub observed_at: DateTime<Utc>,
+    /// Where the track was said to be then.
+    pub position: HistoryPosition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The decision that deleted it (OpenTrack's decision log).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<i64>,
+    pub deleted_at: DateTime<Utc>,
+    pub publisher: PublishContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryPosition {
+    pub latitude: f64,
+    pub longitude: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

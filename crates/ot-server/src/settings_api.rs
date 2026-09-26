@@ -33,6 +33,29 @@ pub struct AppSettings {
     pub site_name: String,
     pub banner: BannerSettings,
     pub warning: WarningSettings,
+    /// How long each system track's position history is kept, in hours
+    /// (0: none). A track manager can delete a point of it.
+    pub history_hours: Option<f64>,
+    /// At most one history point per track this often, in seconds (0:
+    /// every update). Memory grows with tracks × hours ÷ this.
+    pub history_interval_secs: Option<f64>,
+}
+
+/// History kept when the settings give no figure.
+pub const DEFAULT_HISTORY_HOURS: f64 = 12.0;
+pub const DEFAULT_HISTORY_INTERVAL_SECS: f64 = 10.0;
+
+/// The history retention (hours) and point interval (seconds) the saved
+/// settings ask for.
+pub fn history_retention(saved: &Value) -> (f64, f64) {
+    (
+        saved["history_hours"]
+            .as_f64()
+            .unwrap_or(DEFAULT_HISTORY_HOURS),
+        saved["history_interval_secs"]
+            .as_f64()
+            .unwrap_or(DEFAULT_HISTORY_INTERVAL_SECS),
+    )
 }
 
 /// The warning users must accept after signing in, as OpenStare's warning
@@ -92,6 +115,16 @@ impl AppSettings {
         }
         if !hex_colour(&b.background) || !hex_colour(&b.color) {
             return Err("banner colours are #rrggbb".into());
+        }
+        if let Some(h) = self.history_hours
+            && !(0.0..=720.0).contains(&h)
+        {
+            return Err("history_hours: 0 (none) to 720".into());
+        }
+        if let Some(s) = self.history_interval_secs
+            && !(0.0..=3600.0).contains(&s)
+        {
+            return Err("history_interval_secs: 0 (every update) to 3600".into());
         }
         let w = &self.warning;
         if w.enabled && w.text.trim().is_empty() {

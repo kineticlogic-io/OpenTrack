@@ -60,6 +60,7 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .merge(crate::metrics::routes())
         .merge(crate::auth::api::routes())
         .merge(crate::decisions_api::routes())
+        .merge(crate::history_api::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::layer,
@@ -173,7 +174,7 @@ async fn explain(
 }
 
 /// Accepts a bare UID or a `tms-<UID>` track id.
-fn parse_uid(raw: &str) -> Result<Uid, ApiError> {
+pub(crate) fn parse_uid(raw: &str) -> Result<Uid, ApiError> {
     Uid::from_doc_id(raw)
         .or_else(|_| raw.parse())
         .map_err(|e| ApiError::bad_request(e.to_string()))

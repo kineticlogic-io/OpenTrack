@@ -704,10 +704,14 @@ mod tests {
         ui: Option<std::path::PathBuf>,
     ) -> Option<(axum::Router, ot_store::RedisStore)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
+        // Unique per test: two starting in the same microsecond must not
+        // share (and purge) a namespace.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let ns = format!(
-            "ot-api-test-{}-{}",
+            "ot-api-test-{}-{}-{}",
             std::process::id(),
-            chrono::Utc::now().timestamp_micros()
+            chrono::Utc::now().timestamp_micros(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let common = Common {
             sqlite: ":memory:".into(),
