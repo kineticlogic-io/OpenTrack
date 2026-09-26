@@ -8,6 +8,7 @@ import { errorMessage } from '../../lib/format'
 import { ECHELONS, MEMBERS_BASE, NAVAL_BASES, groupSidc, sharedDomain } from '../../lib/groupSymbol'
 import { drawableSidc, symbolUrl } from '../../lib/symbol'
 import { INPUT } from '../../lib/valueSpec'
+import { useCan } from '../../auth/context'
 
 const BASES = [{ id: MEMBERS_BASE, name: "Members' own symbol" }, ...NAVAL_BASES]
 const NONE = 'none'
@@ -40,6 +41,7 @@ export function GroupEditor({
   onClose: () => void
   onSaved: (groupId: string | null) => void
 }) {
+  const canManage = useCan('track_manager')
   const { toast, confirm } = useToast()
   const [group, setGroup] = useState<TrackGroup | null>(null)
   const [spec, setSpec] = useState<GroupSpec | null>(null)
@@ -179,8 +181,8 @@ export function GroupEditor({
       }
       actions={
         <>
-          {groupId && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label="Dissolve group" title="Dissolve group" onClick={dissolve} />}
-          <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
+          {groupId && canManage && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label="Dissolve group" title="Dissolve group" onClick={dissolve} />}
+          {canManage && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
         </>
       }
     >

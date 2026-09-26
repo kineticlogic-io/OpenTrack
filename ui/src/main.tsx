@@ -10,7 +10,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import 'staresdk/styles.css'
 import { ThemeProvider, ToastProvider } from 'staresdk'
 import './index.css'
-import App from './App.tsx'
+import { AuthProvider } from './auth/AuthProvider'
+import { Root } from './auth/Root'
 
 // After a deploy, a page loaded earlier asks for code chunks the server no longer has. Reload once
 // to pick up the new build (the guard stops a loop if loading keeps failing for another reason).
@@ -35,7 +36,9 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider>
       <ToastProvider>
-        <App />
+        <AuthProvider>
+          <Root />
+        </AuthProvider>
       </ToastProvider>
     </ThemeProvider>
   </StrictMode>,

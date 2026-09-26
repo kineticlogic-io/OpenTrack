@@ -4,6 +4,7 @@ import { Badge, Button, DataTable, TabPanel, Tabs, useToast, type DataTableColum
 import { api, type ExtensionField, type GraphEdge, type SystemTrack, type TrackResponse } from '../../api/client'
 import { ago, errorMessage, fmtNum, fmtTime, show, STATE_COLOR } from '../../lib/format'
 import { standardName, symbolUrl } from '../../lib/symbol'
+import { useCan } from '../../auth/context'
 
 // React Flow loads only when the Provenance tab is open.
 const LineageGraph = lazy(() => import('./LineageGraph'))
@@ -59,6 +60,7 @@ function origin(f: ExtensionField, replaced: boolean): string {
  */
 export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; onEdit?: () => void; editLabel?: string }) {
   const [tab, setTab] = useState('card')
+  const canManage = useCan('track_manager')
   const [data, setData] = useState<TrackResponse | null>(null)
   const [missing, setMissing] = useState<string | null>(null)
   const [edges, setEdges] = useState<GraphEdge[] | null>(null)
@@ -179,7 +181,7 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
       align: 'right',
       render: (c) =>
         own.length > 1 && c.source_track_key !== DETECTIONS ? (
-          <Button size="sm" variant="ghost" icon={<TbArrowsSplit />} disabled={splitting !== null} onClick={() => split(c)} title="Split it off this track">
+          <Button size="sm" variant="ghost" icon={<TbArrowsSplit />} disabled={!canManage || splitting !== null} onClick={() => split(c)} title="Split it off this track">
             Split
           </Button>
         ) : null,
@@ -214,7 +216,7 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
         <Badge color={STATE_COLOR[t.state] ?? 'grey'} size="sm" uppercase>
           {t.state}
         </Badge>
-        {onEdit && (
+        {onEdit && canManage && (
           <Button size="sm" variant="secondary" icon={<TbPencil />} onClick={onEdit}>
             {editLabel}
           </Button>
@@ -277,6 +279,7 @@ export function TrackCard({ uid, onEdit, editLabel = 'Edit' }: { uid: string; on
                           variant="ghost"
                           icon={<TbUnlink />}
                           aria-label={`Unpair tms-${p}`}
+                          disabled={!canManage}
                           title="Unpair"
                           onClick={async () => {
                             try {

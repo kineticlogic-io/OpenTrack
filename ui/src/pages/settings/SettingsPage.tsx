@@ -4,6 +4,9 @@ import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useT
 import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { PluginsPanel } from './PluginsPanel'
+import { SecurityPanel } from './SecurityPanel'
+import { UsersPanel } from './UsersPanel'
+import { useCan } from '../../auth/context'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
@@ -33,7 +36,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   )
 }
 
-/** Instance settings: site name, classification banner, plugins, data export, purge. */
+/** Instance settings: site name, banners, plugins, users and security (admins), data export, purge. */
 export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const { toast, confirm } = useToast()
   const [loaded, setLoaded] = useState<AppSettingsResponse | null>(null)
@@ -43,6 +46,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const [purging, setPurging] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const admin = useCan('admin')
 
   useEffect(() => {
     api.appSettings().then(
@@ -57,6 +61,8 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   if (!draft || !loaded) return <span className="muted">LOADING…</span>
   const b = draft.banner
   const setB = (patch: Partial<AppSettings['banner']>) => setDraft({ ...draft, banner: { ...b, ...patch } })
+  const w = draft.warning ?? { enabled: false, text: '' }
+  const setW = (patch: Partial<AppSettings['warning']>) => setDraft({ ...draft, warning: { ...w, ...patch } })
   const dirty = JSON.stringify(draft) !== JSON.stringify(loaded.settings)
 
   const save = async () => {
@@ -95,7 +101,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
   return (
     <div className="stack">
-      <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
+      <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
         <div className="panel-body">
           <Row label="Site name">
             <div className="num-row">
@@ -111,7 +117,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
       </CollapsiblePanel>
 
       {/* As OpenStare's Banner settings: this instance's own marking, whatever OpenStare shows. */}
-      <CollapsiblePanel title="Classification banner" persistKey="ot.panel.settings.banner" actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
+      <CollapsiblePanel title="Banners" persistKey="ot.panel.settings.banner" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
         <div className="panel-body banner-settings">
           <div className="banner-toggle">
             <div className="field-caps">
@@ -162,8 +168,33 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               {b.text || 'UNCLASSIFIED'}
             </div>
           </div>
+          <div className="banner-toggle">
+            <div className="field-caps">
+              Warning banner
+              <InfoTip label="Warning banner">
+                A notice users must accept after signing in, such as consent to monitoring. Declining signs them out. Asked once per browser session.
+              </InfoTip>
+            </div>
+            <Toggle value={w.enabled} onChange={(enabled) => setW({ enabled })} aria-label="Warning Banner" />
+          </div>
+          <div>
+            <div className="field-caps">Warning text</div>
+            <textarea
+              className="plain-textarea"
+              style={{ maxWidth: 'none', fontFamily: 'var(--font-sans)' }}
+              aria-label="Warning text"
+              rows={8}
+              maxLength={20000}
+              value={w.text}
+              onChange={(e) => setW({ text: e.target.value })}
+              placeholder="e.g. You are accessing a U.S. Government information system…"
+            />
+          </div>
         </div>
       </CollapsiblePanel>
+
+      {admin && <UsersPanel />}
+      {admin && <SecurityPanel />}
 
       <PluginsPanel />
 
@@ -179,8 +210,8 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               </Button>
             </div>
           </Row>
-          <Row label="Configuration" hint="Sources, output schema versions, correlation and instance settings, as one JSON file for backup.">
-            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
+          <Row label="Configuration" hint="Sources, output schema versions, correlation and instance settings, as one JSON file for backup. Admins only.">
+            <Button size="sm" variant="ghost" disabled={!admin} icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
               Configuration
             </Button>
           </Row>
@@ -208,7 +239,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
           <Row label="Confirm" hint={`Type the site code, ${loaded.site_code}.`}>
             <div className="num-row">
               <Input style={{ ...INPUT, width: 120 }} aria-label="Site code to confirm" value={purgeConfirm} onChange={(e) => setPurgeConfirm(e.target.value)} spellCheck={false} />
-              <Button size="sm" variant="danger" icon={<TbTrash />} disabled={purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
+              <Button size="sm" variant="danger" icon={<TbTrash />} disabled={!admin || purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
                 Purge tracks
               </Button>
             </div>

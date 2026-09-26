@@ -338,9 +338,94 @@ export interface Banner {
   color: string
 }
 
+/** The warning users accept after signing in (declining signs them out). */
+export interface WarningBanner {
+  enabled: boolean
+  text: string
+}
+
 export interface AppSettings {
   site_name: string
   banner: Banner
+  warning: WarningBanner
+}
+
+// --- Sign-in ---------------------------------------------------------------------------------
+
+export const ROLES = ['viewer', 'track_manager', 'admin'] as const
+export type Role = (typeof ROLES)[number]
+
+/** The signed-in account. */
+export interface Me {
+  id: string
+  email: string
+  name: string
+  role: Role
+  via: 'session' | 'api_token' | 'client_cert' | 'openstare' | 'disabled'
+  can_change_password: boolean
+}
+
+/** What the sign-in page offers. */
+export interface AuthPublic {
+  /** False when sign-in is turned off (OT_AUTH=off). */
+  auth: boolean
+  password_login: boolean
+  saml: { enabled: boolean; label: string }
+  openstare: { enabled: boolean; login_url: string }
+}
+
+export interface Account {
+  id: string
+  email: string
+  name: string
+  role: Role
+  active: boolean
+  /** `local`, or `saml` when made at its first single sign-on. */
+  origin: string
+  has_password: boolean
+  created_at_ms: number
+  updated_at_ms: number
+  last_login_at_ms: number | null
+}
+
+export interface ApiTokenRow {
+  jti: string
+  name: string
+  user_id: string
+  user_email: string
+  created_by: string
+  created_at_ms: number
+  expires_at_ms: number
+  revoked_at_ms: number | null
+}
+
+export interface RoleMap {
+  value: string
+  role: Role
+}
+
+export interface AuthSettings {
+  session_hours?: number | null
+  disable_password_login: boolean
+  saml: {
+    enabled: boolean
+    idp_metadata_xml: string
+    idp_entity_id: string
+    sso_url: string
+    signing_cert: string
+    role_attribute: string
+    role_mapping: RoleMap[]
+    default_role: Role | null
+    allow_admin: boolean
+    button_label: string
+  }
+  openstare: { enabled: boolean; api_url: string; login_url: string; role_mapping: RoleMap[] }
+  client_certs: { common_name: string; user: string }[]
+}
+
+/** Auth settings as read: with what this build and deployment fix. */
+export interface AuthSettingsResponse extends AuthSettings {
+  build: { saml: boolean; public_url: string | null }
 }
 
 export interface AppSettingsResponse {
@@ -757,6 +842,28 @@ export const api = {
   appSettings: () => get<AppSettingsResponse>('/settings'),
   saveAppSettings: (settings: AppSettings) => request<AppSettingsResponse>('PUT', '/settings', settings),
   banner: () => get<Banner>('/public/banner'),
+  warningBanner: () => get<WarningBanner>('/public/warning-banner'),
+
+  authPublic: () => get<AuthPublic>('/auth/public'),
+  me: () => get<Me>('/auth/me'),
+  login: (email: string, password: string) => request<Me>('POST', '/auth/login', { email, password }),
+  logout: () => request<unknown>('POST', '/auth/logout'),
+  changePassword: (current: string, next: string) => request<Me>('POST', '/auth/password', { current, new: next }),
+  users: () => get<{ users: Account[] }>('/auth/users').then((r) => r.users),
+  createUser: (u: { email: string; name: string; role: Role; password?: string }) => request<Account>('POST', '/auth/users', u),
+  updateUser: (id: string, change: { name?: string; role?: Role; active?: boolean }) => request<Account>('PUT', `/auth/users/${enc(id)}`, change),
+  deleteUser: (id: string) => request<unknown>('DELETE', `/auth/users/${enc(id)}`),
+  /** Set a new password, or with `null` remove it (single sign-on only). */
+  resetPassword: (id: string, password: string | null) => request<unknown>('POST', `/auth/users/${enc(id)}/password`, { password }),
+  revokeSessions: (id: string) => request<unknown>('POST', `/auth/users/${enc(id)}/revoke`),
+  apiTokens: () => get<{ tokens: ApiTokenRow[] }>('/auth/api-tokens').then((r) => r.tokens),
+  createApiToken: (t: { name: string; user_id?: string; days?: number }) =>
+    request<{ token: string; jti: string; name: string; user: string; expires_at_ms: number }>('POST', '/auth/api-tokens', t),
+  revokeApiToken: (jti: string) => request<unknown>('DELETE', `/auth/api-tokens/${enc(jti)}`),
+  authSettings: () => get<AuthSettingsResponse>('/auth/settings'),
+  saveAuthSettings: (s: AuthSettings) => request<AuthSettingsResponse>('PUT', '/auth/settings', s),
+  parseSamlMetadata: (xml: string) =>
+    request<{ idp_metadata_xml: string; idp_entity_id: string; sso_url: string; signing_cert: string }>('POST', '/auth/saml/parse-metadata', { xml }),
   exportUrl: (what: 'tracks.geojson' | 'tracks.csv' | 'config') =>
     what === 'config' ? '/api/v1/export/config' : `/api/v1/export/tracks?format=${what === 'tracks.csv' ? 'csv' : 'geojson'}`,
   purge: (confirm: string, history: boolean) =>

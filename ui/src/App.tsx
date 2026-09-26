@@ -4,6 +4,7 @@ import { Badge, Button, DockProvider, PageHeader, Tabs, useTheme } from 'staresd
 import { api, type Banner, type ServerStatus } from './api/client'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
+import { UserChip } from './auth/UserChip'
 
 // Code editor and map (CodeMirror, MapLibre) load only with the pages that use them.
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
@@ -70,6 +71,8 @@ export default function App() {
           title={siteName ? `OpenTrack · ${siteName}` : 'OpenTrack'}
           appName="OpenTrack"
           actions={
+            <div className="num-row">
+            <UserChip />
             <Button
               size="xs"
               variant="ghost"
@@ -78,6 +81,7 @@ export default function App() {
               title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
               onClick={() => commitTheme(theme === 'dark' ? 'light' : 'dark')}
             />
+            </div>
           }
         >
           {status && (

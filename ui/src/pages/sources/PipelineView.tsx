@@ -6,6 +6,7 @@ import { errorMessage } from '../../lib/format'
 import { fieldMap, pipelineStages, type FieldRow } from '../../lib/pipeline'
 import { MappingStudio } from './MappingStudio'
 import { PipelineDesigner } from './designer/PipelineDesigner'
+import { useCan } from '../../auth/context'
 
 // React Flow loads only when the flowchart is shown.
 const PipelineFlow = lazy(() => import('./PipelineFlow'))
@@ -51,6 +52,7 @@ export function PipelineView({
   sourceId: string
 }) {
   const [designing, setDesigning] = useState(false)
+  const canAdmin = useCan('admin')
   const [view, setView] = useState('flow')
   const [stageId, setStageId] = useState('map')
   const [schema, setSchema] = useState<SchemaOverview | null>(null)
@@ -68,7 +70,7 @@ export function PipelineView({
       <div className="value-row">
         <Tabs aria-label="Pipeline views" idPrefix="pipe" size="sm" value={view} onChange={setView} tabs={VIEWS} />
         <span className="spacer" />
-        <Button size="sm" variant="secondary" icon={<TbPencil />} onClick={() => setDesigning(true)}>
+        <Button size="sm" variant="secondary" icon={<TbPencil />} disabled={!canAdmin} onClick={() => setDesigning(true)}>
           Edit
         </Button>
       </div>
