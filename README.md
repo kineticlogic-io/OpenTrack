@@ -56,27 +56,27 @@ the entity, e.g. an AIS destination). Saving an entity updates its live tracks a
 
 ## Architecture
 
-```
-                 ┌──────────────── opentrack (one binary, four roles) ────────────────┐
- feeds ──►  sources     transport → framing → codec → mapping → static join → entity  │
- (TCP, UDP,  worker     links → affiliation → filter → throttle → [tracker]           │
-  HTTP, WS,     │                                                                      │
-  MQTT)         ▼                                                                      │
-             Redis  tms:obs:<source>  (a stream of observations per source)            │
-                │                                                                      │
-                ▼                                                                      │
-             engine     correlation: source tracks → system tracks; lifecycle;         │
-                │       output schema; track management commands; groups               │
-                ▼                                                                      │
-             Redis  tms:sys:<uid> (live state)  +  tms:out (outbox)                    │
-                │                                                                      │
-                ▼                                                                      │
-             writer  ──►  NATS JetStream  tracks.tms-<UID>  (stream TRACKS)  ──► OpenStare
-                                                                                       │
-             control plane (serve): REST API + React UI on :8090; operator commands    │
-             reach the engine through a Redis command queue                            │
-                 └─────────────────────────────────────────────────────────────────────┘
-             SQLite: sources, schema, registry, correlation settings, decision log, track graph
+```mermaid
+flowchart TB
+    feeds["<b>Feeds</b><br/>TCP · UDP · HTTP · WebSocket · MQTT · file"]
+    sources["<b>sources</b> role<br/>transport → framing → codec → mapping → static join →<br/>entity links → affiliation → filter → throttle → tracker"]
+    obs[("Redis<br/>tms:obs:&lt;source&gt; observation streams")]
+    engine["<b>engine</b> role<br/>correlation · lifecycle · output schema ·<br/>track management · groups"]
+    live[("Redis<br/>tms:sys:&lt;uid&gt; live state · tms:out outbox")]
+    writer["<b>writer</b> role<br/>coalesce · publish"]
+    nats[["NATS JetStream<br/>stream TRACKS · subject tracks.tms-&lt;UID&gt;"]]
+    consumers["OpenStare and other consumers"]
+
+    serve["<b>serve</b> role<br/>REST API + React UI :8090"]
+    cmds[("Redis<br/>command queue")]
+    sqlite[("SQLite<br/>sources · schema · registry · settings ·<br/>decision log · track graph")]
+
+    feeds --> sources --> obs --> engine --> live --> writer --> nats --> consumers
+    serve -- operator commands --> cmds --> engine
+    serve -. reads .-> live
+    sqlite -. configuration and registry .-> sources
+    engine -- decisions and track graph --> sqlite
+    serve -- configuration and registry --> sqlite
 ```
 
 * **Roles.** `opentrack all` runs every role in one process; `serve`, `sources`, `engine` and
@@ -92,18 +92,6 @@ the entity, e.g. an AIS destination). Saving an entity updates its live tracks a
   5 s, at once for significant changes).
 * **Rust workspace + React UI.** The server is Rust (tokio, axum, rusqlite, redis, async-nats); the
   UI is React + TypeScript on OpenStare's stareSDK components.
-
-## Status
-
-| Phase | Scope | State |
-|-------|-------|-------|
-| 0. Foundations | Workspace, SQLite + track graph, Redis layout, core schema, NATS writer, UI shell | **done** |
-| 1. Source framework | Transports, JSON / CoT / XML codecs, mapping, enrich, filter, throttle, workers | **done** |
-| 2. Onboarding UI and schema | Add-source wizard, probe, mapping studio, pipeline designer, output schema | **done** |
-| 3. Correlation and tracking | Identifier and kinematic pairing with error propagation, suggest mode, splits, do-not-pair, detection association, GNN/MHT tracker with existence and auto timing | **done** (vector similarity deferred) |
-| 4. Track management | Entities and designation, pair, merge, group, delete, publish overrides, decision log | **done** (undo, history-point deletes and cross-site ownership open) |
-| 5. Codecs and plugin SDK | Protobuf from `.proto`, brokers, WebAssembly plugins | **started**: codec plugin interface (compiled in), STANAG 4607 GMTI plugin, length-field framing, file transport |
-| 6. Migration and cutover | aisstream / adsb.lol as configured sources, parallel run | **started**: both are example configurations |
 
 ## Layout
 
