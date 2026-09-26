@@ -29,6 +29,7 @@ mod registry_sheet;
 mod settings_api;
 mod sources;
 mod synthetic;
+mod user_cli;
 mod writer;
 
 use config::Common;
@@ -76,6 +77,9 @@ enum Command {
     /// Check, add and list plugins.
     #[command(subcommand)]
     Plugin(plugin_cli::PluginCommand),
+    /// Manage accounts (for a node without the UI).
+    #[command(subcommand)]
+    User(user_cli::UserCommand),
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
     Retire {
@@ -232,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Synthetic(args) => synthetic::run(&common, args).await,
         Command::Plugin(cmd) => plugin_cli::run(&common, cmd),
+        Command::User(cmd) => user_cli::run(&common, cmd),
         Command::Bench(args) => {
             engine::bench::run(
                 &common,
