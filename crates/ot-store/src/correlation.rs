@@ -39,6 +39,12 @@ pub struct DecisionRow {
     pub op: String,
     pub reason: Option<String>,
     pub evidence: Value,
+    /// The decision that undid this one, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undone_by: Option<i64>,
+    /// The decision this one undid (an `undo`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<i64>,
 }
 
 fn suggestion(r: &rusqlite::Row<'_>) -> rusqlite::Result<Suggestion> {
@@ -304,7 +310,7 @@ impl Db {
     pub fn decisions_by_op(&self, ops: &[&str], limit: usize) -> Result<Vec<DecisionRow>> {
         let list = serde_json::to_string(ops).expect("strings");
         let mut stmt = self.connection().prepare(
-            "SELECT id, at_ms, actor, op, reason, evidence FROM decisions
+            "SELECT id, at_ms, actor, op, reason, evidence, undone_by, undoes FROM decisions
              WHERE op IN (SELECT value FROM json_each(?1)) ORDER BY id DESC LIMIT ?2",
         )?;
         let rows = stmt
@@ -319,6 +325,8 @@ impl Db {
                     evidence: evidence
                         .and_then(|e| serde_json::from_str(&e).ok())
                         .unwrap_or(Value::Null),
+                    undone_by: r.get(6)?,
+                    undoes: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
