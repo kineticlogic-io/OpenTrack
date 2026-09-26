@@ -21,12 +21,17 @@ tracks in clutter). Each track carries its **existence** probability, from how w
 against clutter and how often it goes unseen, which confirms and drops it; its reports carry the
 position error ellipse and the full position and velocity covariance. For GMTI the tracker times
 itself by the revisit rate it measures in the stream. A tracker's tracks carry no identity: unknown
-affiliation and at most a domain.
+affiliation and at most a domain. **Tracker profiles** (`profiles/trackers/`) hold a sensor's
+tracker settings as a JSON file: wide-area and heavy-clutter GMTI, Global Hawk, Lynx, ASTOR and LSRS
+class MTI, marine, coastal and air surveillance radars, and lidar. A source's tracker stage loads
+one; a tuned tracker is saved, imported or downloaded as one.
 
 **Track correlation.** The engine keeps every source's own tracks (source tracks) and pairs them
 into **system tracks**, GOLD style: tracks sharing an identifier pair at once; otherwise tracks are
-compared kinematically with their covariance propagated in time, scored as likelihood ratios against
-another object being there, and paired when the probability of the same object reaches 0.99. It
+compared kinematically with their covariance propagated in time (a stopped target as a slow drift),
+scored as likelihood ratios against another object being there, and paired when the probability of
+the same object reaches 0.99. A slow feed's last report is reused against a sensor's newer ones at
+reduced weight, so a radar track joins its AIS or ADS-B track within its life. It
 proposes a split when a source stops agreeing with its track, keeps operators' do-not-pair rules, and
 in suggest mode queues pairings for an operator instead. Each system track shows the best source's
 view (position from the most precise recent report, identity from the most trusted source) and a
@@ -125,6 +130,7 @@ scripts/benchmark/   the tracker and correlation benchmark (bench.py: scenarios,
              gmti-gps-replay.py (GMTI and GPS logs of one exercise on one clock), autoferry-replay.py
 sdk/         plugin SDKs: rust/ (WebAssembly components) and python/ (external plugins or components), with examples
 wit/         the plugin interface (plugin.wit)
+profiles/    tracker profiles shipped with OpenTrack (profiles/trackers/*.json)
 ui/          React + TypeScript (Vite) on stareSDK
 ```
 
@@ -204,6 +210,7 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 |---|---|
 | Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics` |
 | Plugins | `GET/POST /plugins`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
+| Tracker profiles | `GET/POST /tracker-profiles`, `GET/DELETE /tracker-profiles/{name}` |
 | Status | `GET /status`, `/metrics`, `/healthz` |
 | Tracks | `GET /tracks`, `GET /tracks/{uid}`, `GET /tracks/{uid}/explain` |
 | Track management | `POST /tracks/pair`, `/tracks/unpair`, `/tracks/merge` (`hold` for a track manager's merge), `/tracks/delete`, `GET/POST /groups`, `PUT/DELETE /groups/{id}`, `POST /groups/{id}/members` |

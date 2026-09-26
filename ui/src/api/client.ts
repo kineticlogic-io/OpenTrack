@@ -146,6 +146,11 @@ export interface CorrelationSettings {
     window_secs: number
     min_interval_secs: number
     max_age_secs: number
+    source_live_secs: number
+    stopped_drift_mps: number
+    reuse_views: boolean
+    reuse_interval_secs: number
+    air_velocity_spread_mps: number
   }
   gate: { base_m: number; max_extrapolation_secs: number }
   freshness_secs: number
@@ -407,6 +412,17 @@ export interface PluginCheck {
   error?: string
   load_ms?: number
   kinds?: Record<string, 'ok' | { error: string }>
+}
+
+/** A sensor's tracker settings, as a file (profiles/trackers). */
+export interface TrackerProfile {
+  name: string
+  label: string
+  description: string
+  sensor: { kind?: string; platform?: string; band?: string; domain?: string; [k: string]: unknown }
+  basis: string
+  tracker: Record<string, unknown>
+  builtin?: boolean
 }
 
 /** @deprecated the codec plugins are PluginInfo with kind `codec`. */
@@ -699,6 +715,10 @@ export const api = {
     ).then((r) => r.revisions),
 
   plugins: () => get<{ plugins: PluginInfo[] }>('/plugins').then((r) => r.plugins),
+  trackerProfiles: () => get<{ profiles: TrackerProfile[]; problems: string[] }>('/tracker-profiles'),
+  saveTrackerProfile: (p: TrackerProfile, replace = false) =>
+    request<TrackerProfile>('POST', `/tracker-profiles${replace ? '?replace=true' : ''}`, p),
+  deleteTrackerProfile: (name: string) => request<unknown>('DELETE', `/tracker-profiles/${enc(name)}`),
   /** Add a WebAssembly component (or, with replace, a new build of one). */
   addPluginWasm: async (file: File, replace = false): Promise<PluginInfo> => {
     const res = await fetch(`/api/v1/plugins${replace ? '?replace=true' : ''}`, {

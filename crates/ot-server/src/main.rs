@@ -20,6 +20,7 @@ mod plugin_cli;
 mod plugins;
 mod plugins_api;
 mod probe;
+mod profiles;
 mod registry_api;
 mod registry_sheet;
 mod settings_api;

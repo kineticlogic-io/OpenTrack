@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Tracker profiles
+
+- **What a profile is.** A sensor's tracker settings as a JSON file, with:
+  - its sensor kind and platform
+  - where the numbers come from
+  - the tracker stage it sets
+- **Where they live.**
+  - `profiles/trackers/` ships with OpenTrack (`OT_PROFILES_DIR`).
+  - Imported profiles go to `profiles/trackers` beside the database.
+- **In a source's tracker stage** you can load a profile, save the tuned stage as one, import a
+  file, or download one. The stage records which profile it came from and shows when it has
+  changed since.
+- **API.** `GET/POST /tracker-profiles`, `GET/DELETE /tracker-profiles/{name}`. Imports and deletes
+  go in the decision log.
+- **Benchmark.** `bench run --profile SOURCE=NAME`.
+- **The shipped profiles** span the sensor kinds with a tracker stage:
+  - GMTI:
+    - `gmti-wide-area`: clutter density 2e-7, a balance between noise and real traffic
+    - `gmti-high-clutter`: 1e-6, for very noisy data such as the Garden Island recordings
+    - `globalhawk-mti`, `lynx-gmti`, `astor-dmti`: nominal starting points
+  - Maritime MTI: `lsrs-maritime-mti`
+  - Radars: `marine-radar-x`, `coastal-surveillance-radar`, `air-surveillance-radar`
+  - Lidar: `lidar-surface`
+- **The STANAG 4607 example** uses `gmti-wide-area`. Its old clutter density, 3e-8, made about 1,150
+  tracks in 40 minutes on the Garden Island recordings.
+
+### correlation-4
+
+Radar tracks now join their AIS and ADS-B tracks. On the benchmark:
+
+| Scenario | Recall | Precision | GOSPA |
+|---|---|---|---|
+| AIS + coastal radar | 49% → 78% | 98% → 96% | 11,869 → 7,151 |
+| ADS-B + radar | 50% → 90% | 100% | 17,866 → 6,862 |
+
+The changes:
+
+- A slow feed's last report is reused against a sensor's newer ones, weighted and at most every
+  10 s.
+- Stopped targets are propagated as a slow drift.
+- Aircraft get their own velocity spread.
+- Views up to 180 s old are compared.
+- The same-source window has its own setting.
+
+The new settings are in the correlation form. See [docs/algorithms.md](docs/algorithms.md).
+
 ## 0.2.0 (alpha), 2026-09-26
 
 ### Plugins

@@ -26,6 +26,11 @@ pub struct Common {
 
     #[command(flatten)]
     pub nats: NatsArgs,
+
+    /// Tracker profiles that ship with OpenTrack (read only). Profiles
+    /// imported in the UI go to `profiles/trackers` beside the database.
+    #[arg(long, env = "OT_PROFILES_DIR", default_value = "profiles/trackers")]
+    pub profiles_dir: PathBuf,
 }
 
 /// Where system tracks are published.

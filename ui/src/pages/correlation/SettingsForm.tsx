@@ -114,6 +114,8 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <Num width={70} label="Objects per square kilometre" value={k.object_density_per_km2} onChange={(object_density_per_km2) => setK({ object_density_per_km2 })} />
           <span className="muted">per km², velocities ±</span>
           <Num width={58} label="Velocity spread" value={k.velocity_spread_mps} onChange={(velocity_spread_mps) => setK({ velocity_spread_mps })} />
+          <span className="muted">m/s, aircraft ±</span>
+          <Num width={58} label="Aircraft velocity spread" value={k.air_velocity_spread_mps} onChange={(air_velocity_spread_mps) => setK({ air_velocity_spread_mps })} />
           <span className="muted">m/s</span>
         </div>
       </Row>
@@ -126,8 +128,31 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
       <Row label="Manoeuvre (m/s²)" hint="Process noise: how fast uncertainty grows while a report is propagated in time.">
         <Num label="Process noise" value={k.process_noise_mps2} onChange={(process_noise_mps2) => setK({ process_noise_mps2 })} />
       </Row>
-      <Row label="Compare views up to (s)">
+      <Row label="Compare views up to (s)" hint="A report is compared with a system track's view propagated to its time, if the view is at most this old.">
         <Num label="Maximum view age" value={k.max_age_secs} onChange={(max_age_secs) => setK({ max_age_secs })} />
+      </Row>
+      <Row label="Stopped drift (m/s)" hint="A view that reports no motion (a moored vessel, a parked vehicle) is propagated as a slow drift at this speed instead of a manoeuvring target, so an old position stays useful.">
+        <Num label="Stopped drift" value={k.stopped_drift_mps} onChange={(stopped_drift_mps) => setK({ stopped_drift_mps })} />
+      </Row>
+      <Row
+        label="Reuse views"
+        hint="Compare a new report with the other side's view already used (a slow feed's last report), its evidence weighted by the new report's share of the uncertainty, at most once every so many seconds: a tracker's consecutive reports are smoothed, not independent."
+      >
+        <div className="num-row">
+          <FieldSelect
+            ariaLabel="Reuse views"
+            fields={YES_NO}
+            value={k.reuse_views === false ? 'no' : 'yes'}
+            onChange={(v) => setK({ reuse_views: v !== 'no' })}
+            style={{ width: 80 }}
+          />
+          <span className="muted">every</span>
+          <Num width={58} label="Reuse interval" value={k.reuse_interval_secs} onChange={(reuse_interval_secs) => setK({ reuse_interval_secs })} />
+          <span className="muted">s at most</span>
+        </div>
+      </Row>
+      <Row label="Source live for (s)" hint="A source's track counts as live on a system track this long after its last report; while it does, another track of the same source cannot join (a sensor's two tracks are two objects).">
+        <Num label="Source live seconds" value={k.source_live_secs} onChange={(source_live_secs) => setK({ source_live_secs })} />
       </Row>
       <Row
         label="Scorer"

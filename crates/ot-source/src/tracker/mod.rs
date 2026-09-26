@@ -109,6 +109,10 @@ pub struct TrackerSpec {
     /// (a scan may be one dwell that never looked at it).
     #[serde(skip)]
     pub revisit_secs: Option<f64>,
+    /// The tracker profile these settings started from (Settings are the
+    /// profile's until changed; this only records where they came from).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// With `algorithm: plugin`: the plugin, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,

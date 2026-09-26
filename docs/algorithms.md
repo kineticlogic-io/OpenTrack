@@ -75,6 +75,52 @@ With gnn-2 (existence; the example's detection probability 0.5, clutter 3·10⁻
 
 ## Changelog
 
+### correlation-4 (2026-09-26)
+
+Radar tracks now join their AIS or ADS-B track. The benchmark found about half of them never
+paired (correlation recall of about 50% on `solent-fusion` and `opensky-fusion`). The engine's
+comparison trace showed three causes:
+
+- **A fresh report can reuse a held view.** A comparison used to count only when *both* sides had
+  a new report. A moored vessel's AIS arrives every few minutes, so a radar track (median life
+  about 3 min) never collected its three comparisons.
+  - A new report may now be compared with the other side's view already used. Its evidence is
+    weighted by the new report's share of the combined position variance: a precise AIS position
+    reused against noisy radar counts nearly in full, and two equally noisy views count half.
+  - A reused comparison counts no sooner than `reuse_interval_secs` (10 s) after the pair's last
+    one. A tracker smooths its output, so its consecutive reports are not independent. Reuse every
+    3 s cost 14 points of precision among the moored vessels of a harbour; at 10 s it costs 2.
+    Switch reuse off with `reuse_views: false`.
+- **Stopped targets drift.** A view that reports no motion (speed within `speed_sigma_mps`) is
+  propagated as a slow drift, `stopped_drift_mps` (0.5 m/s) times the time elapsed. It no longer
+  gets the white-acceleration growth, which put a moored vessel's three-minute-old position at
+  2 to 5 km of uncertainty, so no comparison against it could decide anything. Views may now be
+  180 s old (`max_age_secs`, was 30).
+- **Aircraft get their own velocity spread.** "Another object nearby" had a 15 m/s velocity spread,
+  a surface-traffic figure. When either report is an aircraft it is now `air_velocity_spread_mps`
+  (60 m/s).
+- **The same-source rule has its own setting.** How long a source's track counts as live on a system
+  track, for the rule that a sensor's two tracks are two objects, was `max_age_secs`. It is now
+  `source_live_secs` (30 s), so older views can be compared without keeping stale tracks in the
+  way.
+
+Benchmark: `scripts/benchmark`, baseline against `correlation-4`:
+
+| Scenario | GOSPA | Pairing precision / recall | ID changes / truth hour | Fused position RMS |
+|---|---|---|---|---|
+| solent-fusion (AIS + coastal radar) | 11,869 → 7,151 | 98% / 49% → 96% / 78% | 62 → 89 | 20 → 44 m |
+| opensky-fusion (ADS-B + two radars) | 17,866 → 6,862 | 100% / 50% → 100% / 90% | 64 → 12.5 | 121 → 146 m |
+| autoferry, all 9 fusion scenarios | unchanged | unchanged | unchanged | unchanged |
+
+The costs on `solent-fusion` are the 4% of wrong pairings, which join the radar tracks of
+neighbouring moored vessels (the position RMS), and more distinct system tracks per vessel while
+radar tracks join (ID changes and fragmentation). The next step there is the radar tracker's own
+fragmentation: 23.6 tracks per vessel on `solent-radar`.
+
+In a benchmark run the engine now also writes every pairing comparison to its trace (`compare`:
+the candidate, why it was skipped or its distance, σ, d², ln LR and probability). That trace is how
+these causes were found.
+
 ### correlation-3 (2026-09-25)
 
 Proper error propagation and a probability for every pairing:

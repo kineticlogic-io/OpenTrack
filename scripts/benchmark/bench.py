@@ -5,7 +5,7 @@
     bench.py build [NAME... | all]        fetch the data and build scenarios
     bench.py run [NAME... | all]          run them through OpenTrack and score
         [--label L] [--correlation settings.json] [--set SOURCE.path=VALUE]...
-        [--plugin FILE_OR_ADDRESS]... [--redis URL] [--no-build]
+        [--profile SOURCE=NAME]... [--plugin FILE_OR_ADDRESS]... [--redis URL] [--no-build]
     bench.py score RUN                    score a run again
     bench.py compare RUN_A RUN_B          the measures side by side
 
@@ -156,9 +156,24 @@ def apply_sets(scenario_dir, sets, dest):
     return dest
 
 
+def profile_sets(profiles):
+    """`SOURCE=NAME` → a --set that gives the source that tracker profile
+    (profiles/trackers/NAME.json; SOURCE may be `*`)."""
+    out = []
+    for item in profiles or []:
+        source, _, name = item.partition("=")
+        path = REPO / "profiles/trackers" / f"{name}.json"
+        if not name or not path.exists():
+            sys.exit(f"--profile {item}: no profile {path}")
+        tracker = dict(json.loads(path.read_text())["tracker"], profile=name)
+        out.append(f"{source}.pipeline.tracker={json.dumps(tracker)}")
+    return out
+
+
 def cmd_run(args):
     import scoring
 
+    args.set = (args.set or []) + profile_sets(args.profile)
     names = [n for n in pick(args.names, all_scenarios()) if (scenarios_dir() / n / "scenario.json").exists()]
     if not names:
         sys.exit("no built scenarios: run `bench.py build` first")
@@ -326,6 +341,8 @@ def main():
     p.add_argument("--correlation", help="correlation settings JSON to use instead of each scenario's")
     p.add_argument("--set", action="append", metavar="SOURCE.path=VALUE",
                    help="change a source spec field for this run (repeatable), e.g. gmti.pipeline.tracker.confirm_hits=5")
+    p.add_argument("--profile", action="append", metavar="SOURCE=NAME",
+                   help="give a source a tracker profile (profiles/trackers/NAME.json); SOURCE may be *")
     p.add_argument("--plugin", action="append", metavar="FILE_OR_ADDRESS",
                    help="load a plugin for the run (.wasm or an external plugin's address); repeatable")
     p.add_argument("--redis", help="Redis URL (default: a throwaway Redis in Docker)")

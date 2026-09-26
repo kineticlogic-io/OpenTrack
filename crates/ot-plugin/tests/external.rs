@@ -21,7 +21,11 @@ impl Drop for Served {
 }
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// sdk/python/examples/domain_scorer.py, served; None without python3.
@@ -37,7 +41,9 @@ fn serve_python_scorer() -> Option<(Served, String)> {
         .ok()?;
     // It says when it is listening.
     let mut line = String::new();
-    BufReader::new(child.stderr.take()?).read_line(&mut line).ok()?;
+    BufReader::new(child.stderr.take()?)
+        .read_line(&mut line)
+        .ok()?;
     if !line.contains("serving") {
         eprintln!("skipped: the Python example did not start: {line}");
         let _ = child.kill();
@@ -74,12 +80,19 @@ fn a_python_scorer_served_over_a_socket() {
     let scores = s
         .score(
             &obs("surface", 90.0),
-            &[candidate(obs("air", 90.0)), candidate(obs("surface", 200.0)), candidate(obs("surface", 100.0))],
+            &[
+                candidate(obs("air", 90.0)),
+                candidate(obs("surface", 200.0)),
+                candidate(obs("surface", 100.0)),
+            ],
         )
         .unwrap();
     assert_eq!(scores[0].evidence["veto"], "domain");
     assert_eq!(scores[1].evidence["veto"], "course");
-    assert!(scores[2].pass && (scores[2].ln_lr - 3.0).abs() < 1e-9, "{scores:?}");
+    assert!(
+        scores[2].pass && (scores[2].ln_lr - 3.0).abs() < 1e-9,
+        "{scores:?}"
+    );
 }
 
 #[test]
@@ -97,7 +110,9 @@ fn a_plugin_that_stops_answering_times_out() {
                     let req: serde_json::Value = serde_json::from_str(&line).unwrap();
                     line.clear();
                     let result = match req["method"].as_str() {
-                        Some("describe") => json!({"name": "stuck", "version": "1", "kinds": ["tracker"]}),
+                        Some("describe") => {
+                            json!({"name": "stuck", "version": "1", "kinds": ["tracker"]})
+                        }
                         Some("open") => json!(null),
                         _ => {
                             std::thread::sleep(Duration::from_secs(5));
@@ -121,5 +136,8 @@ fn a_plugin_that_stops_answering_times_out() {
     assert!(started.elapsed() < Duration::from_secs(2), "{e}");
     // The session is not used again.
     let again = t.run(chrono::Utc::now(), false).unwrap_err();
-    assert!(again.contains("stopped after an earlier failure"), "{again}");
+    assert!(
+        again.contains("stopped after an earlier failure"),
+        "{again}"
+    );
 }

@@ -8,6 +8,7 @@ import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
 import { InfoTip } from '../../../components/InfoTip'
 import { PluginOptions, PluginPicker } from '../../../components/PluginOptions'
+import { TrackerProfiles } from './TrackerProfiles'
 
 type Obj = Record<string, unknown>
 type Props = { value: Obj; onChange: (v: Obj) => void }
@@ -311,10 +312,22 @@ export function TrackerForm({ value, onChange }: Props) {
       />
     </Row>
   )
+  const profiles = (
+    <TrackerProfiles
+      value={value}
+      onChange={onChange}
+      row={(label, hint, control) => (
+        <Row label={label} hint={hint}>
+          {control}
+        </Row>
+      )}
+    />
+  )
   if (value.algorithm === 'plugin') {
     const plugin = plugins.find((p) => p.name === value.plugin)
     return (
       <div className="stack">
+        {profiles}
         {algorithm}
         <Row label="Plugin" hint="The enabled plugins that provide a tracker.">
           <PluginPicker
@@ -340,6 +353,7 @@ export function TrackerForm({ value, onChange }: Props) {
   }
   return (
     <div className="stack">
+      {profiles}
       {algorithm}
       <Row label="Domain" hint="Everything this sensor sees. Empty: what most of a track's plots report, if any.">
         <FieldSelect ariaLabel="Tracker domain" allowNone fields={DOMAINS.map((name) => ({ name }))} value={(value.domain as string) ?? null} onChange={(d) => onChange({ ...value, domain: d ?? undefined })} style={{ width: 160 }} />

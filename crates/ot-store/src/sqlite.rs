@@ -154,6 +154,12 @@ impl Db {
         &self.conn
     }
 
+    /// Record a decision about something kept outside the database (a
+    /// tracker profile file); returns its id.
+    pub fn record(&mut self, d: &Decision) -> Result<i64> {
+        self.write(|tx| record_decision(tx, d, now_ms()))
+    }
+
     /// Run `f` in an immediate (write-locked) transaction.
     pub fn write<T>(&mut self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let tx = self

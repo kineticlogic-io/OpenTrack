@@ -215,18 +215,36 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
   const tr = p.tracker as Obj | undefined
   if (tr) {
     const mht = (tr.mht as Obj | undefined) ?? {}
-    const alg = tr.algorithm === 'mht' ? 'MHT' : 'GNN'
+    const alg = tr.algorithm === 'mht' ? 'MHT' : tr.algorithm === 'plugin' ? `plugin ${String(tr.plugin ?? '')}` : 'GNN'
+    const profile: Fact[] = tr.profile ? [{ label: 'Profile', value: String(tr.profile) }] : []
+    const facts: Fact[] =
+      tr.algorithm === 'plugin'
+        ? [
+            ...profile,
+            { label: 'Tracker', value: `the ${String(tr.plugin ?? '?')} plugin (Settings → Plugins)` },
+            { label: 'Options', value: Object.keys((tr.options as Obj | undefined) ?? {}).length ? JSON.stringify(tr.options) : 'its defaults' },
+            { label: 'Track keys', value: 'as the plugin names them' },
+          ]
+        : [
+            ...profile,
+            { label: 'Association', value: alg === 'MHT' ? `multiple hypotheses, final after ${Number(mht.n_scan ?? 3)} scans` : 'global nearest neighbour' },
+            { label: 'Classification', value: `unknown affiliation${tr.domain ? `, ${String(tr.domain)}` : ', domain from the plots if they report one'}; no identity` },
+            {
+              label: 'Confirmed at',
+              value: `existence ${Number(tr.confirm_probability ?? 0.95)}, after at least ${Number(tr.confirm_hits ?? 3)} plots`,
+            },
+            { label: 'Clutter', value: `${Number(tr.clutter_density ?? 1e-6)} false plots per m², detection ${Number(tr.detection_probability ?? 0.9)}` },
+            {
+              label: 'Dropped after',
+              value: tr.auto_timing != null ? 'a few missed revisits (auto timing)' : `${secs(Number(tr.drop_confirmed_secs ?? 8))} without a plot`,
+            },
+            { label: 'Track keys', value: `${String(tr.key_prefix ?? 'T')}<run>-1, -2…` },
+          ]
     out.push({
       id: 'tracker',
       title: `tracker · ${alg}`,
-      summary: `plots → tracks · ${tr.domain ? `${String(tr.domain)}, ` : ''}unknown affiliation`,
-      facts: [
-        { label: 'Association', value: alg === 'MHT' ? `multiple hypotheses, final after ${Number(mht.n_scan ?? 3)} scans` : 'global nearest neighbour' },
-        { label: 'Classification', value: `unknown affiliation${tr.domain ? `, ${String(tr.domain)}` : ', domain from the plots if they report one'}; no identity` },
-        { label: 'Confirmed after', value: `${Number(tr.confirm_hits ?? 3)} plots within ${secs(Number(tr.confirm_within_secs ?? 5))}` },
-        { label: 'Dropped after', value: `${secs(Number(tr.drop_confirmed_secs ?? 8))} without a plot` },
-        { label: 'Track keys', value: `${String(tr.key_prefix ?? 'T')}<run>-1, -2…` },
-      ],
+      summary: `plots → tracks · ${tr.domain ? `${String(tr.domain)}, ` : ''}${tr.profile ? `${String(tr.profile)} · ` : ''}unknown affiliation`,
+      facts,
     })
   }
   const th = p.throttle as Obj | undefined

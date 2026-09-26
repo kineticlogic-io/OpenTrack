@@ -53,6 +53,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::correlation_api::routes())
         .merge(crate::manage_api::routes())
         .merge(crate::plugins_api::routes())
+        .merge(crate::profiles::routes())
 }
 
 pub(crate) fn actor(headers: &HeaderMap) -> String {
@@ -722,6 +723,7 @@ mod tests {
                 tracks_subject: "tracks".into(),
                 max_age_hours: 24.0,
             },
+            profiles_dir: "profiles/trackers".into(),
         };
         let redis = ot_store::RedisStore::connect(&url, ot_store::Keys::new(ns))
             .await

@@ -18,7 +18,7 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// publish rule. Stamped on every engine decision and published message.
 /// Bump it whenever the same inputs would give different system tracks, and
 /// record it in docs/algorithms.md with its scores.
-pub const VERSION: &str = "correlation-3";
+pub const VERSION: &str = "correlation-4";
 
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry
@@ -180,6 +180,9 @@ pub struct KinematicSettings {
     /// velocities are (m/s): the "another object nearby" of each comparison.
     pub object_density_per_km2: f64,
     pub velocity_spread_mps: f64,
+    /// The velocity spread when either report is an aircraft: air traffic's
+    /// velocities differ by far more than surface traffic's.
+    pub air_velocity_spread_mps: f64,
     /// Probability that two unrelated tracks are the same object before any
     /// comparison.
     pub prior_probability: f64,
@@ -194,6 +197,19 @@ pub struct KinematicSettings {
     pub min_interval_secs: f64,
     /// Views older than this are not compared.
     pub max_age_secs: f64,
+    /// A source's track counts as live on a system track this long after its
+    /// last report: while it does, another track of the same source cannot
+    /// join (a sensor's two tracks are two objects).
+    pub source_live_secs: f64,
+    /// Compare a new report with the other side's report already used, its
+    /// evidence weighted by the new report's share of the uncertainty.
+    pub reuse_views: bool,
+    /// ...at least this long after the last counted comparison of the pair:
+    /// a tracker's consecutive reports are smoothed, not independent.
+    pub reuse_interval_secs: f64,
+    /// How fast a stopped target's position may drift (m/s): a view that
+    /// reports no motion is propagated with this, not the manoeuvre noise.
+    pub stopped_drift_mps: f64,
     /// Settings from before correlation-3, still read: a chi-square gate
     /// (2 degrees of freedom) becomes the gate probability; the flat drift
     /// allowance is replaced by `process_noise_mps2`.
@@ -212,13 +228,18 @@ impl Default for KinematicSettings {
             speed_sigma_mps: 1.0,
             object_density_per_km2: 1.0,
             velocity_spread_mps: 15.0,
+            air_velocity_spread_mps: 60.0,
             prior_probability: 0.01,
             pair_probability: 0.99,
             m: 3,
             n: 5,
             window_secs: 30.0,
             min_interval_secs: 3.0,
-            max_age_secs: 30.0,
+            max_age_secs: 180.0,
+            source_live_secs: 30.0,
+            stopped_drift_mps: 0.5,
+            reuse_views: true,
+            reuse_interval_secs: 10.0,
             chi2_gate: None,
             drift_mps: None,
         }
@@ -564,6 +585,9 @@ pub struct Estimate {
     pub p: M4,
     pub t: DateTime<Utc>,
     domain: Option<Domain>,
+    /// It reports no motion (a speed within `speed_sigma_mps`): propagated
+    /// as a slow drift, not a manoeuvring target.
+    pub stopped: bool,
 }
 
 /// A report as an [`Estimate`]: its full covariance when it has one (a
@@ -618,6 +642,10 @@ pub fn estimate(obs: &Observation, s: &KinematicSettings) -> Estimate {
             p[3][3] = sigma * sigma;
         }
     }
+    let stopped = obs
+        .kinematics
+        .speed_mps
+        .is_some_and(|sp| sp.is_finite() && sp.abs() <= s.speed_sigma_mps);
     Estimate {
         lat: obs.position.latitude,
         lon: obs.position.longitude,
@@ -625,13 +653,22 @@ pub fn estimate(obs: &Observation, s: &KinematicSettings) -> Estimate {
         p,
         t: obs.observed_at,
         domain: obs.classification.effective_domain(),
+        stopped,
     }
 }
 
 impl Estimate {
     /// The state at `at` (at most `max_secs` away), moving at constant
     /// velocity (still, without one) with white-acceleration noise `q`.
-    pub fn predict(&self, at: DateTime<Utc>, q: f64, max_secs: f64) -> Self {
+    /// With `drift`, a stopped target (`stopped`) instead drifts: its
+    /// position variance grows by `(drift × dt)²`, without the manoeuvre terms.
+    pub fn predict_with(
+        &self,
+        at: DateTime<Utc>,
+        q: f64,
+        max_secs: f64,
+        drift: Option<f64>,
+    ) -> Self {
         let dt = ((at - self.t).num_milliseconds() as f64 / 1000.0).clamp(-max_secs, max_secs);
         let [vn, ve] = self.v.unwrap_or([0.0, 0.0]);
         let (lat, lon) = offset(self.lat, self.lon, vn * dt, ve * dt);
@@ -639,6 +676,18 @@ impl Estimate {
         f[0][2] = dt;
         f[1][3] = dt;
         let mut p = mul4(&mul4(&f, &self.p), &transpose4(&f));
+        if let Some(d) = drift.filter(|_| self.stopped) {
+            let grow = (d * dt).powi(2);
+            p[0][0] += grow;
+            p[1][1] += grow;
+            return Self {
+                lat,
+                lon,
+                p,
+                t: at,
+                ..*self
+            };
+        }
         let (a, b, c) = (
             dt.powi(4) / 4.0,
             dt.abs().powi(3) / 2.0 * dt.signum(),
@@ -670,6 +719,10 @@ pub struct Kinematic {
     pub dt_s: f64,
     /// Combined position standard deviation (RMS of the two axes).
     pub sigma_m: f64,
+    /// The report's and the (propagated) view's own position standard
+    /// deviations: how much of the combined uncertainty each brings.
+    pub sigma_report_m: f64,
+    pub sigma_view_m: f64,
     /// Difference in speed, when both report motion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed_diff_mps: Option<f64>,
@@ -684,7 +737,12 @@ pub struct Kinematic {
 
 pub fn kinematic(obs: &Observation, view: &Observation, s: &KinematicSettings) -> Kinematic {
     let a = estimate(obs, s);
-    let b = estimate(view, s).predict(obs.observed_at, s.process_noise_mps2, s.max_age_secs);
+    let b = estimate(view, s).predict_with(
+        obs.observed_at,
+        s.process_noise_mps2,
+        s.max_age_secs,
+        Some(s.stopped_drift_mps),
+    );
     let dt = (obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0;
     Kinematic {
         dt_s: (dt.abs() * 10.0).round() / 10.0,
@@ -712,7 +770,12 @@ pub fn compare(a: &Estimate, b: &Estimate, s: &KinematicSettings) -> Kinematic {
     // velocity spread when velocities are compared.
     let mut ln_other = (s.object_density_per_km2 / 1e6).ln();
     if dof == 4 {
-        ln_other -= (std::f64::consts::PI * s.velocity_spread_mps.powi(2)).ln();
+        let spread = if a.domain == Some(Domain::Air) || b.domain == Some(Domain::Air) {
+            s.air_velocity_spread_mps.max(s.velocity_spread_mps)
+        } else {
+            s.velocity_spread_mps
+        };
+        ln_other -= (std::f64::consts::PI * spread.powi(2)).ln();
     }
     let round = |x: f64, k: f64| (x * k).round() / k;
     let pass = d2 <= chi2_quantile(s.gate(), dof);
@@ -726,6 +789,8 @@ pub fn compare(a: &Estimate, b: &Estimate, s: &KinematicSettings) -> Kinematic {
         distance_m: round(dn.hypot(de), 10.0),
         dt_s: 0.0,
         sigma_m: round(((sum[0][0] + sum[1][1]) / 2.0).sqrt(), 10.0),
+        sigma_report_m: round(((a.p[0][0] + a.p[1][1]) / 2.0).sqrt(), 10.0),
+        sigma_view_m: round(((b.p[0][0] + b.p[1][1]) / 2.0).sqrt(), 10.0),
         speed_diff_mps: match (a.v, b.v) {
             (Some(x), Some(y)) => Some(round(x[0].hypot(x[1]) - y[0].hypot(y[1]), 100.0)),
             _ => None,
@@ -889,23 +954,53 @@ impl Evidence {
     /// the one it gave the last counted comparison.
     pub fn record(
         &mut self,
+        side: (&str, DateTime<Utc>),
+        other: (&str, DateTime<Utc>),
+        ln_lr: f64,
+        outside: bool,
+        ns: (usize, &KinematicSettings),
+    ) -> Option<Tally> {
+        self.record_reusing(side, other, ln_lr, outside, ns, None)
+    }
+
+    /// As [`Self::record`], but a new report of `side` may also be compared
+    /// with `other`'s report used before, when `reuse` gives the weight of
+    /// such a comparison: the share of the combined uncertainty that is the
+    /// new report's own (a precise view reused against a noisy report is
+    /// nearly independent evidence each time; two equally noisy ones are not).
+    pub fn record_reusing(
+        &mut self,
         (side, at): (&str, DateTime<Utc>),
         (other, other_at): (&str, DateTime<Utc>),
         ln_lr: f64,
         outside: bool,
         (n, s): (usize, &KinematicSettings),
+        reuse: Option<f64>,
     ) -> Option<Tally> {
         let gap = chrono::Duration::milliseconds((s.min_interval_secs * 1000.0) as i64);
         let stale = |who: &str, t: DateTime<Utc>| self.used.get(who).is_some_and(|u| t <= *u);
-        if self.results.back().is_some_and(|l| (at - l.0).abs() < gap)
-            || stale(side, at)
-            || stale(other, other_at)
-        {
+        if self.results.back().is_some_and(|l| (at - l.0).abs() < gap) || stale(side, at) {
             return None;
         }
+        let reuse_gap = chrono::Duration::milliseconds((s.reuse_interval_secs * 1000.0) as i64);
+        let weight = if stale(other, other_at) {
+            if self
+                .results
+                .back()
+                .is_some_and(|l| (at - l.0).abs() < reuse_gap)
+            {
+                return None;
+            }
+            match reuse {
+                Some(w) if w > 0.0 => w.min(1.0),
+                _ => return None,
+            }
+        } else {
+            1.0
+        };
         self.used.insert(side.to_owned(), at);
         self.used.insert(other.to_owned(), other_at);
-        self.results.push_back((at, ln_lr, outside));
+        self.results.push_back((at, ln_lr * weight, outside));
         let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
         let newest = self.results.iter().map(|r| r.0).max().unwrap_or(at);
         self.results.retain(|r| newest - r.0 <= window);
@@ -1515,7 +1610,7 @@ mod tests {
         o.kinematics.course_deg = Some(90.0);
         o.kinematics.speed_mps = Some(10.0);
         let e = estimate(&o, &s);
-        let later = e.predict(at(10), s.process_noise_mps2, s.max_age_secs);
+        let later = e.predict_with(at(10), s.process_noise_mps2, s.max_age_secs, None);
         assert!((distance_m(0.0, 0.0, later.lat, later.lon) - 100.0).abs() < 0.5);
         // Position variance: σ² + σv²·t² + q²t⁴/4.
         let want = 25.0 + 1.0f64.powi(2) * 100.0 + 0.09 * 1e4 / 4.0;
@@ -1527,6 +1622,61 @@ mod tests {
         // No motion reported: a still estimate with a wide velocity spread.
         let still = estimate(&obs("ais", "2", 0, 0.0, 0.0), &s);
         assert!(still.v.is_none() && still.p[2][2] > 100.0);
+    }
+
+    /// correlation-4: a moored vessel's AIS report, three minutes old, is
+    /// still a position to within a few hundred metres, not kilometres.
+    #[test]
+    fn a_stopped_target_drifts_instead_of_manoeuvring() {
+        let s = KinematicSettings::default();
+        let mut o = obs("ais", "1", 0, 0.0, 0.0);
+        o.kinematics.speed_mps = Some(0.1);
+        let e = estimate(&o, &s);
+        assert!(e.stopped);
+        let manoeuvring = e.predict_with(at(180), s.process_noise_mps2, s.max_age_secs, None);
+        let drifting = e.predict_with(
+            at(180),
+            s.process_noise_mps2,
+            s.max_age_secs,
+            Some(s.stopped_drift_mps),
+        );
+        let sd = |p: &M4| ((p[0][0] + p[1][1]) / 2.0).sqrt();
+        assert!(sd(&manoeuvring.p) > 2000.0, "{}", sd(&manoeuvring.p));
+        assert!(sd(&drifting.p) < 300.0, "{}", sd(&drifting.p));
+        // A moving target still manoeuvres.
+        let mut m = obs("ais", "2", 0, 0.0, 0.0);
+        m.kinematics.speed_mps = Some(8.0);
+        m.kinematics.course_deg = Some(90.0);
+        let moving = estimate(&m, &s).predict_with(
+            at(180),
+            s.process_noise_mps2,
+            s.max_age_secs,
+            Some(s.stopped_drift_mps),
+        );
+        assert!(sd(&moving.p) > 2000.0);
+    }
+
+    /// correlation-4: a new report against a view already used counts, at
+    /// its weight, no sooner than `reuse_interval_secs` after the last.
+    #[test]
+    fn a_reused_view_counts_at_its_weight_and_not_too_often() {
+        let s = KinematicSettings::default();
+        let mut e = Evidence::default();
+        let r = |e: &mut Evidence, a: i64, b: i64, reuse: Option<f64>| {
+            e.record_reusing(("a", at(a)), ("b", at(b)), 2.0, false, (5, &s), reuse)
+        };
+        assert_eq!(r(&mut e, 0, 0, Some(0.9)).map(|t| t.comparisons), Some(1));
+        // The same view again, 3 s later: too soon for a reused view.
+        assert_eq!(r(&mut e, 3, 0, Some(0.9)), None);
+        // 10 s later it counts, weighted.
+        let t = r(&mut e, 10, 0, Some(0.9)).unwrap();
+        assert_eq!(t.comparisons, 2);
+        assert!((t.ln_lr - (2.0 + 1.8)).abs() < 1e-9, "{t:?}");
+        // Without reuse (the split test's use) it does not count.
+        assert_eq!(r(&mut e, 30, 0, None), None);
+        // Both sides new: full weight (the first comparison, at 0 s, has
+        // left the 30 s window).
+        assert!((r(&mut e, 33, 33, None).unwrap().ln_lr - (1.8 + 2.0)).abs() < 1e-9);
     }
 
     /// A GMTI track passing a parked GPS vehicle at 56 m (Garden Island,

@@ -2155,7 +2155,7 @@ impl Engine {
     /// block its next track of the same object (a sensor re-initiating).
     fn track_sources(&self, uid: Uid, at: DateTime<Utc>) -> HashSet<&str> {
         let max_age = chrono::Duration::milliseconds(
-            (self.settings.correlation.kinematic.max_age_secs * 1000.0) as i64,
+            (self.settings.correlation.kinematic.source_live_secs * 1000.0) as i64,
         );
         self.tracks
             .get(&uid)
@@ -2203,19 +2203,33 @@ impl Engine {
             let Some(t) = self.tracks.get(&other) else {
                 continue;
             };
-            if (obs.observed_at - t.view.observed_at).abs() > max_age
-                || t.state == TrackState::Lost
-                || self.forbidden(uid, other)
-                || self
-                    .track_sources(other, obs.observed_at)
-                    .iter()
-                    .any(|x| mine.contains(*x))
+            let skip = if (obs.observed_at - t.view.observed_at).abs() > max_age {
+                Some("view too old")
+            } else if t.state == TrackState::Lost {
+                Some("lost")
+            } else if self.forbidden(uid, other) {
+                Some("do not pair")
+            } else if self
+                .track_sources(other, obs.observed_at)
+                .iter()
+                .any(|x| mine.contains(*x))
             {
-                continue;
-            }
-            if self.settings.correlation.approach == Approach::KinematicsMetadata
+                Some("same source")
+            } else if self.settings.correlation.approach == Approach::KinematicsMetadata
                 && correlate::veto(obs, &t.view).is_some()
             {
+                Some("veto")
+            } else {
+                None
+            };
+            if let Some(why) = skip {
+                if self.recording {
+                    self.trace.push(json!({
+                        "t": obs.observed_at, "kind": "compare",
+                        "key": format!("{}/{}", obs.source_id, obs.source_track_key),
+                        "a": uid.doc_id(), "b": other.doc_id(), "skip": why,
+                    }));
+                }
                 continue;
             }
             compared.push((other, correlate::kinematic(obs, &t.view, &s)));
@@ -2227,22 +2241,47 @@ impl Engine {
                 continue;
             };
             let key = pair_key(uid, other);
+            let trace = |p: Option<f64>, why: Option<&str>| {
+                json!({
+                    "t": obs.observed_at, "kind": "compare",
+                    "key": format!("{}/{}", obs.source_id, obs.source_track_key),
+                    "a": uid.doc_id(), "b": other.doc_id(), "skip": why,
+                    "d": k.distance_m, "sigma": k.sigma_m, "d2": k.d2, "dof": k.dof,
+                    "ln_lr": k.ln_lr, "pass": k.pass, "p": p,
+                })
+            };
             if !k.pass && !self.candidates.contains_key(&key) {
+                if self.recording {
+                    self.trace.push(trace(None, Some("outside the gate")));
+                }
                 continue;
             }
-            let Some(tally) = self.candidates.entry(key).or_default().record(
+            // Reusing the view: weigh by the report's share of the uncertainty.
+            let reuse = {
+                let (r, v) = (k.sigma_report_m.powi(2), k.sigma_view_m.powi(2));
+                (s.reuse_views && r + v > 0.0).then(|| r / (r + v))
+            };
+            let Some(tally) = self.candidates.entry(key).or_default().record_reusing(
                 (&uid.to_string(), obs.observed_at),
                 (&other.to_string(), t.view.observed_at),
                 k.ln_lr,
                 !k.pass,
                 (s.n, &s),
+                reuse,
             ) else {
+                if self.recording {
+                    self.trace
+                        .push(trace(None, Some("too soon after the last comparison")));
+                }
                 continue;
             };
             let (p, of) = (
                 correlate::posterior(s.prior_probability, tally.ln_lr),
                 tally.comparisons,
             );
+            if self.recording {
+                self.trace.push(trace(Some(p), None));
+            }
             if of >= s.m && p >= s.pair_probability && ready.as_ref().is_none_or(|r| p > r.2) {
                 ready = Some((other, k, p, of));
             }
@@ -2654,6 +2693,7 @@ mod tests {
                 tracks_subject: "tracks".into(),
                 max_age_hours: 24.0,
             },
+            profiles_dir: "profiles/trackers".into(),
         };
         common.open_db().unwrap();
         let mut e = Engine::new(common, EngineSettings::default())
