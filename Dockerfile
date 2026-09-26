@@ -9,8 +9,13 @@ COPY ui/ ./
 RUN npm run build
 
 FROM rust:1-bookworm AS server
+# SAML single sign-on signs and checks XML with libxmlsec1.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxmlsec1-dev libxml2-dev pkg-config clang libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY third_party ./third_party
 COPY crates ./crates
 # The plugin interface the WebAssembly host is generated from.
 COPY wit ./wit
@@ -18,7 +23,7 @@ RUN cargo build --release --locked --bin opentrack
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libxmlsec1 libxmlsec1-openssl libxml2 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home opentrack
 COPY --from=server /src/target/release/opentrack /usr/local/bin/opentrack

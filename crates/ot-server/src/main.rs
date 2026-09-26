@@ -270,7 +270,21 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
+async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
+    // An empty variable (as docker compose passes an unset one) is unset.
+    for v in [
+        &mut args.tls_cert,
+        &mut args.tls_key,
+        &mut args.tls_client_ca,
+        &mut args.public_url,
+        &mut args.admin_email,
+        &mut args.admin_password,
+        &mut args.session_secret,
+    ] {
+        if v.as_deref().is_some_and(|s| s.trim().is_empty()) {
+            *v = None;
+        }
+    }
     let mut db = common.open_new_db()?;
     plugins::start(&common).await;
     let disabled = args.auth == "off";

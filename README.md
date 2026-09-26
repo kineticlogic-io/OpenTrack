@@ -7,7 +7,7 @@ correlator**, lets a track manager curate that picture (**track management**: de
 group and delete tracks), and publishes it to NATS JetStream in an OTH-GOLD-style message for
 OpenStare and any other consumer.
 
-Version **0.2.2 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
+Version **0.3.0 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
 interface (`opentrack:plugin@0.1.0`) and the database schema may still change. Back up
 `data/opentrack.db` before upgrading; migrations run on start. What changed: [CHANGELOG.md](CHANGELOG.md).
 
@@ -209,12 +209,48 @@ A track message (`opentrack.track.v2`, `upsert` or `delete`) carries:
 
 Full contract: [docs/nats-output.md](docs/nats-output.md).
 
+## Sign-in and roles
+
+Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
+
+| Role | What it may do |
+|---|---|
+| `viewer` | See everything except accounts and secrets |
+| `track_manager` | Also pair, merge, split, delete, group and designate tracks, undo those, and delete history points |
+| `admin` | Also configure OpenTrack: sources, settings, plugins, accounts and sign-in |
+
+- **How a caller signs in:**
+  - **A password:** local accounts, Argon2id, with a signed `ot_session` cookie. Sessions last 24 h by default.
+  - **SAML single sign-on**, as OpenStare's: paste the identity provider's metadata in Settings → Security, map its role attribute to roles, and set `OT_PUBLIC_URL`.
+  - **OpenStare's own sign-in**, when OpenTrack runs beside OpenStare: a browser signed in to OpenStare on the same host, or an OpenStare API token, is let in with a mapped role.
+  - **An API token**, for machines: made in Settings → Users or with `opentrack user token`, sent as `Authorization: Bearer`.
+  - **A client certificate** over TLS, mapped to an account in Settings → Security.
+- **The first account** is an admin, from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD`. Without them, it is `admin@opentrack.local`, with a made-up password in `initial-admin.txt` beside the database.
+- **Every change** names the account that made it in the decision log.
+- **Settings → Banners** can require users to accept a warning after signing in (as OpenStare's warning banner), besides the classification banner.
+- **`OT_AUTH=off`** turns sign-in off for development: every caller is an admin.
+
+## Track management: undo and history
+
+- **Undo.** A track manager can undo a pair, unpair, delete, merge, split, "do not pair" or group change from the decision log. The undo is itself a decision.
+  - A deleted or merged-away track comes back under its UID.
+  - An undo is refused while a later change by someone else to the same tracks stands.
+- **Position history.** Each system track's published positions are kept for 12 h by default, at most one point every 10 s (Settings: `history_hours`, `history_interval_secs`).
+  - A point costs about 130 bytes of Redis: 2,000 tracks for 12 h at 10 s is about 1.1 GB.
+- **Delete history point.** A track manager can delete a bad point.
+  - The deletion goes out on NATS ([docs/nats-output.md](docs/nats-output.md)).
+  - When it was the track's latest point, the track steps back to the point before.
+
 ## API
 
 Everything the UI does is a REST call under `/api/v1`. The main ones:
 
 | | |
 |---|---|
+| Sign-in | `POST /auth/login`, `/auth/logout`, `GET /auth/me`, `/auth/public`, `POST /auth/password`; SAML at `/auth/saml/login`, `/auth/saml/acs`, `/auth/saml/metadata` |
+| Accounts | `GET/POST /auth/users`, `PUT/DELETE /auth/users/{id}`, `POST /auth/users/{id}/password`, `/auth/users/{id}/revoke`, `GET/POST /auth/api-tokens`, `DELETE /auth/api-tokens/{jti}`, `GET/PUT /auth/settings` |
+| Decisions | `GET /decisions?op=…`, `POST /decisions/{id}/undo` |
+| History | `GET /tracks/{uid}/history`, `POST /history/{uid}/delete` |
 | Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics` |
 | Plugins | `GET/POST /plugins`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
 | Tracker profiles | `GET/POST /tracker-profiles`, `GET/DELETE /tracker-profiles/{name}` |
@@ -224,7 +260,7 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 | Correlation | `GET/PUT /correlation/settings`, `GET /correlation/suggestions`, `POST /correlation/suggestions/{id}/accept\|reject`, `POST /tracks/{uid}/split`, `/tracks/do-not-pair`, `GET /correlation/decisions` |
 | Registry | `GET/POST /registry/entities`, `GET/PUT/DELETE /registry/entities/{id}`, `GET /registry/fields`, `GET /registry/export`, `POST /registry/import-sheet` |
 | Schema | `GET /schema`, `PUT/DELETE /schema/draft`, `POST /schema/draft/publish` |
-| Settings | `GET/PUT /settings`, `GET /public/banner`, `GET /export/tracks`, `/export/config`, `POST /admin/purge` |
+| Settings | `GET/PUT /settings`, `GET /public/banner`, `/public/warning-banner`, `GET /export/tracks`, `/export/config`, `POST /admin/purge` |
 
 ## Running
 
@@ -264,6 +300,11 @@ OpenTrack needs no UI or operator to run. The UI is only a client of the REST AP
 - **The roles run separately.** A node that only collects and correlates needs `sources` and
   `engine`, with `writer` to publish. It can start from a database prepared elsewhere
   (`OT_SQLITE_PATH`).
+- **Accounts without the UI:** `opentrack user list|add|role|passwd|disable|enable|token`
+  (passwords come from standard input). Machines sign in with an API token or a client
+  certificate.
+- **A lean build** without SAML (`cargo build --no-default-features`) needs no libxmlsec1. It
+  still has accounts, API tokens, client certificates and OpenStare sign-in.
 - **What a node needs:** the `opentrack` binary and Redis, plus NATS to publish.
 
 This suits unattended or embedded nodes, such as a vehicle, a drone or a remote sensor site. Each
@@ -286,6 +327,12 @@ share one picture: synchronisation between nodes is on the roadmap.
 | `OT_NATS_MAX_AGE_HOURS` | `24` | message age limit for a stream OpenTrack creates |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | per-track write coalescing |
 | `OT_UI_DIR` | `ui/dist` | built UI served at `/` |
+| `OT_AUTH` | `on` | `off` turns sign-in off (development only: every caller is an admin) |
+| `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | the first admin account, made when there are none |
+| `OT_SESSION_SECRET` | made on first start | key session tokens are signed with (32+ characters); unset, `session.key` beside the database |
+| `OT_PUBLIC_URL` | | where browsers reach OpenTrack (`https://host:8090`); SAML needs it |
+| `OT_TLS_CERT`, `OT_TLS_KEY` | | serve the API and UI over TLS (cookies become `Secure`) |
+| `OT_TLS_CLIENT_CA` | | with TLS, accept client certificates this CA signed, as the accounts Settings → Security maps them to |
 | `OT_LOG`, `OT_LOG_FORMAT` | `info`, text | `OT_LOG_FORMAT=json` for JSON logs |
 
 ## Tests

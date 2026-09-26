@@ -10,6 +10,7 @@ consumer (OpenStare) needs.
 | Stream | `TRACKS` | `OT_NATS_STREAM` |
 | Subjects | `tracks.>` | `OT_NATS_TRACKS_SUBJECT` (the prefix) |
 | One track | `tracks.tms-OTK000000123` | |
+| A deleted history point | `tracks.history.tms-OTK000000123.<Unix ms>` | |
 | Messages kept | 1 per subject (the latest) | |
 | Max age | 24 h without a newer message | `OT_NATS_MAX_AGE_HOURS` |
 | Duplicate window | 2 min | |
@@ -28,7 +29,7 @@ classification or the track's entity changes); a track with no report for 6 h is
 
 | Header | Value |
 |--------|-------|
-| `OT-Op` | `upsert` or `delete` |
+| `OT-Op` | `upsert`, `delete` or `delete_history_point` |
 | `OT-Schema` | `opentrack.track.v2` |
 | `Nats-Msg-Id` | unique per update, e.g. `opentrack-OTK:1790303694426-0` |
 
@@ -70,7 +71,7 @@ attribute without a value is omitted rather than sent as null.
     "destination": "LONG BEACH",
     "state": "confirmed"
   },
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.2.2", "correlation": "correlation-4" },
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" },
   "published_at": "2026-09-25T03:21:17.000676087Z"
 }
 ```
@@ -168,9 +169,37 @@ ages out, so a consumer that starts later still learns of it.
   "uid": "OTK000000001",
   "reason": "no report for 21600s",
   "deleted_at": "2026-09-25T02:34:54.426550476Z",
-  "publisher": { "node_id": "opentrack-OTK", "version": "0.2.2", "correlation": "correlation-4" }
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" }
 }
 ```
+
+## `delete_history_point`
+
+A track manager deleted a bad point from the track's position history. The consumer drops the
+track's point at `observed_at` from what it shows of the track's trail. When it was the track's
+latest point, an `upsert` follows with the track back at the point before.
+
+Each deletion has its own subject, `tracks.history.tms-<UID>.<Unix ms of the point>`. It never
+replaces the track's own latest message, and the stream keeps every deletion until it ages out.
+
+```json
+{
+  "schema": "opentrack.track.v2",
+  "op": "delete_history_point",
+  "track_id": "tms-OTK000000001",
+  "uid": "OTK000000001",
+  "observed_at": "2026-09-26T21:40:03.120Z",
+  "position": { "latitude": 33.0, "longitude": -117.0 },
+  "reason": "a GPS jump",
+  "decision_id": 4812,
+  "deleted_at": "2026-09-26T21:41:10.004Z",
+  "publisher": { "node_id": "opentrack-OTK", "version": "0.3.0", "correlation": "correlation-4" }
+}
+```
+
+**Consumers must ignore what they do not know.** Take a message's kind from `OT-Op` (or `op`), and
+skip any kind or subject you don't handle. A consumer of `tracks.>` that reads every message as a
+track update should filter on `OT-Op: upsert` and `delete`, or subscribe to `tracks.tms-*` only.
 
 ## Other subjects
 

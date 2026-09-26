@@ -17,6 +17,16 @@ services:
       OT_NATS_STREAM: ${OT_NATS_STREAM:-TRACKS}
       OT_NATS_TRACKS_SUBJECT: ${OT_NATS_TRACKS_SUBJECT:-tracks}
       OT_SITE_CODE: ${OT_SITE_CODE:-OTK}
+      # Sign-in (see the README): the first admin, where browsers reach
+      # OpenTrack (for SAML), and TLS with optional client certificates.
+      OT_AUTH: ${OT_AUTH:-on}
+      OT_ADMIN_EMAIL: ${OT_ADMIN_EMAIL:-}
+      OT_ADMIN_PASSWORD: ${OT_ADMIN_PASSWORD:-}
+      OT_SESSION_SECRET: ${OT_SESSION_SECRET:-}
+      OT_PUBLIC_URL: ${OT_PUBLIC_URL:-}
+      OT_TLS_CERT: ${OT_TLS_CERT:-}
+      OT_TLS_KEY: ${OT_TLS_KEY:-}
+      OT_TLS_CLIENT_CA: ${OT_TLS_CLIENT_CA:-}
       OT_LOG: ${OT_LOG:-info}
     volumes:
       # SQLite: sources, schema, registry, cards, decisions and the track graph.
