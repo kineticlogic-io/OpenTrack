@@ -96,7 +96,9 @@ pub fn export(entities: &[Entity]) -> Sheet {
         .iter()
         .flat_map(|e| e.attributes.iter().map(|a| (a.key.as_str(), a.kind)))
         .collect();
-    let mut header: Vec<String> = ["entity_id", "name", "status"].map(String::from).to_vec();
+    let mut header: Vec<String> = ["entity_id", "name", "status", "publish"]
+        .map(String::from)
+        .to_vec();
     header.extend(MINIMUM_COLUMNS.map(String::from));
     header.extend(schemes.iter().map(|s| format!("id:{s}")));
     header.extend(
@@ -111,6 +113,11 @@ pub fn export(entities: &[Entity]) -> Sheet {
                 e.id.clone(),
                 e.name.clone().unwrap_or_default(),
                 e.status.clone(),
+                match e.publish {
+                    Some(ot_store::registry::Publish::Always) => "always".into(),
+                    Some(ot_store::registry::Publish::Never) => "never".into(),
+                    None => String::new(),
+                },
             ];
             for k in MINIMUM_COLUMNS {
                 row.push(e.field(k).map(|v| text(&v)).unwrap_or_default());
@@ -257,6 +264,8 @@ enum Column {
     EntityId,
     Name,
     Status,
+    /// The publish override: `always`, `never`, or empty for automatic.
+    Publish,
     /// One of the minimum after name, by field name.
     Minimum(&'static str),
     Identifier(String),
@@ -279,6 +288,8 @@ fn columns(header: &[String]) -> Result<Vec<Column>, String> {
             Column::Name
         } else if lower == "status" {
             Column::Status
+        } else if lower == "publish" {
+            Column::Publish
         } else if let Some(m) = MINIMUM_COLUMNS.iter().find(|m| **m == lower) {
             Column::Minimum(m)
         } else if let Some(s) = prefixed("id:") {
@@ -314,7 +325,7 @@ fn columns(header: &[String]) -> Result<Vec<Column>, String> {
     }
     if !unknown.is_empty() {
         return Err(format!(
-            "unknown columns: {} (expected entity_id, name, status, {}, id:<scheme>, attr:<key>:<type>)",
+            "unknown columns: {} (expected entity_id, name, status, publish, {}, id:<scheme>, attr:<key>:<type>)",
             unknown.join(", "),
             MINIMUM_COLUMNS.join(", ")
         ));
@@ -353,10 +364,21 @@ pub fn plan(
         let number = i + 2;
         let cell = |c: usize| row.get(c).map(|s| s.trim()).unwrap_or("");
         let (mut id, mut name, mut status) = (String::new(), None, None);
+        // Only a sheet with the column changes the override (empty: automatic).
+        let mut publish: Option<Result<Option<ot_store::registry::Publish>, String>> = None;
         let mut idents: Vec<(String, String)> = Vec::new();
         let mut values: Vec<(&Column, &str)> = Vec::new();
         for (c, col) in cols.iter().enumerate() {
             let v = cell(c);
+            if matches!(col, Column::Publish) {
+                publish = Some(match v.to_ascii_lowercase().as_str() {
+                    "" | "auto" | "automatic" => Ok(None),
+                    "always" => Ok(Some(ot_store::registry::Publish::Always)),
+                    "never" => Ok(Some(ot_store::registry::Publish::Never)),
+                    other => Err(format!("publish {other:?} must be always, never or empty")),
+                });
+                continue;
+            }
             if v.is_empty() {
                 continue;
             }
@@ -371,7 +393,7 @@ pub fn plan(
                         .map(|x| (s.clone(), x.to_owned())),
                 ),
                 Column::Minimum(_) | Column::Attribute(..) => values.push((col, v)),
-                Column::Ignored => {}
+                Column::Publish | Column::Ignored => {}
             }
         }
         if id.is_empty() && name.is_none() && idents.is_empty() && values.is_empty() {
@@ -443,6 +465,11 @@ pub fn plan(
         });
         if let Some(n) = &name {
             after.name = Some(n.clone());
+        }
+        match &publish {
+            Some(Ok(p)) => after.publish = *p,
+            Some(Err(e)) => errors.push(e.clone()),
+            None => {}
         }
         if let Some(s) = &status {
             after.status = s.clone();
@@ -553,6 +580,7 @@ mod tests {
                 "entity_id",
                 "name",
                 "status",
+                "publish",
                 "class_name",
                 "domain",
                 "affiliation",
@@ -572,6 +600,7 @@ mod tests {
                 "TED STEVENS",
                 "active",
                 "",
+                "",
                 "surface",
                 "",
                 "",
@@ -590,6 +619,31 @@ mod tests {
             // Leading zeros survive.
             assert_eq!(back.rows[0], sheet.rows[0], "{format:?}");
         }
+    }
+
+    #[test]
+    fn the_publish_override_goes_out_and_comes_back() {
+        let mut e = ted();
+        e.publish = Some(ot_store::registry::Publish::Never);
+        let out = export(&[e]);
+        assert_eq!(out.rows[0][3], "never");
+        // Set, cleared (automatic), and left alone by a sheet without the column.
+        let plans = run(&sheet(&["entity_id", "publish"], &[&["ent-ted", "always"]]));
+        let after = plans[0].entity.as_ref().unwrap();
+        assert_eq!(
+            (plans[0].action, after.publish),
+            ("update", Some(ot_store::registry::Publish::Always))
+        );
+        let plans = run(&sheet(
+            &["entity_id", "publish"],
+            &[&["ent-ted", "sometimes"]],
+        ));
+        assert_eq!(plans[0].action, "error");
+        let plans = run(&sheet(
+            &["entity_id", "name"],
+            &[&["ent-ted", "TED STEVENS"]],
+        ));
+        assert_eq!(plans[0].action, "unchanged");
     }
 
     fn run(sheet: &Sheet) -> Vec<Planned> {
