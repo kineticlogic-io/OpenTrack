@@ -47,7 +47,7 @@ pub fn identity_keys(obs: &Observation) -> Vec<String> {
 
 /// The registry entity an observation resolved to, when the match is
 /// trustworthy: corroborated (`applied` on older records) and without
-/// conflicting identifiers. The same rule decides whether a card applies.
+/// conflicting identifiers. The same rule decides whether entity links apply.
 pub fn trusted_entity(obs: &Observation) -> Option<String> {
     let r = obs.ext.get("registry")?;
     let trusted = r
@@ -1097,8 +1097,12 @@ pub fn best_view(
             .cmp(&a.priority)
             .then(b.obs.observed_at.cmp(&a.obs.observed_at))
     });
+    // Extension values: a source whose entity match is trusted first (its
+    // entity links are the authority), then by priority.
+    let mut by_entity = by_priority.clone();
+    by_entity.sort_by_key(|c| std::cmp::Reverse(c.corroborated()));
     let mut ext = serde_json::Map::new();
-    for c in &by_priority {
+    for c in &by_entity {
         for (k, v) in &c.obs.ext {
             if !v.is_null() && !ext.contains_key(k) {
                 ext.insert(k.clone(), v.clone());

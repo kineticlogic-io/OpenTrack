@@ -42,7 +42,7 @@ const FIELD_COLUMNS: DataTableColumn<FieldRow>[] = [
           OpenTrack <span className="mono">{f.builtin}</span>
         </span>
       ) : (
-        <span className="muted">card, else feed mapping</span>
+        <span className="muted">feed mapping or entity link</span>
       ),
     sortValue: (f) => f.builtin ?? '',
   },
@@ -50,7 +50,7 @@ const FIELD_COLUMNS: DataTableColumn<FieldRow>[] = [
     key: 'used',
     header: 'Fed by',
     width: '16%',
-    render: (f) => (f.builtin ? <span className="muted">—</span> : f.used.join(', ') || <span className="muted">cards only</span>),
+    render: (f) => (f.builtin ? <span className="muted">—</span> : f.used.join(', ') || <span className="muted">no feed yet</span>),
   },
   { key: 'desc', header: 'Notes', render: (f) => f.description ?? (f.enum_values ? f.enum_values.join(' | ') : '') },
 ]
@@ -218,7 +218,7 @@ export default function SchemaPage() {
         persistKey="ot.panel.schemaVersions"
         titleActions={
           <InfoTip label="Output schema versions">
-            The output schema defines the attributes every published track carries and the fields of every card. A published version never changes;
+            The output schema defines the attributes every published track carries. A published version never changes;
             edit a draft, then publish it.
           </InfoTip>
         }
@@ -347,8 +347,8 @@ export default function SchemaPage() {
         titleActions={
           <InfoTip label="Always published">
             The OTH-GOLD minimum (contact and position sets) and a symbol code (SIDC) are in every track message. The output schema adds{' '}
-            <span className="mono">attributes</span>: each field is filled from the entity&apos;s card, else from a feed mapping (
-            <span className="mono">ext.&lt;field&gt;</span>), or linked to an OpenTrack value.
+            <span className="mono">attributes</span>: each field is filled from a feed mapping (<span className="mono">ext.&lt;field&gt;</span>), an
+            entity attribute a pipeline links to it (the entity wins), or an OpenTrack value it is linked to.
           </InfoTip>
         }
       >

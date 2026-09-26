@@ -11,7 +11,7 @@ const LineageGraph = lazy(() => import('./LineageGraph'))
 const REFRESH_MS = 5000
 
 const TABS = [
-  { id: 'card', label: 'Card' },
+  { id: 'card', label: 'Details' },
   { id: 'provenance', label: 'Provenance' },
 ]
 
@@ -44,11 +44,10 @@ function pairedBy(edge: GraphEdge | undefined): string {
   }
 }
 
-/** Where a published attribute's value came from. */
-function origin(f: ExtensionField, card: Record<string, unknown> | null): string {
+/** Where a published attribute's value came from, where that is known. */
+function origin(f: ExtensionField, replaced: boolean): string {
   if (f.builtin) return 'OpenTrack'
-  if (card && card[f.key] !== undefined && card[f.key] !== null) return 'card'
-  return 'feed'
+  return replaced ? 'entity' : ''
 }
 
 /**
@@ -58,13 +57,12 @@ function origin(f: ExtensionField, card: Record<string, unknown> | null): string
  * MIL-STD-2525 symbol), then the output schema's attributes; and its provenance, the source
  * tracks and correlation decisions behind it.
  */
-export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: number }) {
+export function TrackCard({ uid }: { uid: string }) {
   const [tab, setTab] = useState('card')
   const [data, setData] = useState<TrackResponse | null>(null)
   const [missing, setMissing] = useState<string | null>(null)
   const [edges, setEdges] = useState<GraphEdge[] | null>(null)
   const [fields, setFields] = useState<ExtensionField[]>([])
-  const [card, setCard] = useState<Record<string, unknown> | null>(null)
   const [edgesRev, setEdgesRev] = useState(0)
   const [splitting, setSplitting] = useState<string | null>(null)
   const { toast, confirm } = useToast()
@@ -98,25 +96,18 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
     }
   }, [uid, tab, edgesRev])
 
-  // The schema's fields, and the card's own values to tell card from feed.
+  // The latest published output schema's fields.
   const entityId = data?.track.entity_id ?? null
   useEffect(() => {
     let cancelled = false
-    if (entityId) {
-      api.card(entityId).then(
-        (v) => !cancelled && (setFields(v.schema.fields), setCard(v.card?.values ?? {})),
-        () => {},
-      )
-    } else {
-      api.schema().then(
-        (o) => !cancelled && setFields(o.versions.find((v) => v.version === o.latest_published)?.fields ?? []),
-        () => {},
-      )
-    }
+    api.schema().then(
+      (o) => !cancelled && setFields(o.versions.find((v) => v.version === o.latest_published)?.fields ?? []),
+      () => {},
+    )
     return () => {
       cancelled = true
     }
-  }, [entityId, cardVersion])
+  }, [])
 
   const notices = useMemo(() => {
     const out: Record<string, NonNullable<SystemTrack['notices']>> = {}
@@ -196,7 +187,6 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
   ]
   const icon = symbolUrl(m.sidc, 36)
   const attrs = t.attributes ?? {}
-  const cardValues = entityId ? card : null
   return (
     <div className="panel-body">
       <div className="card-head">
@@ -256,7 +246,19 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
               </dd>
               <dt>Subject</dt>
               <dd className="mono">{data.subject}</dd>
+              <dt>Entity</dt>
+              <dd className="mono">{entityId ?? <span className="muted">none</span>}</dd>
             </dl>
+            {(t.notices ?? []).length > 0 && (
+              <div className="stack" style={{ gap: 4 }}>
+                {(t.notices ?? []).map((n) => (
+                  <span key={`${n.key}:${n.source_id}`} className="notice">
+                    <TbAlertTriangle aria-hidden /> <span className="mono">{n.key}</span>: {n.source_id} reports{' '}
+                    <span className="mono">{show(n.feed)}</span>; the entity&apos;s <span className="mono">{show(n.entity)}</span> is published.
+                  </span>
+                ))}
+              </div>
+            )}
             <h3 className="subhead">Attributes</h3>
             {fields.length === 0 ? (
               <span className="muted">The output schema has no attributes. Add fields in the Schema workspace.</span>
@@ -271,21 +273,14 @@ export function TrackCard({ uid, cardVersion }: { uid: string; cardVersion: numb
                       ) : (
                         <>
                           <span className="mono">{show(attrs[f.key])}</span>{' '}
-                          <span className="muted">{origin(f, cardValues)}</span>
+                          <span className="muted">{origin(f, (notices[`ext.${f.key}`] ?? []).length > 0)}</span>
                         </>
                       )}
-                      {(notices[f.key] ?? []).map((n) => (
-                        <span key={n.source_id} className="notice">
-                          <TbAlertTriangle aria-hidden /> {n.source_id} reports <span className="mono">{show(n.feed)}</span>;
-                          the card value is published.
-                        </span>
-                      ))}
                     </dd>
                   </div>
                 ))}
               </dl>
             )}
-            {!entityId && <span className="muted">No card yet. Edit to start one.</span>}
           </div>
         ) : (
           <div className="stack">

@@ -39,7 +39,7 @@ impl Db {
 
     /// Delete the track graph's history: every source and system track node
     /// and the edges touching them, and the correlation suggestions. The
-    /// decision log, configuration, registry and cards stay; UIDs are never
+    /// decision log, configuration, registry stay; UIDs are never
     /// reused. Returns (nodes, edges) deleted.
     pub fn purge_track_history(&mut self, decision: Decision) -> Result<(usize, usize)> {
         self.write(|tx| {

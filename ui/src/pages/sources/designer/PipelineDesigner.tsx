@@ -3,7 +3,7 @@ import { TbDownload, TbPlus, TbTrash } from 'react-icons/tb'
 import { Button, Modal, SaveButton, useToast } from 'staresdk'
 import { api, type SchemaOverview, type SourceSpec } from '../../../api/client'
 import { errorMessage } from '../../../lib/format'
-import { pipelineStages } from '../../../lib/pipeline'
+import { pipelineStages, DEFAULT_LINKS } from '../../../lib/pipeline'
 import { usePreview } from '../../../lib/usePreview'
 import { PreviewResults } from '../PreviewResults'
 import { MapEditor } from './MapEditor'
@@ -24,8 +24,8 @@ const OPTIONAL: { id: string; label: string; add: (p: Pipeline) => Pipeline; rem
   },
   {
     id: 'registry',
-    label: 'Registry settings',
-    add: (p) => ({ ...p, registry: {} }),
+    label: 'Entity links',
+    add: (p) => ({ ...p, registry: { links: DEFAULT_LINKS } }),
     remove: (p) => ({ ...p, registry: undefined }),
   },
   {
@@ -157,7 +157,10 @@ export function PipelineDesigner({
       editor = p.registry ? (
         <RegistryForm value={p.registry as Obj} onChange={(registry) => setPipeline({ ...p, registry })} />
       ) : (
-        <span className="muted">Runs with defaults: resolves identifiers so cards reach the track, applies nothing. Add registry settings to apply entity fields.</span>
+        <span className="muted">
+          Runs with defaults: resolves identifiers, and at a corroborated match the entity&apos;s name, class name, domain, affiliation, track type
+          and symbol populate the track. Configure it to choose the links.
+        </span>
       )
       break
     case 'affiliation':

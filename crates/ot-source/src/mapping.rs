@@ -150,7 +150,10 @@ const TARGETS: &[(&str, FieldType)] = &[
 ];
 
 fn target_type(field: &str) -> Option<FieldType> {
-    if let Some(key) = field.strip_prefix("ext.") {
+    if let Some(key) = field
+        .strip_prefix("ext.")
+        .or_else(|| field.strip_prefix("entity."))
+    {
         return (!key.is_empty() && !key.contains('.')).then_some(FieldType::Text);
     }
     TARGETS.iter().find(|(f, _)| *f == field).map(|(_, t)| *t)
@@ -261,6 +264,12 @@ impl MappingSpec {
             for (target, spec) in &rule.fields {
                 let v = coerce(target, spec.eval(record));
                 if !v.is_null() {
+                    // `entity.<key>` updates the track's entity (see
+                    // `registry::ENTITY_EXT`); it travels as `ext.entity.<key>`.
+                    let target = match target.strip_prefix("entity.") {
+                        Some(key) => format!("ext.{}.{key}", crate::registry::ENTITY_EXT),
+                        None => target.clone(),
+                    };
                     let path: Path = target.parse().expect("validated target");
                     path.set(&mut fields, v);
                 }
@@ -291,7 +300,7 @@ fn coerce(target: &str, v: Value) -> Value {
         Some(FieldType::Number) => as_f64(&v).map_or(Value::Null, |x| {
             serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number)
         }),
-        Some(FieldType::Text) if target.starts_with("ext.") => v,
+        Some(FieldType::Text) if target.starts_with("ext.") || target.starts_with("entity.") => v,
         Some(FieldType::Text) => {
             let s = as_string(&v);
             if s.trim().is_empty() {

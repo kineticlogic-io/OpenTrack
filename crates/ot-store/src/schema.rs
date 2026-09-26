@@ -20,6 +20,15 @@ pub struct SchemaVersion {
 }
 
 impl Db {
+    /// The newest published output schema version (0 before any).
+    pub fn latest_published_schema(&self) -> Result<u32> {
+        Ok(self.connection().query_row(
+            "SELECT coalesce(max(version), 0) FROM schema_versions WHERE status = 'published'",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn schema_versions(&self) -> Result<Vec<SchemaVersion>> {
         let mut stmt = self.connection().prepare(
             "SELECT version, status, published_at_ms, notes FROM schema_versions ORDER BY version",

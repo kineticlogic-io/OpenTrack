@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TbPencil, TbSearch } from 'react-icons/tb'
+import { TbPencil, TbPlus, TbSearch } from 'react-icons/tb'
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, useToast, type DataTableColumn } from 'staresdk'
 import { MapView, type MapPoint } from 'staresdk/map-view'
-import { api, type TrackRow } from '../../api/client'
+import { api, type Entity, type TrackRow } from '../../api/client'
 import { ago, errorMessage, fmtNum, STATE_COLOR } from '../../lib/format'
 import { affiliationColor } from '../../lib/palette'
 import { symbolUrl } from '../../lib/symbol'
-import { CardEditor } from './CardEditor'
+import { EntityEditor } from '../registry/EntityEditor'
 import { TrackCard } from './TrackCard'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
@@ -54,17 +54,17 @@ const COLUMNS: DataTableColumn<TrackRow>[] = [
     sortValue: (t) => t.state,
   },
   {
-    key: 'card',
-    header: 'Card',
-    width: 90,
+    key: 'entity',
+    header: 'Entity',
+    width: 100,
     render: (t) =>
       t.notices > 0 ? (
-        <Badge color="warning" size="sm" title="Card values differ from what a feed reports">
-          differs {t.notices}
+        <Badge color="warning" size="sm" title="The entity replaced values a feed reports">
+          replaced {t.notices}
         </Badge>
       ) : t.entity_id ? (
         <Badge color="blue" size="sm">
-          card
+          entity
         </Badge>
       ) : (
         ''
@@ -106,7 +106,7 @@ function Filter({ label, any, values, value, onChange }: { label: string; any: s
 
 const distinct = (rows: TrackRow[], pick: (t: TrackRow) => string[]) => [...new Set(rows.flatMap(pick))].sort()
 
-/** Every live track on a map and in a table, with the selected one's card. */
+/** Every live track on a map and in a table, with the selected one's details and entity. */
 export default function TrackDbPage({ selected, onSelect }: { selected: string; onSelect: (uid: string) => void }) {
   const { toast } = useToast()
   const [rows, setRows] = useState<TrackRow[] | null>(null)
@@ -116,8 +116,6 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const [affiliation, setAffiliation] = useState<string | null>(null)
   const [source, setSource] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
-  // Bumped after a card save, so the card view reloads its values.
-  const [cardVersion, setCardVersion] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -186,19 +184,26 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
           title="Track card"
           persistKey="ot.panel.trackcard"
           actions={
-            selected && (
-              <Button size="sm" variant="secondary" icon={<TbPencil />} onClick={() => setEditing(true)}>
-                Edit
+            selected &&
+            row && (
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={row.entity_id ? <TbPencil /> : <TbPlus />}
+                title={row.entity_id ? 'Edit the entity this track resolves to' : 'Create an entity from this track'}
+                onClick={() => setEditing(true)}
+              >
+                {row.entity_id ? 'Edit entity' : 'New entity'}
               </Button>
             )
           }
         >
           <div className="workspace-body">
             {selected ? (
-              <TrackCard key={selected} uid={selected} cardVersion={cardVersion} />
+              <TrackCard key={selected} uid={selected} />
             ) : (
               <div className="panel-body">
-                <span className="muted">Select a track on the map or in the table to see its card.</span>
+                <span className="muted">Select a track on the map or in the table to see its details.</span>
               </div>
             )}
           </div>
@@ -245,15 +250,17 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
         />
       </CollapsiblePanel>
 
-      {selected && (
-        <CardEditor
-          key={`${selected}:${row?.entity_id ?? ''}`}
-          entityId={row?.entity_id}
-          fromTrack={selected}
-          title={row ? displayName(row) || row.track_id : selected}
+      {selected && row && (
+        <EntityEditor
+          entityId={row.entity_id}
+          seed={{
+            name: displayName(row) || null,
+            domain: (row.domain !== 'unknown' ? row.domain : null) as Entity['domain'],
+            identifiers: (row.identifiers ?? []).map((i) => ({ ...i, expected_name: row.name ?? null })),
+          }}
           open={editing}
           onClose={() => setEditing(false)}
-          onSaved={() => setCardVersion((v) => v + 1)}
+          onSaved={() => {}}
         />
       )}
     </div>

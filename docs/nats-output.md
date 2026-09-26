@@ -22,7 +22,7 @@ Because the stream keeps the latest message per track, a consumer that starts la
 current picture by reading the stream from the start (for example an ordered consumer with
 `DeliverPolicy::LastPerSubject` on `tracks.>`), then keeps receiving updates. Live tracks are
 republished whenever they change, at most every 5 s each (immediately when identity,
-classification or a card changes); a track with no report for 6 h is dropped and deleted.
+classification or the track's entity changes); a track with no report for 6 h is dropped and deleted.
 
 ## Headers
 
@@ -121,12 +121,13 @@ standard identity, so `sidc`, `affiliation` and `force_code` always agree.
 
 For each output schema field, OpenTrack takes the value from, in order:
 
-1. **The entity's card**: values an admin entered on the baseball card of the ship, aircraft or
-   emitter the track resolves to (through its identifiers). The card is the authority: when a feed
-   reports something different, the card value is published and OpenTrack shows operators the
-   difference.
-2. **A feed**, through the source's mapping to that field.
-3. **OpenTrack itself**, for fields linked to a built-in value (lifecycle `state`, `speed_mps`,
+1. **The track**, under `ext.<field>`: a feed's value, through the source's mapping to that
+   field, or the value of the registry entity the track resolves to (through its identifiers),
+   where the source's pipeline links an entity attribute to the field. The entity is the
+   authority: when a feed reports something different, the entity's value is published and
+   OpenTrack shows operators the difference. The same holds for the OTH-GOLD fields a pipeline
+   links (by default the entity's name, class name, domain, affiliation, track type and symbol).
+2. **OpenTrack itself**, for fields linked to a built-in value (lifecycle `state`, `speed_mps`,
    `identifiers`, `sources`, ...). `confidence` is the probability that the track is a real
    object, 0 to 1: `1 − Π(1 − existence · pairing confidence)` over its source tracks, where a
    tracker's tracks carry their existence probability and track feeds count as 1 unless they

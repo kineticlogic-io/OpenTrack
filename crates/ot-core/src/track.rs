@@ -34,14 +34,16 @@ pub struct Contributor {
     pub existence: Option<f64>,
 }
 
-/// A card value that differs from what a feed reports for the same
-/// attribute. The card wins; the difference is surfaced to operators.
+/// A track field where the entity's value replaced a different one the
+/// feed reported (an entity → track link). The entity wins; the difference
+/// is surfaced to operators.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttributeNotice {
-    /// Output schema field key.
+    /// Track field, e.g. `classification.cot_type` or `ext.destination`.
     pub key: String,
-    /// The value on the entity's card (published).
-    pub card: serde_json::Value,
+    /// The entity's value (published).
+    #[serde(alias = "card")]
+    pub entity: serde_json::Value,
     /// What the feed reported (not published).
     pub feed: serde_json::Value,
     pub source_id: String,
@@ -64,15 +66,16 @@ pub struct SystemTrack {
     pub aliases: Vec<Uid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
-    /// Registry entity (baseball card) this track resolves to, when the
+    /// Registry entity this track resolves to, when the
     /// registry match is corroborated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
-    /// Output schema values, resolved from the card, the feed and built-ins;
+    /// Output schema values, resolved from the track's values (feeds and
+    /// entity links) and built-ins;
     /// published as `attributes`.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub attributes: serde_json::Map<String, serde_json::Value>,
-    /// Card values that differ from the feed.
+    /// Track fields where the entity replaced what a feed reports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<AttributeNotice>,
     pub first_seen: DateTime<Utc>,

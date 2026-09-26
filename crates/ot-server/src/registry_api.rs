@@ -1,18 +1,19 @@
-//! The registry over the API: browse and search entities with their cards,
-//! and move the whole registry in and out as a spreadsheet (see
+//! The registry over the API: browse, create, edit and delete entities, and
+//! move the whole registry in and out as a spreadsheet (see
 //! [`crate::registry_sheet`]).
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use ot_core::Uid;
+use ot_store::{Entity, RegistryIdentifier};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::actor;
-use crate::cards::latest_schema;
 use crate::control::{ApiError, AppState};
 use crate::registry_sheet::{self, Format, Planned};
 
@@ -21,7 +22,12 @@ const MAX_SHEET_BYTES: usize = 32 * 1024 * 1024;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/registry/entities", get(list))
+        .route("/registry/entities", get(list).post(create))
+        .route(
+            "/registry/entities/{id}",
+            get(view).put(save).delete(delete),
+        )
+        .route("/registry/fields", get(fields))
         .route("/registry/export", get(export))
         .route(
             "/registry/import-sheet",
@@ -38,28 +44,143 @@ struct ListQuery {
     offset: usize,
 }
 
-/// A page of entities (all, or those whose name or identifier matches `q`),
-/// each with its card.
+/// A page of entities (all, or those whose name or identifier matches `q`).
 async fn list(
     State(s): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
-    let (page, total) = s
+    let (entities, total) = s
         .with_db(move |db| db.list_entities(&q.q, limit, q.offset))
         .await?;
-    let entities: Vec<Value> = page
+    Ok(Json(json!({ "entities": entities, "total": total })))
+}
+
+/// Entity field names a pipeline can link: the OTH-GOLD minimum, and every
+/// attribute key in use (with how many entities have it).
+async fn fields(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let keys = s.with_db(|db| db.attribute_keys()).await?;
+    Ok(Json(json!({
+        "minimum": ot_store::registry::MINIMUM,
+        "attributes": keys
+            .into_iter()
+            .map(|(k, n)| json!({"key": k, "entities": n}))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// The entity, its history, and the live tracks it speaks for (with what
+/// their feeds reported where the entity replaced it).
+async fn entity_view(s: &AppState, id: String) -> Result<Value, ApiError> {
+    let key = id.clone();
+    let (entity, revisions) = s
+        .with_db(move |db| Ok((db.entity(&key)?, db.entity_revisions(&key, 50)?)))
+        .await?;
+    let entity = entity.ok_or_else(|| ApiError::not_found(format!("entity {id}")))?;
+    let tracks: Vec<Value> = s
+        .redis
+        .list_system_tracks()
+        .await?
         .into_iter()
-        .map(|(e, card)| {
+        .filter(|t| t.entity_id.as_deref() == Some(id.as_str()))
+        .map(|t| {
             json!({
-                "id": e.id, "name": e.name, "status": e.status, "fields": e.fields,
-                "identifiers": e.identifiers,
-                "card": card.as_ref().map(|c| &c.values),
-                "card_updated_at_ms": card.as_ref().map(|c| c.updated_at_ms),
+                "uid": t.uid, "track_id": t.uid.doc_id(), "state": t.state,
+                "source_id": t.view.source_id, "last_seen": t.last_seen,
+                "notices": t.notices,
             })
         })
         .collect();
-    Ok(Json(json!({ "entities": entities, "total": total })))
+    Ok(json!({ "entity": entity, "revisions": revisions, "tracks": tracks }))
+}
+
+async fn view(State(s): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(entity_view(&s, id).await?))
+}
+
+async fn save(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(mut entity): Json<Entity>,
+) -> Result<Json<Value>, ApiError> {
+    entity.id = id.clone();
+    let actor = actor(&headers);
+    let key = id.clone();
+    s.with_db(move |db| {
+        if db.entity(&key)?.is_none() {
+            return Err(ot_store::StoreError::NotFound(format!("entity {key}")));
+        }
+        db.save_entity(&entity, &actor)
+    })
+    .await?;
+    Ok(Json(entity_view(&s, id).await?))
+}
+
+async fn delete(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let actor = actor(&headers);
+    s.with_db(move |db| db.delete_entity(&id, &actor)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct CreateBody {
+    /// Seed the entity's name and identifiers from this live track.
+    #[serde(default)]
+    from_track: Option<String>,
+    #[serde(flatten)]
+    entity: Entity,
+}
+
+async fn create(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let mut entity = body.entity;
+    entity.id = String::new();
+    if let Some(raw) = &body.from_track {
+        let uid: Uid = Uid::from_doc_id(raw)
+            .or_else(|_| raw.parse())
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        let t = s
+            .redis
+            .get_system_track(uid)
+            .await?
+            .ok_or_else(|| ApiError::not_found(format!("live system track {uid}")))?;
+        if let Some(e) = &t.entity_id {
+            return Err(ApiError::conflict(format!(
+                "track {uid} already resolves to entity {e}"
+            )));
+        }
+        entity.name = entity.name.or(t.view.name.clone());
+        for i in &t.view.identifiers {
+            if !entity
+                .identifiers
+                .iter()
+                .any(|x| x.scheme == i.scheme && x.value == i.value)
+            {
+                entity.identifiers.push(RegistryIdentifier {
+                    scheme: i.scheme.clone(),
+                    value: i.value.clone(),
+                    expected_name: t.view.name.clone(),
+                    source: None,
+                });
+            }
+        }
+    }
+    if entity.identifiers.is_empty() {
+        return Err(ApiError::unprocessable(
+            "an entity needs at least one identifier (scheme and value), so tracks can find it",
+        ));
+    }
+    let actor = actor(&headers);
+    let saved = s.with_db(move |db| db.save_entity(&entity, &actor)).await?;
+    Ok((StatusCode::CREATED, Json(entity_view(&s, saved.id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -77,16 +198,15 @@ fn format_of(q: &FormatQuery) -> Result<Format, ApiError> {
         .ok_or_else(|| ApiError::bad_request(format!("format {:?}: use xlsx or csv", q.format)))
 }
 
-/// The whole registry with its cards as a spreadsheet download.
+/// The whole registry as a spreadsheet download.
 async fn export(
     State(s): State<AppState>,
     Query(q): Query<FormatQuery>,
 ) -> Result<Response, ApiError> {
     let format = format_of(&q)?;
-    let schema = latest_schema(&s).await?;
     let (all, _) = s.with_db(|db| db.list_entities("", usize::MAX, 0)).await?;
     let bytes = tokio::task::spawn_blocking(move || {
-        registry_sheet::write(&registry_sheet::export(&all, &schema), format)
+        registry_sheet::write(&registry_sheet::export(&all), format)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))?
@@ -133,8 +253,6 @@ async fn import(
         format: q.format.clone(),
     })?;
     let sheet = registry_sheet::read(&body, format).map_err(ApiError::unprocessable)?;
-    let schema = latest_schema(&s).await?;
-    let plan_schema = schema.clone();
     let planned = s
         .with_db(move |db| {
             // Lookups fail only on a database error: remember the first.
@@ -151,12 +269,7 @@ async fn import(
             let db: &ot_store::Db = db;
             let result = registry_sheet::plan(
                 &sheet,
-                &plan_schema,
-                &mut |id| {
-                    let e = keep(&failure, db.registry_entity(id))?;
-                    let c = keep(&failure, db.card(id));
-                    Some((e, c))
-                },
+                &mut |id| keep(&failure, db.entity(id)),
                 &mut |scheme, value| {
                     keep(&failure, db.registry_resolve(scheme, value)).map(|e| e.id)
                 },
@@ -189,21 +302,9 @@ async fn import(
     }
     let actor = actor(&headers);
     let label = q.label.unwrap_or_else(|| "spreadsheet import".into());
-    let entities: Vec<ot_store::RegistryEntity> =
-        rows.iter().filter_map(|r| r.entity.clone()).collect();
-    let cards: Vec<(String, serde_json::Map<String, Value>)> = rows
-        .iter()
-        .filter_map(|r| r.card.clone().map(|c| (r.entity_id.clone(), c)))
-        .collect();
-    let version = schema.version;
+    let entities: Vec<Entity> = rows.iter().filter_map(|r| r.entity.clone()).collect();
     let imported = s
-        .with_db(move |db| {
-            let counts = db.registry_import(&entities, &actor, &label)?;
-            for (id, values) in &cards {
-                db.put_card(id, values, version, &actor)?;
-            }
-            Ok(counts)
-        })
+        .with_db(move |db| db.registry_import(&entities, &actor, &label))
         .await?;
     Ok((
         StatusCode::OK,

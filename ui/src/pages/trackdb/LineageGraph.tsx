@@ -7,7 +7,7 @@ const UID_RE = /^[A-Z0-9]{3}\d{9}$/
 
 /** A track's lineage from its graph edges: the source tracks reporting for it (current and
  *  past), the tracker that formed a source track from its source's detections, system tracks
- *  merged into or split from it, and the card it resolves to. */
+ *  merged into or split from it, and the entity it resolves to. */
 export default function LineageGraph({ uid, edges, entityId }: { uid: string; edges: GraphEdge[]; entityId?: string }) {
   const graph = useMemo(() => {
     const nodes = new Map<string, GraphViewNode>()
@@ -50,8 +50,8 @@ export default function LineageGraph({ uid, edges, entityId }: { uid: string; ed
       if (n.id !== uid && !n.id.startsWith('tracker:') && out.filter((e) => e.source === n.id).every((e) => e.ended)) n.tone = 'muted'
     }
     if (entityId) {
-      nodes.set(`card:${entityId}`, { id: `card:${entityId}`, label: entityId, sublabel: 'card' })
-      out.push({ id: 'card', source: uid, target: `card:${entityId}`, label: 'CARD' })
+      nodes.set(`entity:${entityId}`, { id: `entity:${entityId}`, label: entityId, sublabel: 'entity' })
+      out.push({ id: 'entity', source: uid, target: `entity:${entityId}`, label: 'ENTITY' })
     }
     return { nodes: [...nodes.values()], edges: out }
   }, [uid, edges, entityId])

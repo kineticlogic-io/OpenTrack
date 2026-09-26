@@ -35,8 +35,8 @@ docs/nats-output.md  the published track contract, for consumers
 ui/           React + TypeScript (Vite) on openstare's stareSDK components: Overview (status and
               system metrics), Sources (topology, list, add-source wizard, mapping studio with live
               preview), Correlation (suggestions, settings, decisions), Track Database (map,
-              baseball card with provenance, card editor, tracks table), Registry (entities,
-              identifiers and cards; spreadsheet export and import), Schema workspace, Settings
+              track card with provenance, entity editor, tracks table), Registry (entities with
+              identifiers and attributes; editor, spreadsheet export and import), Schema workspace, Settings
               (site name, classification banner, data export, purge)
 ```
 
@@ -101,7 +101,7 @@ off. The same operations are API calls: `/api/v1/correlation/settings`,
 [docs/algorithms.md](docs/algorithms.md).
 
 Storage split: **SQLite** holds everything a person decided or configured (sources, schema,
-mappings, entity cards, the audit log, the track graph); **Redis** holds everything feeds produce
+mappings, the entity registry, the audit log, the track graph); **Redis** holds everything feeds produce
 (`tms:obs:*` streams, `tms:src:*` / `tms:sys:*` live state, the `tms:out` outbox, metrics).
 
 System tracks are published to NATS JetStream, one subject per track: `tracks.tms-<UID>`, where the
@@ -116,18 +116,27 @@ What a track message carries:
   position (the mandatory CTC and POS fields of OS-OTG Rev C), plus a required symbol code
   (`sidc`: MIL-STD-2525C, 2525D or a CoT type, with its standard named).
 * **`attributes`**, designed by the admin in the Schema workspace as an output schema (field name,
-  type, notes). A field's value comes from the entity's **card** (the baseball card an admin fills
-  in on the Cards page, e.g. a ship's contact phone), else from a **feed** mapped to it at
-  onboarding, or from an OpenTrack **built-in** it is linked to (state, speed, identifiers...).
-  The card is the authority; where a feed disagrees, the track and the card show a warning.
+  type, notes). A field's value comes from a **feed** mapped to it at onboarding, from an
+  **entity** attribute a source's pipeline links to it, or from an OpenTrack **built-in** it is
+  linked to (state, speed, identifiers...).
 
-A card belongs to a registry entity, which tracks reach through their identifiers of any scheme;
-**Create card** on a looked-up track starts one with that track's identifiers.
+**Entities.** The registry holds one entity per real-world object: identifiers (one to many, any
+scheme: `mmsi`, `icao`, `elnot`...), a status, the OTH-GOLD minimum (name, class name, domain,
+affiliation, track type, CoT type, SIDC) and free-form attributes (key, type, value). Tracks reach
+an entity through their identifiers, graded against the name it is expected to broadcast. Each
+source's pipeline links entity fields and track fields at a corroborated match, each link one way:
+**entity → track** (the entity is the authority; its value replaces the feed's, and the track
+shows the difference) or **track → entity** (the feed updates the entity, e.g. an AIS
+destination). By default the entity's minimum populates the track. A mapping can also send a
+value straight to the entity with an `entity.<key>` destination (a static-data rule, say). Every
+save is a revision, feed updates included.
 
-The **Registry** tab lists and searches every entity with its identifiers, registry fields and
-card, and opens its card. The whole registry exports as a spreadsheet (XLSX or CSV,
+The **Registry** tab lists and searches every entity, and creates, edits and deletes them: a
+two-column form for the minimum and status, identifiers you add and remove, and a key / type /
+value table of attributes. **New entity** on a track in the Track Database starts one with that
+track's name and identifiers. The whole registry exports as a spreadsheet (XLSX or CSV,
 `GET /api/v1/registry/export?format=xlsx`), one row per entity with `entity_id`, `name`,
-`status`, `id:<scheme>`, `registry:<key>` and `card:<field>` columns, and imports the same way
+`status`, the minimum, `id:<scheme>` and `attr:<key>:<type>` columns, and imports the same way
 (`POST /api/v1/registry/import-sheet`): a dry run shows each row's change first, a row updates
 the entity its id or identifiers name or creates one, blank cells change nothing, an identifier is
 never taken from another entity, and nothing is written while any row has an error.
@@ -140,7 +149,7 @@ at `GET /api/v1/public/banner`. It also
 exports the live tracks (GeoJSON or CSV, as published, with state, confidence and sources) and
 the configuration (sources, schema versions, correlation and instance settings, as one JSON file),
 and **purges** the tracks: every live track is retired (published ones are deleted downstream),
-optionally with the track graph's history; configuration, registry, cards and the decision log
+optionally with the track graph's history; configuration, the registry and the decision log
 stay. A purge asks for the site code to be typed.
 
 ## Running

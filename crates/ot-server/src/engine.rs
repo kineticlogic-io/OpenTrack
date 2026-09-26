@@ -29,9 +29,10 @@
 //! system track left with no reporting source is retired at once.
 //!
 //! It also resolves each track's published `attributes` against the latest
-//! published output schema: the entity's card first (with a notice where a
-//! feed disagrees), then the feed, then linked built-ins. Card and schema
-//! changes are picked up within seconds and republish the affected tracks.
+//! published output schema: the track's `ext` values (from feeds, and from
+//! entity links in the source pipelines, which record where an entity
+//! replaced a feed value), then linked built-ins. A newly published schema is
+//! picked up within seconds and republishes the affected tracks.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
@@ -207,17 +208,15 @@ pub fn lifecycle(track: &SystemTrack, now: DateTime<Utc>, s: &EngineSettings) ->
     }
 }
 
-/// What attribute resolution needs: the latest published output schema and
-/// every card, with the version they were loaded at.
+/// What attribute resolution needs: the latest published output schema.
 #[derive(Default)]
 struct Attributes {
-    version: String,
+    version: u32,
     schema: Option<ExtensionSchema>,
-    cards: HashMap<String, Map<String, Value>>,
 }
 
 /// The entity a track's registry match points to, when it was corroborated
-/// and unambiguous (so its card may speak for the track).
+/// and unambiguous (so its links were used).
 fn entity_of(t: &SystemTrack) -> Option<String> {
     crate::correlate::trusted_entity(&t.view)
 }
@@ -228,10 +227,7 @@ fn resolve(attrs: &Attributes, t: &mut SystemTrack) -> bool {
     let entity_changed = entity != t.entity_id;
     t.entity_id = entity;
     let (values, notices) = match &attrs.schema {
-        Some(schema) => {
-            let card = t.entity_id.as_ref().and_then(|e| attrs.cards.get(e));
-            resolve_attributes(schema, t, card)
-        }
+        Some(schema) => resolve_attributes(schema, t),
         None => (Map::new(), Vec::new()),
     };
     let changed = entity_changed || values != t.attributes || notices != t.notices;
@@ -455,7 +451,7 @@ impl Engine {
                         tracing::warn!(error = %format!("{e:#}"), "correlation settings refresh failed");
                     }
                     if let Err(e) = self.refresh_attributes().await {
-                        tracing::warn!(error = %format!("{e:#}"), "card refresh failed");
+                        tracing::warn!(error = %format!("{e:#}"), "output schema refresh failed");
                     }
                 }
                 _ = reap_tick.tick() => {
@@ -511,25 +507,21 @@ impl Engine {
         Ok(())
     }
 
-    /// Reload cards and the output schema when either changed, and republish
-    /// every live track whose attributes change as a result.
+    /// Reload the output schema when a new version is published, and
+    /// republish every live track whose attributes change as a result.
     async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let known = self.attrs.version.clone();
+        let known = (self.attrs.version, self.attrs.schema.is_some());
         let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Attributes>> {
             let db = c.open_db()?;
-            let version = db.cards_version()?;
-            if version == known {
+            let version = db.latest_published_schema()?;
+            if (version, true) == known {
                 return Ok(None);
             }
             let schema = crate::sources::load_schemas(&db)?
                 .into_values()
                 .max_by_key(|s| s.version);
-            Ok(Some(Attributes {
-                version,
-                schema,
-                cards: db.all_cards()?.into_iter().collect(),
-            }))
+            Ok(Some(Attributes { version, schema }))
         })
         .await??;
         let Some(attrs) = loaded else {
@@ -548,9 +540,8 @@ impl Engine {
         }
         tracing::info!(
             schema = self.attrs.schema.as_ref().map(|s| s.version),
-            cards = self.attrs.cards.len(),
             republished,
-            "cards and output schema loaded"
+            "output schema loaded"
         );
         Ok(())
     }
@@ -2089,26 +2080,25 @@ mod tests {
     }
 
     #[test]
-    fn cards_attach_through_a_corroborated_registry_match() {
+    fn entity_overrides_become_notices_and_stale_matches_link_no_entity() {
         let schema: ExtensionSchema =
             serde_json::from_value(serde_json::json!({"version": 2, "fields": [
                 {"key": "destination", "type": "string"},
-                {"key": "contact_phone", "type": "string"},
                 {"key": "state", "type": "string", "builtin": "state"}
             ]}))
             .unwrap();
-        let card = serde_json::json!({"contact_phone": "+1 555 0100", "destination": "LONG BEACH"});
         let attrs = Attributes {
-            version: "v".into(),
+            version: 2,
             schema: Some(schema),
-            cards: [("ent-1".to_string(), card.as_object().unwrap().clone())].into(),
         };
         let mut o = obs(t0(), "A", Domain::Surface);
         o.ext
-            .insert("destination".into(), serde_json::json!("SAN DIEGO"));
+            .insert("destination".into(), serde_json::json!("LONG BEACH"));
         o.ext.insert(
             "registry".into(),
-            serde_json::json!({"entity_id": "ent-1", "applied": true, "grade": "exact"}),
+            serde_json::json!({"entity_id": "ent-1", "applied": true, "corroborated": true,
+                               "grade": "exact", "overrides": [
+                {"field": "ext.destination", "reported": "SAN DIEGO", "entity": "LONG BEACH"}]}),
         );
         let uid: Uid = "OTK000000001".parse().unwrap();
         let mut t = SystemTrack::from_first_observation(uid, o.clone());
@@ -2116,15 +2106,14 @@ mod tests {
         assert_eq!(t.entity_id.as_deref(), Some("ent-1"));
         assert_eq!(
             Value::Object(t.attributes.clone()),
-            serde_json::json!({"contact_phone": "+1 555 0100", "destination": "LONG BEACH",
-                               "state": "tentative"})
+            serde_json::json!({"destination": "LONG BEACH", "state": "tentative"})
         );
         assert_eq!(t.notices.len(), 1);
         assert_eq!(t.notices[0].feed, "SAN DIEGO");
         // Nothing changed: no republish needed.
         assert!(!resolve(&attrs, &mut t));
 
-        // A stale (uncorroborated) match must not pull in the card.
+        // A stale (uncorroborated) match links no entity.
         o.ext.insert(
             "registry".into(),
             serde_json::json!({"entity_id": "ent-1", "applied": false, "grade": "stale"}),
@@ -2132,8 +2121,6 @@ mod tests {
         let mut stale = SystemTrack::from_first_observation(uid, o);
         resolve(&attrs, &mut stale);
         assert_eq!(stale.entity_id, None);
-        assert_eq!(stale.attributes["destination"], "SAN DIEGO");
-        assert!(stale.notices.is_empty());
     }
 
     // --- Replay: scripted reports through a real engine (Redis + SQLite) ---

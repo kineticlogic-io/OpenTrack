@@ -181,7 +181,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               Configuration
             </Button>
           </Row>
-          <Row label="Registry" hint="Entities, identifiers and cards: export and import them on the Registry tab.">
+          <Row label="Registry" hint="Entities with their identifiers and attributes: export and import them on the Registry tab.">
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
               Registry XLSX
             </Button>
@@ -194,7 +194,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
         persistKey="ot.panel.settings.purge"
         titleActions={
           <InfoTip label="Purge">
-            Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry, cards and the decision log stay.
+            Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry and the decision log stay.
           </InfoTip>
         }
       >

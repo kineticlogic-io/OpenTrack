@@ -838,14 +838,15 @@
         "WARSHIP"
       ],
       "military_cot": "^[^-]*-[^-]*-(U|S-C)(-|$)",
-      "apply": {
-        "classification.cot_type": "cot",
-        "callsign": "name",
-        "platform.name": "name",
-        "platform.flag": "flag",
-        "platform.hull": "hull_code",
-        "platform.class": "ship_class"
-      }
+      "links": [
+        { "entity": "cot_type", "track": "classification.cot_type" },
+        { "entity": "name", "track": "callsign" },
+        { "entity": "name", "track": "platform.name" },
+        { "entity": "flag", "track": "platform.flag" },
+        { "entity": "hull_code", "track": "platform.hull" },
+        { "entity": "class_name", "track": "platform.class" },
+        { "entity": "destination", "track": "ext.destination", "direction": "to_entity" }
+      ]
     },
     "affiliation": {
       "country": "platform.flag",

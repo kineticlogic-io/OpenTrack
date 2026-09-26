@@ -7,9 +7,11 @@
 //! per-source metrics, and publishes a live status the API reads. A source
 //! with a raw-output subject (set with recorded consent) also publishes each
 //! of its observations, before correlation, as JSON on that NATS subject.
+//! Entity fields a feed updates (a pipeline's track → entity links) are
+//! written to the registry every few seconds.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -28,7 +30,8 @@ use tokio::task::JoinHandle;
 use crate::config::Common;
 
 const CONFIG_POLL: Duration = Duration::from_secs(2);
-const REGISTRY_POLL: Duration = Duration::from_secs(15);
+const REGISTRY_POLL: Duration = Duration::from_secs(5);
+const ENTITY_WRITE_EVERY: Duration = Duration::from_secs(2);
 const FLUSH_EVERY: Duration = Duration::from_secs(5);
 const TRACKER_HOLD_POLL: Duration = Duration::from_millis(250);
 const STATUS_TTL: Duration = Duration::from_secs(30);
@@ -37,7 +40,11 @@ const STATUS_TTL: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub struct Registry {
     map: RwLock<HashMap<(String, String), RegistryEntry>>,
+    /// Entity fields feeds reported, `(source, entity, fields)`, to write.
+    updates: Mutex<Vec<EntityUpdate>>,
 }
+
+type EntityUpdate = (String, String, Vec<(String, serde_json::Value)>);
 
 impl RegistryLookup for Registry {
     fn lookup(&self, scheme: &str, value: &str) -> Option<RegistryEntry> {
@@ -71,6 +78,23 @@ impl Registry {
         }
         n
     }
+
+    fn queue(&self, source: &str, updates: Vec<(String, Vec<(String, serde_json::Value)>)>) {
+        if let Ok(mut q) = self.updates.lock() {
+            q.extend(
+                updates
+                    .into_iter()
+                    .map(|(entity, fields)| (source.to_owned(), entity, fields)),
+            );
+        }
+    }
+
+    fn take_updates(&self) -> Vec<EntityUpdate> {
+        self.updates
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
+    }
 }
 
 struct Running {
@@ -91,6 +115,7 @@ pub async fn run(
     let (mut config_version, mut registry_version) = (String::new(), String::new());
     let mut config_tick = tokio::time::interval(CONFIG_POLL);
     let mut registry_tick = tokio::time::interval(REGISTRY_POLL);
+    let mut entity_tick = tokio::time::interval(ENTITY_WRITE_EVERY);
     tokio::pin!(shutdown);
     tracing::info!("source workers started");
     loop {
@@ -113,6 +138,26 @@ pub async fn run(
                     }
                     Ok(None) => {}
                     Err(e) => tracing::warn!(error = %e, "registry refresh failed"),
+                }
+            }
+            _ = entity_tick.tick() => {
+                let updates = registry.take_updates();
+                if updates.is_empty() { continue }
+                let c = common.clone();
+                let res = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
+                    let mut db = c.open_db()?;
+                    let mut changed = 0;
+                    for (source, entity, fields) in updates {
+                        if db.update_entity_fields(&entity, &fields, &format!("source:{source}"))? {
+                            changed += 1;
+                        }
+                    }
+                    Ok(changed)
+                }).await?;
+                match res {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(entities = n, "entities updated from feeds"),
+                    Err(e) => tracing::warn!(error = %e, "entity update failed"),
                 }
             }
             _ = config_tick.tick() => {
@@ -401,6 +446,9 @@ async fn pipeline_loop(
                     }
                 }
             }
+        }
+        if !out.entity_updates.is_empty() {
+            registry.queue(id, out.entity_updates);
         }
         for (key, entry) in &out.statics {
             redis

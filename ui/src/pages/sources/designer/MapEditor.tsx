@@ -9,6 +9,7 @@ import { ValueEditor } from './ValueEditor'
 
 type Obj = Record<string, unknown>
 const OTHER_EXT = 'other ext field…'
+const OTHER_ENTITY = 'entity field…'
 const KINDS = ['observation', 'static', 'track']
 
 interface Row {
@@ -33,23 +34,37 @@ const withPath = (spec: ValueSpec | undefined, path: string): ValueSpec =>
 const hasExtras = (spec: ValueSpec | undefined) =>
   spec !== undefined && typeof spec !== 'string' && Object.keys(spec).some((k) => k !== 'path')
 
-/** Pick a mapping target: an OpenTrack field, or an `ext.` field of the mapping's schema version. */
+/** Pick a mapping target: an OpenTrack field, an `ext.` field of the mapping's schema version, or an
+ *  entity field (`entity.<key>`, which updates the track's entity at a corroborated match). */
 function TargetPicker({ value, onChange, options }: { value: string; onChange: (t: string) => void; options: string[] }) {
-  const [other, setOther] = useState(value !== '' && !options.includes(value))
+  const typed = (v: string) => (v.startsWith('entity.') ? OTHER_ENTITY : v !== '' && !options.includes(v) ? OTHER_EXT : null)
+  const [other, setOther] = useState<string | null>(typed(value))
+  const prefix = other === OTHER_ENTITY ? 'entity.' : 'ext.'
   return (
     <div className="value-row" style={{ flexWrap: 'nowrap' }}>
       <FieldSelect
         ariaLabel={`Destination of ${value || 'new field'}`}
         allowNone
-        fields={[...options, OTHER_EXT].map((name) => ({ name }))}
-        value={other ? OTHER_EXT : value || null}
+        fields={[...options, OTHER_EXT, OTHER_ENTITY].map((name) => ({ name }))}
+        value={other ?? (value || null)}
         onChange={(v) => {
-          setOther(v === OTHER_EXT)
-          onChange(v === OTHER_EXT ? (value.startsWith('ext.') ? value : 'ext.') : (v ?? ''))
+          const next = v === OTHER_EXT || v === OTHER_ENTITY ? v : null
+          setOther(next)
+          const p = v === OTHER_ENTITY ? 'entity.' : 'ext.'
+          onChange(next ? (value.startsWith(p) ? value : p) : (v ?? ''))
         }}
         style={{ width: other ? 150 : '100%' }}
       />
-      {other && <Input style={INPUT} aria-label="ext field name" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />}
+      {other && (
+        <Input
+          style={INPUT}
+          aria-label={other === OTHER_ENTITY ? 'entity field name' : 'ext field name'}
+          value={value}
+          placeholder={`${prefix}key`}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+        />
+      )}
     </div>
   )
 }

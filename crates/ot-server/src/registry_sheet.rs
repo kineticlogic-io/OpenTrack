@@ -1,10 +1,13 @@
 //! The registry as a spreadsheet: one row per entity, for export and bulk
 //! import (CSV, or XLSX from any spreadsheet program).
 //!
-//! Columns: `entity_id`, `name`, `status`; `id:<scheme>` for each identifier
-//! scheme (several values of one scheme separated by `;`); `registry:<key>`
-//! for the entity's registry fields (cot, flag, hull_code...); and
-//! `card:<field>` for each card field of the output schema.
+//! Columns: `entity_id`, `name`, `status`; the rest of the OTH-GOLD minimum
+//! (`class_name`, `domain`, `affiliation`, `track_type`, `cot_type`,
+//! `sidc`); `id:<scheme>` for each identifier scheme (several values of one
+//! scheme separated by `;`); and `attr:<key>:<type>` for each attribute
+//! (`attr:length:number`; without a type, an existing attribute keeps its
+//! own and a new one is text). Sheets from earlier versions, with
+//! `registry:<key>` and `card:<field>` columns, import as attributes.
 //!
 //! An import is planned row by row before anything is written. A row updates
 //! the entity its `entity_id` names, else the one its identifiers belong to,
@@ -13,11 +16,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ot_source::schema::{ExtType, ExtensionSchema, check_card};
-use ot_store::cards::EntityWithCard;
-use ot_store::{Card, RegistryEntity, RegistryIdentifier, registry::normalize_scheme};
+use ot_store::{AttrType, Entity, RegistryIdentifier, registry::normalize_scheme};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// A spreadsheet format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,16 @@ pub struct Sheet {
 
 const SHEET_NAME: &str = "Registry";
 
+/// The minimum's columns after entity_id, name and status.
+const MINIMUM_COLUMNS: [&str; 6] = [
+    "class_name",
+    "domain",
+    "affiliation",
+    "track_type",
+    "cot_type",
+    "sidc",
+];
+
 /// A cell's text for a JSON value: strings as they are, anything else as JSON.
 fn text(v: &Value) -> String {
     match v {
@@ -68,34 +79,42 @@ fn text(v: &Value) -> String {
     }
 }
 
+fn type_name(t: AttrType) -> String {
+    serde_json::to_value(t)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
 /// The registry as a sheet, in `entities` order.
-pub fn export(entities: &[(RegistryEntity, Option<Card>)], schema: &ExtensionSchema) -> Sheet {
+pub fn export(entities: &[Entity]) -> Sheet {
     let schemes: BTreeSet<&str> = entities
         .iter()
-        .flat_map(|(e, _)| e.identifiers.iter().map(|i| i.scheme.as_str()))
+        .flat_map(|e| e.identifiers.iter().map(|i| i.scheme.as_str()))
         .collect();
-    let fields: BTreeSet<&str> = entities
+    let attributes: BTreeSet<(&str, AttrType)> = entities
         .iter()
-        .flat_map(|(e, _)| e.fields.keys().map(String::as_str))
-        .collect();
-    let card_fields: Vec<&str> = schema
-        .fields
-        .iter()
-        .filter(|f| f.builtin.is_none())
-        .map(|f| f.key.as_str())
+        .flat_map(|e| e.attributes.iter().map(|a| (a.key.as_str(), a.kind)))
         .collect();
     let mut header: Vec<String> = ["entity_id", "name", "status"].map(String::from).to_vec();
+    header.extend(MINIMUM_COLUMNS.map(String::from));
     header.extend(schemes.iter().map(|s| format!("id:{s}")));
-    header.extend(fields.iter().map(|k| format!("registry:{k}")));
-    header.extend(card_fields.iter().map(|k| format!("card:{k}")));
+    header.extend(
+        attributes
+            .iter()
+            .map(|(k, t)| format!("attr:{k}:{}", type_name(*t))),
+    );
     let rows = entities
         .iter()
-        .map(|(e, card)| {
+        .map(|e| {
             let mut row = vec![
                 e.id.clone(),
                 e.name.clone().unwrap_or_default(),
                 e.status.clone(),
             ];
+            for k in MINIMUM_COLUMNS {
+                row.push(e.field(k).map(|v| text(&v)).unwrap_or_default());
+            }
             for s in &schemes {
                 let values: Vec<&str> = e
                     .identifiers
@@ -105,14 +124,11 @@ pub fn export(entities: &[(RegistryEntity, Option<Card>)], schema: &ExtensionSch
                     .collect();
                 row.push(values.join("; "));
             }
-            for k in &fields {
-                row.push(e.fields.get(*k).map(text).unwrap_or_default());
-            }
-            for k in &card_fields {
+            for (k, t) in &attributes {
                 row.push(
-                    card.as_ref()
-                        .and_then(|c| c.values.get(*k))
-                        .map(text)
+                    e.attribute(k)
+                        .filter(|a| a.kind == *t)
+                        .map(|a| text(&a.value))
                         .unwrap_or_default(),
                 );
             }
@@ -225,19 +241,15 @@ pub struct Planned {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub identifiers_added: Vec<String>,
+    /// Fields the row changes (the minimum's and attributes).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub registry_fields: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub card_fields: Vec<String>,
+    pub fields: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
-    /// The entity to write (with every identifier it should hold), when the
-    /// registry part changes.
+    /// The entity to write (with every identifier it should hold), when it
+    /// changes.
     #[serde(skip)]
-    pub entity: Option<RegistryEntity>,
-    /// The whole card to save, when it changes.
-    #[serde(skip)]
-    pub card: Option<Map<String, Value>>,
+    pub entity: Option<Entity>,
 }
 
 /// What a column holds.
@@ -245,54 +257,66 @@ enum Column {
     EntityId,
     Name,
     Status,
+    /// One of the minimum after name, by field name.
+    Minimum(&'static str),
     Identifier(String),
-    Registry(String),
-    Card(String),
+    /// An attribute, with the type the header gives.
+    Attribute(String, Option<AttrType>),
     Ignored,
 }
 
-fn columns(header: &[String], schema: &ExtensionSchema) -> Result<Vec<Column>, String> {
+fn columns(header: &[String]) -> Result<Vec<Column>, String> {
     let mut out = Vec::new();
     let mut unknown = Vec::new();
     for h in header {
         let lower = h.to_ascii_lowercase();
-        let col = match lower.as_str() {
-            "" => Column::Ignored,
-            "entity_id" | "id" => Column::EntityId,
-            "name" => Column::Name,
-            "status" => Column::Status,
-            _ => {
-                if let Some(s) = lower.strip_prefix("id:") {
-                    Column::Identifier(
-                        normalize_scheme(s).map_err(|e| format!("column {h:?}: {e}"))?,
-                    )
-                } else if let Some(k) = h.strip_prefix("registry:").or(h.strip_prefix("REGISTRY:"))
-                {
-                    Column::Registry(k.trim().to_owned())
-                } else if let Some(k) = h.strip_prefix("card:").or(h.strip_prefix("CARD:")) {
-                    let k = k.trim();
-                    match schema.field(k) {
-                        Some(f) if f.builtin.is_none() => Column::Card(k.to_owned()),
-                        _ => {
-                            unknown.push(format!(
-                                "{h} (no card field {k:?} in output schema version {})",
-                                schema.version
-                            ));
-                            Column::Ignored
-                        }
-                    }
-                } else {
-                    unknown.push(h.clone());
-                    Column::Ignored
+        let prefixed = |p: &str| lower.starts_with(p).then(|| h[p.len()..].trim().to_owned());
+        let col = if lower.is_empty() {
+            Column::Ignored
+        } else if matches!(lower.as_str(), "entity_id" | "id") {
+            Column::EntityId
+        } else if lower == "name" {
+            Column::Name
+        } else if lower == "status" {
+            Column::Status
+        } else if let Some(m) = MINIMUM_COLUMNS.iter().find(|m| **m == lower) {
+            Column::Minimum(m)
+        } else if let Some(s) = prefixed("id:") {
+            Column::Identifier(normalize_scheme(&s).map_err(|e| format!("column {h:?}: {e}"))?)
+        } else if let Some(rest) = prefixed("attr:") {
+            match rest.rsplit_once(':') {
+                Some((k, t)) => {
+                    let kind = serde_json::from_value(Value::String(t.trim().to_ascii_lowercase()))
+                        .map_err(|_| {
+                            format!(
+                                "column {h:?}: {t:?} is not text, number, boolean, datetime or json"
+                            )
+                        })?;
+                    Column::Attribute(k.trim().to_owned(), Some(kind))
                 }
+                None => Column::Attribute(rest, None),
             }
+        } else if let Some(k) = prefixed("registry:") {
+            // An earlier sheet's registry fields: `cot` and `ship_class` are
+            // now the CoT type and class name.
+            match k.as_str() {
+                "cot" => Column::Minimum("cot_type"),
+                "ship_class" => Column::Minimum("class_name"),
+                _ => Column::Attribute(k, None),
+            }
+        } else if let Some(k) = prefixed("card:") {
+            Column::Attribute(k, None)
+        } else {
+            unknown.push(h.clone());
+            Column::Ignored
         };
         out.push(col);
     }
     if !unknown.is_empty() {
         return Err(format!(
-            "unknown columns: {} (expected entity_id, name, status, id:<scheme>, registry:<key>, card:<field>)",
-            unknown.join(", ")
+            "unknown columns: {} (expected entity_id, name, status, {}, id:<scheme>, attr:<key>:<type>)",
+            unknown.join(", "),
+            MINIMUM_COLUMNS.join(", ")
         ));
     }
     if !out
@@ -304,30 +328,6 @@ fn columns(header: &[String], schema: &ExtensionSchema) -> Result<Vec<Column>, S
     Ok(out)
 }
 
-/// A registry cell's value: JSON when it is an object, an array, true, false
-/// or null; text otherwise (so "0012" stays "0012").
-fn registry_value(s: &str) -> Value {
-    let t = s.trim();
-    if (t.starts_with('{') || t.starts_with('[') || matches!(t, "true" | "false" | "null"))
-        && let Ok(v) = serde_json::from_str(t)
-    {
-        return v;
-    }
-    Value::String(t.to_owned())
-}
-
-/// A card cell's value: JSON for position and JSON fields, text otherwise
-/// (the schema coerces it to the field's type).
-fn card_value(schema: &ExtensionSchema, key: &str, s: &str) -> Value {
-    let t = s.trim();
-    match schema.field(key).map(|f| f.kind) {
-        Some(ExtType::Position | ExtType::Json) => {
-            serde_json::from_str(t).unwrap_or_else(|_| Value::String(t.to_owned()))
-        }
-        _ => Value::String(t.to_owned()),
-    }
-}
-
 fn valid_entity_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -336,17 +336,15 @@ fn valid_entity_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
-/// Plan an import. `entity` looks an entity (and its card) up by id;
-/// `holder` finds the entity holding an identifier; `new_id` names new
-/// entities.
+/// Plan an import. `entity` looks an entity up by id; `holder` finds the
+/// entity holding an identifier; `new_id` names new entities.
 pub fn plan(
     sheet: &Sheet,
-    schema: &ExtensionSchema,
-    entity: &mut dyn FnMut(&str) -> Option<EntityWithCard>,
+    entity: &mut dyn FnMut(&str) -> Option<Entity>,
     holder: &mut dyn FnMut(&str, &str) -> Option<String>,
     new_id: &mut dyn FnMut() -> String,
 ) -> Result<Vec<Planned>, String> {
-    let cols = columns(&sheet.header, schema)?;
+    let cols = columns(&sheet.header)?;
     let mut out = Vec::new();
     // Earlier rows' entities and identifiers: a sheet may name each once.
     let mut rows_of_entity: HashMap<String, usize> = HashMap::new();
@@ -356,8 +354,7 @@ pub fn plan(
         let cell = |c: usize| row.get(c).map(|s| s.trim()).unwrap_or("");
         let (mut id, mut name, mut status) = (String::new(), None, None);
         let mut idents: Vec<(String, String)> = Vec::new();
-        let mut fields = Map::new();
-        let mut card = Map::new();
+        let mut values: Vec<(&Column, &str)> = Vec::new();
         for (c, col) in cols.iter().enumerate() {
             let v = cell(c);
             if v.is_empty() {
@@ -373,21 +370,11 @@ pub fn plan(
                         .filter(|x| !x.is_empty())
                         .map(|x| (s.clone(), x.to_owned())),
                 ),
-                Column::Registry(k) => {
-                    fields.insert(k.clone(), registry_value(v));
-                }
-                Column::Card(k) => {
-                    card.insert(k.clone(), card_value(schema, k, v));
-                }
+                Column::Minimum(_) | Column::Attribute(..) => values.push((col, v)),
                 Column::Ignored => {}
             }
         }
-        if id.is_empty()
-            && name.is_none()
-            && idents.is_empty()
-            && fields.is_empty()
-            && card.is_empty()
-        {
+        if id.is_empty() && name.is_none() && idents.is_empty() && values.is_empty() {
             continue;
         }
         let mut errors = Vec::new();
@@ -430,7 +417,7 @@ pub fn plan(
         };
         let target = existing
             .as_ref()
-            .map(|(e, _)| e.id.clone())
+            .map(|e| e.id.clone())
             .or_else(|| (!id.is_empty()).then(|| id.clone()))
             .unwrap_or_else(&mut *new_id);
         for (ident, h) in &holders {
@@ -448,17 +435,11 @@ pub fn plan(
         }
 
         // The entity after the row.
-        let (before, before_card) = match &existing {
-            Some((e, c)) => (Some(e.clone()), c.as_ref().map(|c| c.values.clone())),
-            None => (None, None),
-        };
-        let mut after = before.clone().unwrap_or(RegistryEntity {
+        let mut after = existing.clone().unwrap_or_else(|| Entity {
             id: target.clone(),
-            name: None,
             status: "active".into(),
-            fields: Map::new(),
             source: Some("sheet".into()),
-            identifiers: Vec::new(),
+            ..Default::default()
         });
         if let Some(n) = &name {
             after.name = Some(n.clone());
@@ -466,11 +447,41 @@ pub fn plan(
         if let Some(s) = &status {
             after.status = s.clone();
         }
-        let mut registry_fields = Vec::new();
-        for (k, v) in fields {
-            if after.fields.get(&k) != Some(&v) {
-                registry_fields.push(k.clone());
-                after.fields.insert(k, v);
+        let mut fields = Vec::new();
+        for (col, v) in values {
+            let (key, kind) = match col {
+                Column::Minimum(k) => ((*k).to_owned(), None),
+                Column::Attribute(k, t) => (k.clone(), *t),
+                _ => continue,
+            };
+            let changed = match kind {
+                // A typed column: the attribute takes that type.
+                Some(t) if !ot_store::registry::RESERVED.contains(&key.as_str()) => {
+                    match t.coerce(&Value::String(v.to_owned())) {
+                        Ok(value) => {
+                            let before = after.attribute(&key).cloned();
+                            match after.attributes.iter_mut().find(|a| a.key == key) {
+                                Some(a) => {
+                                    a.kind = t;
+                                    a.value = value;
+                                }
+                                None => after.attributes.push(ot_store::Attribute {
+                                    key: key.clone(),
+                                    kind: t,
+                                    value,
+                                }),
+                            }
+                            Ok(after.attribute(&key).cloned() != before)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => after.set_field(&key, &Value::String(v.to_owned())),
+            };
+            match changed {
+                Ok(true) => fields.push(key),
+                Ok(false) => {}
+                Err(e) => errors.push(format!("{key}: {e}")),
             }
         }
         let mut identifiers_added = Vec::new();
@@ -489,29 +500,17 @@ pub fn plan(
                 });
             }
         }
-        let mut merged = before_card.clone().unwrap_or_default();
-        let mut card_fields = Vec::new();
-        for (k, v) in card {
-            merged.insert(k, v);
+        if errors.is_empty()
+            && let Err(e) = after.clone().validate()
+        {
+            errors.push(e.to_string());
         }
-        let merged = match check_card(schema, &merged) {
-            Ok(m) => m,
-            Err(e) => {
-                errors.push(format!("card: {e}"));
-                Map::new()
-            }
-        };
-        for (k, v) in &merged {
-            if before_card.as_ref().and_then(|c| c.get(k)) != Some(v) {
-                card_fields.push(k.clone());
-            }
-        }
-        let entity_changes = before.as_ref() != Some(&after);
+        let changes = existing.as_ref() != Some(&after);
         let action = if !errors.is_empty() {
             "error"
-        } else if before.is_none() {
+        } else if existing.is_none() {
             "create"
-        } else if entity_changes || !card_fields.is_empty() {
+        } else if changes {
             "update"
         } else {
             "unchanged"
@@ -522,11 +521,9 @@ pub fn plan(
             entity_id: target,
             name: after.name.clone(),
             identifiers_added,
-            registry_fields,
-            card_fields: card_fields.clone(),
+            fields,
             errors,
-            entity: (action != "error" && (entity_changes || before.is_none())).then_some(after),
-            card: (action != "error" && !card_fields.is_empty()).then_some(merged),
+            entity: (action == "create" || action == "update").then_some(after),
         });
     }
     Ok(out)
@@ -537,63 +534,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn schema() -> ExtensionSchema {
-        ExtensionSchema {
-            version: 2,
-            fields: serde_json::from_value(json!([
-                {"key": "contact_phone", "type": "string"},
-                {"key": "crew", "type": "integer"},
-                {"key": "state", "type": "string", "builtin": "state"}
-            ]))
-            .unwrap(),
-        }
-    }
-
-    fn ident(scheme: &str, value: &str) -> RegistryIdentifier {
-        RegistryIdentifier {
-            scheme: scheme.into(),
-            value: value.into(),
-            expected_name: None,
-            source: None,
-        }
-    }
-
-    fn ted() -> (RegistryEntity, Option<Card>) {
-        let mut fields = Map::new();
-        fields.insert("flag".into(), json!("US"));
-        (
-            RegistryEntity {
-                id: "ent-ted".into(),
-                name: Some("TED STEVENS".into()),
-                status: "active".into(),
-                fields,
-                source: None,
-                identifiers: vec![ident("mmsi", "338000001"), ident("imo", "0012345")],
-            },
-            Some(Card {
-                entity_id: "ent-ted".into(),
-                values: serde_json::from_value(json!({"contact_phone": "+1 555 0100"})).unwrap(),
-                schema_version: 2,
-                updated_at_ms: 0,
-                decision_id: None,
-            }),
-        )
+    fn ted() -> Entity {
+        serde_json::from_value(json!({
+            "id": "ent-ted", "name": "TED STEVENS", "status": "active", "domain": "surface",
+            "identifiers": [{"scheme": "mmsi", "value": "338000001"}, {"scheme": "imo", "value": "0012345"}],
+            "attributes": [{"key": "flag", "type": "text", "value": "US"},
+                           {"key": "crew", "type": "number", "value": 24}]
+        }))
+        .unwrap()
     }
 
     #[test]
     fn export_and_read_back_in_both_formats() {
-        let sheet = export(&[ted()], &schema());
+        let sheet = export(&[ted()]);
         assert_eq!(
             sheet.header,
             [
                 "entity_id",
                 "name",
                 "status",
+                "class_name",
+                "domain",
+                "affiliation",
+                "track_type",
+                "cot_type",
+                "sidc",
                 "id:imo",
                 "id:mmsi",
-                "registry:flag",
-                "card:contact_phone",
-                "card:crew"
+                "attr:crew:number",
+                "attr:flag:text"
             ]
         );
         assert_eq!(
@@ -602,29 +571,33 @@ mod tests {
                 "ent-ted",
                 "TED STEVENS",
                 "active",
+                "",
+                "surface",
+                "",
+                "",
+                "",
+                "",
                 "0012345",
                 "338000001",
-                "US",
-                "+1 555 0100",
-                ""
+                "24",
+                "US"
             ]
         );
         for format in [Format::Csv, Format::Xlsx] {
             let bytes = write(&sheet, format).unwrap();
             let back = read(&bytes, format).unwrap();
             assert_eq!(back.header, sheet.header, "{format:?}");
-            // Leading zeros survive; trailing empty cells may be cut.
-            assert_eq!(back.rows[0][..7], sheet.rows[0][..7], "{format:?}");
+            // Leading zeros survive.
+            assert_eq!(back.rows[0], sheet.rows[0], "{format:?}");
         }
     }
 
     fn run(sheet: &Sheet) -> Vec<Planned> {
-        let (e, c) = ted();
+        let e = ted();
         let mut n = 0;
         plan(
             sheet,
-            &schema(),
-            &mut |id| (id == "ent-ted").then(|| (e.clone(), c.clone())),
+            &mut |id| (id == "ent-ted").then(|| e.clone()),
             &mut |s, v| {
                 (e.identifiers.iter().any(|i| i.scheme == s && i.value == v))
                     .then(|| "ent-ted".into())
@@ -648,90 +621,82 @@ mod tests {
     }
 
     #[test]
-    fn rows_update_by_identifier_create_new_and_refuse_conflicts() {
-        let s = sheet(
-            &["name", "id:mmsi", "id:icao", "registry:flag", "card:crew"],
+    fn an_exported_sheet_imports_unchanged() {
+        let planned = run(&export(&[ted()]));
+        assert_eq!(planned[0].action, "unchanged", "{planned:?}");
+    }
+
+    #[test]
+    fn rows_update_by_identifier_create_and_report_errors() {
+        let planned = run(&sheet(
             &[
-                // Found by its MMSI: a new ICAO, the crew count, the same flag.
-                &["", "338000001", "a1b2c3", "US", "12"],
-                // New.
-                &["NEW ONE", "366999999", "", "", ""],
-                // Claims TED STEVENS's MMSI for a new entity... by entity_id? No:
-                // same MMSI as row 2, and a crew count that is not a number.
-                &["BAD", "338000001", "", "", "many"],
-                &["", "", "", "", ""],
+                "name",
+                "affiliation",
+                "id:mmsi",
+                "id:elnot",
+                "attr:length:number",
+                "registry:cot",
+                "card:owner",
             ],
-        );
-        let p = run(&s);
-        assert_eq!(p.len(), 3, "blank rows are skipped");
-        assert_eq!(
-            (p[0].action, p[0].entity_id.as_str()),
-            ("update", "ent-ted")
-        );
-        assert_eq!(p[0].identifiers_added, ["icao:a1b2c3"]);
-        assert!(p[0].registry_fields.is_empty(), "flag unchanged");
-        assert_eq!(p[0].card_fields, ["crew"]);
-        let card = p[0].card.as_ref().unwrap();
-        assert_eq!(card["crew"], json!(12));
-        assert_eq!(
-            card["contact_phone"],
-            json!("+1 555 0100"),
-            "blank cells keep values"
-        );
-        assert_eq!(p[0].entity.as_ref().unwrap().identifiers.len(), 3);
-
-        assert_eq!(
-            (p[1].action, p[1].entity_id.as_str()),
-            ("create", "ent-new1")
-        );
-        assert_eq!(
-            p[1].entity.as_ref().unwrap().identifiers[0].label(),
-            "mmsi:366999999"
-        );
-
-        assert_eq!(p[2].action, "error");
-        let errors = p[2].errors.join(" | ");
-        assert!(errors.contains("also in row 2"), "{errors}");
-        assert!(errors.contains("card:"), "{errors}");
-        assert!(p[2].entity.is_none() && p[2].card.is_none());
-    }
-
-    #[test]
-    fn an_identifier_is_never_taken_from_another_entity() {
-        let s = sheet(&["entity_id", "id:mmsi"], &[&["ent-other", "338000001"]]);
-        let p = run(&s);
-        assert_eq!(p[0].action, "error");
-        assert!(p[0].errors[0].contains("already belongs to entity ent-ted"));
-    }
-
-    #[test]
-    fn unknown_columns_and_unchanged_rows() {
-        let e = plan(
-            &sheet(&["name", "colour"], &[&["X", "red"]]),
-            &schema(),
-            &mut |_| None,
-            &mut |_, _| None,
-            &mut || "ent-x".into(),
-        )
-        .unwrap_err();
-        assert!(e.contains("colour"), "{e}");
-        let e = plan(
-            &sheet(&["name", "card:state"], &[&["X", "live"]]),
-            &schema(),
-            &mut |_| None,
-            &mut |_, _| None,
-            &mut || "ent-x".into(),
-        )
-        .unwrap_err();
-        assert!(
-            e.contains("card:state"),
-            "a built-in is not a card field: {e}"
-        );
-        let p = run(&sheet(
-            &["entity_id", "name"],
-            &[&["ent-ted", "TED STEVENS"]],
+            &[
+                // Found by MMSI: adds an ELNOT, sets affiliation, a new typed
+                // attribute, the CoT type (an earlier sheet's registry:cot) and
+                // an earlier sheet's card field.
+                &[
+                    "",
+                    "friend",
+                    "338000001",
+                    "NL504",
+                    "103.5",
+                    "a-f-S-C",
+                    "MSC",
+                ],
+                // New entity.
+                &["NEW SHIP", "", "999", "", "", "", ""],
+                // Bad values.
+                &["BAD", "enemy", "998", "", "long", "", ""],
+            ],
         ));
-        assert_eq!(p[0].action, "unchanged");
-        assert!(p[0].entity.is_none() && p[0].card.is_none());
+        assert_eq!(planned[0].action, "update", "{planned:?}");
+        assert_eq!(planned[0].identifiers_added, ["elnot:NL504"]);
+        let e = planned[0].entity.as_ref().unwrap();
+        assert_eq!(e.field("affiliation"), Some(json!("friend")));
+        assert_eq!(e.attribute("length").unwrap().value, json!(103.5));
+        assert_eq!(e.cot_type.as_deref(), Some("a-f-S-C"));
+        assert_eq!(e.field("owner"), Some(json!("MSC")));
+        // Blank cells leave values: the flag is still there.
+        assert_eq!(e.field("flag"), Some(json!("US")));
+        assert_eq!(
+            planned[0].fields,
+            ["affiliation", "length", "cot_type", "owner"]
+        );
+
+        assert_eq!(planned[1].action, "create");
+        assert_eq!(planned[1].entity_id, "ent-new1");
+
+        assert_eq!(planned[2].action, "error");
+        assert_eq!(planned[2].errors.len(), 2, "{:?}", planned[2].errors);
+    }
+
+    #[test]
+    fn identifiers_are_never_taken_and_a_sheet_names_each_once() {
+        let planned = run(&sheet(
+            &["entity_id", "id:mmsi"],
+            &[
+                &["ent-other", "338000001"],
+                &["ent-x", "5"],
+                &["ent-y", "5"],
+            ],
+        ));
+        assert!(planned[0].errors[0].contains("already belongs to entity ent-ted"));
+        assert_eq!(planned[1].action, "create");
+        assert!(planned[2].errors[0].contains("also in row 3"));
+    }
+
+    #[test]
+    fn unknown_columns_are_refused() {
+        let e = columns(&["name".into(), "colour".into()]).err().unwrap();
+        assert!(e.contains("colour"), "{e}");
+        assert!(columns(&["attr:x:colour".into()]).is_err());
     }
 }

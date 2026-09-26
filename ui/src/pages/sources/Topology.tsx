@@ -127,13 +127,6 @@ export default function Topology({ sources, onSelect }: { sources: SourceRow[]; 
       tone: 'accent',
       width: END_W,
     })
-    nodes.push({
-      id: 'cards',
-      label: 'Cards',
-      sublabel: live ? `${live.with_card.toLocaleString()} tracks with a card` : undefined,
-      width: END_W,
-    })
-    edges.push({ id: 'cards>engine', source: 'cards', target: 'engine' })
     const backlog = live ? live.outbox.lag + live.outbox.pending : 0
     nodes.push({
       id: 'writer',

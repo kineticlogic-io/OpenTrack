@@ -14,7 +14,7 @@ use ot_source::frame::Frame;
 use ot_source::pipeline::Pipeline;
 use ot_source::schema::{ExtensionField, ExtensionSchema};
 use ot_source::source::SourceSpec;
-use ot_store::{RegistryEntity, SourceRow, SourceWrite};
+use ot_store::{Entity, SourceRow, SourceWrite};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -40,7 +40,6 @@ pub fn routes() -> Router<AppState> {
         .route("/registry", get(registry_resolve))
         .route("/registry/stats", get(registry_stats))
         .route("/registry/import", post(registry_import))
-        .route("/registry/entities/{id}", get(registry_entity))
         .route("/tracks", get(list_tracks))
         .route("/probe", post(crate::probe::probe))
         .route("/sources/{id}/samples", get(crate::probe::samples))
@@ -50,7 +49,6 @@ pub fn routes() -> Router<AppState> {
             put(put_schema_draft).delete(discard_schema_draft),
         )
         .route("/schema/draft/publish", post(publish_schema_draft))
-        .merge(crate::cards::routes())
         .merge(crate::registry_api::routes())
         .merge(crate::settings_api::routes())
         .merge(crate::correlation_api::routes())
@@ -443,17 +441,6 @@ async fn registry_resolve(
     Ok(Json(serde_json::to_value(e).unwrap_or_default()))
 }
 
-async fn registry_entity(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    let e = s
-        .with_db(move |db| db.registry_entity(&id))
-        .await?
-        .ok_or_else(|| ApiError::not_found("entity"))?;
-    Ok(Json(serde_json::to_value(e).unwrap_or_default()))
-}
-
 async fn registry_stats(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(s.with_db(|db| db.registry_counts()).await?))
 }
@@ -461,7 +448,7 @@ async fn registry_stats(State(s): State<AppState>) -> Result<Json<Value>, ApiErr
 #[derive(Deserialize)]
 struct ImportBody {
     label: String,
-    entities: Vec<RegistryEntity>,
+    entities: Vec<Entity>,
 }
 
 async fn registry_import(
@@ -1166,17 +1153,9 @@ mod tests {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
-        let (st, _) = call(
-            &app,
-            "PUT",
-            "/api/v1/schema/draft",
-            Some(json!({"fields": [{"key": "contact_phone", "type": "string"}, {"key": "crew", "type": "integer"}]})),
-        )
-        .await;
-        assert_eq!(st, StatusCode::OK);
-        call(&app, "POST", "/api/v1/schema/draft/publish", None).await;
-
-        let csv = "name,id:mmsi,registry:flag,card:crew\nTED STEVENS,338000001,US,12\nOTHER,366000002,,\n";
+        // An earlier sheet's registry and card columns import as attributes.
+        let csv = "name,domain,id:mmsi,registry:flag,attr:crew:number,card:owner\n\
+                   TED STEVENS,surface,338000001,US,12,MSC\nOTHER,,366000002,,,\n";
         // A dry run writes nothing.
         let (st, body) = call_raw(
             &app,
@@ -1209,8 +1188,13 @@ mod tests {
         assert_eq!(list["total"], 1, "{list}");
         let ted = &list["entities"][0];
         assert_eq!(ted["name"], "TED STEVENS");
-        assert_eq!(ted["fields"]["flag"], "US");
-        assert_eq!(ted["card"]["crew"], 12);
+        assert_eq!(ted["domain"], "surface");
+        assert_eq!(
+            ted["attributes"],
+            json!([{"key": "flag", "type": "text", "value": "US"},
+                   {"key": "crew", "type": "number", "value": 12},
+                   {"key": "owner", "type": "text", "value": "MSC"}])
+        );
 
         // The same sheet again changes nothing; a conflicting row is refused whole.
         let (_, body) = call_raw(
@@ -1247,12 +1231,12 @@ mod tests {
             )
             .unwrap();
             assert_eq!(sheet.rows.len(), 2, "{format}");
-            assert!(sheet.header.contains(&"card:crew".to_owned()));
+            assert!(sheet.header.contains(&"attr:crew:number".to_owned()));
         }
     }
 
     #[tokio::test]
-    async fn cards_through_the_api() {
+    async fn schema_drafts_and_entities_through_the_api() {
         let Some((app, redis)) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
@@ -1263,13 +1247,12 @@ mod tests {
             "/api/v1/schema/draft",
             Some(json!({"fields": [
                 {"key": "contact_phone", "type": "string", "description": "Ship's contact number"},
-                {"key": "length_m", "type": "number", "unit": "m"},
                 {"key": "speed_mps", "type": "number", "builtin": "speed_mps"}
             ]})),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{body}");
-        assert_eq!(body["fields"][2]["builtin"], "speed_mps");
+        assert_eq!(body["fields"][1]["builtin"], "speed_mps");
         let (st, _) = call(&app, "POST", "/api/v1/schema/draft/publish", None).await;
         assert_eq!(st, StatusCode::OK);
         // A linked field must declare its built-in's type.
@@ -1288,69 +1271,103 @@ mod tests {
         let (st, body) = call(
             &app,
             "POST",
-            "/api/v1/cards",
+            "/api/v1/registry/entities",
             Some(json!({
-                "name": "TED STEVENS",
-                "identifiers": [{"scheme": "mmsi", "value": "338924210"}],
-                "values": {"contact_phone": "+1 555 0100", "length_m": "210"}
+                "name": "TED STEVENS", "domain": "surface", "affiliation": "friend",
+                "identifiers": [{"scheme": "MMSI", "value": "338924210"}, {"scheme": "imo", "value": "9876543"}],
+                "attributes": [{"key": "contact_phone", "type": "text", "value": "+1 555 0100"},
+                               {"key": "length", "type": "number", "value": "210"}]
             })),
         )
         .await;
         assert_eq!(st, StatusCode::CREATED, "{body}");
         let id = body["entity"]["id"].as_str().unwrap().to_owned();
-        assert_eq!(
-            body["card"]["values"],
-            json!({"contact_phone": "+1 555 0100", "length_m": 210.0})
-        );
-        assert_eq!(body["schema"]["version"], 2);
+        assert_eq!(body["entity"]["identifiers"][0]["scheme"], "mmsi");
+        assert_eq!(body["entity"]["attributes"][1]["value"], 210);
 
-        // The same identifier cannot start a second card.
+        // An identifier belongs to one entity; an entity needs one.
         let (st, _) = call(
             &app,
             "POST",
-            "/api/v1/cards",
-            Some(json!({
-                "identifiers": [{"scheme": "mmsi", "value": "338924210"}]
-            })),
+            "/api/v1/registry/entities",
+            Some(json!({"identifiers": [{"scheme": "mmsi", "value": "338924210"}]})),
         )
         .await;
         assert_eq!(st, StatusCode::CONFLICT);
-        let (st, _) = call(&app, "POST", "/api/v1/cards", Some(json!({"name": "x"}))).await;
+        let (st, _) = call(
+            &app,
+            "POST",
+            "/api/v1/registry/entities",
+            Some(json!({"name": "x"})),
+        )
+        .await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
 
-        // Built-in fields and unknown keys cannot be set on a card.
-        for bad in [
-            json!({"speed_mps": 3}),
-            json!({"nope": 1}),
-            json!({"length_m": "long"}),
-        ] {
-            let (st, _) = call(
-                &app,
-                "PUT",
-                &format!("/api/v1/cards/{id}"),
-                Some(json!({"values": bad.clone()})),
-            )
-            .await;
-            assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
-        }
+        // Edit: remove the IMO, add an ELNOT; bad values are refused.
+        let mut e = body["entity"].clone();
+        e["identifiers"] = json!([{"scheme": "mmsi", "value": "338924210"}, {"scheme": "elnot", "value": "NL504"}]);
+        e["affiliation"] = json!("neutral");
         let (st, body) = call(
             &app,
             "PUT",
-            &format!("/api/v1/cards/{id}"),
-            Some(json!({"values": {"contact_phone": "+1 555 0199"}})),
+            &format!("/api/v1/registry/entities/{id}"),
+            Some(e.clone()),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{body}");
-        assert_eq!(
-            body["card"]["values"],
-            json!({"contact_phone": "+1 555 0199"})
-        );
+        assert_eq!(body["entity"]["identifiers"][1]["value"], "NL504");
         assert_eq!(body["revisions"].as_array().unwrap().len(), 2);
+        let (_, found) = call(
+            &app,
+            "GET",
+            "/api/v1/registry?scheme=imo&value=9876543",
+            None,
+        )
+        .await;
+        assert_ne!(found["id"], id);
+        for bad in [
+            json!({"domain": "sky"}),
+            json!({"attributes": [{"key": "name", "type": "text", "value": "x"}]}),
+            json!({"attributes": [{"key": "n", "type": "number", "value": "ten"}]}),
+        ] {
+            let mut b = e.clone();
+            for (k, v) in bad.as_object().unwrap() {
+                b[k] = v.clone();
+            }
+            let (st, _) = call(
+                &app,
+                "PUT",
+                &format!("/api/v1/registry/entities/{id}"),
+                Some(b),
+            )
+            .await;
+            assert!(st.is_client_error(), "{bad}: {st}");
+        }
 
-        let (_, body) = call(&app, "GET", "/api/v1/cards?q=stevens", None).await;
-        assert_eq!(body["entities"][0]["id"], id);
-        assert_eq!(body["entities"][0]["has_card"], true);
-        let (st, _) = call(&app, "GET", "/api/v1/cards/ent-nope", None).await;
+        let (_, fields) = call(&app, "GET", "/api/v1/registry/fields", None).await;
+        assert!(
+            fields["minimum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("affiliation"))
+        );
+        assert_eq!(fields["attributes"][0]["key"], "contact_phone");
+
+        let (st, _) = call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/registry/entities/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let (st, _) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/registry/entities/{id}"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         let (_, body) = call(&app, "GET", "/api/v1/schema", None).await;
         assert!(

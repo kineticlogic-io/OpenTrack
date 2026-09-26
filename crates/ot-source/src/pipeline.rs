@@ -34,7 +34,8 @@ pub struct PipelineSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Registry resolution settings. Without them the registry still runs
     /// with defaults: identifiers are resolved and graded under
-    /// `ext.registry` (so entity cards reach the track) but nothing is applied.
+    /// `ext.registry`, and the entity's OTH-GOLD minimum populates the track
+    /// (see [`crate::registry::default_links`]).
     pub registry: Option<RegistryStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affiliation: Option<AffiliationStage>,
@@ -256,6 +257,9 @@ pub struct Output {
     pub observations: Vec<Observation>,
     /// Static cache entries that changed, for the worker to persist.
     pub statics: Vec<(String, StaticEntry)>,
+    /// Entity fields the feed reports differently (track → entity links),
+    /// per entity, for the worker to write.
+    pub entity_updates: Vec<(String, Vec<(String, Value)>)>,
     /// The last decode or validation error seen, for status reporting.
     pub last_error: Option<String>,
 }
@@ -271,6 +275,9 @@ pub struct Pipeline {
     pub counts: Counts,
     /// Used when the spec configures no registry stage.
     default_registry: RegistryStage,
+    /// The last value sent to each (entity, field), so a feed repeating a
+    /// value writes it once, not until the registry snapshot catches up.
+    entity_sent: HashMap<(String, String), Value>,
     tracker: Option<crate::tracker::Tracker>,
 }
 
@@ -293,8 +300,8 @@ impl Pipeline {
             throttle: HashMap::new(),
             schema: None,
             counts: Counts::default(),
-            default_registry: serde_json::from_value(serde_json::json!({}))
-                .expect("registry stage defaults"),
+            default_registry: RegistryStage::default(),
+            entity_sent: HashMap::new(),
         })
     }
 
@@ -493,9 +500,31 @@ impl Pipeline {
                 .registry
                 .as_ref()
                 .unwrap_or(&self.default_registry);
-            let grade = stage
-                .run(&mut obs, registry)
-                .map_or("none", |m| m.grade.as_str());
+            let matched = stage.run(&mut obs, registry);
+            // Values mapped to the entity go no further than here.
+            if let Some(ext) = obs.get_mut("ext").and_then(Value::as_object_mut) {
+                ext.remove(crate::registry::ENTITY_EXT);
+            }
+            let grade = matched.as_ref().map_or("none", |m| m.grade.as_str());
+            if let Some(m) = matched {
+                let fresh: Vec<(String, Value)> = m
+                    .updates
+                    .into_iter()
+                    .filter(|(field, v)| {
+                        self.entity_sent.get(&(m.entity_id.clone(), field.clone())) != Some(v)
+                    })
+                    .collect();
+                if !fresh.is_empty() {
+                    if self.entity_sent.len() > 100_000 {
+                        self.entity_sent.clear();
+                    }
+                    for (field, v) in &fresh {
+                        self.entity_sent
+                            .insert((m.entity_id.clone(), field.clone()), v.clone());
+                    }
+                    out.entity_updates.push((m.entity_id, fresh));
+                }
+            }
             *self.counts.grades.entry(grade).or_default() += 1;
             if let Some(stage) = &self.spec.affiliation {
                 stage.run(&mut obs);
@@ -556,7 +585,8 @@ mod tests {
             "codec": { "type": "json" },
             "mapping": { "rules": [
                 { "name": "static", "kind": "static", "when": { "path": "t", "eq": "static" },
-                  "key": "id", "fields": { "name": "name", "platform.flag": "flag" } },
+                  "key": "id", "fields": { "name": "name", "platform.flag": "flag",
+                                           "entity.destination": "dest" } },
                 { "name": "pos", "when": { "path": "t", "eq": "pos" }, "key": "id",
                   "identifiers": [ { "scheme": "mmsi", "value": "id" } ],
                   "fields": { "position.latitude": "lat", "position.longitude": "lon",
@@ -580,7 +610,7 @@ mod tests {
             name: Some("USS EXAMPLE".into()),
             expected_name: Some("EXAMPLE".into()),
             fields: serde_json::from_value(
-                json!({"cot": "a-u-S-C", "flag": "US", "hull_code": "DDG-1"}),
+                json!({"cot_type": "a-u-S-C", "flag": "US", "hull_code": "DDG-1"}),
             )
             .unwrap(),
         };
@@ -602,13 +632,23 @@ mod tests {
         let st = feed(
             &mut p,
             &reg,
-            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "LONG BEACH"}),
         );
         assert_eq!(st.statics.len(), 1);
 
         let out = feed(&mut p, &reg, pos(1, "2026-09-24T12:00:00Z", 32.0));
         assert_eq!(out.observations.len(), 1);
+        // The static data's destination updates the entity, once, and is
+        // not carried on the observation.
+        assert_eq!(
+            out.entity_updates,
+            [(
+                "e1".to_string(),
+                vec![("destination".to_string(), json!("LONG BEACH"))]
+            )]
+        );
         let o = &out.observations[0];
+        assert!(!o.ext.contains_key("entity"));
         assert_eq!(o.name.as_deref(), Some("EXAMPLE"), "static join");
         assert_eq!(
             o.classification.cot_type.as_deref(),

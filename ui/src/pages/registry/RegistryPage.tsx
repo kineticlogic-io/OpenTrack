@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { TbDownload, TbSearch, TbUpload } from 'react-icons/tb'
+import { TbDownload, TbPlus, TbSearch, TbUpload } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, Input, useToast, type DataTableColumn } from 'staresdk'
-import { api, type RegistryListEntity, type SheetImport } from '../../api/client'
-import { errorMessage, fmtTime } from '../../lib/format'
+import { api, type Entity, type SheetImport } from '../../api/client'
+import { errorMessage, fmtTime, show } from '../../lib/format'
 import { InfoTip } from '../../components/InfoTip'
-import { CardEditor } from '../trackdb/CardEditor'
+import { EntityEditor } from './EntityEditor'
 
 const PAGE = 200
 
-const COLUMNS: DataTableColumn<RegistryListEntity>[] = [
+const COLUMNS: DataTableColumn<Entity>[] = [
   { key: 'name', header: 'Name', render: (e) => e.name ?? <span className="muted">{e.id}</span>, sortValue: (e) => e.name ?? e.id },
   {
     key: 'ids',
@@ -17,22 +17,24 @@ const COLUMNS: DataTableColumn<RegistryListEntity>[] = [
     render: (e) => e.identifiers.map((i) => `${i.scheme}:${i.value}`).join('  '),
   },
   {
-    key: 'fields',
-    header: 'Registry',
-    render: (e) =>
-      Object.entries(e.fields)
-        .map(([k, v]) => `${k} ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        .join(' · '),
+    key: 'identity',
+    header: 'Domain · affiliation',
+    width: 180,
+    render: (e) => [e.domain, e.affiliation].filter(Boolean).join(' · ') || <span className="muted">—</span>,
+    sortValue: (e) => `${e.domain ?? ''}${e.affiliation ?? ''}`,
   },
   {
-    key: 'card',
-    header: 'Card',
-    width: 110,
-    render: (e) => {
-      const n = Object.keys(e.card ?? {}).length
-      return n ? <span title={e.card_updated_at_ms ? `saved ${fmtTime(e.card_updated_at_ms)}` : undefined}>{n} field{n === 1 ? '' : 's'}</span> : <span className="muted">—</span>
-    },
-    sortValue: (e) => Object.keys(e.card ?? {}).length,
+    key: 'attributes',
+    header: 'Attributes',
+    render: (e) => e.attributes.map((a) => `${a.key} ${show(a.value)}`).join(' · '),
+  },
+  {
+    key: 'updated',
+    header: 'Saved',
+    width: 140,
+    mono: true,
+    render: (e) => (e.updated_at_ms ? fmtTime(e.updated_at_ms) : ''),
+    sortValue: (e) => e.updated_at_ms ?? 0,
   },
   {
     key: 'status',
@@ -44,13 +46,14 @@ const COLUMNS: DataTableColumn<RegistryListEntity>[] = [
 
 const ACTION_COLOR = { create: 'success', update: 'blue', unchanged: 'grey', error: 'danger' } as const
 
-/** The registry: every entity with its identifiers, registry fields and card; spreadsheet export and import. */
+/** The registry: every entity with its identifiers, minimum and attributes; create, edit, and spreadsheet export and import. */
 export default function RegistryPage() {
   const { toast } = useToast()
   const [query, setQuery] = useState('')
-  const [rows, setRows] = useState<RegistryListEntity[] | null>(null)
+  const [rows, setRows] = useState<Entity[] | null>(null)
   const [total, setTotal] = useState(0)
-  const [editing, setEditing] = useState<RegistryListEntity | null>(null)
+  // The entity open in the editor: an id, 'new', or none.
+  const [editing, setEditing] = useState<string | null>(null)
   const [plan, setPlan] = useState<{ file: File; result: SheetImport } | null>(null)
   const [busy, setBusy] = useState(false)
   const picker = useRef<HTMLInputElement>(null)
@@ -107,13 +110,7 @@ export default function RegistryPage() {
         badge={rows ? (query.trim() ? `${rows.length.toLocaleString()} of ${total.toLocaleString()}` : total.toLocaleString()) : undefined}
         persistKey="ot.panel.registry"
         titleActions={
-          <div className="num-row">
-            <InfoTip label="Registry sheets">
-              One row per entity: <span className="mono">entity_id</span>, <span className="mono">name</span>, <span className="mono">status</span>,{' '}
-              <span className="mono">id:&lt;scheme&gt;</span> (several separated by ;), <span className="mono">registry:&lt;key&gt;</span> and{' '}
-              <span className="mono">card:&lt;field&gt;</span>. Export a sheet to start from. Blank cells leave values as they are; an identifier is
-              never taken from another entity.
-            </InfoTip>
+          <div className="title-tools">
             <div className="search">
               <TbSearch aria-hidden />
               <Input
@@ -130,15 +127,25 @@ export default function RegistryPage() {
         }
         actions={
           <>
+            <Button size="sm" icon={<TbPlus />} onClick={() => setEditing('new')}>
+              New entity
+            </Button>
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
               Export XLSX
             </Button>
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('csv'), '_self')}>
               Export CSV
             </Button>
-            <Button size="sm" icon={<TbUpload />} disabled={busy} onClick={() => picker.current?.click()}>
+            <Button size="sm" variant="ghost" icon={<TbUpload />} disabled={busy} onClick={() => picker.current?.click()}>
               Import sheet
             </Button>
+            <InfoTip label="Registry sheets">
+              One row per entity: <span className="mono">entity_id</span>, <span className="mono">name</span>, <span className="mono">status</span>, the
+              minimum (<span className="mono">class_name</span>, <span className="mono">domain</span>, <span className="mono">affiliation</span>,{' '}
+              <span className="mono">track_type</span>, <span className="mono">cot_type</span>, <span className="mono">sidc</span>),{' '}
+              <span className="mono">id:&lt;scheme&gt;</span> (several separated by ;) and <span className="mono">attr:&lt;key&gt;:&lt;type&gt;</span>.
+              Export a sheet to start from. Blank cells leave values as they are; an identifier is never taken from another entity.
+            </InfoTip>
             <input
               ref={picker}
               type="file"
@@ -159,7 +166,7 @@ export default function RegistryPage() {
             columns={COLUMNS}
             rows={rows ?? []}
             rowKey={(e) => e.id}
-            onRowClick={(e) => setEditing(e)}
+            onRowClick={(e) => setEditing(e.id)}
             empty={rows ? 'No entity matches.' : 'Loading…'}
             maxHeight={560}
           />
@@ -200,8 +207,7 @@ export default function RegistryPage() {
                     ) : (
                       [
                         r.identifiers_added?.length ? `+ ${r.identifiers_added.join(', ')}` : '',
-                        r.registry_fields?.length ? `registry ${r.registry_fields.join(', ')}` : '',
-                        r.card_fields?.length ? `card ${r.card_fields.join(', ')}` : '',
+                        r.fields?.length ? r.fields.join(', ') : '',
                       ]
                         .filter(Boolean)
                         .join(' · ')
@@ -217,13 +223,14 @@ export default function RegistryPage() {
         </CollapsiblePanel>
       )}
 
-      <CardEditor
-        entityId={editing?.id ?? null}
-        fromTrack=""
-        title={editing?.name ?? editing?.id ?? ''}
+      <EntityEditor
+        entityId={editing === 'new' ? null : editing}
         open={editing !== null}
         onClose={() => setEditing(null)}
-        onSaved={() => load()}
+        onSaved={(id) => {
+          if (editing === 'new' && id) setEditing(id)
+          load()
+        }}
       />
     </div>
   )

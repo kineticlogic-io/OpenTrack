@@ -316,7 +316,7 @@ struct PurgeBody {
 
 /// Retire every live track (published ones are deleted downstream too) and,
 /// with `history`, delete the track graph. Configuration, the registry,
-/// cards and the decision log stay.
+/// and the decision log stay.
 async fn purge(
     State(s): State<AppState>,
     headers: HeaderMap,

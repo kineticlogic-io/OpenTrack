@@ -8,7 +8,8 @@
 //! The body is the OTH-GOLD mandatory minimum (see [`crate::gold`]), which is
 //! fixed, plus `attributes`: exactly the fields of the admin-designed output
 //! schema that have a value for this track, whether from a feed mapping, the
-//! entity's card or an OpenTrack built-in. Nothing else is published.
+//! entity through a source's entity links, or an OpenTrack built-in. Nothing
+//! else is published.
 //!
 //! Two operations, carried both in the `OT-Op` header and in the body's `op`:
 //!

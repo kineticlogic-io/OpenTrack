@@ -18,8 +18,12 @@
 //! identifiers resolve to different entities the match is recorded as a
 //! conflict and nothing is applied.
 //!
-//! The token lists and which entry fields are applied at which grades are
-//! per-source configuration.
+//! At a corroborated match the stage links entity fields and track fields,
+//! each link one way: entity → track (the entity is the authority: its value
+//! replaces what the feed reports, and a difference is recorded) or track →
+//! entity (the feed updates the entity, e.g. an AIS destination). The token
+//! lists, the grades that count as corroborated and the links are per-source
+//! configuration.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -39,23 +43,26 @@ pub struct RegistryEntry {
     /// Name the platform is expected to broadcast under this identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_name: Option<String>,
-    /// All other entity fields (cot, flag, hull_code, ship_class, ...).
+    /// The entity's other fields, flat: the OTH-GOLD minimum (`class_name`,
+    /// `domain`, `affiliation`, `track_type`, `cot_type`, `sidc`) and its
+    /// attributes by key (`flag`, `hull_code`, ...).
     #[serde(default)]
     pub fields: Map<String, Value>,
 }
 
 impl RegistryEntry {
-    pub fn field(&self, name: &str) -> Option<&Value> {
+    /// A field by name: `entity_id`, `name`, or one of `fields`.
+    pub fn field(&self, name: &str) -> Option<Value> {
         match name {
-            "entity_id" => None,
-            _ => self.fields.get(name),
+            "entity_id" => Some(Value::String(self.entity_id.clone())),
+            "name" => self.name.clone().map(Value::String),
+            _ => self.fields.get(name).cloned(),
         }
+        .filter(|v| !v.is_null() && !as_string(v).trim().is_empty())
     }
 
     fn text(&self, name: &str) -> Option<String> {
-        self.field(name)
-            .map(as_string)
-            .filter(|s| !s.trim().is_empty())
+        self.field(name).map(|v| as_string(&v))
     }
 }
 
@@ -93,8 +100,65 @@ impl Grade {
     }
 }
 
+/// Which way a link copies a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkDirection {
+    /// The entity's value populates the track (the entity is the authority).
+    #[default]
+    ToTrack,
+    /// The track's value updates the entity.
+    ToEntity,
+}
+
+/// One entity field linked to one track field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct EntityLink {
+    /// Entity field: one of the minimum (`name`, `class_name`, `domain`,
+    /// `affiliation`, `track_type`, `cot_type`, `sidc`), `entity_id`, or an
+    /// attribute key.
+    pub entity: String,
+    /// Track (observation) field, e.g. `classification.domain` or `ext.destination`.
+    pub track: Path,
+    #[serde(default)]
+    pub direction: LinkDirection,
+}
+
+impl EntityLink {
+    fn to_track(entity: &str, track: &str) -> Self {
+        Self {
+            entity: entity.into(),
+            track: track.parse().expect("path"),
+            direction: LinkDirection::ToTrack,
+        }
+    }
+}
+
+/// Where mapped `entity.<key>` values travel on an observation
+/// (`ext.entity.<key>`): at a corroborated match they update the entity, and
+/// they are never published.
+pub const ENTITY_EXT: &str = "entity";
+
+/// The links a stage has unless it lists its own: the entity's OTH-GOLD
+/// minimum populates the track.
+pub fn default_links() -> Vec<EntityLink> {
+    [
+        ("name", "name"),
+        ("class_name", "platform.class"),
+        ("domain", "classification.domain"),
+        ("affiliation", "classification.affiliation"),
+        ("track_type", "track_type"),
+        ("cot_type", "classification.cot_type"),
+        ("sidc", "classification.sidc"),
+    ]
+    .into_iter()
+    .map(|(e, t)| EntityLink::to_track(e, t))
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawStage")]
 pub struct RegistryStage {
     /// Identifier schemes to resolve, in priority order. Empty (the default)
     /// resolves every identifier the observation carries, in its order.
@@ -116,10 +180,68 @@ pub struct RegistryStage {
     /// Grades at which `apply` is used; default exact, hull, name, generic.
     #[serde(default = "corroborated")]
     pub apply_grades: BTreeSet<Grade>,
-    /// Observation field ← registry entry field, applied (overwriting) at the
-    /// grades above. `name` and `entity_id` are available as fields too.
+    /// Entity fields linked to track fields, used at the grades above.
+    pub links: Vec<EntityLink>,
+}
+
+/// The stage as stored: `apply` (track field ← entity field) is an earlier
+/// form of entity → track links, read once.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawStage {
     #[serde(default)]
-    pub apply: BTreeMap<String, String>,
+    schemes: Vec<String>,
+    #[serde(default = "default_name_field")]
+    broadcast_name: Path,
+    #[serde(default)]
+    generic_tokens: BTreeSet<String>,
+    #[serde(default)]
+    markers: BTreeSet<String>,
+    #[serde(default)]
+    military_cot: Option<RegexString>,
+    #[serde(default = "corroborated")]
+    apply_grades: BTreeSet<Grade>,
+    #[serde(default)]
+    links: Option<Vec<EntityLink>>,
+    #[serde(default)]
+    apply: BTreeMap<String, Path>,
+}
+
+impl From<RawStage> for RegistryStage {
+    fn from(r: RawStage) -> Self {
+        let links = match r.links {
+            Some(links) => links,
+            None if r.apply.is_empty() => default_links(),
+            None => r
+                .apply
+                .into_iter()
+                .map(|(track, entity)| EntityLink {
+                    entity: match entity.to_string().as_str() {
+                        "cot" => "cot_type".into(),
+                        "ship_class" => "class_name".into(),
+                        other => other.into(),
+                    },
+                    track: track.parse().unwrap_or_else(|_| default_name_field()),
+                    direction: LinkDirection::ToTrack,
+                })
+                .collect(),
+        };
+        Self {
+            schemes: r.schemes,
+            broadcast_name: r.broadcast_name,
+            generic_tokens: r.generic_tokens,
+            markers: r.markers,
+            military_cot: r.military_cot,
+            apply_grades: r.apply_grades,
+            links,
+        }
+    }
+}
+
+impl Default for RegistryStage {
+    fn default() -> Self {
+        serde_json::from_value(json!({})).expect("stage defaults")
+    }
 }
 
 fn default_name_field() -> Path {
@@ -139,7 +261,7 @@ pub struct RegistryMatch {
     pub name: Option<String>,
     pub applied: bool,
     /// The match is trustworthy: an accepted grade and no disagreeing
-    /// identifiers. The entity's card then speaks for the track.
+    /// identifiers. The entity's links are then used.
     pub corroborated: bool,
     /// The identifier that produced the grade.
     pub scheme: String,
@@ -148,6 +270,25 @@ pub struct RegistryMatch {
     /// the identifiers disagree, so nothing was applied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
+    /// Track fields where the entity replaced a different feed value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<Override>,
+    /// The source whose report this is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Entity fields the feed reports differently (track → entity links),
+    /// for the worker to write.
+    #[serde(skip)]
+    pub updates: Vec<(String, Value)>,
+}
+
+/// A feed value the entity replaced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Override {
+    /// Track field.
+    pub field: String,
+    pub reported: Value,
+    pub entity: Value,
 }
 
 fn tokens(s: &str) -> Vec<String> {
@@ -219,7 +360,7 @@ impl RegistryStage {
             || self
                 .military_cot
                 .as_ref()
-                .is_some_and(|re| entry.text("cot").is_some_and(|c| re.0.0.is_match(&c)));
+                .is_some_and(|re| entry.text("cot_type").is_some_and(|c| re.0.0.is_match(&c)));
         if marked && military {
             Grade::Generic
         } else {
@@ -273,30 +414,67 @@ impl RegistryStage {
             })
             .min_by_key(|(_, _, g)| *g)?;
         let corroborated = conflicts.is_empty() && self.apply_grades.contains(&grade);
-        let applied = corroborated && entry.name.is_some();
-        if applied {
-            for (target, source) in &self.apply {
-                let v = match source.as_str() {
-                    "name" => entry.name.clone().map(Value::String),
-                    "entity_id" => Some(Value::String(entry.entity_id.clone())),
-                    other => entry.field(other).cloned(),
-                };
-                if let Some(v) = v.filter(|v| !v.is_null() && !as_string(v).trim().is_empty())
-                    && let Ok(path) = target.parse::<Path>()
-                {
-                    path.set(obs, v);
+        let (mut overrides, mut updates) = (Vec::new(), Vec::new());
+        // Values a mapping sent to the entity (`entity.<key>`).
+        let mapped = obs
+            .get_mut("ext")
+            .and_then(Value::as_object_mut)
+            .and_then(|ext| ext.remove(ENTITY_EXT));
+        if corroborated && let Some(Value::Object(mapped)) = mapped {
+            for (k, v) in mapped {
+                if !v.is_null() && entry.field(&k).as_ref() != Some(&v) {
+                    updates.push((k, v));
                 }
+            }
+        }
+        if corroborated {
+            // Feed values first, before an entity value replaces one.
+            for l in self
+                .links
+                .iter()
+                .filter(|l| l.direction == LinkDirection::ToEntity)
+            {
+                if let Some(v) = l.track.get(obs).filter(|v| !v.is_null())
+                    && entry.field(&l.entity).as_ref() != Some(v)
+                {
+                    updates.push((l.entity.clone(), v.clone()));
+                }
+            }
+            for l in self
+                .links
+                .iter()
+                .filter(|l| l.direction == LinkDirection::ToTrack)
+            {
+                let Some(v) = entry.field(&l.entity) else {
+                    continue;
+                };
+                if let Some(reported) = l.track.get(obs).filter(|r| !r.is_null())
+                    && as_string(reported) != as_string(&v)
+                {
+                    overrides.push(Override {
+                        field: l.track.to_string(),
+                        reported: reported.clone(),
+                        entity: v.clone(),
+                    });
+                }
+                l.track.set(obs, v);
             }
         }
         let m = RegistryMatch {
             entity_id: entry.entity_id.clone(),
             grade,
             name: entry.name.clone(),
-            applied,
+            applied: corroborated,
             corroborated,
             scheme: id.0.clone(),
             value: id.1.clone(),
             conflicts,
+            overrides,
+            updates,
+            source_id: obs
+                .get("source_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         };
         let ext = obs
             .as_object_mut()
@@ -333,7 +511,7 @@ mod tests {
             name: Some("USS TED STEVENS".into()),
             expected_name: Some("TED STEVENS".into()),
             fields: serde_json::from_value(
-                json!({"cot": "a-f-S-C-L-D-D", "flag": "US", "hull_code": "DDG-128"}),
+                json!({"cot_type": "a-f-S-C-L-D-D", "flag": "US", "hull_code": "DDG-128"}),
             )
             .unwrap(),
         }
@@ -356,7 +534,7 @@ mod tests {
         assert_eq!(s.grade(Some("ABC"), &short), Grade::Stale);
         // Generic needs a warship entry.
         let mut civil = e.clone();
-        civil.fields = serde_json::from_value(json!({"cot": "a-u-S-X"})).unwrap();
+        civil.fields = serde_json::from_value(json!({"cot_type": "a-u-S-X"})).unwrap();
         assert_eq!(s.grade(Some("NAVY"), &civil), Grade::Stale);
     }
 
@@ -390,6 +568,63 @@ mod tests {
 
         let mut miss = json!({"identifiers": [{"scheme": "mmsi", "value": "1"}]});
         assert!(stage().run(&mut miss, &reg).is_none());
+    }
+
+    #[test]
+    fn links_go_both_ways_and_record_what_the_entity_replaced() {
+        let reg: BTreeMap<(String, String), RegistryEntry> =
+            [(("mmsi".to_string(), "338924210".to_string()), entry())].into();
+        let mut s: RegistryStage = serde_json::from_value(json!({
+            "links": [
+                {"entity": "cot_type", "track": "classification.cot_type"},
+                {"entity": "destination", "track": "ext.destination", "direction": "to_entity"},
+                {"entity": "flag", "track": "platform.flag", "direction": "to_entity"}]
+        }))
+        .unwrap();
+        let mut obs = json!({"identifiers": [{"scheme": "mmsi", "value": "338924210"}],
+                             "name": "TED STEVENS", "classification": {"cot_type": "a-u-S"},
+                             "platform": {"flag": "US"}, "ext": {"destination": "LONG BEACH"}});
+        let m = s.run(&mut obs, &reg).unwrap();
+        assert_eq!(obs["classification"]["cot_type"], "a-f-S-C-L-D-D");
+        assert_eq!(
+            obs["ext"]["registry"]["overrides"][0]["field"],
+            "classification.cot_type"
+        );
+        assert_eq!(obs["ext"]["registry"]["overrides"][0]["reported"], "a-u-S");
+        // Only what differs from the entity is sent back to it.
+        assert_eq!(
+            m.updates,
+            [("destination".to_string(), json!("LONG BEACH"))]
+        );
+
+        // Uncorroborated: nothing either way.
+        s.apply_grades = [Grade::Exact].into();
+        let mut obs = json!({"identifiers": [{"scheme": "mmsi", "value": "338924210"}],
+                             "name": "OTHER", "ext": {"destination": "LONG BEACH"}});
+        let m = s.run(&mut obs, &reg).unwrap();
+        assert!(m.updates.is_empty() && !m.applied);
+
+        // No links configured: the OTH-GOLD minimum populates the track.
+        let d = RegistryStage::default();
+        assert_eq!(d.links, default_links());
+        let mut e = entry();
+        e.fields.insert("domain".into(), json!("surface"));
+        e.fields.insert("affiliation".into(), json!("friend"));
+        let reg: BTreeMap<(String, String), RegistryEntry> =
+            [(("mmsi".to_string(), "338924210".to_string()), e)].into();
+        let mut obs = json!({"identifiers": [{"scheme": "mmsi", "value": "338924210"}],
+                             "name": "TED STEVENS"});
+        d.run(&mut obs, &reg).unwrap();
+        assert_eq!(obs["classification"]["domain"], "surface");
+        assert_eq!(obs["classification"]["affiliation"], "friend");
+        assert_eq!(obs["name"], "USS TED STEVENS");
+        // A stored `apply` reads as entity → track links, round trip as links.
+        let legacy = stage();
+        assert!(legacy.links.iter().any(|l| l.entity == "cot_type"
+            && l.track.to_string() == "classification.cot_type"));
+        let back: RegistryStage =
+            serde_json::from_value(serde_json::to_value(&legacy).unwrap()).unwrap();
+        assert_eq!(back, legacy);
     }
 
     #[test]

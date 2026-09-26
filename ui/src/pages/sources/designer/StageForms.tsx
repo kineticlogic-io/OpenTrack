@@ -1,7 +1,8 @@
-import { TbPlus, TbTrash } from 'react-icons/tb'
+import { useEffect, useState } from 'react'
+import { TbPlus, TbTrash, TbX } from 'react-icons/tb'
 import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
-import type { SecurityLabel } from '../../../api/client'
-import { describeCondition, describeValue, type ValueSpec } from '../../../lib/pipeline'
+import { api, type SecurityLabel } from '../../../api/client'
+import { DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
@@ -122,40 +123,112 @@ export function JoinForm({ value, onChange }: Props) {
 }
 
 const GRADES = ['exact', 'hull', 'name', 'generic', 'stale']
+const DIRECTIONS = [{ name: 'entity → track' }, { name: 'track → entity' }]
 
+/** The entity stage: how a track finds its entity, and which fields flow which way at a corroborated match. */
 export function RegistryForm({ value, onChange }: Props) {
-  const apply = Object.entries((value.apply as Obj) ?? {})
-  const setApply = (entries: [string, unknown][]) => onChange({ ...value, apply: Object.fromEntries(entries) })
+  const links = entityLinks(value)
+  const setLinks = (next: EntityLink[]) => {
+    const rest = Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'apply'))
+    onChange({ ...rest, links: next })
+  }
+  const setLink = (i: number, patch: Partial<EntityLink>) => setLinks(links.map((l, j) => (j === i ? { ...l, ...patch } : l)))
+  const [entityFields, setEntityFields] = useState<string[]>([])
+  const [trackFields, setTrackFields] = useState<string[]>([])
+  useEffect(() => {
+    api.registryFields().then(
+      (f) => setEntityFields([...f.minimum, 'entity_id', ...f.attributes.map((a) => a.key)]),
+      () => {},
+    )
+    api.schema().then(
+      (o) => {
+        const ext = (o.versions.find((v) => v.version === o.latest_published)?.fields ?? []).filter((f) => !f.builtin).map((f) => `ext.${f.key}`)
+        setTrackFields([...o.core, ...ext])
+      },
+      () => {},
+    )
+  }, [])
   return (
     <div className="stack">
-      <Row label="Schemes" hint="Identifier schemes to resolve, in priority order. Empty: every identifier.">
+      <Row label="Schemes" hint="Identifier schemes to resolve, in priority order. Empty: every identifier the track carries.">
         <Input style={INPUT} aria-label="Registry schemes" value={((value.schemes as string[]) ?? []).join(', ')} onChange={(e) => onChange({ ...value, schemes: words(e.target.value) })} spellCheck={false} />
       </Row>
-      <Row label="Name to grade" hint="The observation field compared with the entity's name.">
+      <Row label="Name to grade" hint="The track field compared with the entity's name and each identifier's broadcast name, to grade the match.">
         <Input style={INPUT} aria-label="Broadcast name field" value={String(value.broadcast_name ?? 'name')} onChange={(e) => onChange({ ...value, broadcast_name: e.target.value })} spellCheck={false} />
       </Row>
-      <Row label="Apply at grades" hint={`Grades at which the fields below overwrite the feed: ${GRADES.join(', ')}.`}>
+      <Row label="Use at grades" hint={`Grades that count as corroborated, where the links below are used: ${GRADES.join(', ')}.`}>
         <Input
           style={INPUT}
           aria-label="Apply grades"
-          value={((value.apply_grades as string[]) ?? ['exact', 'hull', 'name', 'generic']).join(', ')}
+          value={((value.apply_grades as string[]) ?? DEFAULT_GRADES).join(', ')}
           onChange={(e) => onChange({ ...value, apply_grades: words(e.target.value) })}
           spellCheck={false}
         />
       </Row>
-      <h4 className="subhead">Fields set from the entity</h4>
-      {apply.map(([to, from], i) => (
-        <div key={i} className="value-row">
-          <Input style={{ ...INPUT, width: 220 }} aria-label={`Apply ${i + 1} observation field`} placeholder="classification.cot_type" value={to} onChange={(e) => setApply(apply.map(([k, v], j) => (j === i ? [e.target.value, v] : [k, v])))} spellCheck={false} />
-          <span className="muted">← entity field</span>
-          <Input style={{ ...INPUT, width: 160 }} aria-label={`Apply ${i + 1} entity field`} placeholder="cot, name, flag…" value={String(from)} onChange={(e) => setApply(apply.map(([k, v], j) => (j === i ? [k, e.target.value] : [k, v])))} spellCheck={false} />
-          <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label={`Remove apply ${i + 1}`} title="Remove" onClick={() => setApply(apply.filter((_, j) => j !== i))} />
+      <div className="entity-section-head">
+        <h4 className="subhead">
+          Links
+          <InfoTip label="Links">
+            Entity → track: the entity is the authority, and its value replaces what the feed reports (the difference is shown on the track).
+            Track → entity: the feed updates the entity, e.g. an AIS destination. A mapping can also send a value straight to the entity with an{' '}
+            <span className="mono">entity.&lt;key&gt;</span> destination.
+          </InfoTip>
+        </h4>
+        <div className="num-row">
+          <Button size="sm" variant="ghost" onClick={() => setLinks(DEFAULT_LINKS)} title="Replace the links with the defaults: the entity's OTH-GOLD minimum populates the track">
+            Default links
+          </Button>
+          <Button size="sm" variant="ghost" icon={<TbPlus />} onClick={() => setLinks([...links, { entity: '', track: '', direction: 'to_track' }])}>
+            Add link
+          </Button>
         </div>
-      ))}
-      <div>
-        <Button size="sm" variant="secondary" icon={<TbPlus />} disabled={apply.some(([k]) => k === '')} onClick={() => setApply([...apply, ['', '']])}>
-          Field
-        </Button>
+      </div>
+      <datalist id="link-entity-fields">
+        {entityFields.map((f) => (
+          <option key={f} value={f} />
+        ))}
+      </datalist>
+      <datalist id="link-track-fields">
+        {trackFields.map((f) => (
+          <option key={f} value={f} />
+        ))}
+      </datalist>
+      <div className="kv-table kv-links">
+        <span className="kv-head">Entity field</span>
+        <span className="kv-head">Direction</span>
+        <span className="kv-head">Track field</span>
+        <span />
+        {links.map((l, i) => (
+          <div key={i} className="kv-row">
+            <Input
+              style={{ ...INPUT, width: '100%', fontFamily: 'var(--font-mono)' }}
+              aria-label={`Link ${i + 1} entity field`}
+              list="link-entity-fields"
+              value={l.entity}
+              placeholder="name, flag…"
+              onChange={(e) => setLink(i, { entity: e.target.value })}
+              spellCheck={false}
+            />
+            <FieldSelect
+              ariaLabel={`Link ${i + 1} direction`}
+              fields={DIRECTIONS}
+              value={l.direction === 'to_entity' ? 'track → entity' : 'entity → track'}
+              onChange={(v) => setLink(i, { direction: v === 'track → entity' ? 'to_entity' : 'to_track' })}
+              style={{ width: '100%' }}
+            />
+            <Input
+              style={{ ...INPUT, width: '100%', fontFamily: 'var(--font-mono)' }}
+              aria-label={`Link ${i + 1} track field`}
+              list="link-track-fields"
+              value={l.track}
+              placeholder="classification.domain"
+              onChange={(e) => setLink(i, { track: e.target.value })}
+              spellCheck={false}
+            />
+            <Button size="xs" variant="ghost" icon={<TbX />} aria-label={`Remove link ${i + 1}`} onClick={() => setLinks(links.filter((_, j) => j !== i))} />
+          </div>
+        ))}
+        {links.length === 0 && <span className="muted kv-empty">No links: the entity is matched, but nothing flows either way.</span>}
       </div>
     </div>
   )

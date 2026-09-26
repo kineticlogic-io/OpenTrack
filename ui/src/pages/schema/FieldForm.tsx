@@ -4,7 +4,7 @@ import type { ExtensionField, SchemaOverview } from '../../api/client'
 import { validKey } from '../../lib/schemaUsage'
 
 const TYPES: ExtensionField['type'][] = ['string', 'integer', 'number', 'boolean', 'enum', 'timestamp', 'position', 'json']
-const CARD_OR_FEED = 'card or feed'
+const CARD_OR_FEED = 'feed or entity'
 // Inputs as tall as the selects beside them.
 const ROW_INPUT = { height: 28, fontSize: 12 }
 
@@ -19,7 +19,7 @@ function problem(f: ExtensionField, all: ExtensionField[], reserved: string[]): 
 
 /**
  * The draft's fields as a form: one row per field with its name, type, unit, where its value comes
- * from (a card or feed mapping, or an OpenTrack built-in, which fixes the type) and notes.
+ * from (a feed mapping or an entity link, or an OpenTrack built-in, which fixes the type) and notes.
  */
 export function FieldForm({
   fields,
@@ -104,9 +104,9 @@ export function FieldForm({
                 {err ? (
                   <span className="error-text">{err}</span>
                 ) : f.builtin ? (
-                  `OpenTrack fills it${builtins.find((b) => b.name === f.builtin)?.reads?.length ? ` from ${builtins.find((b) => b.name === f.builtin)!.reads!.join(', ')}` : ''}; cards and feeds do not.`
+                  `OpenTrack fills it${builtins.find((b) => b.name === f.builtin)?.reads?.length ? ` from ${builtins.find((b) => b.name === f.builtin)!.reads!.join(', ')}` : ''}; feeds and entities do not.`
                 ) : (
-                  `Fed by ${feeds.join(', ')}; a card value takes precedence.`
+                  `Fed by ${feeds.join(', ')}; where a pipeline links it to an entity attribute, the entity's value takes precedence.`
                 )}
               </div>
             )}

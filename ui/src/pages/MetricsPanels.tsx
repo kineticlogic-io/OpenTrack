@@ -145,8 +145,8 @@ export default function MetricsPanels() {
             <Stat label="Confirmed" value={state('confirmed')} />
             <Stat label="Tentative" value={state('tentative')} />
             <Stat label="Lost" value={state('lost')} />
-            <Stat label="With a card" value={l.with_card} />
-            <Stat label="Card differs" value={l.notices} />
+            <Stat label="With an entity" value={l.with_entity} />
+            <Stat label="Entity differs" value={l.notices} />
             {Object.entries(l.by_domain)
               .sort((a, b) => b[1] - a[1])
               .map(([d, n]) => (
@@ -161,7 +161,7 @@ export default function MetricsPanels() {
                 { label: 'live', values: gauge(pts, (p) => p.system.tracks) },
                 { label: 'confirmed', values: gauge(pts, (p) => p.system.tracks_confirmed), tone: 'info' },
                 { label: 'lost', values: gauge(pts, (p) => p.system.tracks_lost), tone: 'warning' },
-                { label: 'with a card', values: gauge(pts, (p) => p.system.tracks_with_card), tone: 'neutral' },
+                { label: 'with an entity', values: gauge(pts, (p) => p.system.tracks_with_entity), tone: 'neutral' },
               ]}
             />
           </div>

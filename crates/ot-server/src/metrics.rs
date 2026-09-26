@@ -83,7 +83,7 @@ struct Live {
     tracks: u64,
     by_state: BTreeMap<String, u64>,
     by_domain: BTreeMap<String, u64>,
-    with_card: u64,
+    with_entity: u64,
     notices: u64,
     /// The writer's backlog on the outbox.
     outbox: GroupBacklog,
@@ -111,7 +111,7 @@ async fn live(s: &AppState) -> Result<Live, ApiError> {
         *out.by_state.entry(state).or_default() += 1;
         let m = ot_core::wire::to_message(&t, &ctx, now);
         *out.by_domain.entry(m.domain).or_default() += 1;
-        out.with_card += u64::from(t.entity_id.is_some());
+        out.with_entity += u64::from(t.entity_id.is_some());
         out.notices += t.notices.len() as u64;
     }
     out.outbox = s.redis.outbox_backlog(crate::writer::GROUP).await?;
@@ -175,7 +175,7 @@ pub async fn run_sampler(s: AppState) {
             ("tracks_tentative", state("tentative")),
             ("tracks_confirmed", state("confirmed")),
             ("tracks_lost", state("lost")),
-            ("tracks_with_card", l.with_card),
+            ("tracks_with_entity", l.with_entity),
             ("notices", l.notices),
             ("outbox_pending", l.outbox.pending),
             ("outbox_lag", l.outbox.lag),

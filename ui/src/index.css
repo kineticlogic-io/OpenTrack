@@ -646,3 +646,20 @@ body {
 /* A form label with its ⓘ. */
 .row-label { display: flex; align-items: center; gap: 2px; min-height: 24px; }
 .row-label > label { margin-bottom: 0 !important; }
+
+/* The entity editor: a two-column form (label, control) and buildable key/value tables,
+   in OpenStare's form style (11px uppercase labels, compact 28px controls). */
+.entity-editor { gap: var(--space-md); }
+.entity-form { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 6px var(--space-md); align-items: center; }
+.entity-form-row, .kv-row { display: contents; }
+.entity-form-label { display: flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-secondary); }
+.entity-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-bottom: calc(-1 * var(--space-sm)); }
+.kv-table { display: grid; gap: 6px var(--space-sm); align-items: center; }
+.kv-identifiers { grid-template-columns: 112px minmax(0, 1fr) minmax(0, 1fr) 28px; }
+.kv-attributes { grid-template-columns: minmax(0, 1fr) 104px minmax(0, 1.4fr) 28px; }
+.kv-head { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-secondary); }
+.kv-empty { grid-column: 1 / -1; }
+.kv-links { grid-template-columns: minmax(0, 1fr) 128px minmax(0, 1.3fr) 28px; }
+/* Title-row tools that give way (a narrower search) before the title does. */
+.title-tools { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.title-tools .search { flex: 0 1 180px; min-width: 96px; }

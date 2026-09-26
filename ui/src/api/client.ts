@@ -39,10 +39,11 @@ export interface Observation {
   identifiers?: { scheme: string; value: string }[]
 }
 
-/** A card value that differs from what a feed reports; the card value is published. */
+/** A track field where the entity's value replaced a different one the feed reported; the entity's is published. */
 export interface AttributeNotice {
+  /** Track field, e.g. classification.cot_type or ext.destination. */
   key: string
-  card: unknown
+  entity: unknown
   feed: unknown
   source_id: string
 }
@@ -51,9 +52,9 @@ export interface SystemTrack {
   uid: string
   state: 'tentative' | 'confirmed' | 'lost' | 'dropped'
   view: Observation
-  /** The entity (card) this track resolves to. */
+  /** The registry entity this track resolves to. */
   entity_id?: string
-  /** Published attributes, resolved from the card, the feed and built-ins. */
+  /** Published attributes, resolved from the track's values (feeds and entity links) and built-ins. */
   attributes?: Record<string, unknown>
   notices?: AttributeNotice[]
   contributors: {
@@ -194,7 +195,7 @@ export interface TrackRow {
   uid: string
   track_id: string
   entity_id: string | null
-  /** Card values that differ from what a feed reports. */
+  /** Track fields where the entity replaced what a feed reports. */
   notices: number
   state: SystemTrack['state']
   class: string
@@ -246,7 +247,7 @@ export interface SystemMetrics {
     tracks: number
     by_state: Record<string, number>
     by_domain: Record<string, number>
-    with_card: number
+    with_entity: number
     notices: number
     outbox: Backlog
     observations: Backlog
@@ -325,17 +326,6 @@ export interface AppSettingsResponse {
   node_id: string
 }
 
-/** An entity as the registry list shows it, with its card values. */
-export interface RegistryListEntity {
-  id: string
-  name?: string | null
-  status: string
-  fields: Record<string, unknown>
-  identifiers: { scheme: string; value: string }[]
-  card?: Record<string, unknown> | null
-  card_updated_at_ms?: number | null
-}
-
 /** What a spreadsheet import does, row by row. */
 export interface SheetImport {
   applied: boolean
@@ -346,8 +336,8 @@ export interface SheetImport {
     entity_id: string
     name?: string
     identifiers_added?: string[]
-    registry_fields?: string[]
-    card_fields?: string[]
+    /** Fields the row changes (the minimum's and attributes). */
+    fields?: string[]
     errors?: string[]
   }[]
 }
@@ -508,7 +498,7 @@ export interface ExtensionField {
   enum_values?: string[]
   /** Notes for the people who maintain and consume the schema. */
   description?: string
-  /** Filled by OpenTrack (state, speed_mps, ...) instead of a feed or card. */
+  /** Filled by OpenTrack (state, speed_mps, ...) instead of a feed or entity. */
   builtin?: string
 }
 
@@ -534,45 +524,52 @@ export interface SchemaOverview {
   sources: { source: string; enabled: boolean; schema_version: number }[]
 }
 
-// --- Cards ---------------------------------------------------------------------------------
+// --- Entities --------------------------------------------------------------------------
 
 export interface RegistryIdentifier {
   scheme: string
   value: string
+  /** Name the object is expected to broadcast under this identifier. */
   expected_name?: string | null
   source?: string | null
 }
 
-export interface Entity {
-  id: string
-  name?: string | null
-  status: string
-  identifiers: RegistryIdentifier[]
+export type AttrType = 'text' | 'number' | 'boolean' | 'datetime' | 'json'
+export const ATTR_TYPES: AttrType[] = ['text', 'number', 'boolean', 'datetime', 'json']
+
+export interface EntityAttribute {
+  key: string
+  type: AttrType
+  value: unknown
 }
 
-export interface CardView {
+export const DOMAINS = ['air', 'surface', 'subsurface', 'ground', 'space'] as const
+export const AFFILIATIONS = ['pending', 'unknown', 'assumed_friend', 'friend', 'neutral', 'suspect', 'hostile', 'joker', 'faker', 'none'] as const
+export const TRACK_TYPES = ['tactical', 'live_training', 'simulated_training', 'demand_entry'] as const
+
+/** One real-world object: identifiers, status, the OTH-GOLD minimum and free-form attributes. */
+export interface Entity {
+  id: string
+  status: 'active' | 'retired'
+  name?: string | null
+  class_name?: string | null
+  domain?: (typeof DOMAINS)[number] | null
+  affiliation?: (typeof AFFILIATIONS)[number] | null
+  track_type?: (typeof TRACK_TYPES)[number] | null
+  cot_type?: string | null
+  sidc?: string | null
+  identifiers: RegistryIdentifier[]
+  attributes: EntityAttribute[]
+  source?: string | null
+  updated_at_ms?: number
+}
+
+export interface EntityView {
   entity: Entity
-  /** The output schema the card form follows (latest published). */
-  schema: { version: number; fields: ExtensionField[] }
-  card: { values: Record<string, unknown>; schema_version: number; updated_at_ms: number } | null
-  revisions: {
-    id: number
-    values: Record<string, unknown>
-    schema_version: number
-    saved_at_ms: number
-    decision_id: number | null
-    actor: string | null
-  }[]
-  /** Live tracks this card speaks for, with what their feed reports. */
-  tracks: {
-    uid: string
-    track_id: string
-    state: string
-    source_id: string
-    last_seen: string
-    feed: Record<string, unknown>
-    notices: AttributeNotice[]
-  }[]
+  /** Saved versions, newest first. */
+  revisions: { id: number; entity: Entity; saved_at_ms: number; decision_id: number | null; actor: string | null }[]
+  /** Live tracks resolving to it, with the fields where it replaced what their feed reports. */
+  tracks: { uid: string; track_id: string; state: string; source_id: string; last_seen: string; notices: AttributeNotice[] }[]
 }
 
 export const api = {
@@ -632,7 +629,14 @@ export const api = {
     request<{ retired: number; history?: { nodes: number; edges: number } | null }>('POST', '/admin/purge', { confirm, history }),
 
   registryEntities: (q: string, limit = 100, offset = 0) =>
-    get<{ entities: RegistryListEntity[]; total: number }>(`/registry/entities?q=${enc(q)}&limit=${limit}&offset=${offset}`),
+    get<{ entities: Entity[]; total: number }>(`/registry/entities?q=${enc(q)}&limit=${limit}&offset=${offset}`),
+  entity: (id: string) => get<EntityView>(`/registry/entities/${enc(id)}`),
+  /** Create an entity; with `from_track`, seeded with that live track's name and identifiers. */
+  createEntity: (entity: Omit<Entity, 'id'> & { from_track?: string }) => request<EntityView>('POST', '/registry/entities', entity),
+  saveEntity: (entity: Entity) => request<EntityView>('PUT', `/registry/entities/${enc(entity.id)}`, entity),
+  deleteEntity: (id: string) => request<unknown>('DELETE', `/registry/entities/${enc(id)}`),
+  /** Entity fields a pipeline can link: the minimum and the attribute keys in use. */
+  registryFields: () => get<{ minimum: string[]; attributes: { key: string; entities: number }[] }>('/registry/fields'),
   registryExportUrl: (format: 'xlsx' | 'csv') => `/api/v1/registry/export?format=${format}`,
   /** Plan (or with `apply`, make) the changes a spreadsheet describes. */
   importSheet: async (file: File, apply: boolean): Promise<SheetImport> => {
@@ -647,15 +651,4 @@ export const api = {
     return parsed as SheetImport
   },
 
-  searchCards: (q: string) =>
-    get<{ entities: (Entity & { has_card: boolean })[] }>(`/cards?q=${enc(q)}`).then((r) => r.entities),
-  card: (id: string) => get<CardView>(`/cards/${enc(id)}`),
-  saveCard: (id: string, values: Record<string, unknown>) =>
-    request<CardView>('PUT', `/cards/${enc(id)}`, { values }),
-  createCard: (body: {
-    from_track?: string
-    name?: string
-    identifiers?: RegistryIdentifier[]
-    values?: Record<string, unknown>
-  }) => request<CardView>('POST', '/cards', body),
 }

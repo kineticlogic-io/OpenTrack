@@ -171,18 +171,22 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
     })
   }
   const reg = p.registry as Obj | undefined
+  const links = entityLinks(reg)
+  const toTrack = links.filter((l) => l.direction !== 'to_entity').length
   out.push({
     id: 'registry',
-    title: 'registry',
-    summary: reg ? `${plural(Object.keys((reg.apply as Obj) ?? {}).length, 'field')} applied on a match` : 'match only (defaults)',
-    facts: reg
-      ? [
-          { label: 'Schemes', value: ((reg.schemes as string[]) ?? []).join(', ') || 'every identifier' },
-          { label: 'Name to grade', value: String(reg.broadcast_name ?? 'name') },
-          { label: 'Applied at grades', value: ((reg.apply_grades as string[]) ?? ['exact', 'hull', 'name', 'generic']).join(', ') },
-          ...Object.entries((reg.apply as Obj) ?? {}).map(([to, from]) => ({ label: `sets ${to}`, value: `from the entity's ${from}` })),
-        ]
-      : [{ label: 'What it does', value: 'Resolves identifiers to registry entities (so cards reach the track); applies nothing.' }],
+    title: 'entity',
+    summary: `${plural(toTrack, 'field')} from the entity${links.length > toTrack ? `, ${links.length - toTrack} back to it` : ''}${reg ? '' : ' (defaults)'}`,
+    facts: [
+      { label: 'Schemes', value: ((reg?.schemes as string[]) ?? []).join(', ') || 'every identifier' },
+      { label: 'Name to grade', value: String(reg?.broadcast_name ?? 'name') },
+      { label: 'Used at grades', value: ((reg?.apply_grades as string[]) ?? DEFAULT_GRADES).join(', ') },
+      ...links.map((l) =>
+        l.direction === 'to_entity'
+          ? { label: `updates entity ${l.entity}`, value: `from the track's ${l.track}` }
+          : { label: `sets ${l.track}`, value: `from the entity's ${l.entity}` },
+      ),
+    ],
   })
   const aff = p.affiliation as Obj | undefined
   if (aff) {
@@ -262,13 +266,45 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
   return out
 }
 
+// --- Entity links --------------------------------------------------------------------------
+
+export interface EntityLink {
+  entity: string
+  track: string
+  direction?: 'to_track' | 'to_entity'
+}
+
+export const DEFAULT_GRADES = ['exact', 'hull', 'name', 'generic']
+
+/** The entity's OTH-GOLD minimum populating the track: the links a stage has unless it lists its own. */
+export const DEFAULT_LINKS: EntityLink[] = [
+  { entity: 'name', track: 'name' },
+  { entity: 'class_name', track: 'platform.class' },
+  { entity: 'domain', track: 'classification.domain' },
+  { entity: 'affiliation', track: 'classification.affiliation' },
+  { entity: 'track_type', track: 'track_type' },
+  { entity: 'cot_type', track: 'classification.cot_type' },
+  { entity: 'sidc', track: 'classification.sidc' },
+].map((l) => ({ ...l, direction: 'to_track' as const }))
+
+/** A stage's links: its own, an earlier form's `apply` (track field ← entity field), or the defaults. */
+export function entityLinks(reg: Obj | undefined): EntityLink[] {
+  if (Array.isArray(reg?.links)) return reg.links as EntityLink[]
+  const apply = Object.entries((reg?.apply as Obj) ?? {})
+  if (apply.length) {
+    const renamed: Record<string, string> = { cot: 'cot_type', ship_class: 'class_name' }
+    return apply.map(([track, from]) => ({ entity: renamed[String(from)] ?? String(from), track, direction: 'to_track' }))
+  }
+  return DEFAULT_LINKS
+}
+
 // --- Field map -----------------------------------------------------------------------------
 
 export type Destination = { text: string; kind: 'attribute' | 'gold' | 'internal' | 'none' }
 
 export interface FieldRow {
   id: string
-  /** Where the value is set: a mapping rule, the registry or the affiliation stage. */
+  /** Where the value is set: a mapping rule, the entity or the affiliation stage. */
   stage: string
   from: string
   how: string
@@ -284,6 +320,7 @@ function outputFields(schema: SchemaOverview) {
 /** Where a value written to `target` ends up in the published message. */
 export function destinations(target: string, schema: SchemaOverview): Destination[] {
   const fields = outputFields(schema)
+  if (target.startsWith('entity.')) return [{ kind: 'internal', text: `updates the entity's ${target.slice(7)}` }]
   if (target.startsWith('ext.')) {
     const key = target.slice(4)
     const f = fields.find((x) => x.key === key)
@@ -349,16 +386,26 @@ export function fieldMap(spec: SourceSpec, schema: SchemaOverview): FieldRow[] {
       })
     }
   }
-  const reg = p.registry as Obj | undefined
-  for (const [target, from] of Object.entries((reg?.apply as Obj) ?? {})) {
-    rows.push({
-      id: `registry:${target}`,
-      stage: 'registry',
-      from: `entity ${String(from)}`,
-      how: 'on a corroborated match, overwrites the feed',
-      target,
-      published: destinations(target, schema),
-    })
+  for (const [n, l] of entityLinks(p.registry as Obj | undefined).entries()) {
+    rows.push(
+      l.direction === 'to_entity'
+        ? {
+            id: `registry:${n}`,
+            stage: 'entity',
+            from: l.track,
+            how: 'on a corroborated match, updates the entity',
+            target: `entity ${l.entity}`,
+            published: [{ kind: 'internal', text: `the entity's ${l.entity}` }],
+          }
+        : {
+            id: `registry:${n}`,
+            stage: 'entity',
+            from: `entity ${l.entity}`,
+            how: 'on a corroborated match, replaces the feed',
+            target: l.track,
+            published: destinations(l.track, schema),
+          },
+    )
   }
   const aff = p.affiliation as Obj | undefined
   if (aff) {

@@ -7,7 +7,6 @@
 //! speed while Redis absorbs thousands of observations per second.
 
 mod app_settings;
-pub mod cards;
 pub mod correlation;
 pub mod graph;
 pub mod keys;
@@ -18,12 +17,13 @@ pub mod schema;
 pub mod sources;
 pub mod sqlite;
 
-pub use cards::{Card, CardRevision, new_entity_id};
 pub use correlation::{DecisionRow, Suggestion};
 pub use graph::{EdgeKind, NodeKind};
 pub use keys::Keys;
 pub use redis_store::{GroupBacklog, OutboxEntry, OutboxOp, RedisStore};
-pub use registry::{RegistryEntity, RegistryIdentifier, RegistryRow};
+pub use registry::{
+    AttrType, Attribute, Entity, EntityRevision, RegistryIdentifier, RegistryRow, new_entity_id,
+};
 pub use schema::SchemaVersion;
 pub use sources::{SourceRevision, SourceRow, SourceWrite};
 pub use sqlite::{Db, Decision, StoreError};
