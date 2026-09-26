@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.2 (alpha), 2026-09-26
+
+### Engine throughput
+
+The engine now handles about 28,000 observations a second, from 2,000 to 16,000 tracks updating
+once a second. It handled about 3,900 before.
+
+| Tracks | Before | Engine | Whole run |
+|---|---|---|---|
+| 2,000 | 3,880/s | 29,400/s | 19,000/s |
+| 8,000 | 3,920/s | 27,700/s | 18,100/s |
+| 16,000 | not measured | 26,800/s | 17,700/s |
+
+"Whole run" also counts the benchmark decoding and feeding its own data, which the sources
+process does in a deployment.
+
+- **One database connection.** The engine keeps one SQLite connection open. It used to open one
+  for every decision, and closing it rewrote and deleted the database journal: about 6.5 ms per
+  new track, a cap of some 150 new tracks a second.
+- **Batched Redis writes.** Within a batch of observations, the engine writes source reports and
+  system tracks together in one atomic pipeline, each track once. It used to make about three
+  round trips per observation. Publish decisions are still made as each observation arrives.
+- **Load scenarios.** `load-2k`, `load-8k` and `load-16k` in `scripts/benchmark/` feed tracks at
+  1 Hz for a minute and report observations a second.
+
+### Registry spreadsheet
+
+- **A publish column** (always, never, or empty for automatic) comes after status, so a track
+  manager's publish override survives an export and an import.
+- **A sheet without the column** leaves every override as it is.
+
+### Documentation
+
+- **Headless running.** The README now describes running OpenTrack headless.
+
 ## 0.2.1 (alpha), 2026-09-26
 
 ### Tracker profiles

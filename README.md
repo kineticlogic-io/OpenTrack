@@ -7,7 +7,7 @@ correlator**, lets a track manager curate that picture (**track management**: de
 group and delete tracks), and publishes it to NATS JetStream in an OTH-GOLD-style message for
 OpenStare and any other consumer.
 
-Version **0.2.1 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
+Version **0.2.2 (alpha)**: interfaces, the published message (`opentrack.track.v2`), the plugin
 interface (`opentrack:plugin@0.1.0`) and the database schema may still change. Back up
 `data/opentrack.db` before upgrading; migrations run on start. What changed: [CHANGELOG.md](CHANGELOG.md).
 
@@ -246,6 +246,22 @@ UI development: `opentrack serve` plus `cd ui && npm run dev` (Vite proxies `/ap
 
 Or with Docker: `docker compose up --build` (host networking, beside an existing Redis, publishing
 to OpenStare's NATS). For a local NATS with JetStream: `docker compose --profile dev-nats up nats`.
+
+### Headless
+
+OpenTrack needs no UI or operator to run. The UI is only a client of the REST API:
+- **Without a built UI**, `serve` and `all` serve the API alone.
+- **Configuration** goes through the API or files: source specs (as in `docs/examples/`), tracker
+  profiles (JSON in `profiles/trackers/`), correlation settings, and plugins
+  (`opentrack plugin add`). Every change goes in the decision log.
+- **The roles run separately.** A node that only collects and correlates needs `sources` and
+  `engine`, with `writer` to publish. It can start from a database prepared elsewhere
+  (`OT_SQLITE_PATH`).
+- **What a node needs:** the `opentrack` binary and Redis, plus NATS to publish.
+
+This suits unattended or embedded nodes, such as a vehicle, a drone or a remote sensor site. Each
+node gets its own `OT_SITE_CODE`, so track IDs from different nodes never clash. Nodes don't yet
+share one picture: synchronisation between nodes is on the roadmap.
 
 ### Configuration
 
