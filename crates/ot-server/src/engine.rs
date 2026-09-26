@@ -1637,7 +1637,11 @@ impl Engine {
         let decision = Decision::new(actor, "merge")
             .reason(reason)
             .evidence(evidence)
-            .evidence(json!({ "correlation_version": correlate::VERSION }));
+            .evidence(json!({
+                "correlation_version": correlate::VERSION,
+                "from": from.doc_id(),
+                "into": into.doc_id(),
+            }));
         let c = self.common.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
             Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)

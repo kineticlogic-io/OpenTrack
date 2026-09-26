@@ -281,6 +281,12 @@ impl Db {
                 }
                 out.tracks.push(uid);
             }
+            // Name the tracks it touched, as other decisions do.
+            let names: Vec<String> = out.tracks.iter().map(|u| u.doc_id()).collect();
+            tx.execute(
+                "UPDATE decisions SET evidence = json_set(evidence, '$.tracks', json(?2)) WHERE id = ?1",
+                params![undo, serde_json::to_string(&names)?],
+            )?;
             out.do_not_pair_changed = opened
                 .iter()
                 .chain(&closed)
