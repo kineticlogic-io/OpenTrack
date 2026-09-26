@@ -337,6 +337,11 @@ def delta(old, new, higher_better):
 
 
 def main():
+    # `live` has its own options (see live_load.py).
+    if len(sys.argv) > 1 and sys.argv[1] == "live":
+        import live_load
+        live_load.main(sys.argv[2:])
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list").set_defaults(fn=cmd_list)
