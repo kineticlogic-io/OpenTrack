@@ -20,6 +20,7 @@ argon2.workspace = true
 jsonwebtoken.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 tower.workspace = true

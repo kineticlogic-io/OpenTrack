@@ -33,6 +33,13 @@ pub struct Common {
     #[arg(long, env = "OT_PROFILES_DIR", default_value = "profiles/trackers")]
     pub profiles_dir: PathBuf,
 
+    /// How long each source's observation stream keeps reports (seconds):
+    /// the engine can be down this long without losing any. Redis holds
+    /// about 500 bytes a report, so 16,000 reports a second for 600 s is
+    /// about 4.8 GB.
+    #[arg(long, env = "OT_OBS_WINDOW_SECS", default_value_t = 600)]
+    pub obs_window_secs: u64,
+
     /// A connection a long-running role keeps open for `open_db` to hand out.
     #[arg(skip)]
     pub shared_db: SharedDb,
@@ -197,7 +204,9 @@ impl Common {
     }
 
     pub async fn open_redis(&self) -> anyhow::Result<ot_store::RedisStore> {
-        Ok(ot_store::RedisStore::connect(&self.redis, self.keys()).await?)
+        let mut r = ot_store::RedisStore::connect(&self.redis, self.keys()).await?;
+        r.obs_window = std::time::Duration::from_secs(self.obs_window_secs.max(10));
+        Ok(r)
     }
 }
 

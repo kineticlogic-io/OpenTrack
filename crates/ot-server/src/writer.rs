@@ -24,6 +24,9 @@ pub const GROUP: &str = "track-writer";
 /// Metrics bucket the writer counts under.
 const METRICS_SOURCE: &str = crate::metrics::WRITER;
 
+/// Publications in flight at once (each waits for its acknowledgement).
+const CONCURRENT_PUBLISHES: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct WriterSettings {
     pub consumer: String,
@@ -359,11 +362,18 @@ impl<S: TrackSink> Writer<S> {
             }
         }
 
-        for (uid, ids) in self.schedule.take_due(now) {
-            let Some(track) = self.redis.get_system_track(uid).await? else {
+        // Every due track read at once, published concurrently (each waits
+        // for the stream's acknowledgement), acknowledged at once.
+        let due = self.schedule.take_due(now);
+        let uids: Vec<Uid> = due.iter().map(|(u, _)| *u).collect();
+        let tracks = self.redis.get_system_tracks(&uids).await?;
+        let mut acks: Vec<String> = Vec::new();
+        let mut sends: Vec<(Uid, Vec<String>, Outgoing)> = Vec::new();
+        for ((uid, ids), track) in due.into_iter().zip(tracks) {
+            let Some(track) = track else {
                 // Retired since it was queued; its delete is in the outbox.
                 self.tally.skipped += 1;
-                self.redis.ack_outbox(GROUP, &ids).await?;
+                acks.extend(ids);
                 continue;
             };
             let body = wire::to_message(&track, &self.ctx, chrono::Utc::now());
@@ -373,27 +383,54 @@ impl<S: TrackSink> Writer<S> {
                 ids.last().expect("non-empty"),
                 serde_json::to_vec(&body)?,
             );
-            match self.send(msg).await {
-                Ok(stored) => {
-                    if stored {
-                        self.schedule.written(uid, now);
+            sends.push((uid, ids, msg));
+        }
+        for chunk in sends.chunks(CONCURRENT_PUBLISHES) {
+            if self.needs_prepare {
+                if let Err(e) = self.sink.prepare().await {
+                    tracing::warn!(%e, "stream not ready, will retry");
+                    for (uid, ids, _) in chunk {
+                        self.tally.retried += 1;
+                        failed += 1;
+                        self.schedule
+                            .retry(*uid, ids.clone(), now + self.settings.retry_after);
+                    }
+                    continue;
+                }
+                self.needs_prepare = false;
+            }
+            let results = futures_util::future::join_all(
+                chunk
+                    .iter()
+                    .map(|(_, _, msg)| self.sink.publish(msg.clone())),
+            )
+            .await;
+            for ((uid, ids, _), result) in chunk.iter().zip(results) {
+                match result {
+                    Ok(()) => {
+                        self.schedule.written(*uid, now);
                         self.tally.written += 1;
                         written += 1;
-                    } else {
+                        acks.extend(ids.iter().cloned());
+                    }
+                    Err(e) if e.is_transient() => {
+                        tracing::warn!(%e, %uid, "write failed, will retry");
+                        self.needs_prepare = true;
+                        self.tally.retried += 1;
+                        failed += 1;
+                        self.schedule
+                            .retry(*uid, ids.clone(), now + self.settings.retry_after);
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, "message refused");
                         self.tally.rejected += 1;
                         failed += 1;
+                        acks.extend(ids.iter().cloned());
                     }
-                    self.redis.ack_outbox(GROUP, &ids).await?;
-                }
-                Err(e) => {
-                    tracing::warn!(%e, %uid, "write failed, will retry");
-                    self.tally.retried += 1;
-                    failed += 1;
-                    self.schedule
-                        .retry(uid, ids, now + self.settings.retry_after);
                 }
             }
         }
+        self.redis.ack_outbox(GROUP, &acks).await?;
 
         for (metric, n) in [
             ("written", written),

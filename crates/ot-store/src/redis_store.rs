@@ -15,6 +15,10 @@ use crate::sqlite::{Result, StoreError};
 /// cap) before its consumer acknowledged it: nothing to read, only to ack.
 pub const TRIMMED: &str = "trimmed before it was read";
 
+/// Marks an outbox entry id from the control stream (deletes), which is
+/// never trimmed, unlike the publication stream.
+const CONTROL_TAG: &str = "c:";
+
 /// Work item for the track writer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboxOp {
@@ -219,10 +223,7 @@ impl RedisStore {
             .arg(serde_json::to_string(track)?)
             .ignore()
             .cmd("XADD")
-            .arg(self.keys.outbox())
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.outbox_maxlen)
+            .arg(self.keys.outbox_control())
             .arg("*")
             .arg("op")
             .arg("tombstone")
@@ -284,12 +285,16 @@ impl RedisStore {
                 }
             };
             if let Some((op, key, value)) = queued {
-                pipe.cmd("XADD")
-                    .arg(self.keys.outbox())
-                    .arg("MAXLEN")
-                    .arg("~")
-                    .arg(self.outbox_maxlen)
-                    .arg("*")
+                pipe.cmd("XADD");
+                if op == "tombstone" {
+                    pipe.arg(self.keys.outbox_control());
+                } else {
+                    pipe.arg(self.keys.outbox())
+                        .arg("MAXLEN")
+                        .arg("~")
+                        .arg(self.outbox_maxlen);
+                }
+                pipe.arg("*")
                     .arg("op")
                     .arg(op)
                     .arg("uid")
@@ -385,10 +390,7 @@ impl RedisStore {
             .arg(t_ms)
             .ignore()
             .cmd("XADD")
-            .arg(self.keys.outbox())
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.outbox_maxlen)
+            .arg(self.keys.outbox_control())
             .arg("*")
             .arg("op")
             .arg("history_delete")
@@ -467,6 +469,25 @@ impl RedisStore {
         Ok(raw.map(|s| serde_json::from_str(&s)).transpose()?)
     }
 
+    /// Several system tracks in one round trip, in order (`None` for one
+    /// that is gone).
+    pub async fn get_system_tracks(&self, uids: &[Uid]) -> Result<Vec<Option<SystemTrack>>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = uids
+            .iter()
+            .map(|u| self.keys.system_track(&u.to_string()))
+            .collect();
+        let raw: Vec<Option<String>> = redis::cmd("MGET")
+            .arg(&keys)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        raw.into_iter()
+            .map(|r| Ok(r.map(|s| serde_json::from_str(&s)).transpose()?))
+            .collect()
+    }
+
     /// Remove a system track's live state and queue its tombstone.
     pub async fn retire_system_track(&self, uid: Uid, reason: &str) -> Result<()> {
         redis::pipe()
@@ -474,10 +495,7 @@ impl RedisStore {
             .del(self.keys.system_track(&uid.to_string()))
             .ignore()
             .cmd("XADD")
-            .arg(self.keys.outbox())
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.outbox_maxlen)
+            .arg(self.keys.outbox_control())
             .arg("*")
             .arg("op")
             .arg("tombstone")
@@ -493,19 +511,22 @@ impl RedisStore {
 
     /// Create a consumer group on the outbox if it does not exist yet.
     pub async fn ensure_outbox_group(&self, group: &str) -> Result<()> {
-        let res: redis::RedisResult<String> = redis::cmd("XGROUP")
-            .arg("CREATE")
-            .arg(self.keys.outbox())
-            .arg(group)
-            .arg("0")
-            .arg("MKSTREAM")
-            .query_async(&mut self.conn.clone())
-            .await;
-        match res {
-            Ok(_) => Ok(()),
-            Err(e) if e.code() == Some("BUSYGROUP") => Ok(()),
-            Err(e) => Err(e.into()),
+        for stream in [self.keys.outbox(), self.keys.outbox_control()] {
+            let res: redis::RedisResult<String> = redis::cmd("XGROUP")
+                .arg("CREATE")
+                .arg(stream)
+                .arg(group)
+                .arg("0")
+                .arg("MKSTREAM")
+                .query_async(&mut self.conn.clone())
+                .await;
+            match res {
+                Ok(_) => {}
+                Err(e) if e.code() == Some("BUSYGROUP") => {}
+                Err(e) => return Err(e.into()),
+            }
         }
+        Ok(())
     }
 
     /// Read outbox entries for `consumer`. With `pending`, re-read this
@@ -529,12 +550,18 @@ impl RedisStore {
         if !pending && !block.is_zero() {
             cmd.arg("BLOCK").arg(block.as_millis() as u64);
         }
+        // Deletes (never trimmed) first, then publications.
+        let from = if pending { "0" } else { ">" };
+        let control = self.keys.outbox_control();
         cmd.arg("STREAMS")
+            .arg(&control)
             .arg(self.keys.outbox())
-            .arg(if pending { "0" } else { ">" });
+            .arg(from)
+            .arg(from);
         let reply: Option<StreamReadReply> = cmd.query_async(&mut self.conn.clone()).await?;
         let mut out = Vec::new();
         for key in reply.map(|r| r.keys).unwrap_or_default() {
+            let tag = if key.key == control { CONTROL_TAG } else { "" };
             for entry in key.ids {
                 let field = |name: &str| entry.get::<String>(name);
                 let op =
@@ -565,12 +592,15 @@ impl RedisStore {
                         _ => None,
                     };
                 match op {
-                    Some(op) => out.push(OutboxEntry { id: entry.id, op }),
+                    Some(op) => out.push(OutboxEntry {
+                        id: format!("{tag}{}", entry.id),
+                        op,
+                    }),
                     None => {
                         // Unreadable entries are acknowledged so they cannot
                         // wedge the group, and logged for investigation.
                         tracing::warn!(id = %entry.id, "dropping malformed outbox entry");
-                        self.ack_outbox(group, std::slice::from_ref(&entry.id))
+                        self.ack_outbox(group, &[format!("{tag}{}", entry.id)])
                             .await?;
                     }
                 }
@@ -579,16 +609,28 @@ impl RedisStore {
         Ok(out)
     }
 
+    /// Acknowledge outbox entries (ids as [`read_outbox`] gave them).
     pub async fn ack_outbox(&self, group: &str, ids: &[String]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
+        let (control, publish): (Vec<&String>, Vec<&String>) =
+            ids.iter().partition(|i| i.starts_with(CONTROL_TAG));
+        let control: Vec<&str> = control.iter().map(|i| &i[CONTROL_TAG.len()..]).collect();
+        for (stream, ids) in [
+            (self.keys.outbox_control(), control),
+            (
+                self.keys.outbox(),
+                publish.iter().map(|i| i.as_str()).collect(),
+            ),
+        ] {
+            if ids.is_empty() {
+                continue;
+            }
+            let _: i64 = redis::cmd("XACK")
+                .arg(stream)
+                .arg(group)
+                .arg(ids)
+                .query_async(&mut self.conn.clone())
+                .await?;
         }
-        let _: i64 = redis::cmd("XACK")
-            .arg(self.keys.outbox())
-            .arg(group)
-            .arg(ids)
-            .query_async(&mut self.conn.clone())
-            .await?;
         Ok(())
     }
 
@@ -909,7 +951,14 @@ impl RedisStore {
 
     /// Backlog of the writer on the outbox.
     pub async fn outbox_backlog(&self, group: &str) -> Result<GroupBacklog> {
-        self.group_backlog(&self.keys.outbox(), group).await
+        let a = self.group_backlog(&self.keys.outbox(), group).await?;
+        let b = self
+            .group_backlog(&self.keys.outbox_control(), group)
+            .await?;
+        Ok(GroupBacklog {
+            pending: a.pending + b.pending,
+            lag: a.lag + b.lag,
+        })
     }
 
     /// Backlog of the engine on a source's observation stream.

@@ -35,7 +35,7 @@
 //! picked up within seconds and republishes the affected tracks.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use ot_core::{Contributor, Domain, Observation, PairingType, SystemTrack, TrackState, Uid};
@@ -614,36 +614,41 @@ impl Engine {
         self.refresh_sources().await?;
         self.refresh_attributes().await?;
         self.pump(true).await?;
-        let mut sources_tick = tokio::time::interval(Duration::from_secs(5));
-        let mut reap_tick = tokio::time::interval(Duration::from_secs(10));
+        // A batch is never abandoned part way (it holds read but unacknowledged
+        // observations and deferred writes): timers and shutdown are looked
+        // at between batches, and a batch waits at most `read_block`.
+        let (mut next_refresh, mut next_reap) = (Instant::now(), Instant::now());
         loop {
             tokio::select! {
+                biased;
                 _ = &mut shutdown => break,
-                _ = sources_tick.tick() => {
-                    if let Err(e) = self.refresh_sources().await {
-                        tracing::warn!(error = %format!("{e:#}"), "source list refresh failed");
-                    }
-                    if let Err(e) = self.refresh_correlation().await {
-                        tracing::warn!(error = %format!("{e:#}"), "correlation settings refresh failed");
-                    }
-                    if let Err(e) = self.refresh_attributes().await {
-                        tracing::warn!(error = %format!("{e:#}"), "output schema refresh failed");
-                    }
-                    if let Err(e) = self.refresh_groups().await {
-                        tracing::warn!(error = %format!("{e:#}"), "group refresh failed");
-                    }
+                _ = std::future::ready(()) => {}
+            }
+            let now = Instant::now();
+            if now >= next_refresh {
+                next_refresh = now + Duration::from_secs(5);
+                if let Err(e) = self.refresh_sources().await {
+                    tracing::warn!(error = %format!("{e:#}"), "source list refresh failed");
                 }
-                _ = reap_tick.tick() => {
-                    if let Err(e) = self.reap().await {
-                        tracing::warn!(error = %format!("{e:#}"), "lifecycle sweep failed");
-                    }
+                if let Err(e) = self.refresh_correlation().await {
+                    tracing::warn!(error = %format!("{e:#}"), "correlation settings refresh failed");
                 }
-                res = self.pump(false) => {
-                    if let Err(e) = res {
-                        tracing::warn!(error = %format!("{e:#}"), "engine cycle failed; retrying");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
+                if let Err(e) = self.refresh_attributes().await {
+                    tracing::warn!(error = %format!("{e:#}"), "output schema refresh failed");
                 }
+                if let Err(e) = self.refresh_groups().await {
+                    tracing::warn!(error = %format!("{e:#}"), "group refresh failed");
+                }
+            }
+            if now >= next_reap {
+                next_reap = now + Duration::from_secs(10);
+                if let Err(e) = self.reap().await {
+                    tracing::warn!(error = %format!("{e:#}"), "lifecycle sweep failed");
+                }
+            }
+            if let Err(e) = self.pump(false).await {
+                tracing::warn!(error = %format!("{e:#}"), "engine cycle failed; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
         tracing::info!(tracks = self.tracks.len(), "engine stopped");
@@ -2870,6 +2875,7 @@ mod tests {
                 max_age_hours: 24.0,
             },
             profiles_dir: "profiles/trackers".into(),
+            obs_window_secs: 600,
             shared_db: Default::default(),
         };
         common.open_db().unwrap();

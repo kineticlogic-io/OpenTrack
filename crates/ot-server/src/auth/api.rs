@@ -582,6 +582,7 @@ mod tests {
                 max_age_hours: 24.0,
             },
             profiles_dir: "profiles/trackers".into(),
+            obs_window_secs: 600,
             shared_db: Default::default(),
         };
         let mut db = ot_store::Db::open_in_memory().unwrap();

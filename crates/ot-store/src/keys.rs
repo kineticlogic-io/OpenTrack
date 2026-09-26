@@ -9,7 +9,8 @@
 //! | `<ns>:sys:<uid>`                  | current state of a system track                |
 //! | `<ns>:hist:<source>:<key>`        | capped report history of a source track        |
 //! | `<ns>:thist:<uid>`                | a system track's positions (by time, retained) |
-//! | `<ns>:out`                        | stream of publish/tombstone work for the writer |
+//! | `<ns>:out`                        | stream of publish work for the writer (capped) |
+//! | `<ns>:out:ctl`                    | deletes for the writer (never trimmed)         |
 //! | `<ns>:metrics:<source>:<minute>`  | per-source, per-minute counters                |
 //! | `<ns>:cache:*`, `<ns>:throttle:*` | static-join cache and write throttles (TTL)    |
 
@@ -67,6 +68,13 @@ impl Keys {
 
     pub fn outbox(&self) -> String {
         format!("{}:out", self.ns)
+    }
+
+    /// Deletes and history-point deletions for the writer: rare, and never
+    /// trimmed (the publication outbox is capped, since a later update
+    /// queues a track again, but a lost delete would leave a ghost).
+    pub fn outbox_control(&self) -> String {
+        format!("{}:out:ctl", self.ns)
     }
 
     /// Cached static (identity) fields of a source track, for the static join.
