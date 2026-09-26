@@ -371,14 +371,18 @@ export function PublishForm({
   reports,
   tracker,
   publishAlone,
+  confirmAfter,
   onChange,
   onPublishAlone,
+  onConfirmAfter,
 }: {
   reports?: string
   tracker: boolean
   publishAlone?: boolean
   onChange: (r: 'detections' | undefined) => void
   onPublishAlone: (v: boolean | undefined) => void
+  confirmAfter?: number
+  onConfirmAfter: (v: number | undefined) => void
 }) {
   const alone = publishAlone ?? reports !== 'detections'
   return (
@@ -412,6 +416,24 @@ export function PublishForm({
           }}
           style={{ width: 160 }}
         />
+      </Row>
+      <Row
+        label="Confirm after"
+        hint={`Reports a new track needs from this source before it is confirmed and can be published. Empty: ${reports === 'detections' && !tracker ? "the engine's default (3), since one plot may be clutter" : '1, since a feed\'s track is already a track'}. A track's entity set to always publish skips this.`}
+      >
+        <div className="num-row">
+          <Input
+            style={{ ...INPUT, width: 90 }}
+            type="number"
+            min={1}
+            step={1}
+            aria-label="Confirm after reports"
+            value={confirmAfter === undefined ? '' : String(confirmAfter)}
+            placeholder={reports === 'detections' && !tracker ? '3' : '1'}
+            onChange={(e) => onConfirmAfter(e.target.value.trim() === '' ? undefined : Math.max(1, Math.round(Number(e.target.value))))}
+          />
+          <span className="muted">reports</span>
+        </div>
       </Row>
     </div>
   )

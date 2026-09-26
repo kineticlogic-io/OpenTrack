@@ -391,6 +391,8 @@ export interface SourceSpec {
   reports?: 'tracks' | 'detections'
   /** Whether a track this source alone reports for is published (default: track feeds only). */
   publish_alone?: boolean
+  /** Reports a new track needs from this source to be confirmed; unset: 1 for track feeds, the engine's default for detections. */
+  confirm_after?: number
   /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
   security?: SecurityLabel
 }
@@ -601,6 +603,8 @@ export interface Entity {
   track_type?: (typeof TRACK_TYPES)[number] | null
   cot_type?: string | null
   sidc?: string | null
+  /** A track manager's override of publishing its tracks; unset: the engine's rules. */
+  publish?: 'always' | 'never' | null
   identifiers: RegistryIdentifier[]
   attributes: EntityAttribute[]
   source?: string | null

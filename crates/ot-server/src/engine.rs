@@ -219,6 +219,8 @@ struct Attributes {
     registry: String,
     /// `tms-<UID>` → the entity pinned to that track (identifier `track:tms-<UID>`).
     pins: HashMap<String, Pin>,
+    /// Entity id → a track manager's publish override: always (true) or never.
+    publish: HashMap<String, bool>,
 }
 
 /// An entity pinned to one system track: a track manager's designation of a
@@ -421,6 +423,9 @@ pub struct Engine {
     detection_sources: HashSet<String>,
     /// Source id → whether a track it alone reports for is published.
     alone: HashMap<String, bool>,
+    /// Source id → reports a new track needs from it to be confirmed (unset:
+    /// the engine's default).
+    confirm: HashMap<String, u64>,
     /// Correlation settings from the command line, used until saved ones exist.
     default_correlation: CorrelationSettings,
     /// Version of the saved settings and "do not pair" decisions loaded.
@@ -513,6 +518,7 @@ impl Engine {
             priorities: HashMap::new(),
             detection_sources: HashSet::new(),
             alone: HashMap::new(),
+            confirm: HashMap::new(),
             default_correlation,
             correlation_version: String::new(),
             do_not_pair: HashSet::new(),
@@ -590,28 +596,34 @@ impl Engine {
 
     async fn refresh_sources(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let rows: Vec<(String, i64, bool, bool)> =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                Ok(c.open_db()?
-                    .list_sources()?
-                    .into_iter()
-                    .filter(|s| s.enabled)
-                    .map(|s| {
-                        // A tracker stage turns detections into tracks before they get here.
-                        let detections = s.spec.get("reports").and_then(|r| r.as_str())
-                            == Some("detections")
-                            && s.spec
-                                .pointer("/pipeline/tracker")
-                                .is_none_or(Value::is_null);
-                        let alone =
-                            serde_json::from_value::<ot_source::source::SourceSpec>(s.spec.clone())
-                                .map_or(true, |spec| spec.publishes_alone());
-                        (s.id, s.priority, detections, alone)
-                    })
-                    .collect())
-            })
-            .await??;
-        self.priorities = rows.iter().map(|(id, p, _, _)| (id.clone(), *p)).collect();
+        type Row = (String, i64, bool, bool, Option<u64>);
+        let rows: Vec<Row> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok(c.open_db()?
+                .list_sources()?
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| {
+                    // A tracker stage turns detections into tracks before they get here.
+                    let detections = s.spec.get("reports").and_then(|r| r.as_str())
+                        == Some("detections")
+                        && s.spec
+                            .pointer("/pipeline/tracker")
+                            .is_none_or(Value::is_null);
+                    let spec =
+                        serde_json::from_value::<ot_source::source::SourceSpec>(s.spec.clone())
+                            .ok();
+                    let alone = spec.as_ref().is_none_or(|spec| spec.publishes_alone());
+                    let confirm = spec.as_ref().and_then(|spec| spec.confirms_after());
+                    (s.id, s.priority, detections, alone, confirm)
+                })
+                .collect())
+        })
+        .await??;
+        self.priorities = rows.iter().map(|r| (r.0.clone(), r.1)).collect();
+        self.confirm = rows
+            .iter()
+            .filter_map(|r| r.4.map(|n| (r.0.clone(), n)))
+            .collect();
         self.alone = rows.iter().map(|r| (r.0.clone(), r.3)).collect();
         self.detection_sources = rows.iter().filter(|r| r.2).map(|r| r.0.clone()).collect();
         let mut ids: Vec<String> = rows.into_iter().map(|r| r.0).collect();
@@ -643,8 +655,16 @@ impl Engine {
             let schema = crate::sources::load_schemas(&db)?
                 .into_values()
                 .max_by_key(|s| s.version);
-            let pins = db
-                .registry_rows()?
+            let rows = db.registry_rows()?;
+            let publish = rows
+                .iter()
+                .filter_map(|r| match r.fields.get("publish").and_then(Value::as_str) {
+                    Some("always") => Some((r.entity_id.clone(), true)),
+                    Some("never") => Some((r.entity_id.clone(), false)),
+                    _ => None,
+                })
+                .collect();
+            let pins = rows
                 .into_iter()
                 .filter(|r| r.scheme == TRACK_SCHEME)
                 .map(|r| {
@@ -666,6 +686,7 @@ impl Engine {
                 schema,
                 registry,
                 pins,
+                publish,
             }))
         })
         .await??;
@@ -1679,6 +1700,23 @@ impl Engine {
         }
     }
 
+    /// Reports a track needs to be confirmed: the fewest any of its sources
+    /// asks for (a track feed's report confirms what a radar also sees).
+    fn confirm_for(&self, uid: Uid) -> u64 {
+        self.tracks
+            .get(&uid)
+            .into_iter()
+            .flat_map(|t| &t.contributors)
+            .map(|c| {
+                self.confirm
+                    .get(&c.source_id)
+                    .copied()
+                    .unwrap_or(self.settings.confirm_after)
+            })
+            .min()
+            .unwrap_or(self.settings.confirm_after)
+    }
+
     /// Whether a track is authoritative enough to publish: confirmed, and
     /// reported for by a source that may stand alone. Sensors agreeing with
     /// each other are not enough.
@@ -1694,9 +1732,19 @@ impl Engine {
         let Some(t) = self.tracks.get(&uid) else {
             return Ok(());
         };
-        let held = self.settings.correlation.output.rejects(t);
+        // A track manager's override on the track's entity comes first.
+        let forced = t
+            .entity_id
+            .as_ref()
+            .and_then(|e| self.attrs.publish.get(e))
+            .copied();
+        let held = match forced {
+            Some(true) => None,
+            Some(false) => Some("its entity is set never to publish".to_owned()),
+            None => self.settings.correlation.output.rejects(t),
+        };
         let was = t.is_published();
-        let publish = held.is_none() && (was || self.authoritative(t));
+        let publish = held.is_none() && (was || forced == Some(true) || self.authoritative(t));
         let t = self.tracks.get_mut(&uid).expect("checked above");
         t.filtered = held.clone();
         if publish {
@@ -1826,7 +1874,15 @@ impl Engine {
         }
         self.latest.insert(key.clone(), obs.clone());
         if !self.tracks.contains_key(&uid) {
+            let confirm = self
+                .confirm
+                .get(&obs.source_id)
+                .copied()
+                .unwrap_or(self.settings.confirm_after);
             let mut t = SystemTrack::from_first_observation(uid, obs);
+            if t.observation_count >= confirm {
+                t.state = TrackState::Confirmed;
+            }
             resolve(&self.attrs, &mut t);
             self.tracks.insert(uid, t.clone());
             self.index_track(uid);
@@ -1839,7 +1895,7 @@ impl Engine {
             self.load_missing(uid).await?;
         }
         let best = multi.then(|| self.best_of(uid)).flatten();
-        let confirm = self.settings.confirm_after;
+        let confirm = self.confirm_for(uid);
         let t = self.tracks.get_mut(&uid).expect("checked above");
         let before = t.entity_id.clone();
         let outcome = match best {
@@ -2044,7 +2100,7 @@ impl Engine {
     async fn republish(&mut self, uid: Uid) -> anyhow::Result<()> {
         self.load_missing(uid).await?;
         let best = self.best_of(uid);
-        let confirm = self.settings.confirm_after;
+        let confirm = self.confirm_for(uid);
         let Some(t) = self.tracks.get_mut(&uid) else {
             return Ok(());
         };
@@ -2809,6 +2865,53 @@ mod tests {
     }
 
     /// Queue an operator command and run it; the engine's answer.
+    #[tokio::test]
+    async fn track_feeds_confirm_on_one_report_and_entities_override_publishing() {
+        let Some((mut e, _dir)) = engine(&["ais", "radar"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.confirm = [("ais".to_string(), 1)].into();
+        feed(&mut e, &[report("ais", "1", 0, 32.0, -117.0, Some("1"))]).await;
+        let t = track_of(&e, "ais", "1");
+        assert_eq!(e.tracks[&t].state, TrackState::Confirmed);
+        assert!(e.tracks[&t].is_published());
+
+        // Its entity says never: withdrawn. Back to automatic: published again.
+        e.attrs.pins.insert(
+            t.doc_id(),
+            Pin {
+                entity_id: "ent-1".into(),
+                fields: Map::new(),
+            },
+        );
+        e.attrs.publish.insert("ent-1".into(), false);
+        feed(&mut e, &[report("ais", "1", 40, 32.0, -117.0, Some("1"))]).await;
+        assert!(!e.tracks[&t].is_published());
+        assert!(e.tracks[&t].filtered.as_deref().unwrap().contains("never"));
+        e.attrs.publish.clear();
+        feed(&mut e, &[report("ais", "1", 80, 32.0, -117.0, Some("1"))]).await;
+        assert!(e.tracks[&t].is_published());
+
+        // A detection-like source at the default needs three reports; its
+        // entity set to always publishes it at once.
+        feed(&mut e, &[report("radar", "r", 0, 33.0, -117.0, None)]).await;
+        let r = track_of(&e, "radar", "r");
+        assert_eq!(e.tracks[&r].state, TrackState::Tentative);
+        e.attrs.pins.insert(
+            r.doc_id(),
+            Pin {
+                entity_id: "ent-2".into(),
+                fields: Map::new(),
+            },
+        );
+        e.attrs.publish.insert("ent-2".into(), true);
+        feed(&mut e, &[report("radar", "r", 5, 33.0, -117.0, None)]).await;
+        assert_eq!(e.tracks[&r].state, TrackState::Tentative);
+        assert!(e.tracks[&r].is_published());
+        e.redis.purge_namespace().await.unwrap();
+    }
+
     #[tokio::test]
     async fn track_management_pairs_groups_merges_and_deletes() {
         let Some((mut e, _dir)) = engine(&["ais"]).await else {

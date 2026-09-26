@@ -106,6 +106,17 @@ impl AttrType {
     }
 }
 
+/// A track manager's override of whether an entity's tracks are published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Publish {
+    /// Published as soon as they exist, confirmed or not, whatever reports
+    /// for them and whatever the output filter says.
+    Always,
+    /// Kept inside OpenTrack (withdrawn downstream if already published).
+    Never,
+}
+
 /// A free-form attribute: a key, its type and its value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attribute {
@@ -130,6 +141,7 @@ pub const RESERVED: &[&str] = &[
     "sidc",
     "identifiers",
     "attributes",
+    "publish",
 ];
 
 /// The OTH-GOLD minimum an entity carries, by field name.
@@ -166,6 +178,10 @@ pub struct Entity {
     pub cot_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidc: Option<String>,
+    /// Whether its tracks are published: always, never, or (unset) by the
+    /// engine's rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish: Option<Publish>,
     #[serde(default)]
     pub identifiers: Vec<RegistryIdentifier>,
     #[serde(default)]
@@ -258,6 +274,7 @@ impl Entity {
             "track_type" => enum_text(&self.track_type).map(Value::String),
             "cot_type" => s(&self.cot_type),
             "sidc" => s(&self.sidc),
+            "publish" => enum_text(&self.publish).map(Value::String),
             _ => self
                 .attribute(key)
                 .map(|a| a.value.clone())
@@ -275,6 +292,9 @@ impl Entity {
             if !a.value.is_null() {
                 out.insert(a.key.clone(), a.value.clone());
             }
+        }
+        if let Some(p) = self.field("publish") {
+            out.insert("publish".into(), p);
         }
         out
     }
@@ -298,6 +318,12 @@ impl Entity {
             "domain" => self.domain = parse_enum("domain", v)?,
             "affiliation" => self.affiliation = parse_enum("affiliation", v)?,
             "track_type" => self.track_type = parse_enum("track type", v)?,
+            "publish" => {
+                self.publish = match v.as_str().map(|s| s.trim().to_ascii_lowercase()) {
+                    Some(s) if s == "automatic" || s == "auto" => None,
+                    _ => parse_enum("publish setting (always or never)", v)?,
+                }
+            }
             k if RESERVED.contains(&k) => return Err(format!("{k} cannot be set")),
             k => match self.attributes.iter_mut().find(|a| a.key == k) {
                 Some(a) => a.value = a.kind.coerce(v)?,
@@ -430,7 +456,7 @@ type EntityColumns = (
     Option<String>,
     String,
     Option<String>,
-    [Option<String>; 3],
+    [Option<String>; 4],
     Option<String>,
     Option<String>,
     String,
@@ -442,7 +468,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<Option<Entity>> {
     let row: Option<EntityColumns> = conn
         .query_row(
             "SELECT name, status, class_name, domain, affiliation, track_type,
-                    cot_type, sidc, attributes, source, updated_at_ms
+                    cot_type, sidc, attributes, source, updated_at_ms, publish
              FROM registry_entities WHERE id = ?1",
             [id],
             |r| {
@@ -450,7 +476,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<Option<Entity>> {
                     r.get(0)?,
                     r.get(1)?,
                     r.get(2)?,
-                    [r.get(3)?, r.get(4)?, r.get(5)?],
+                    [r.get(3)?, r.get(4)?, r.get(5)?, r.get(11)?],
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
@@ -464,7 +490,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<Option<Entity>> {
         name,
         status,
         class_name,
-        [domain, affiliation, track_type],
+        [domain, affiliation, track_type, publish],
         cot_type,
         sidc,
         attributes,
@@ -498,6 +524,7 @@ fn load(conn: &rusqlite::Connection, id: &str) -> Result<Option<Entity>> {
         domain: parse_enum("domain", &text(domain)).unwrap_or(None),
         affiliation: parse_enum("affiliation", &text(affiliation)).unwrap_or(None),
         track_type: parse_enum("track type", &text(track_type)).unwrap_or(None),
+        publish: parse_enum("publish setting", &text(publish)).unwrap_or(None),
         cot_type,
         sidc,
         identifiers,
@@ -522,13 +549,13 @@ fn holder(tx: &Transaction<'_>, i: &RegistryIdentifier) -> Result<Option<String>
 fn write_row(tx: &Transaction<'_>, e: &Entity, now: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO registry_entities (id, name, status, class_name, domain, affiliation, track_type,
-                                        cot_type, sidc, attributes, source, created_at_ms, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+                                        cot_type, sidc, attributes, source, created_at_ms, updated_at_ms, publish)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status,
              class_name = excluded.class_name, domain = excluded.domain,
              affiliation = excluded.affiliation, track_type = excluded.track_type,
              cot_type = excluded.cot_type, sidc = excluded.sidc, attributes = excluded.attributes,
-             source = coalesce(excluded.source, registry_entities.source),
+             source = coalesce(excluded.source, registry_entities.source), publish = excluded.publish,
              updated_at_ms = excluded.updated_at_ms",
         params![
             e.id,
@@ -542,7 +569,8 @@ fn write_row(tx: &Transaction<'_>, e: &Entity, now: i64) -> Result<()> {
             e.sidc,
             serde_json::to_string(&e.attributes)?,
             e.source,
-            now
+            now,
+            enum_text(&e.publish)
         ],
     )?;
     Ok(())
@@ -1102,13 +1130,30 @@ mod tests {
         );
         let now = db.entity(&saved.id).unwrap().unwrap();
         assert_eq!(now.field("destination"), Some(json!("LONG BEACH")));
+        let mut forced = now.clone();
+        forced.publish = Some(Publish::Always);
+        let forced = db.save_entity(&forced, "op:test").unwrap();
+        assert_eq!(forced.publish, Some(Publish::Always));
+        assert_eq!(
+            db.registry_rows()
+                .unwrap()
+                .iter()
+                .find(|r| r.entity_id == saved.id)
+                .unwrap()
+                .fields["publish"],
+            "always"
+        );
+        let mut auto = forced.clone();
+        auto.set_field("publish", &json!("automatic")).unwrap();
+        let now = db.save_entity(&auto, "op:test").unwrap();
+        assert_eq!(now.publish, None);
         assert_eq!(now.field("length"), Some(json!(104)));
         assert_eq!(now.field("domain"), Some(json!("surface")));
 
         let revs = db.entity_revisions(&saved.id, 10).unwrap();
-        assert_eq!(revs.len(), 3);
-        assert_eq!(revs[0].actor.as_deref(), Some("source:ais"));
-        assert_eq!(revs[2].entity["affiliation"], "friend");
+        assert_eq!(revs.len(), 5);
+        assert_eq!(revs[2].actor.as_deref(), Some("source:ais"));
+        assert_eq!(revs[4].entity["affiliation"], "friend");
 
         // Reserved and duplicate keys, bad values.
         for bad in [

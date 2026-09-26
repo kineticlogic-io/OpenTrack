@@ -671,3 +671,5 @@ body {
 .selection-bar { display: flex; align-items: center; gap: var(--space-sm); min-height: 32px; padding: var(--space-sm) var(--space-md) 0; margin-bottom: var(--space-sm); flex-wrap: wrap; }
 .tick { width: 14px; height: 14px; accent-color: var(--color-accent); cursor: pointer; }
 .radio-row { display: flex; align-items: center; gap: var(--space-sm); cursor: pointer; }
+/* The entity editor's publish override, in its title bar. */
+.publish-pick { display: inline-flex; align-items: center; gap: 4px; }

@@ -31,6 +31,7 @@ interface AttrDraft {
 
 interface Draft {
   status: Entity['status']
+  publish: 'automatic' | 'always' | 'never'
   minimum: Record<(typeof MINIMUM)[number]['key'], string>
   identifiers: { scheme: string; value: string; expected_name: string }[]
   attributes: AttrDraft[]
@@ -80,6 +81,7 @@ function text(v: unknown): string {
 function toDraft(e: Partial<Entity>): Draft {
   return {
     status: e.status ?? 'active',
+    publish: e.publish ?? 'automatic',
     minimum: Object.fromEntries(MINIMUM.map((m) => [m.key, text(e[m.key])])) as Draft['minimum'],
     identifiers: (e.identifiers ?? []).map((i) => ({ scheme: i.scheme, value: i.value, expected_name: i.expected_name ?? '' })),
     attributes: (e.attributes ?? []).map((a) => ({ key: a.key, type: a.type, text: text(a.value) })),
@@ -92,6 +94,7 @@ function fromDraft(id: string, d: Draft): Entity {
   return {
     id,
     status: d.status,
+    publish: d.publish === 'automatic' ? null : d.publish,
     ...(Object.fromEntries(MINIMUM.map((m) => [m.key, blank(d.minimum[m.key])])) as Partial<Entity>),
     identifiers: d.identifiers
       .filter((i) => i.scheme.trim() || i.value.trim())
@@ -118,7 +121,7 @@ function changes(r: Revision, older?: Revision): string {
   const a = r.entity as unknown as Record<string, unknown>
   const b = older.entity as unknown as Record<string, unknown>
   const out: string[] = []
-  for (const k of ['status', ...MINIMUM.map((m) => m.key)]) if (text(a[k]) !== text(b[k])) out.push(k)
+  for (const k of ['status', 'publish', ...MINIMUM.map((m) => m.key)]) if (text(a[k]) !== text(b[k])) out.push(k)
   const ids = (e: Entity) => e.identifiers.map((i) => `${i.scheme}:${i.value}`)
   const [now, was] = [ids(r.entity), ids(older.entity)]
   for (const i of now) if (!was.includes(i)) out.push(`+${i}`)
@@ -280,6 +283,20 @@ export function EntityEditor({
       }
       actions={
         <>
+          <span className="publish-pick" title="Whether tracks resolving to this entity are published">
+            <InfoTip label="Publish">
+              Automatic: the usual rules (confirmed, and reported by a source that may stand alone). Always: published at once, confirmed or
+              not, whatever reports for them and whatever the output filter says. Never: kept inside OpenTrack, and withdrawn downstream if
+              already published.
+            </InfoTip>
+            <FieldSelect
+              ariaLabel="Publish"
+              fields={[{ name: 'automatic' }, { name: 'always' }, { name: 'never' }]}
+              value={draft.publish}
+              onChange={(v) => set({ publish: v === 'always' || v === 'never' ? v : 'automatic' })}
+              style={{ width: 118 }}
+            />
+          </span>
           {entityId && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label="Delete entity" title="Delete entity" onClick={remove} />}
           <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
         </>
@@ -340,8 +357,8 @@ export function EntityEditor({
           <h4 className="subhead">
             Identifiers
             <InfoTip label="Identifiers">
-              How tracks find this entity: any scheme (mmsi, icao, elnot, …) and value. An identifier belongs to one entity. &ldquo;Broadcasts
-              as&rdquo; is the name the object is expected to report under it, which corroborates the match.
+              How tracks find this entity: any scheme (mmsi, icao, elnot, …) and value. An identifier belongs to one entity. Name is the name
+              the track is expected to report under it, which corroborates the match.
             </InfoTip>
           </h4>
           <Button size="sm" variant="ghost" icon={<TbPlus />} onClick={() => set({ identifiers: [...draft.identifiers, { scheme: '', value: '', expected_name: '' }] })}>
@@ -356,7 +373,7 @@ export function EntityEditor({
         <div className="kv-table kv-identifiers">
           <span className="kv-head">Scheme</span>
           <span className="kv-head">Value</span>
-          <span className="kv-head">Broadcasts as</span>
+          <span className="kv-head">Name</span>
           <span />
           {draft.identifiers.map((i, n) => (
             <IdentifierRow key={n} i={i} n={n} onChange={setIdent} onRemove={() => set({ identifiers: draft.identifiers.filter((_, j) => j !== n) })} />

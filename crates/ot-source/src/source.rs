@@ -28,6 +28,11 @@ pub struct SourceSpec {
     /// lidar track stays inside OpenTrack until such a source reports for it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_alone: Option<bool>,
+    /// Reports a new track needs from this source before it is confirmed.
+    /// Unset: 1 for track feeds (a feed's track is already a track), the
+    /// engine's default (3) for detections, where one plot may be clutter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_after: Option<u64>,
     /// A security label for everything this source reports: its reports and
     /// the tracks they make carry it (OpenStare's `stare-security` shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +44,14 @@ impl SourceSpec {
     pub fn publishes_alone(&self) -> bool {
         self.publish_alone
             .unwrap_or(self.reports == Reports::Tracks)
+    }
+
+    /// [`Self::confirm_after`] with its default applied: `None` means the
+    /// engine's default.
+    pub fn confirms_after(&self) -> Option<u64> {
+        self.confirm_after
+            .or((self.reports == Reports::Tracks).then_some(1))
+            .map(|n| n.max(1))
     }
 }
 

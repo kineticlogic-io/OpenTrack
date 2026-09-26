@@ -181,8 +181,10 @@ export function PipelineDesigner({
           reports={spec.reports}
           tracker={p.tracker !== undefined}
           publishAlone={spec.publish_alone}
+          confirmAfter={spec.confirm_after}
           onChange={(reports) => setSpec({ ...spec, reports })}
           onPublishAlone={(publish_alone) => setSpec({ ...spec, publish_alone })}
+          onConfirmAfter={(confirm_after) => setSpec({ ...spec, confirm_after })}
         />
       )
       editor = (

@@ -206,13 +206,14 @@ pub fn to_message(
         op: Op::Upsert,
         track_id: track.uid.doc_id(),
         uid: track.uid,
+        // OTH-GOLD writes class-name in capitals.
         class: non_empty(v.platform.class.as_deref())
             .unwrap_or(gold::UNEQUATED)
-            .to_owned(),
+            .to_uppercase(),
         name: non_empty(v.name.as_deref())
             .or(non_empty(v.platform.name.as_deref()))
             .unwrap_or(gold::UNKNOWN)
-            .to_owned(),
+            .to_uppercase(),
         domain: domain.and_then(lower).unwrap_or_else(|| "unknown".into()),
         affiliation: affiliation
             .and_then(lower)

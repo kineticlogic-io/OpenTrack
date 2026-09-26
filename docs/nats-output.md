@@ -80,8 +80,8 @@ attribute without a value is omitted rather than sent as null.
 | Field | GOLD | |
 |-------|------|-|
 | `track_id` | CTC 1 | `tms-<UID>`: the key. Stable for the life of the track. `uid` is the bare UID. |
-| `class` | CTC 2 | platform class, `UNEQUATED` when unknown |
-| `name` | CTC 2 | platform name, `UNKNOWN` when unknown (GOLD writes these as `class-name`) |
+| `class` | CTC 2 | platform class in capitals, `UNEQUATED` when unknown |
+| `name` | CTC 2 | platform name in capitals, `UNKNOWN` when unknown (GOLD writes these as `class-name`) |
 | `domain` | CTC 11 | force code position: `air`, `surface`, `subsurface`, `ground`, `space` or `unknown` |
 | `affiliation` | CTC 11 | force code threat identity: `pending`, `unknown`, `assumed_friend`, `friend`, `neutral`, `suspect`, `hostile`, `joker`, `faker` or `none` |
 | `force_code` | CTC 11 | the GOLD force code (Table 5-1), e.g. 9 surface friend, 30 surface unknown |
