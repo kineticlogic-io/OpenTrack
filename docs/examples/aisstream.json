@@ -839,6 +839,7 @@
       ],
       "military_cot": "^[^-]*-[^-]*-(U|S-C)(-|$)",
       "links": [
+        { "entity": "name", "track": "name" },
         { "entity": "cot_type", "track": "classification.cot_type" },
         { "entity": "name", "track": "callsign" },
         { "entity": "name", "track": "platform.name" },
