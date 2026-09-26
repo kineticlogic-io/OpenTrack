@@ -156,6 +156,13 @@ A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
 
+`tcp_client`, `http_poll` (`https://`), `websocket` (`wss://`) and `mqtt` (`mqtts://`) take a
+`tls` object: `ca_file` (trusted instead of the system roots), `cert_file` and `key_file` (a client
+certificate for mutual TLS), `server_name` (verify against this name instead of the host) and
+`insecure_skip_verify` (development only). `tcp_server` takes `tls: {cert_file, key_file,
+client_ca_file}`; with a client CA, only clients presenting a certificate it signed are accepted,
+and each client's certificate subject is logged. Files are PEM; paths may use `${env:NAME}`.
+
 A source reports either **tracks** (a key per object: AIS, ADS-B, TAK, a radar's own tracks) or
 **detections** (`"reports": "detections"`: anonymous plots). Detections update the nearest system
 track another source keeps or, with a tracker stage, become tracks first. A mapping rule of kind

@@ -4,6 +4,8 @@
 //! supervisor restarts it with backoff. Framing is part of the transport's
 //! configuration. Secrets are never stored: any string setting may reference
 //! an environment variable as `${env:NAME}`, resolved when the source starts.
+//! Stream and URL transports can run over TLS, mutual TLS included (see
+//! [`crate::tls`]).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -16,13 +18,15 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio_tungstenite::Connector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::frame::{Frame, Framer, Framing};
 use crate::path::Path;
+pub use crate::tls::{ClientTls, ServerTls};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -36,12 +40,19 @@ pub enum TransportConfig {
         /// Sent once after connecting (e.g. a login or subscribe line).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         send_on_connect: Option<String>,
+        /// Connect with TLS (mutual TLS with a client certificate).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ClientTls>,
     },
     /// Listen for TCP clients; every connection feeds the same source.
     TcpServer {
         bind: String,
         #[serde(default = "lines")]
         framing: Framing,
+        /// Accept TLS only; with `client_ca_file`, only clients holding a
+        /// certificate that CA signed (mutual TLS).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ServerTls>,
     },
     /// One frame per datagram.
     Udp {
@@ -66,6 +77,9 @@ pub enum TransportConfig {
         body: Option<String>,
         #[serde(default = "twenty")]
         timeout_secs: f64,
+        /// TLS for `https://`: a private CA, a client certificate, …
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ClientTls>,
     },
     /// WebSocket client; one frame per message.
     Websocket {
@@ -81,6 +95,9 @@ pub enum TransportConfig {
         error_path: Option<Path>,
         #[serde(default = "twenty")]
         ping_secs: f64,
+        /// TLS for `wss://`: a private CA, a client certificate, …
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ClientTls>,
     },
     /// MQTT 3.1.1 client; one frame per PUBLISH. The message's topic is
     /// available to mappings as `_frame.topic` (and `_frame.topic_levels`,
@@ -106,8 +123,12 @@ pub enum TransportConfig {
         #[serde(default = "thirty")]
         keepalive_secs: f64,
         /// PEM file of the CA to trust for `mqtts://` (default: system roots).
+        /// Older form of `tls.ca_file`, still accepted.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_file: Option<String>,
+        /// TLS for `mqtts://`: a private CA, a client certificate, …
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ClientTls>,
     },
     /// Replay recorded data: a file, or every file in a directory (by name,
     /// optionally only those with `extension`), split by `framing`. The file
@@ -152,6 +173,15 @@ fn yes() -> bool {
     true
 }
 
+/// TLS settings on a URL that will not use them are a mistake.
+fn tls_url(url: &str, scheme: &str) -> Result<(), String> {
+    if url.starts_with(scheme) || url.starts_with("${env:") {
+        Ok(())
+    } else {
+        Err(format!("tls settings need a {scheme} url, got {url:?}"))
+    }
+}
+
 /// Largest MQTT message accepted, matching the frame ceiling.
 const MQTT_MAX_PACKET: usize = crate::frame::DEFAULT_MAX_FRAME;
 
@@ -170,6 +200,35 @@ impl TransportConfig {
 
     /// Settings that cannot be caught by the type alone.
     pub fn check(&self) -> Result<(), String> {
+        match self {
+            TransportConfig::TcpClient { tls: Some(t), .. } => t.check()?,
+            TransportConfig::TcpServer { tls: Some(t), .. } => t.check()?,
+            TransportConfig::HttpPoll {
+                url, tls: Some(t), ..
+            } => {
+                tls_url(url, "https://")?;
+                t.check()?;
+            }
+            TransportConfig::Websocket {
+                url, tls: Some(t), ..
+            } => {
+                tls_url(url, "wss://")?;
+                t.check()?;
+            }
+            TransportConfig::Mqtt {
+                url,
+                ca_file,
+                tls: Some(t),
+                ..
+            } => {
+                tls_url(url, "mqtts://")?;
+                if ca_file.is_some() && t.ca_file.is_some() {
+                    return Err("set the MQTT CA once: tls.ca_file (or the older ca_file)".into());
+                }
+                t.check()?;
+            }
+            _ => {}
+        }
         if let TransportConfig::File {
             path,
             frames_per_second,
@@ -303,20 +362,40 @@ pub async fn run(
             port,
             framing,
             send_on_connect,
+            tls,
         } => {
             let host = resolve_env(host)?;
-            let mut stream = tokio::net::TcpStream::connect((host.as_str(), *port))
+            // Build the TLS settings first: a bad certificate file is a
+            // configuration error, not a connection failure.
+            let tls = match tls {
+                Some(t) => {
+                    let name = match t.server_name()? {
+                        Some(n) => n,
+                        None => crate::tls::server_name(&host)?,
+                    };
+                    let config = Arc::new(t.client_config()?);
+                    Some((tokio_rustls::TlsConnector::from(config), name))
+                }
+                None => None,
+            };
+            let stream = tokio::net::TcpStream::connect((host.as_str(), *port))
                 .await
                 .with_context(|| format!("connecting to {host}:{port}"))?;
-            connected(&status);
-            if let Some(line) = send_on_connect {
-                use tokio::io::AsyncWriteExt;
-                stream.write_all(resolve_env(line)?.as_bytes()).await?;
-            }
             let origin = format!("{host}:{port}");
-            read_stream(stream, framing, &tx, &status, &origin).await
+            let line = send_on_connect.as_deref().map(resolve_env).transpose()?;
+            match tls {
+                Some((connector, name)) => {
+                    let stream = connector
+                        .connect(name, stream)
+                        .await
+                        .with_context(|| format!("TLS handshake with {origin}"))?;
+                    tcp_client(stream, line, framing, &tx, &status, &origin).await
+                }
+                None => tcp_client(stream, line, framing, &tx, &status, &origin).await,
+            }
         }
-        TransportConfig::TcpServer { bind, framing } => {
+        TransportConfig::TcpServer { bind, framing, tls } => {
+            let acceptor = tls.as_ref().map(ServerTls::acceptor).transpose()?;
             let listener = tokio::net::TcpListener::bind(resolve_env(bind)?.as_str())
                 .await
                 .with_context(|| format!("binding {bind}"))?;
@@ -324,9 +403,27 @@ pub async fn run(
             loop {
                 let (stream, peer) = listener.accept().await?;
                 let (tx, status, framing) = (tx.clone(), status.clone(), framing.clone());
+                let acceptor = acceptor.clone();
                 tokio::spawn(async move {
                     let origin = peer.to_string();
-                    if let Err(e) = read_stream(stream, &framing, &tx, &status, &origin).await {
+                    let ended = match acceptor {
+                        Some(acceptor) => match tls_accept(&acceptor, stream, peer).await {
+                            Ok(stream) => {
+                                read_stream(stream, &framing, &tx, &status, &origin).await
+                            }
+                            Err(e) => {
+                                // Failed verification (or not TLS at all): drop the client.
+                                tracing::warn!(%peer, error = %e, "TLS client rejected");
+                                set(&status, |s| {
+                                    s.errors += 1;
+                                    s.last_error = Some(format!("{peer}: {e:#}"));
+                                });
+                                return;
+                            }
+                        },
+                        None => read_stream(stream, &framing, &tx, &status, &origin).await,
+                    };
+                    if let Err(e) = ended {
                         tracing::debug!(%peer, error = %e, "tcp client ended");
                     }
                 });
@@ -357,11 +454,15 @@ pub async fn run(
             headers,
             body,
             timeout_secs,
+            tls,
         } => {
-            let client = reqwest::Client::builder()
+            let mut client = reqwest::Client::builder()
                 .timeout(Duration::from_secs_f64(*timeout_secs))
-                .user_agent(concat!("opentrack/", env!("CARGO_PKG_VERSION")))
-                .build()?;
+                .user_agent(concat!("opentrack/", env!("CARGO_PKG_VERSION")));
+            if let Some(t) = tls {
+                client = client.tls_backend_preconfigured(t.client_config()?);
+            }
+            let client = client.build()?;
             let url = resolve_env(url)?;
             let method: reqwest::Method = method.parse().context("bad HTTP method")?;
             let mut hdrs = reqwest::header::HeaderMap::new();
@@ -444,6 +545,7 @@ pub async fn run(
             subscribe,
             error_path,
             ping_secs,
+            tls,
         } => {
             let url = resolve_env(url)?;
             let mut request = url.as_str().into_client_request()?;
@@ -453,9 +555,14 @@ pub async fn run(
                     resolve_env(v)?.parse()?,
                 );
             }
-            let (mut ws, _) = tokio_tungstenite::connect_async(request)
-                .await
-                .with_context(|| format!("connecting to {}", redact(&url)))?;
+            let connector = tls
+                .as_ref()
+                .map(|t| anyhow::Ok(Connector::Rustls(Arc::new(t.client_config()?))))
+                .transpose()?;
+            let (mut ws, _) =
+                tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
+                    .await
+                    .with_context(|| format!("connecting to {}", redact(&url)))?;
             if let Some(sub) = subscribe {
                 let text = match resolve_value(sub)? {
                     Value::String(s) => s,
@@ -593,7 +700,10 @@ async fn run_mqtt(
     tx: &mpsc::Sender<Frame>,
     status: &SharedStatus,
 ) -> anyhow::Result<()> {
-    use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, SubscribeReasonCode, Transport};
+    use rumqttc::{
+        AsyncClient, Event, MqttOptions, Packet, QoS, SubscribeReasonCode, TlsConfiguration,
+        Transport,
+    };
     let TransportConfig::Mqtt {
         url,
         topics,
@@ -604,6 +714,7 @@ async fn run_mqtt(
         clean_session,
         keepalive_secs,
         ca_file,
+        tls: tls_settings,
     } = config
     else {
         unreachable!("run_mqtt called with another transport");
@@ -627,11 +738,17 @@ async fn run_mqtt(
         opts.set_credentials(resolve_env(user)?, pass.unwrap_or_default());
     }
     if tls {
-        opts.set_transport(match ca_file {
-            Some(path) => {
-                let path = resolve_env(path)?;
-                let ca = std::fs::read(&path).with_context(|| format!("reading CA file {path}"))?;
-                Transport::tls(ca, None, None)
+        // The top-level `ca_file` is the older spelling of `tls.ca_file`.
+        let mut settings = tls_settings.clone();
+        if let Some(ca) = ca_file {
+            settings
+                .get_or_insert_default()
+                .ca_file
+                .get_or_insert(ca.clone());
+        }
+        opts.set_transport(match settings {
+            Some(t) => {
+                Transport::tls_with_config(TlsConfiguration::Rustls(Arc::new(t.client_config()?)))
             }
             None => Transport::tls_with_default_config(),
         });
@@ -740,8 +857,54 @@ fn replay_files(path: &str, extension: Option<&str>) -> anyhow::Result<Vec<std::
     Ok(files)
 }
 
+/// A connected TCP client (plain or TLS): say hello, then read.
+async fn tcp_client<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    send_on_connect: Option<String>,
+    framing: &Framing,
+    tx: &mpsc::Sender<Frame>,
+    status: &SharedStatus,
+    origin: &str,
+) -> anyhow::Result<()> {
+    connected(status);
+    if let Some(line) = send_on_connect {
+        stream.write_all(line.as_bytes()).await?;
+        stream.flush().await?;
+    }
+    read_stream(stream, framing, tx, status, origin).await
+}
+
+/// The TLS handshake with a `tcp_server` client, bounded so a silent peer
+/// cannot hold a task open. Logs who connected.
+async fn tls_accept(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+) -> anyhow::Result<tokio_rustls::server::TlsStream<tokio::net::TcpStream>> {
+    let stream = tokio::time::timeout(TLS_HANDSHAKE, acceptor.accept(stream))
+        .await
+        .context("TLS handshake timed out")?
+        .context("TLS handshake")?;
+    match stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|c| c.first())
+    {
+        Some(cert) => {
+            let subject = crate::tls::subject(cert).unwrap_or_else(|| "(unreadable)".into());
+            tracing::info!(%peer, %subject, "TLS client connected");
+        }
+        None => tracing::info!(%peer, "TLS client connected (no client certificate)"),
+    }
+    Ok(stream)
+}
+
+/// Longest a `tcp_server` client may take over its TLS handshake.
+const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
+
 async fn read_stream(
-    mut stream: tokio::net::TcpStream,
+    mut stream: impl AsyncRead + Unpin,
     framing: &Framing,
     tx: &mpsc::Sender<Frame>,
     status: &SharedStatus,
@@ -842,6 +1005,7 @@ mod tests {
                 tag: "</event>".into(),
                 max_len: 1 << 20,
             },
+            tls: None,
         };
         let (tx, mut rx) = mpsc::channel(8);
         let status = SharedStatus::default();
@@ -956,6 +1120,7 @@ mod tests {
             clean_session: true,
             keepalive_secs: 30.0,
             ca_file: None,
+            tls: None,
         };
         let (tx, mut rx) = mpsc::channel(8);
         let status = SharedStatus::default();
@@ -1004,5 +1169,506 @@ mod tests {
         assert!(rx.try_recv().is_err());
         task.abort();
         publisher.abort();
+    }
+
+    /// Test certificates: a CA, a server certificate for localhost and
+    /// 127.0.0.1, a client certificate from the CA and one from a stranger.
+    struct Pki {
+        dir: tempfile::TempDir,
+    }
+
+    impl Pki {
+        fn new() -> Pki {
+            use rcgen::{
+                BasicConstraints, CertificateParams, CertifiedIssuer, DnType,
+                ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let write =
+                |name: &str, pem: String| std::fs::write(dir.path().join(name), pem).unwrap();
+            let ca = |cn: &str| {
+                let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+                params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+                params.distinguished_name.push(DnType::CommonName, cn);
+                params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+                CertifiedIssuer::self_signed(params, KeyPair::generate().unwrap()).unwrap()
+            };
+            let (ours, stranger) = (ca("OpenTrack test CA"), ca("Somebody else"));
+            write("ca.pem", ours.pem());
+            let leaf =
+                |name: &str, sans: Vec<String>, usage, issuer: &CertifiedIssuer<'_, KeyPair>| {
+                    let mut params = CertificateParams::new(sans).unwrap();
+                    params.distinguished_name.push(DnType::CommonName, name);
+                    params
+                        .distinguished_name
+                        .push(DnType::OrganizationName, "OpenTrack test");
+                    params.extended_key_usages = vec![usage];
+                    let key = KeyPair::generate().unwrap();
+                    let cert = params.signed_by(&key, issuer).unwrap();
+                    write(&format!("{name}.pem"), cert.pem());
+                    write(&format!("{name}.key"), key.serialize_pem());
+                };
+            let server = ExtendedKeyUsagePurpose::ServerAuth;
+            let client = ExtendedKeyUsagePurpose::ClientAuth;
+            leaf(
+                "server",
+                vec!["localhost".into(), "127.0.0.1".into()],
+                server,
+                &ours,
+            );
+            leaf("client-a", vec![], client.clone(), &ours);
+            leaf("client-x", vec![], client, &stranger);
+            Pki { dir }
+        }
+
+        fn path(&self, name: &str) -> String {
+            self.dir.path().join(name).display().to_string()
+        }
+
+        /// Client settings trusting our CA, optionally with a client certificate.
+        fn client(&self, cert: Option<&str>) -> ClientTls {
+            ClientTls {
+                ca_file: Some(self.path("ca.pem")),
+                cert_file: cert.map(|c| self.path(&format!("{c}.pem"))),
+                key_file: cert.map(|c| self.path(&format!("{c}.key"))),
+                ..Default::default()
+            }
+        }
+
+        fn server(&self, mutual: bool) -> ServerTls {
+            ServerTls {
+                cert_file: self.path("server.pem"),
+                key_file: self.path("server.key"),
+                client_ca_file: mutual.then(|| self.path("ca.pem")),
+            }
+        }
+    }
+
+    /// Start a TLS `tcp_server` on a free port.
+    async fn tls_server(
+        tls: ServerTls,
+    ) -> (
+        SocketAddr,
+        mpsc::Receiver<Frame>,
+        SharedStatus,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let config = TransportConfig::TcpServer {
+            bind: addr.to_string(),
+            framing: lines(),
+            tls: Some(tls),
+        };
+        let (tx, rx) = mpsc::channel(8);
+        let status = SharedStatus::default();
+        let task_status = status.clone();
+        let task = tokio::spawn(async move {
+            let _ = run(&config, tx, task_status).await;
+        });
+        while tokio::net::TcpStream::connect(addr).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        (addr, rx, status, task)
+    }
+
+    /// Run a `tcp_client` that sends one line, until it ends or `wait` passes.
+    async fn tls_client(
+        addr: SocketAddr,
+        host: &str,
+        tls: ClientTls,
+        wait: Duration,
+    ) -> Option<anyhow::Result<()>> {
+        let config = TransportConfig::TcpClient {
+            host: host.into(),
+            port: addr.port(),
+            framing: lines(),
+            send_on_connect: Some("hello\n".into()),
+            tls: Some(tls),
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        tokio::time::timeout(wait, run(&config, tx, SharedStatus::default()))
+            .await
+            .ok()
+    }
+
+    #[tokio::test]
+    async fn mutual_tls_server_accepts_only_clients_the_ca_signed() {
+        let pki = Pki::new();
+        let (addr, mut rx, status, task) = tls_server(pki.server(true)).await;
+        let wait = Duration::from_millis(500);
+
+        // A client certificate from the CA: its line arrives.
+        let client = tokio::spawn(tls_client(
+            addr,
+            "localhost",
+            pki.client(Some("client-a")),
+            Duration::from_secs(5),
+        ));
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no frame from the trusted client")
+            .unwrap();
+        assert_eq!(&frame.bytes[..], b"hello");
+        client.abort();
+
+        // No client certificate, or one from another CA: nothing arrives,
+        // and the server counts the rejection.
+        for cert in [None, Some("client-x")] {
+            let errors = status.lock().unwrap().errors;
+            let _ = tls_client(addr, "127.0.0.1", pki.client(cert), wait).await;
+            assert!(
+                tokio::time::timeout(wait, rx.recv()).await.is_err(),
+                "a frame from an untrusted client ({cert:?})"
+            );
+            assert_eq!(status.lock().unwrap().errors, errors + 1, "{cert:?}");
+            assert!(
+                status
+                    .lock()
+                    .unwrap()
+                    .last_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("TLS handshake")
+            );
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn tls_client_trusts_its_ca_file_and_checks_the_name() {
+        let pki = Pki::new();
+        let (addr, mut rx, _status, task) = tls_server(pki.server(false)).await;
+
+        // By IP address (in the certificate), then under a server_name override.
+        let by_name = ClientTls {
+            server_name: Some("localhost".into()),
+            ..pki.client(None)
+        };
+        for tls in [pki.client(None), by_name] {
+            let client = tokio::spawn(tls_client(addr, "127.0.0.1", tls, Duration::from_secs(5)));
+            let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("no frame over TLS")
+                .unwrap();
+            assert_eq!(&frame.bytes[..], b"hello");
+            client.abort();
+        }
+
+        // A name the certificate does not cover, and a CA that did not sign it.
+        let wrong_name = ClientTls {
+            server_name: Some("elsewhere.example".into()),
+            ..pki.client(None)
+        };
+        let wrong_ca = ClientTls {
+            ca_file: Some(pki.path("client-x.pem")),
+            ..Default::default()
+        };
+        for tls in [wrong_name, wrong_ca] {
+            let err = tls_client(addr, "127.0.0.1", tls, Duration::from_secs(5))
+                .await
+                .expect("handshake did not fail")
+                .unwrap_err();
+            assert!(format!("{err:#}").contains("TLS handshake"), "{err:#}");
+        }
+
+        // Development escape hatch: no verification at all.
+        let insecure = ClientTls {
+            insecure_skip_verify: true,
+            ..Default::default()
+        };
+        let client = tokio::spawn(tls_client(
+            addr,
+            "127.0.0.1",
+            insecure,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        client.abort();
+        task.abort();
+    }
+
+    /// A mutual-TLS listener on a free port that hands each verified
+    /// connection to `serve`.
+    async fn mutual_tls_listener<F, Fut>(pki: &Pki, serve: F) -> (u16, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(tokio_rustls::server::TlsStream<tokio::net::TcpStream>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let acceptor = pki.server(true).acceptor().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                if let Ok(tls) = acceptor.accept(stream).await {
+                    tokio::spawn(serve(tls));
+                }
+            }
+        });
+        (port, task)
+    }
+
+    async fn first_frame(config: TransportConfig) -> Frame {
+        let (tx, mut rx) = mpsc::channel(8);
+        let task = tokio::spawn(async move { run(&config, tx, SharedStatus::default()).await });
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no frame")
+            .unwrap();
+        task.abort();
+        frame
+    }
+
+    #[tokio::test]
+    async fn https_and_wss_present_the_client_certificate() {
+        let pki = Pki::new();
+        let (port, server) = mutual_tls_listener(&pki, |mut tls| async move {
+            // Read the request head, then answer.
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                match tls.read_u8().await {
+                    Ok(b) => head.push(b),
+                    Err(_) => return,
+                }
+            }
+            let _ = tls
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await;
+            let _ = tls.shutdown().await;
+        })
+        .await;
+        let frame = first_frame(TransportConfig::HttpPoll {
+            url: format!("https://localhost:{port}/feed"),
+            interval_secs: 0.1,
+            method: "GET".into(),
+            headers: BTreeMap::new(),
+            body: None,
+            timeout_secs: 5.0,
+            tls: Some(pki.client(Some("client-a"))),
+        })
+        .await;
+        assert_eq!(&frame.bytes[..], b"ok");
+        server.abort();
+
+        let (port, server) = mutual_tls_listener(&pki, |tls| async move {
+            let Ok(mut ws) = tokio_tungstenite::accept_async(tls).await else {
+                return;
+            };
+            let _ = ws.send(Message::text("{\"id\":1}")).await;
+            // Hold the connection open until the client goes.
+            while ws.next().await.is_some() {}
+        })
+        .await;
+        let frame = first_frame(TransportConfig::Websocket {
+            url: format!("wss://127.0.0.1:{port}/stream"),
+            headers: BTreeMap::new(),
+            subscribe: None,
+            error_path: None,
+            ping_secs: 20.0,
+            tls: Some(ClientTls {
+                server_name: Some("localhost".into()),
+                ..pki.client(Some("client-a"))
+            }),
+        })
+        .await;
+        assert_eq!(&frame.bytes[..], b"{\"id\":1}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn mqtts_uses_the_old_ca_file_with_a_client_certificate() {
+        async fn packet(s: &mut (impl AsyncRead + Unpin)) -> std::io::Result<(u8, Vec<u8>)> {
+            let kind = s.read_u8().await?;
+            let (mut len, mut shift) = (0usize, 0);
+            loop {
+                let b = s.read_u8().await?;
+                len |= usize::from(b & 0x7f) << shift;
+                shift += 7;
+                if b & 0x80 == 0 {
+                    break;
+                }
+            }
+            let mut body = vec![0; len];
+            s.read_exact(&mut body).await?;
+            Ok((kind, body))
+        }
+        let pki = Pki::new();
+        // Just enough of a broker: accept the session and the subscription,
+        // then publish one message.
+        let (port, server) = mutual_tls_listener(&pki, |mut tls| async move {
+            while let Ok((kind, body)) = packet(&mut tls).await {
+                let reply: Vec<u8> = match kind >> 4 {
+                    1 => vec![0x20, 2, 0, 0],
+                    8 => [
+                        &[0x90, 3, body[0], body[1], 0][..],
+                        b"\x30\x07\x00\x03a/bhi",
+                    ]
+                    .concat(),
+                    12 => vec![0xd0, 0],
+                    _ => continue,
+                };
+                if tls.write_all(&reply).await.is_err() {
+                    return;
+                }
+            }
+        })
+        .await;
+        let mut spec = serde_json::json!({
+            "type": "mqtt", "url": format!("mqtts://localhost:{port}"), "topics": ["a/#"],
+            "ca_file": pki.path("ca.pem"),
+        });
+        let client = pki.client(Some("client-a"));
+        spec["tls"] =
+            serde_json::json!({"cert_file": client.cert_file, "key_file": client.key_file});
+        let frame = first_frame(serde_json::from_value(spec).unwrap()).await;
+        assert_eq!(&frame.bytes[..], b"hi");
+        assert_eq!(frame.meta["topic"], "a/b");
+        server.abort();
+    }
+
+    #[test]
+    fn tls_files_fail_clearly() {
+        let pki = Pki::new();
+        let err = ClientTls {
+            ca_file: Some(pki.path("server.key")),
+            ..Default::default()
+        }
+        .client_config()
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "tls.ca_file {}: no certificates found",
+                pki.path("server.key")
+            )
+        );
+        let err = ClientTls {
+            cert_file: Some(pki.path("client-a.pem")),
+            key_file: Some(pki.path("client-a.pem")),
+            ..pki.client(None)
+        }
+        .client_config()
+        .unwrap_err();
+        assert!(err.to_string().ends_with("no private key found"), "{err}");
+        let err = ServerTls {
+            cert_file: pki.path("missing.pem"),
+            ..pki.server(false)
+        }
+        .acceptor()
+        .err()
+        .unwrap();
+        assert!(format!("{err:#}").starts_with("tls.cert_file "), "{err:#}");
+        // Paths resolve environment references.
+        assert!(
+            ClientTls {
+                ca_file: Some("${env:OT_SURELY_UNSET_VAR}/ca.pem".into()),
+                ..Default::default()
+            }
+            .client_config()
+            .is_err()
+        );
+        let subject = crate::tls::subject(
+            &<rustls::pki_types::CertificateDer as rustls::pki_types::pem::PemObject>::from_pem_file(pki.path("client-a.pem")).unwrap(),
+        );
+        assert_eq!(subject.as_deref(), Some("CN=client-a, O=OpenTrack test"));
+    }
+
+    #[test]
+    fn tls_settings_round_trip_and_check() {
+        let spec = serde_json::json!({
+            "type": "tcp_client", "host": "feed.local", "port": 8089,
+            "tls": {
+                "ca_file": "/etc/ot/ca.pem", "cert_file": "/etc/ot/me.pem",
+                "key_file": "${env:OT_KEY_FILE}", "server_name": "feed.example"
+            }
+        });
+        let t: TransportConfig = serde_json::from_value(spec.clone()).unwrap();
+        assert_eq!(t.check(), Ok(()));
+        let back = serde_json::to_value(&t).unwrap();
+        assert_eq!(back["tls"], spec["tls"]);
+        assert_eq!(serde_json::from_value::<TransportConfig>(back).unwrap(), t);
+
+        let server: TransportConfig = serde_json::from_value(serde_json::json!({
+            "type": "tcp_server", "bind": "0.0.0.0:8089",
+            "tls": { "cert_file": "s.pem", "key_file": "s.key", "client_ca_file": "ca.pem" }
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_value::<TransportConfig>(serde_json::to_value(&server).unwrap())
+                .unwrap(),
+            server
+        );
+        // Unknown TLS settings are refused, as elsewhere.
+        assert!(
+            serde_json::from_value::<TransportConfig>(serde_json::json!({
+                "type": "websocket", "url": "wss://x", "tls": { "verify": false }
+            }))
+            .is_err()
+        );
+
+        let check = |v: serde_json::Value| {
+            serde_json::from_value::<TransportConfig>(v)
+                .unwrap()
+                .check()
+        };
+        assert!(
+            check(serde_json::json!({"type": "http_poll", "url": "https://x", "tls": {"key_file": "k.pem"}}))
+                .unwrap_err()
+                .contains("tls.key_file needs a tls.cert_file")
+        );
+        assert!(
+            check(serde_json::json!({"type": "websocket", "url": "wss://x", "tls": {"cert_file": "c.pem"}}))
+                .unwrap_err()
+                .contains("tls.cert_file needs a tls.key_file")
+        );
+        assert!(
+            check(serde_json::json!({"type": "websocket", "url": "ws://x", "tls": {}}))
+                .unwrap_err()
+                .contains("wss://")
+        );
+        assert!(
+            check(serde_json::json!({"type": "tcp_server", "bind": "0.0.0.0:1", "tls": {"cert_file": "", "key_file": "k"}}))
+                .unwrap_err()
+                .contains("cert_file")
+        );
+    }
+
+    #[test]
+    fn mqtt_ca_file_still_parses() {
+        let old = serde_json::json!({
+            "type": "mqtt", "url": "mqtts://broker.local", "topics": ["t"], "ca_file": "/etc/ot/ca.pem"
+        });
+        let t: TransportConfig = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            &t,
+            TransportConfig::Mqtt {
+                ca_file: Some(_),
+                tls: None,
+                ..
+            }
+        ));
+        assert_eq!(t.check(), Ok(()));
+        assert_eq!(serde_json::to_value(&t).unwrap()["ca_file"], old["ca_file"]);
+
+        // With a client certificate alongside; but only one CA.
+        let mut both = old.clone();
+        both["tls"] = serde_json::json!({"cert_file": "c.pem", "key_file": "c.key"});
+        let t: TransportConfig = serde_json::from_value(both.clone()).unwrap();
+        assert_eq!(t.check(), Ok(()));
+        both["tls"]["ca_file"] = "other.pem".into();
+        let t: TransportConfig = serde_json::from_value(both).unwrap();
+        assert!(t.check().unwrap_err().contains("CA once"));
+        let mut plain = old;
+        plain["url"] = "mqtt://broker.local".into();
+        plain["tls"] = serde_json::json!({});
+        let t: TransportConfig = serde_json::from_value(plain).unwrap();
+        assert!(t.check().unwrap_err().contains("mqtts://"));
     }
 }
