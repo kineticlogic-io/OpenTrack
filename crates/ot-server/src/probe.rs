@@ -245,6 +245,7 @@ mod tests {
             port: 9,
             framing: ot_source::frame::Framing::Lines { max_len: 1024 },
             send_on_connect: None,
+            tls: None,
         };
         let (frames, err) = capture(&t, 5, 2.0).await;
         assert!(frames.is_empty());

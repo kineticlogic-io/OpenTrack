@@ -57,6 +57,21 @@ curl -X POST -H 'content-type: application/json' \
    "mapping": { "rules": [{ "name": "position", "key": "_frame.topic_levels[1]",
                             "identifiers": [{ "scheme": "mmsi", "value": "_frame.topic_levels[1]" }], ... }] }
    ```
+
+   Client transports connect over TLS with a `tls` object (a private CA, a client certificate for mutual TLS);
+   `tcp_server` accepts TLS only with one, and with `client_ca_file` only clients holding a certificate that CA signed:
+
+   ```json
+   "transport": { "type": "tcp_client", "host": "feed.example", "port": 8089,
+                  "tls": { "ca_file": "/etc/opentrack/feed-ca.pem", "cert_file": "/etc/opentrack/client.pem",
+                           "key_file": "${env:OT_CLIENT_KEY}", "server_name": "feed.example" } }
+   "transport": { "type": "tcp_server", "bind": "0.0.0.0:8089",
+                  "tls": { "cert_file": "/etc/opentrack/server.pem", "key_file": "/etc/opentrack/server.key",
+                           "client_ca_file": "/etc/opentrack/clients-ca.pem" } }
+   ```
+
+   MQTT's older top-level `ca_file` still works; use `tls.ca_file` alongside a client certificate. A key without
+   a certificate (or the reverse), or TLS settings on a plain `http://`, `ws://` or `mqtt://` URL, fail validation.
 2. **Codec** turns a frame into records (`json`, `cot_xml`, `xml`).
 3. **Reject** rules drop records before mapping, counted per reason (`rejected:<reason>`).
 4. **Mapping** rules map records to the track schema. Every matching rule applies; `static` rules feed the static

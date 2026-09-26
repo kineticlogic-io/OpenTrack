@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { FieldSelect, Input, Label, Toggle } from 'staresdk'
+import { CollapsiblePanel, FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type PluginInfo, type SourceSpec } from '../../api/client'
+import { InfoTip } from '../../components/InfoTip'
 import { PluginOptions, PluginPicker } from '../../components/PluginOptions'
 
 type Transport = SourceSpec['transport']
@@ -155,6 +156,78 @@ function ListSetting({
 
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s))
 
+/** Transports that can run over TLS (the URL ones only for https://, wss://, mqtts://). */
+const TLS_TRANSPORTS = ['tcp_client', 'tcp_server', 'http_poll', 'websocket', 'mqtt']
+
+/** The transport's `tls` settings: trust, client certificate (mutual TLS) and, for the TCP server, its own certificate. */
+function TlsSettings({ transport, onTransport }: { transport: Transport; onTransport: (t: Transport) => void }) {
+  const server = transport.type === 'tcp_server'
+  const tls = (transport.tls as Record<string, unknown> | undefined) ?? {}
+  const setTls = (k: string, v: unknown) => {
+    const nextTls = { ...tls, [k]: v }
+    if (v === undefined || v === '' || v === false) delete nextTls[k]
+    const next: Transport = { ...transport, tls: nextTls }
+    // MQTT's older top-level ca_file moves into tls on edit.
+    if (k === 'ca_file') delete next.ca_file
+    if (Object.keys(nextTls).length === 0) delete next.tls
+    onTransport(next)
+  }
+  const on = transport.tls !== undefined || transport.ca_file !== undefined
+  return (
+    <div className="field wide">
+      <CollapsiblePanel
+        title="TLS"
+        badge={on ? (tls.cert_file || tls.client_ca_file ? 'mutual' : 'on') : undefined}
+        defaultOpen={on}
+        titleActions={
+          server ? (
+            <InfoTip label="TLS">
+              Set a certificate and key (PEM files) to accept TLS connections only. With a client CA, every client must present a
+              certificate that CA signed (mutual TLS); others are rejected, and each client&apos;s certificate subject is logged. Paths
+              may use {'${env:NAME}'}.
+            </InfoTip>
+          ) : (
+            <InfoTip label="TLS">
+              For tcp, https://, wss:// and mqtts://. The CA file (PEM) is trusted instead of the system roots. A client certificate
+              and key (PEM) authenticate this server to the feed (mutual TLS); set both or neither. Server name verifies the
+              feed&apos;s certificate against that name instead of the host. Skipping verification lets anyone impersonate the feed:
+              development only. Paths may use {'${env:NAME}'}.
+            </InfoTip>
+          )
+        }
+      >
+        <div className="panel-body">
+          <div className="form-grid">
+            {server ? (
+              <>
+                <Text label="Certificate" value={tls.cert_file} onChange={(v) => setTls('cert_file', v)} placeholder="server.pem" />
+                <Text label="Key" value={tls.key_file} onChange={(v) => setTls('key_file', v)} placeholder="server.key" />
+                <Text label="Client CA" value={tls.client_ca_file} onChange={(v) => setTls('client_ca_file', v)} placeholder="optional: mutual TLS" />
+              </>
+            ) : (
+              <>
+                <Text label="CA file" value={tls.ca_file ?? transport.ca_file} onChange={(v) => setTls('ca_file', v)} placeholder="default: system roots" />
+                <Text label="Client certificate" value={tls.cert_file} onChange={(v) => setTls('cert_file', v)} placeholder="optional: mutual TLS" />
+                <Text label="Client key" value={tls.key_file} onChange={(v) => setTls('key_file', v)} placeholder="with the certificate" />
+                <Text label="Server name" value={tls.server_name} onChange={(v) => setTls('server_name', v)} placeholder="default: the host" />
+                <label className="field">
+                  <Label size="sm">Skip verification</Label>
+                  <Toggle
+                    size="sm"
+                    value={tls.insecure_skip_verify === true}
+                    onChange={(skip) => setTls('insecure_skip_verify', skip)}
+                    aria-label="Skip certificate verification"
+                  />
+                </label>
+              </>
+            )}
+          </div>
+        </div>
+      </CollapsiblePanel>
+    </div>
+  )
+}
+
 /** Transport and codec settings for a source. */
 export function TransportForm({
   transport,
@@ -298,7 +371,6 @@ export function TransportForm({
           <Text label="Username" value={transport.username} onChange={(v) => set('username', v)} placeholder="optional" />
           <Text label="Password" value={transport.password} onChange={(v) => set('password', v)} placeholder="${env:NAME}" />
           <Text label="Keepalive (s)" type="number" value={transport.keepalive_secs} onChange={(v) => set('keepalive_secs', num(v))} placeholder="30" />
-          <Text label="CA file (mqtts)" value={transport.ca_file} onChange={(v) => set('ca_file', v)} placeholder="default: system roots" />
           <label className="field">
             <Label size="sm">Persistent session</Label>
             <Toggle
@@ -310,6 +382,7 @@ export function TransportForm({
           </label>
         </>
       )}
+      {TLS_TRANSPORTS.includes(transport.type) && <TlsSettings transport={transport} onTransport={onTransport} />}
       {(transport.type === 'tcp_client' || transport.type === 'tcp_server') && (
         <>
           <div className="field">
