@@ -3,6 +3,7 @@ import { TbPlayerPlay, TbPlus, TbShieldLock, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, FileDropZone, Input, Label, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { api, type PluginGrants, type PluginInfo } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
+import { useCan } from '../../auth/context'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
@@ -181,6 +182,7 @@ export function PluginsPanel() {
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null)
   const [adding, setAdding] = useState(false)
   const [granting, setGranting] = useState<PluginInfo | null>(null)
+  const admin = useCan('admin')
   const load = useCallback(() => {
     api.plugins().then(setPlugins, (e) => toast({ variant: 'error', title: 'Plugins', message: errorMessage(e) }))
   }, [toast])
@@ -285,10 +287,10 @@ export function PluginsPanel() {
       render: (p) =>
         p.builtin ? null : (
           <span className="num-row" style={{ justifyContent: 'flex-end' }}>
-            <Toggle size="sm" aria-label={`Enable ${p.name}`} value={p.enabled} onChange={(v) => toggle(p, v)} />
-            <Button size="xs" variant="ghost" icon={<TbPlayerPlay />} title="Check it loads and opens" aria-label={`Check ${p.name}`} onClick={() => check(p)} />
-            <Button size="xs" variant="ghost" icon={<TbShieldLock />} title="Grants" aria-label={`Grants for ${p.name}`} onClick={() => setGranting(p)} />
-            <Button size="xs" variant="ghost" icon={<TbTrash />} title="Delete" aria-label={`Delete ${p.name}`} onClick={() => remove(p)} />
+            <Toggle size="sm" aria-label={`Enable ${p.name}`} value={p.enabled} disabled={!admin} onChange={(v) => toggle(p, v)} />
+            <Button size="xs" variant="ghost" icon={<TbPlayerPlay />} title="Check it loads and opens" aria-label={`Check ${p.name}`} disabled={!admin} onClick={() => check(p)} />
+            <Button size="xs" variant="ghost" icon={<TbShieldLock />} title="Grants" aria-label={`Grants for ${p.name}`} disabled={!admin} onClick={() => setGranting(p)} />
+            <Button size="xs" variant="ghost" icon={<TbTrash />} title="Delete" aria-label={`Delete ${p.name}`} disabled={!admin} onClick={() => remove(p)} />
           </span>
         ),
     },
@@ -306,9 +308,11 @@ export function PluginsPanel() {
         </InfoTip>
       }
       actions={
-        <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
-          Add plugin
-        </Button>
+        admin && (
+          <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
+            Add plugin
+          </Button>
+        )
       }
     >
       <div className="panel-body">

@@ -12,6 +12,7 @@ import { EntityEditor } from '../registry/EntityEditor'
 import { InfoTip } from '../../components/InfoTip'
 import { GroupEditor } from './GroupEditor'
 import { TrackCard } from './TrackCard'
+import { useCan } from '../../auth/context'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
 setWorkerUrl(maplibreWorkerUrl)
@@ -136,6 +137,7 @@ const distinct = (rows: TrackRow[], pick: (t: TrackRow) => string[]) => [...new 
 /** Every live track on a map and in a table, with the selected one's details and entity. */
 export default function TrackDbPage({ selected, onSelect }: { selected: string; onSelect: (uid: string) => void }) {
   const { toast } = useToast()
+  const canManage = useCan('track_manager')
   const [rows, setRows] = useState<TrackRow[] | null>(null)
   const [query, setQuery] = useState('')
   const [state, setState] = useState<string | null>(null)
@@ -359,7 +361,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 size="sm"
                 variant="ghost"
                 icon={<TbLink />}
-                disabled={busy || tickedTracks.length < 2 || tickedGroups.length > 0}
+                disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
                 title="The same object: keep the tracks separate, each listing the others"
                 onClick={pair}
               >
@@ -369,7 +371,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 size="sm"
                 variant="ghost"
                 icon={<TbArrowMerge />}
-                disabled={busy || tickedTracks.length < 2 || tickedGroups.length > 0}
+                disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
                 title="One track survives with the others' history and sources"
                 onClick={() => setMerging(ticked[0])}
               >
@@ -379,13 +381,13 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 size="sm"
                 variant="ghost"
                 icon={<TbUsersGroup />}
-                disabled={busy || tickedGroups.length > 1}
+                disabled={!canManage || busy || tickedGroups.length > 1}
                 title={tickedGroups.length === 1 ? (tickedTracks.length ? 'Add the ticked tracks to the ticked group' : 'Edit the group') : 'Form a group of the ticked tracks'}
                 onClick={group}
               >
                 {tickedGroups.length === 1 ? (tickedTracks.length ? 'Add to group' : 'Edit group') : 'Group'}
               </Button>
-              <Button size="sm" variant="ghost" icon={<TbTrash />} disabled={busy} onClick={remove}>
+              <Button size="sm" variant="ghost" icon={<TbTrash />} disabled={!canManage || busy} onClick={remove}>
                 Delete
               </Button>
               <span className="spacer" />
@@ -429,7 +431,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               <Button size="sm" variant="ghost" onClick={() => setMerging(null)}>
                 Cancel
               </Button>
-              <Button size="sm" icon={<TbArrowMerge />} disabled={busy} onClick={() => merge(merging)}>
+              <Button size="sm" icon={<TbArrowMerge />} disabled={!canManage || busy} onClick={() => merge(merging)}>
                 Merge into {merging}
               </Button>
             </div>

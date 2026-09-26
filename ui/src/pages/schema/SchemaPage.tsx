@@ -7,6 +7,7 @@ import { errorMessage, fmtTime } from '../../lib/format'
 import { unpublished, usedBy, type Unpublished } from '../../lib/schemaUsage'
 import { FieldForm } from './FieldForm'
 import { InfoTip } from '../../components/InfoTip'
+import { useCan } from '../../auth/context'
 
 type VersionRow = SchemaVersion & { sources: string[] }
 type FieldRow = ExtensionField & { used: string[] }
@@ -64,6 +65,7 @@ const asJson = (f: ExtensionField[]) => JSON.stringify(f, null, 2)
 
 export default function SchemaPage() {
   const { toast, confirm } = useToast()
+  const canAdmin = useCan('admin')
   const [overview, setOverview] = useState<SchemaOverview | null>(null)
   const [sources, setSources] = useState<SourceRow[]>([])
   const [selected, setSelected] = useState<number | null>(null)
@@ -227,7 +229,7 @@ export default function SchemaPage() {
           <div className="toolbar">
             <span className="spacer" />
             {!editing && (
-              <Button size="sm" icon={<TbPencil />} onClick={() => startEditing()}>
+              <Button size="sm" icon={<TbPencil />} disabled={!canAdmin} onClick={() => startEditing()}>
                 {draft ? 'Edit draft' : 'New draft'}
               </Button>
             )}
@@ -328,7 +330,7 @@ export default function SchemaPage() {
                 width: 110,
                 align: 'right',
                 render: (u) => (
-                  <Button size="sm" variant="secondary" icon={<TbPlus />} onClick={() => addMissing(u)}>
+                  <Button size="sm" variant="secondary" icon={<TbPlus />} disabled={!canAdmin} onClick={() => addMissing(u)}>
                     Add
                   </Button>
                 ),

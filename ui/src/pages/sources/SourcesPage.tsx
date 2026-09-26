@@ -6,6 +6,7 @@ import { ago, errorMessage, fmtCount } from '../../lib/format'
 import { sourceState } from '../../lib/sourceState'
 import { AddSourceWizard } from './AddSourceWizard'
 import { SourceDetail } from './SourceDetail'
+import { useCan } from '../../auth/context'
 
 // React Flow loads only with the Sources page's topology.
 const Topology = lazy(() => import('./Topology'))
@@ -56,6 +57,7 @@ const COLUMNS: DataTableColumn<SourceRow>[] = [
 ]
 
 export default function SourcesPage({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
+  const canAdmin = useCan('admin')
   const [sources, setSources] = useState<SourceRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
@@ -114,7 +116,7 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
           <div className="toolbar">
             <span className="muted">Feeds OpenTrack ingests. Select one to see its status, transport, pipeline and history.</span>
             <span className="spacer" />
-            <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
+            <Button size="sm" icon={<TbPlus />} disabled={!canAdmin} onClick={() => setAdding(true)}>
               Add source
             </Button>
           </div>

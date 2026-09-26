@@ -15,6 +15,7 @@ import { InfoTip } from '../../components/InfoTip'
 import { DetailDrawer } from '../../lib/DetailDrawer'
 import { ago, errorMessage, fmtTime, show } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
+import { useCan } from '../../auth/context'
 
 type Revision = EntityView['revisions'][number]
 type LinkedTrack = EntityView['tracks'][number]
@@ -178,6 +179,7 @@ export function EntityEditor({
   onClose: () => void
   onSaved: (entityId: string | null) => void
 }) {
+  const canManage = useCan('track_manager')
   const { toast, confirm } = useToast()
   const [view, setView] = useState<EntityView | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -297,8 +299,8 @@ export function EntityEditor({
               style={{ width: 118 }}
             />
           </span>
-          {entityId && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label="Delete entity" title="Delete entity" onClick={remove} />}
-          <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
+          {entityId && canManage && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label="Delete entity" title="Delete entity" onClick={remove} />}
+          {canManage && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
         </>
       }
     >

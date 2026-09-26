@@ -5,6 +5,7 @@ import { api, type Entity, type SheetImport } from '../../api/client'
 import { errorMessage, fmtTime, show } from '../../lib/format'
 import { InfoTip } from '../../components/InfoTip'
 import { EntityEditor } from './EntityEditor'
+import { useCan } from '../../auth/context'
 
 const PAGE = 200
 
@@ -49,6 +50,7 @@ const ACTION_COLOR = { create: 'success', update: 'blue', unchanged: 'grey', err
 /** The registry: every entity with its identifiers, minimum and attributes; create, edit, and spreadsheet export and import. */
 export default function RegistryPage() {
   const { toast } = useToast()
+  const canManage = useCan('track_manager')
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<Entity[] | null>(null)
   const [total, setTotal] = useState(0)
@@ -127,7 +129,7 @@ export default function RegistryPage() {
         }
         actions={
           <>
-            <Button size="sm" icon={<TbPlus />} onClick={() => setEditing('new')}>
+            <Button size="sm" icon={<TbPlus />} disabled={!canManage} onClick={() => setEditing('new')}>
               New entity
             </Button>
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
@@ -136,7 +138,7 @@ export default function RegistryPage() {
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('csv'), '_self')}>
               Export CSV
             </Button>
-            <Button size="sm" variant="ghost" icon={<TbUpload />} disabled={busy} onClick={() => picker.current?.click()}>
+            <Button size="sm" variant="ghost" icon={<TbUpload />} disabled={!canManage || busy} onClick={() => picker.current?.click()}>
               Import sheet
             </Button>
             <InfoTip label="Registry sheets">
@@ -184,7 +186,7 @@ export default function RegistryPage() {
               <Button size="sm" variant="ghost" onClick={() => setPlan(null)}>
                 Cancel
               </Button>
-              <Button size="sm" disabled={busy || plan.result.counts.error > 0 || planRows.length === 0} onClick={apply}>
+              <Button size="sm" disabled={!canManage || busy || plan.result.counts.error > 0 || planRows.length === 0} onClick={apply}>
                 Apply
               </Button>
             </>

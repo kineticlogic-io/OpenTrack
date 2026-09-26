@@ -4,6 +4,7 @@ import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, SaveButton, us
 import { api, type CorrelationSettings, type DecisionRow, type Suggestion, type SuggestionTrack } from '../../api/client'
 import { errorMessage, fmtTime } from '../../lib/format'
 import { SettingsForm } from './SettingsForm'
+import { useCan } from '../../auth/context'
 
 const REFRESH_MS = 5000
 const STATUSES = [{ name: 'open' }, { name: 'accepted' }, { name: 'rejected' }, { name: 'expired' }, { name: 'all' }]
@@ -37,6 +38,8 @@ const OP_COLOR: Record<string, 'blue' | 'success' | 'warning' | 'danger' | 'grey
  */
 export default function CorrelationPage() {
   const { toast } = useToast()
+  const canManage = useCan('track_manager')
+  const canAdmin = useCan('admin')
   const [status, setStatus] = useState('open')
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null)
   const [busy, setBusy] = useState<number | null>(null)
@@ -152,10 +155,10 @@ export default function CorrelationPage() {
       render: (s) =>
         s.status === 'open' ? (
           <span className="value-row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
-            <Button size="sm" variant="primary" icon={<TbCheck />} disabled={busy !== null} onClick={() => decide(s, 'accept')}>
+            <Button size="sm" variant="primary" icon={<TbCheck />} disabled={!canManage || busy !== null} onClick={() => decide(s, 'accept')}>
               Accept
             </Button>
-            <Button size="sm" variant="secondary" icon={<TbX />} disabled={busy !== null} onClick={() => decide(s, 'reject')}>
+            <Button size="sm" variant="secondary" icon={<TbX />} disabled={!canManage || busy !== null} onClick={() => decide(s, 'reject')}>
               Reject
             </Button>
           </span>
@@ -223,12 +226,12 @@ export default function CorrelationPage() {
                 size="sm"
                 variant="ghost"
                 icon={<TbRestore />}
-                disabled={!defaults || JSON.stringify(draft) === JSON.stringify(defaults)}
+                disabled={!canAdmin || !defaults || JSON.stringify(draft) === JSON.stringify(defaults)}
                 onClick={() => defaults && setDraft(defaults)}
               >
                 Defaults
               </Button>
-              <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
+              {canAdmin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
             </>
           }
         >

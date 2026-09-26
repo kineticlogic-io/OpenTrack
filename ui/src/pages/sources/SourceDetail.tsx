@@ -8,6 +8,7 @@ import { DetailDrawer } from '../../lib/DetailDrawer'
 import { PipelineView } from './PipelineView'
 import { sourceState } from '../../lib/sourceState'
 import { TransportForm } from './TransportForm'
+import { useCan } from '../../auth/context'
 
 type Revision = Awaited<ReturnType<typeof api.revisions>>[number]
 
@@ -118,6 +119,7 @@ export function SourceDetail({
 }) {
   const { toast, confirm } = useToast()
   const [tab, setTab] = useState('status')
+  const canAdmin = useCan('admin')
   const [draft, setDraft] = useState<SourceSpec>(source.spec)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -180,10 +182,10 @@ export function SourceDetail({
         <>
           <label className="row" style={{ gap: 6 }}>
             <span className="muted">Enabled</span>
-            <Toggle size="sm" value={source.enabled} onChange={toggle} aria-label="Enabled" />
+            <Toggle size="sm" value={source.enabled} disabled={!canAdmin} onChange={toggle} aria-label="Enabled" />
           </label>
-          <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
-          <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label="Delete source" title="Delete source" onClick={remove} />
+          {canAdmin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
+          <Button size="xs" variant="ghost" icon={<TbTrash />} disabled={!canAdmin} aria-label="Delete source" title="Delete source" onClick={remove} />
         </>
       }
     >
