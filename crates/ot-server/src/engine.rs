@@ -45,6 +45,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::Common;
 
+pub(crate) mod bench;
 mod manage;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
@@ -453,15 +454,21 @@ pub struct Engine {
     groups: HashMap<Uid, manage::GroupState>,
     /// Tracks changed by track management, saved on the next tick.
     dirty: HashSet<Uid>,
+    /// Keep [`Self::trace`] and [`Self::associations`] (replays and
+    /// benchmarks; never a live engine, where they would only grow).
+    pub(crate) recording: bool,
     /// Where each detection went, for scoring replays.
-    #[cfg(test)]
-    associations: Vec<(String, Option<Uid>)>,
+    pub(crate) associations: Vec<(String, Option<Uid>)>,
     /// Every report, association and merge in order, for replay videos.
-    #[cfg(test)]
-    trace: Vec<Value>,
+    pub(crate) trace: Vec<Value>,
     /// The time of the report being processed (for traced merges).
-    #[cfg(test)]
     clock: Option<DateTime<Utc>>,
+    /// Scenario time for a replay run faster than real time: lifecycle and
+    /// timers follow it instead of the wall clock.
+    pub(crate) sim_now: Option<DateTime<Utc>>,
+    /// How long a read waits for observations when none are queued (zero:
+    /// not at all; Redis checks block timeouts only every 100 ms or so).
+    pub(crate) read_block: Duration,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -536,12 +543,12 @@ impl Engine {
             attrs: Attributes::default(),
             groups: HashMap::new(),
             dirty: HashSet::new(),
-            #[cfg(test)]
+            recording: cfg!(test),
             associations: Vec::new(),
-            #[cfg(test)]
             trace: Vec::new(),
-            #[cfg(test)]
             clock: None,
+            sim_now: None,
+            read_block: Duration::from_secs(1),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -600,7 +607,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn refresh_sources(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn refresh_sources(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
         type Row = (
             String,
@@ -655,7 +662,7 @@ impl Engine {
 
     /// Reload the output schema when a new version is published, and
     /// republish every live track whose attributes change as a result.
-    async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
         let known = (
             self.attrs.version,
@@ -752,7 +759,13 @@ impl Engine {
         Ok(())
     }
 
-    async fn pump(&mut self, pending: bool) -> anyhow::Result<()> {
+    /// Now: the wall clock, or the scenario's time in a fast replay.
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.sim_now.unwrap_or_else(Utc::now)
+    }
+
+    /// Process one batch of queued observations; how many were read.
+    pub(crate) async fn pump(&mut self, pending: bool) -> anyhow::Result<usize> {
         if let Err(e) = self.process_commands().await {
             tracing::warn!(error = %format!("{e:#}"), "operator commands failed");
         }
@@ -763,13 +776,14 @@ impl Engine {
                 GROUP,
                 &self.settings.consumer,
                 1000,
-                Duration::from_secs(1),
+                self.read_block,
                 pending,
             )
             .await?;
         if batch.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
+        let read = batch.len();
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
         let mut reports = Vec::with_capacity(batch.len());
@@ -798,10 +812,7 @@ impl Engine {
         reports.sort_by_key(|o| o.observed_at);
         let mut reports = reports.into_iter().peekable();
         while let Some(obs) = reports.next() {
-            #[cfg(test)]
-            {
-                self.clock = Some(obs.observed_at);
-            }
+            self.clock = Some(obs.observed_at);
             if self.detection_sources.contains(&obs.source_id) {
                 // One scan: every plot of this source at this instant.
                 let mut scan = vec![obs];
@@ -840,13 +851,14 @@ impl Engine {
                 }
                 None => counts.out_of_order += 1,
             }
-            #[cfg(test)]
-            self.trace.push(json!({
-                "t": obs.observed_at, "kind": "report", "source": obs.source_id,
-                "key": obs.source_track_key, "lat": obs.position.latitude,
-                "lon": obs.position.longitude,
-                "uid": self.reports.get(&key).map(|u| u.doc_id()),
-            }));
+            if self.recording {
+                self.trace.push(json!({
+                    "t": obs.observed_at, "kind": "report", "source": obs.source_id,
+                    "key": obs.source_track_key, "lat": obs.position.latitude,
+                    "lon": obs.position.longitude,
+                    "uid": self.reports.get(&key).map(|u| u.doc_id()),
+                }));
+            }
         }
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
@@ -854,7 +866,7 @@ impl Engine {
         self.redis
             .incr_metrics(crate::metrics::ENGINE, &counts.pairs())
             .await?;
-        Ok(())
+        Ok(read)
     }
 
     /// Record the identity keys a track's view carries, unless another live
@@ -1023,10 +1035,11 @@ impl Engine {
         let Some(gone) = self.tracks.remove(&from) else {
             return Ok(());
         };
-        #[cfg(test)]
-        self.trace.push(json!({
-            "t": self.clock, "kind": "merge", "from": from.doc_id(), "into": into.doc_id(),
-        }));
+        if self.recording {
+            self.trace.push(json!({
+                "t": self.clock, "kind": "merge", "from": from.doc_id(), "into": into.doc_id(),
+            }));
+        }
         self.grid.remove(from);
         self.candidates.retain(|(a, b), _| *a != from && *b != from);
         let has_detections_from = |t: &SystemTrack, source: &str| {
@@ -1126,7 +1139,7 @@ impl Engine {
 
     /// Reload correlation settings and "do not pair" decisions when they
     /// changed (an operator saved settings, rejected a pairing, split a track).
-    async fn refresh_correlation(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn refresh_correlation(&mut self) -> anyhow::Result<()> {
         type Loaded = (String, Option<Value>, Vec<(String, String)>);
         let c = self.common.clone();
         let known = self.correlation_version.clone();
@@ -1218,7 +1231,7 @@ impl Engine {
             b.map(|u| u.to_string()).unwrap_or_default(),
             source_track.clone().unwrap_or_default()
         );
-        let now = Utc::now();
+        let now = self.now();
         let first = !self.suggested.contains_key(&key);
         if self
             .suggested
@@ -1335,7 +1348,7 @@ impl Engine {
         if self
             .split_rejected
             .get(&(uid, leaving.clone()))
-            .is_some_and(|t| Utc::now() - *t < chrono::Duration::minutes(30))
+            .is_some_and(|t| self.now() - *t < chrono::Duration::minutes(30))
         {
             return Ok(());
         }
@@ -1628,7 +1641,8 @@ impl Engine {
                             close("accepted", None).await??;
                             Ok(json!({ "new_track": new.doc_id() }))
                         } else {
-                            self.split_rejected.insert((a, leaving.clone()), Utc::now());
+                            let now = self.now();
+                            self.split_rejected.insert((a, leaving.clone()), now);
                             let d = Decision::new(&actor, "reject_split").reason(format!(
                                 "{leaving} stays on {}: rejected suggestion {id}",
                                 a.doc_id()
@@ -2255,28 +2269,32 @@ impl Engine {
         for (i, mut det) in scan.into_iter().enumerate() {
             let Some(&uid) = taken.get(&i) else {
                 counts.unassociated += 1;
-                #[cfg(test)]
+                if self.recording {
+                    self.trace.push(json!({
+                        "t": det.observed_at, "kind": "detection", "source": det.source_id,
+                        "key": det.source_track_key, "lat": det.position.latitude,
+                        "lon": det.position.longitude, "uid": null,
+                    }));
+                }
+                if self.recording {
+                    self.associations
+                        .push((format!("{}/{}", det.source_id, det.source_track_key), None));
+                }
+                continue;
+            };
+            if self.recording {
+                self.associations.push((
+                    format!("{}/{}", det.source_id, det.source_track_key),
+                    Some(uid),
+                ));
+            }
+            if self.recording {
                 self.trace.push(json!({
                     "t": det.observed_at, "kind": "detection", "source": det.source_id,
                     "key": det.source_track_key, "lat": det.position.latitude,
-                    "lon": det.position.longitude, "uid": null,
+                    "lon": det.position.longitude, "uid": uid.doc_id(),
                 }));
-                #[cfg(test)]
-                self.associations
-                    .push((format!("{}/{}", det.source_id, det.source_track_key), None));
-                continue;
-            };
-            #[cfg(test)]
-            self.associations.push((
-                format!("{}/{}", det.source_id, det.source_track_key),
-                Some(uid),
-            ));
-            #[cfg(test)]
-            self.trace.push(json!({
-                "t": det.observed_at, "kind": "detection", "source": det.source_id,
-                "key": det.source_track_key, "lat": det.position.latitude,
-                "lon": det.position.longitude, "uid": uid.doc_id(),
-            }));
+            }
             det.source_track_key = DETECTIONS.into();
             if let Some(t) = self.tracks.get_mut(&uid)
                 && !t
@@ -2301,8 +2319,8 @@ impl Engine {
         Ok(())
     }
 
-    async fn reap(&mut self) -> anyhow::Result<()> {
-        let now = Utc::now();
+    pub(crate) async fn reap(&mut self) -> anyhow::Result<()> {
+        let now = self.now();
         let mut dropped = Vec::new();
         let mut went_lost = Vec::new();
         for track in self.tracks.values_mut() {
@@ -3469,7 +3487,7 @@ mod tests {
 
     // --- Autoferry: recorded radar and lidar against a track feed ---
     //
-    // Fixtures from scripts/autoferry.py (Autoferry sensor fusion dataset,
+    // Fixtures from scripts/benchmark/replay/autoferry.py (Autoferry sensor fusion dataset,
     // NTNU, CC0). Each report carries the ground-truth target it is nearest
     // to (none for clutter), which scores where the engine put it.
 
@@ -3514,7 +3532,7 @@ mod tests {
     }
 
     /// With OT_REPLAY_TRACE=<dir>, write the engine's trace of a replay there
-    /// (scripts/replay-video.py renders it).
+    /// (scripts/benchmark/replay/replay-video.py renders it).
     fn write_trace(e: &Engine, name: &str) {
         let Ok(dir) = std::env::var("OT_REPLAY_TRACE") else {
             return;

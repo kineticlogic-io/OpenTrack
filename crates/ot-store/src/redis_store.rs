@@ -278,7 +278,8 @@ impl RedisStore {
             .arg(consumer)
             .arg("COUNT")
             .arg(count);
-        if !pending {
+        // A zero block returns at once (BLOCK 0 would wait forever).
+        if !pending && !block.is_zero() {
             cmd.arg("BLOCK").arg(block.as_millis() as u64);
         }
         cmd.arg("STREAMS")
@@ -414,7 +415,8 @@ impl RedisStore {
             .arg(consumer)
             .arg("COUNT")
             .arg(count);
-        if !pending {
+        // A zero block returns at once (BLOCK 0 would wait forever).
+        if !pending && !block.is_zero() {
             cmd.arg("BLOCK").arg(block.as_millis() as u64);
         }
         cmd.arg("STREAMS");

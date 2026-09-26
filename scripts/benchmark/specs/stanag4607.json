@@ -1,7 +1,7 @@
 {
-  "id": "gmti-4607",
+  "id": "gmti",
   "name": "GMTI (STANAG 4607)",
-  "description": "STANAG 4607 GMTI over TCP: every dwell target report is a detection, formed into ground tracks by the GNN tracker. With publish_platform, the sensor platform's own position (dwell and platform location segments) is a friendly air track that bypasses the tracker. For testing, stream recordings with scripts/benchmark/replay/gmti-rebroadcast.py.",
+  "description": "STANAG 4607 GMTI, one packet per frame, as the TCP transport's length-field framing delivers them. As docs/examples/stanag4607.json, without shift_to_now: the benchmark runs on the recording's own clock.",
   "reports": "detections",
   "publish_alone": true,
   "transport": {
@@ -22,7 +22,7 @@
       "options": {
         "emit": "targets",
         "publish_platform": true,
-        "shift_to_now": true,
+        "shift_to_now": false,
         "range_sigma_m": 20.0,
         "cross_range_sigma_deg": 0.2
       }

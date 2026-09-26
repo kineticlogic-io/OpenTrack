@@ -1,7 +1,7 @@
 {
   "id": "demo-autoferry-lidar",
   "name": "Autoferry demo: lidar (GNN tracker)",
-  "description": "Replay (scripts/autoferry-replay.py): raw Autoferry detections, one frame per scan, formed into tracks by the tracker stage. Simulated training data.",
+  "description": "Replay (scripts/benchmark/replay/autoferry-replay.py): raw Autoferry detections, one frame per scan, formed into tracks by the tracker stage. Simulated training data.",
   "reports": "detections",
   "transport": {
     "type": "udp",

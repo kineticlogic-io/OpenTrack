@@ -1,7 +1,7 @@
 {
   "id": "demo-autoferry-track",
   "name": "Autoferry demo: vessel track feed",
-  "description": "Replay (scripts/autoferry-replay.py): the Autoferry ground truth as an AIS-like track feed, every 3 s with 2 m noise. Simulated training data.",
+  "description": "Replay (scripts/benchmark/replay/autoferry-replay.py): the Autoferry ground truth as an AIS-like track feed, every 3 s with 2 m noise. Simulated training data.",
   "transport": {
     "type": "udp",
     "bind": "127.0.0.1:47001"

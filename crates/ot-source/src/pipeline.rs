@@ -262,6 +262,8 @@ pub struct Output {
     pub entity_updates: Vec<(String, Vec<(String, Value)>)>,
     /// The last decode or validation error seen, for status reporting.
     pub last_error: Option<String>,
+    /// Plots given to the tracker stage, when [`Pipeline::keep_plots`] is on.
+    pub plots: Vec<Observation>,
 }
 
 pub struct Pipeline {
@@ -279,6 +281,7 @@ pub struct Pipeline {
     /// value writes it once, not until the registry snapshot catches up.
     entity_sent: HashMap<(String, String), Value>,
     tracker: Option<crate::tracker::Tracker>,
+    keep_plots: bool,
 }
 
 impl Pipeline {
@@ -302,7 +305,15 @@ impl Pipeline {
             counts: Counts::default(),
             default_registry: RegistryStage::default(),
             entity_sent: HashMap::new(),
+            keep_plots: false,
         })
+    }
+
+    /// Also return the plots the tracker stage is given (benchmarks score
+    /// what the sensor saw as well as what the tracker made of it).
+    pub fn keep_plots(mut self, on: bool) -> Self {
+        self.keep_plots = on;
+        self
     }
 
     /// Enforce this extension schema (types, defaults, required fields).
@@ -547,6 +558,9 @@ impl Pipeline {
                 && m.kind == RuleKind::Observation
             {
                 self.counts.plots += 1;
+                if self.keep_plots {
+                    out.plots.push(obs.clone());
+                }
                 t.push(obs, received_at);
                 continue;
             }

@@ -102,13 +102,14 @@ crates/
   ot-nats     NATS JetStream publisher (stream setup, acknowledged publishes, status)
   ot-source   source framework: transports, framing, codecs and codec plugins, mapping, entity stage, filter, tracker (GNN/MHT), throttle
   ot-codec-stanag4607  STANAG 4607 (Edition 3) GMTI decoder: every segment type, typed and as JSON records
-  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | retire
+  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | bench | retire
 docs/
   nats-output.md   the published track contract, for consumers
   algorithms.md    tracker and correlation algorithms, versions and scores
   examples/        aisstream, adsb.lol, STANAG 4607 GMTI, a GPS feed and the Autoferry demo as pure configuration
-scripts/     replay tools: gmti-rebroadcast.py (4607 recordings over TCP), gmti-gps-replay.py (GMTI and
-             GPS logs of one exercise on one clock), autoferry-replay.py (the Autoferry demo)
+scripts/benchmark/   the tracker and correlation benchmark (bench.py: scenarios, scoring), and
+             replay/ tools that feed a running OpenTrack: gmti-rebroadcast.py (4607 recordings over TCP),
+             gmti-gps-replay.py (GMTI and GPS logs of one exercise on one clock), autoferry-replay.py
 ui/          React + TypeScript (Vite) on stareSDK
 ```
 
@@ -256,6 +257,23 @@ tests on their own topics, and all clean up afterwards. The engine tests replay 
 through a real engine (Redis and SQLite). The NATS tests need JetStream
 (`docker run -p 4222:4222 nats:2 -js`); for MQTT any broker works
 (`docker run -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf`).
+
+## Benchmark
+
+`scripts/benchmark/` scores the tracker and correlation against truth on recorded and simulated
+scenarios: the Autoferry lidar and radar recordings, GMTI with the exercise GPS, Stone Soup's
+Solent AIS and OpenSky ADS-B with simulated radars, and a synthetic crossing case. Each scenario
+runs through `opentrack bench`, the real pipelines and engine on the scenario's clock (100 to 400
+times real time), and is scored with GOSPA, SIAP-style track quality and identity measures, and
+correlation precision and recall. The data is downloaded or read locally and never committed.
+
+```sh
+scripts/benchmark/setup.sh                 # a Python venv with numpy and scipy
+scripts/benchmark/bench build all           # fetch the data, build the scenarios
+scripts/benchmark/bench run all --label x   # run and score; compare two runs with `bench compare`
+```
+
+See [scripts/benchmark/README.md](scripts/benchmark/README.md).
 
 ## UI components
 

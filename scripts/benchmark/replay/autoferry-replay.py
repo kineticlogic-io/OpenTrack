@@ -9,7 +9,7 @@ trackers end their own. Everything the demo sources publish is marked
 simulated training.
 
 Usage: autoferry-replay.py [--loops N] [--scenarios 2 16] [--host 127.0.0.1]
-Needs the fixtures from scripts/autoferry.py (crates/ot-server/tests/data/autoferry).
+Needs the fixtures from scripts/benchmark/replay/autoferry.py (crates/ot-server/tests/data/autoferry).
 """
 
 import argparse
@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-FIXTURES = Path(__file__).resolve().parent.parent / "crates/ot-server/tests/data/autoferry"
+FIXTURES = Path(__file__).resolve().parents[3] / "crates/ot-server/tests/data/autoferry"
 PORTS = {"track": 47001, "lidar-det": 47002, "radar-det": 47003}
 GAP_S = 20.0
 

@@ -62,6 +62,10 @@ enum Command {
     },
     /// Push synthetic tracks through the pipeline.
     Synthetic(synthetic::SyntheticArgs),
+    /// Run a recorded scenario through the pipelines and the engine, as fast
+    /// as they go, and write what the engine made of it (see
+    /// scripts/benchmark/). Publishes nothing.
+    Bench(BenchArgs),
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
     Retire {
@@ -71,6 +75,18 @@ enum Command {
         #[arg(long, default_value = "retired from the command line")]
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, Args)]
+struct BenchArgs {
+    /// Scenario directory (with scenario.json).
+    scenario: PathBuf,
+    /// Where the results go.
+    #[arg(long)]
+    out: PathBuf,
+    /// Correlation settings (JSON) to use instead of the scenario's.
+    #[arg(long)]
+    correlation: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -172,6 +188,17 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Synthetic(args) => synthetic::run(&common, args).await,
+        Command::Bench(args) => {
+            engine::bench::run(
+                &common,
+                engine::bench::BenchOptions {
+                    scenario: args.scenario,
+                    out: args.out,
+                    correlation: args.correlation,
+                },
+            )
+            .await
+        }
         Command::Retire { uid, reason } => {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(

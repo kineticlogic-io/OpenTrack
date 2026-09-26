@@ -1,7 +1,7 @@
 {
   "id": "gps-tabasco",
   "name": "GPS track feed (exercise replay)",
-  "description": "GPS logs of an exercise's vehicles, replayed with the GMTI of the same exercise by scripts/gmti-gps-replay.py: one JSON message per fix over UDP. Live training data.",
+  "description": "GPS logs of an exercise's vehicles, replayed with the GMTI of the same exercise by scripts/benchmark/replay/gmti-gps-replay.py: one JSON message per fix over UDP. Live training data.",
   "transport": {
     "type": "udp",
     "bind": "127.0.0.1:47010"

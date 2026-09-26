@@ -20,7 +20,9 @@ here, so a bump cannot ship without its notes.
 Autoferry sensor fusion dataset (NTNU, CC0), scenarios 2 (crossing) and 16 (longest
 range), replayed by the tests in `crates/ot-source/src/tracker/tests.rs` and
 `crates/ot-server/src/engine.rs` (`replay_autoferry_*`). Run them with
-`OT_TEST_REDIS_URL=redis://127.0.0.1:6379 cargo test autoferry -- --nocapture`.
+`OT_TEST_REDIS_URL=redis://127.0.0.1:6379 cargo test autoferry -- --nocapture`. The wider benchmark
+(`scripts/benchmark/`, GOSPA and SIAP-style scores over nine Autoferry scenarios, GMTI, AIS and
+ADS-B with simulated radars) is how parameter and algorithm changes are compared.
 
 - **Tracker**: per vessel, the reports and purity of its best track; tracks that mostly
   follow clutter.
