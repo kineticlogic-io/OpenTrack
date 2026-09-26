@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.3.0 (alpha), 2026-09-26
+
+The "secure" phase: sign-in and roles, TLS, undo and history. NATS stays the only output.
+
+### Sign-in and roles
+
+- **Every API call needs a signed-in caller**, in one of three roles:
+  - `viewer`: sees everything but accounts and secrets
+  - `track_manager`: also manages tracks
+  - `admin`: also configures OpenTrack
+- **One middleware checks the role each path needs.** A new route that changes something is an
+  admin's until it is listed. The decision log now records the signed-in account, which a client
+  can no longer set.
+- **How callers sign in**, modelled on OpenStare's:
+  - local accounts (Argon2id passwords) with a signed `ot_session` cookie
+  - SAML 2.0 single sign-on, ported from OpenStare
+  - OpenStare's own sign-in and API tokens, when OpenTrack runs beside OpenStare
+  - API tokens for machines
+  - client certificates over TLS
+- **UI:**
+  - the sign-in page, like OpenStare's
+  - the user menu (change password, sign out)
+  - Settings → Users (accounts and API tokens)
+  - Settings → Security (sessions, SAML, OpenStare sign-in, client certificates)
+  - controls a role cannot use are disabled
+- **Warning banner:** as OpenStare's, text users accept after signing in. Declining signs them out.
+- **`opentrack user`** manages accounts on a node without the UI.
+- **The first admin** comes from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD`. Without them, it is
+  `admin@opentrack.local`, with the password in `initial-admin.txt` beside the database.
+- **`OT_AUTH=off`** turns sign-in off for development.
+
+### TLS
+
+- **The API and UI over TLS** with `OT_TLS_CERT` and `OT_TLS_KEY`. With `OT_TLS_CLIENT_CA`,
+  client certificates sign machines in.
+- **Feeds over TLS and mutual TLS:**
+  - a `tls` object on the `tcp_client`, `http_poll`, `websocket` and `mqtt` transports: CA, client
+    certificate and key, server name
+  - a `tls` object on `tcp_server`: certificate, key, and a client CA that makes client
+    certificates required
+
+### Undo
+
+- **What undo covers:** a track manager's pair, unpair, delete, merge, split, "do not pair" and
+  group changes, from the decision log (`POST /decisions/{id}/undo`).
+- **An undo is a decision of its own.**
+- **How it works:** it reverses the decision's links in the temporal track graph.
+  - A deleted or merged-away track comes back under its UID.
+  - A track the engine made meanwhile for the same source retires.
+- **When it is refused:** while a later change by someone else to the same tracks stands.
+
+### Position history
+
+- **What is kept:** each system track's published positions, for `history_hours` (default 12 h).
+  At most one point is kept every `history_interval_secs` (default 10 s), both in Settings.
+  - A point costs about 130 bytes: 2,000 tracks for 12 h at 10 s is about 1.1 GB of Redis.
+- **Reading it:** `GET /tracks/{uid}/history`.
+- **Delete history point** (`POST /history/{uid}/delete`): a track manager deletes a bad point.
+  - It goes out on NATS as `delete_history_point`, on `tracks.history.tms-<UID>.<ms>`.
+  - When the point was the track's latest, the track steps back to the point before.
+  - **Consumers of `tracks.>` must skip message kinds they do not handle**
+    ([docs/nats-output.md](docs/nats-output.md)).
+
+### Engine
+
+- **One SQLite connection** (0.2.2) and batched writes keep the engine at about 25,000 to 29,000
+  observations a second from 2,000 to 16,000 tracks, with history recorded.
+
+### Upgrading
+
+- **Migration 0013** adds accounts, tokens and sign-in settings. It runs on start.
+- **Sign-in is on after the upgrade.** Set `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD`, or read
+  `initial-admin.txt` beside the database, then sign in.
+  - Scripts calling the API need an API token.
+- **The image** now needs libxmlsec1, which it installs. `--no-default-features` builds without
+  SAML.
+
 ## 0.2.2 (alpha), 2026-09-26
 
 ### Engine throughput
