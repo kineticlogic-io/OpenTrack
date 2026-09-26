@@ -56,9 +56,11 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::profiles::routes())
 }
 
+/// Who is making a request, as the decision log records it: the signed-in
+/// account, set by [`crate::auth::layer`] (a client cannot set it).
 pub(crate) fn actor(headers: &HeaderMap) -> String {
     headers
-        .get("x-opentrack-actor")
+        .get(crate::auth::ACTOR_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.len() <= 128)
@@ -733,6 +735,7 @@ mod tests {
             db: Arc::new(Mutex::new(ot_store::Db::open_in_memory().unwrap())),
             redis: redis.clone(),
             nats: common.connect_nats().await.unwrap(),
+            auth: Arc::new(crate::auth::Auth::off()),
             common,
         };
         Some((router(state, ui), redis))

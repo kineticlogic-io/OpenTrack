@@ -9,10 +9,12 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 
 mod api;
+mod auth;
 mod config;
 mod control;
 mod correlate;
 mod correlation_api;
+mod decisions_api;
 mod engine;
 mod manage_api;
 mod metrics;
@@ -108,6 +110,24 @@ struct ServeArgs {
     /// Built UI to serve at `/` (skipped if it has no index.html).
     #[arg(long, env = "OT_UI_DIR", default_value = "ui/dist")]
     ui_dir: PathBuf,
+    /// Sign-in: `on`, or `off` (every caller is an admin; development only).
+    #[arg(long, env = "OT_AUTH", default_value = "on", value_parser = ["on", "off"])]
+    auth: String,
+    /// Key session tokens are signed with (at least 32 characters). Unset:
+    /// one is made on first start and kept beside the database.
+    #[arg(long, env = "OT_SESSION_SECRET", hide_env_values = true)]
+    session_secret: Option<String>,
+    /// The first admin account, made when there are no accounts. Unset: an
+    /// admin@opentrack.local account with its password in a file beside
+    /// the database.
+    #[arg(long, env = "OT_ADMIN_EMAIL")]
+    admin_email: Option<String>,
+    #[arg(long, env = "OT_ADMIN_PASSWORD", hide_env_values = true)]
+    admin_password: Option<String>,
+    /// Where browsers reach this server (`https://host:8090`); SAML sign-on
+    /// needs it.
+    #[arg(long, env = "OT_PUBLIC_URL")]
+    public_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -235,12 +255,33 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
-    let db = common.open_new_db()?;
+    let mut db = common.open_new_db()?;
     plugins::start(&common).await;
+    let disabled = args.auth == "off";
+    if disabled {
+        tracing::warn!("sign-in is turned off (OT_AUTH=off): every caller is an admin");
+    } else {
+        auth::bootstrap_admin(
+            &common,
+            &mut db,
+            args.admin_email.as_deref(),
+            args.admin_password.as_deref(),
+        )?;
+    }
+    let auth_settings: auth::AuthSettings =
+        serde_json::from_value(db.auth_settings()?).context("the saved sign-in settings")?;
+    let secret = auth::load_secret(&common, args.session_secret.as_deref())?;
     let state = control::AppState {
         db: Arc::new(Mutex::new(db)),
         redis: common.open_redis().await?,
         nats: common.connect_nats().await?,
+        auth: Arc::new(auth::Auth::new(
+            secret,
+            disabled,
+            false,
+            args.public_url.clone(),
+            auth_settings,
+        )),
         common,
     };
     let listener = tokio::net::TcpListener::bind(args.bind)
@@ -248,9 +289,13 @@ async fn serve(common: Common, args: ServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding {}", args.bind))?;
     tracing::info!(addr = %args.bind, "control plane listening");
     tokio::spawn(metrics::run_sampler(state.clone()));
-    axum::serve(listener, control::router(state, Some(args.ui_dir)))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        control::router(state, Some(args.ui_dir))
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 

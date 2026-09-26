@@ -30,6 +30,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Db>>,
     pub redis: RedisStore,
     pub nats: ot_nats::Nats,
+    pub auth: crate::auth::SharedAuth,
 }
 
 impl AppState {
@@ -56,7 +57,13 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/tracks/{uid}", get(track))
         .route("/tracks/{uid}/explain", get(explain))
         .merge(crate::api::routes())
-        .merge(crate::metrics::routes());
+        .merge(crate::metrics::routes())
+        .merge(crate::auth::api::routes())
+        .merge(crate::decisions_api::routes())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::layer,
+        ));
 
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
