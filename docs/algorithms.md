@@ -107,6 +107,11 @@ Benchmark against correlation-4, with splits proposed (the default):
 | synthetic-crossing | 655 → 663 | 99.0% / 93.1% → 100% / 92.7% | 65 → 63 | 8.9 → 9.3 | 54 → 54 m |
 
 - **Harbour gate:** 5.36% → 3.21% wrong. With `split.automatic` on, it is 2.00%, recall 78.1%.
+- **Automatic splits are now the default** (`split.automatic: true`; `propose` still offers them).
+  A sensor track that stopped following its object leaves on its own. Judged at each moment, it is
+  the difference between 25.6% and 8.7% wrong pairings over the harbour scenarios.
+- **The Autoferry lidar now uses MHT, not GNN.** Two boats passing within metres swapped under GNN.
+  With this, the harbour gate is 1.51% (1.70% with splits only proposed).
 - **The cost is GOSPA's false-track term.** Radar and AIS tracks of a crowded harbour now stay apart
   more often, as two tracks, rather than pairing wrongly.
 

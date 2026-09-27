@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.3.1 (alpha), 2026-09-27
+
+Phase 2, "proven at scale", is met: 16,000 live tracks at 1 Hz on one host, and fewer than 2% wrong
+pairings on the harbour benchmark.
+
+### Throughput under live load
+
+- **`bench live`** runs the whole server with a Redis and NATS of its own, fed N tracks at 1 Hz, and
+  samples it every 10 s: backlogs, memory, CPU, publications a second, and the delay from report to
+  publication.
+- **16,000 tracks for 10 minutes:**
+
+  | | Before | After |
+  |---|---|---|
+  | Engine backlog | 3.4 million, growing | at most 200 |
+  | Published | 2,000/s | 3,242/s |
+  | Delay (p50 / p99) | 142 / 218 s | 1.0 / 2.0 s |
+
+  It uses about one core and 313 MB.
+- **Fixed: the engine dropped reports under load.** A timer abandoned the batch in progress. Timers
+  now wait until a batch is finished.
+- **The writer publishes concurrently:** one Redis read for every track due, 256 publications in
+  flight.
+- **Deletes and history-point deletions have their own outbox stream.** It is never trimmed, so a
+  writer that falls behind no longer loses them.
+- **`OT_OBS_WINDOW_SECS`** sets how long observation streams keep reports (default 600 s). That is
+  about 4.8 GB of Redis at 16,000 reports a second.
+
+### correlation-5
+
+- **Splits work against slow feeds.** A radar track that followed another vessel could stay on an
+  AIS track that reports every 10 s indefinitely. The split check now has its own window,
+  `split.window_secs`, and may reuse the other side's last report.
+- **Local density:** a close approach counts for less in a crowded harbour
+  (`local_density_radius_m`, 500 m).
+- **Automatic splits are the default.**
+- **The Autoferry lidar uses MHT**, and so does the `lidar-surface` profile.
+- **Harbour wrong pairings: 5.36% → 1.51%.** The costs:
+  - more radar and AIS tracks stay apart in the Solent (GOSPA 7,151 → 9,805)
+  - more identity changes on two Autoferry recordings
+
+  See [docs/algorithms.md](docs/algorithms.md).
+
+### Benchmark
+
+- **IDF1** for system tracks and each tracker.
+- **The harbour gate** appears in every summary, with a stricter figure that judges each pairing at
+  each moment.
+
+### UI
+
+- **The History tab** has "Show on map", which draws the track's history as a line, and "Zoom to
+  track".
+- **stareSDK 0.1.8:** MapView lines and camera fitting.
+
+### Upgrading
+
+- No migrations.
+- **Correlation settings saved before 0.3.1 keep their `split.automatic`.** Turn it on in the
+  correlation form.
+
 ## 0.3.0 (alpha), 2026-09-26
 
 The "secure" phase: sign-in and roles, TLS, undo and history. NATS stays the only output.

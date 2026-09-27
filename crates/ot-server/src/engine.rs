@@ -3575,6 +3575,8 @@ mod tests {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
+        // Proposed, not split: an operator decides.
+        e.settings.correlation.split.automatic = false;
         e.alone = [("radar".to_string(), false)].into();
         // AIS and radar on the same ship: paired.
         for s in 0..6 {

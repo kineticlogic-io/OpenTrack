@@ -321,7 +321,7 @@ impl Default for SplitSettings {
     fn default() -> Self {
         Self {
             propose: true,
-            automatic: false,
+            automatic: true,
             split_probability: 0.001,
             gate_probability: 0.9999,
             m: 5,
