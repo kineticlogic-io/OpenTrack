@@ -77,6 +77,14 @@ impl Engine {
         if !(ot_sync::replicated(op) || matches!(op, "accept" | "reject")) {
             return self.run_command(cmd).await;
         }
+        if op.starts_with("profile_") {
+            anyhow::bail!("{op} comes only from another node");
+        }
+        if self.receive_only {
+            anyhow::bail!(
+                "this node is receive-only: track management is done on another node (Settings)"
+            );
+        }
         let before = self.db(|db| db.max_decision_id()).await?;
         self.canonical = None;
         let result = self.run_command(cmd).await?;
@@ -103,23 +111,12 @@ impl Engine {
                 Vec::new()
             };
             let site = self.common.site;
-            let hlc = self.hlc.tick(Utc::now().timestamp_millis() as u64);
+            let now = Utc::now().timestamp_millis() as u64;
             let id = self
                 .db(move |db| {
-                    let id = GlobalId {
-                        site,
-                        seq: db.sync_next_seq(site)?,
-                    };
-                    let entry = Entry {
-                        id,
-                        hlc,
-                        actor: actor.clone(),
-                        role,
-                        command,
-                    };
-                    db.sync_record(&entry, SyncStatus::Applied, None)?;
-                    db.tag_decisions(before, &actor, id, &parts)?;
-                    Ok(id)
+                    let entry = db.sync_append_own(site, &actor, &role, &command, now)?;
+                    db.tag_decisions(before, &actor, entry.id, &parts)?;
+                    Ok(entry.id)
                 })
                 .await?;
             tracing::debug!(%id, %op, "logged for every node");
@@ -133,7 +130,6 @@ impl Engine {
             // Our own, heard back.
             return Ok(SyncStatus::Applied);
         }
-        self.hlc.observe(entry.hlc);
         let e = entry.clone();
         let fresh = self
             .db(move |db| db.sync_record(&e, SyncStatus::Pending, None))
@@ -159,6 +155,42 @@ impl Engine {
             self.apply_entry(&entry).await?;
         }
         Ok(())
+    }
+
+    /// Another node's output schema or correlation settings, saved here as
+    /// this node's own (when this node shares the profile).
+    async fn apply_profile(&mut self, cmd: &Value) -> anyhow::Result<Value> {
+        if !self.share_profile {
+            return Ok(json!({ "skipped": "this node does not share the profile" }));
+        }
+        let actor = cmd["actor"].as_str().unwrap_or("operator").to_owned();
+        match cmd["op"].as_str().unwrap_or_default() {
+            "profile_correlation" => {
+                let settings: crate::correlate::CorrelationSettings =
+                    serde_json::from_value(cmd["settings"].clone())
+                        .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
+                settings.validate().map_err(|e| anyhow::anyhow!(e))?;
+                let value = serde_json::to_value(&settings)?;
+                let d = ot_store::Decision::new(&actor, "correlation_settings")
+                    .reason("correlation settings from another node")
+                    .evidence(value.clone());
+                self.db(move |db| db.save_correlation_settings(&value, d))
+                    .await?;
+                self.refresh_correlation().await?;
+                Ok(json!({}))
+            }
+            "profile_schema" => {
+                let fields: Vec<Value> = serde_json::from_value(cmd["fields"].clone())
+                    .map_err(|e| anyhow::anyhow!("fields: {e}"))?;
+                let notes = cmd["notes"].as_str().map(str::to_owned);
+                let v = self
+                    .db(move |db| db.publish_schema_as(&fields, notes.as_deref(), &actor))
+                    .await?;
+                self.refresh_attributes().await?;
+                Ok(json!({ "version": v.version }))
+            }
+            other => anyhow::bail!("unknown profile change {other:?}"),
+        }
     }
 
     /// Another node's report of its track: it reports for the system track
@@ -313,7 +345,11 @@ impl Engine {
         let actor = entry.actor.clone();
         let before = self.db(|db| db.max_decision_id()).await?;
         self.remote = true;
-        let result = self.run_command(&cmd).await;
+        let result = if op.starts_with("profile_") {
+            self.apply_profile(&cmd).await
+        } else {
+            self.run_command(&cmd).await
+        };
         self.remote = false;
         match result {
             Ok(_) => {

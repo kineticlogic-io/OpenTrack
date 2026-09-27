@@ -62,9 +62,17 @@ async fn put_settings(
     let decision = ot_store::Decision::new(actor(&headers), "correlation_settings")
         .reason("correlation settings saved")
         .evidence(value.clone());
-    let stored = value.clone();
-    s.with_db(move |db| db.save_correlation_settings(&stored, decision))
-        .await?;
+    let (stored, site, who) = (value.clone(), s.common.site, actor(&headers));
+    s.with_db(move |db| {
+        db.save_correlation_settings(&stored, decision)?;
+        crate::settings_api::share_profile(
+            db,
+            site,
+            &who,
+            &json!({ "op": "profile_correlation", "settings": stored }),
+        )
+    })
+    .await?;
     Ok(Json(json!({ "settings": value, "saved": true })))
 }
 

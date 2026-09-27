@@ -501,13 +501,16 @@ pub struct Engine {
     /// How long a read waits for observations when none are queued (zero:
     /// not at all; Redis checks block timeouts only every 100 ms or so).
     pub(crate) read_block: Duration,
-    /// This node's clock for the replicated decision log.
-    hlc: ot_sync::Clock,
     /// Set by a command whose logged form is not what it was given (an
     /// accepted suggestion is logged as the merge it made).
     canonical: Option<Value>,
     /// Applying another node's decision: UIDs it minted are kept.
     remote: bool,
+    /// Settings: other nodes' track management applies here, but none is
+    /// accepted from this node's own people.
+    receive_only: bool,
+    /// Settings: other nodes' output schema and correlation settings apply.
+    share_profile: bool,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -544,9 +547,8 @@ impl Engine {
         common.share_db()?;
         let redis = common.open_redis().await?;
         let c = common.clone();
-        let (reports, last_hlc) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            let db = c.open_db()?;
-            Ok((db.live_reports()?, db.sync_last_hlc()?))
+        let reports = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok(c.open_db()?.live_reports()?)
         })
         .await??;
         let (stored_groups, tracks): (Vec<SystemTrack>, Vec<SystemTrack>) = redis
@@ -601,9 +603,10 @@ impl Engine {
             )),
             history_every_ms: (crate::settings_api::DEFAULT_HISTORY_INTERVAL_SECS * 1000.0) as i64,
             history_last: HashMap::new(),
-            hlc: ot_sync::Clock::after(last_hlc),
             canonical: None,
             remote: false,
+            receive_only: false,
+            share_profile: true,
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -727,12 +730,14 @@ impl Engine {
     /// republish every live track whose attributes change as a result.
     pub(crate) async fn refresh_attributes(&mut self) -> anyhow::Result<()> {
         let c = self.common.clone();
-        let (hours, every) = tokio::task::spawn_blocking(move || -> anyhow::Result<(f64, f64)> {
-            Ok(crate::settings_api::history_retention(
-                &c.open_db()?.app_settings()?,
-            ))
+        let (hours, every, sync) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let saved = c.open_db()?.app_settings()?;
+            let (hours, every) = crate::settings_api::history_retention(&saved);
+            Ok((hours, every, crate::settings_api::sync_settings(&saved)))
         })
         .await??;
+        self.receive_only = sync.receive_only;
+        self.share_profile = sync.share_profile;
         self.history_keep = (hours > 0.0).then(|| Duration::from_secs_f64(hours * 3600.0));
         self.history_every_ms = (every * 1000.0) as i64;
         let c = self.common.clone();
@@ -4541,6 +4546,171 @@ mod tests {
         assert_eq!(on_a.len(), 1);
         a.redis.purge_namespace().await.unwrap();
         b.redis.purge_namespace().await.unwrap();
+    }
+
+    /// Trust `peers` for sync.
+    async fn trust(e: &Engine, peers: &[&str]) {
+        let v = json!({ "sync": { "enabled": true, "peers": peers } });
+        e.db(move |db| db.put_app_settings(&v, "test"))
+            .await
+            .unwrap();
+    }
+
+    /// Deliver `outs` from one link to another, as a networking package
+    /// would (addressed messages only to their node), and let the receiving
+    /// engine apply what arrived. Returns the receiver's answers.
+    async fn deliver(
+        outs: Vec<crate::link::Out>,
+        to: &mut crate::link::Link,
+        to_engine: &mut Engine,
+    ) -> Vec<crate::link::Out> {
+        let mut back = Vec::new();
+        for o in outs {
+            if o.to.is_some_and(|t| t != to_engine.common.site) {
+                continue;
+            }
+            back.extend(to.handle(&o.bytes).await.unwrap());
+        }
+        to_engine.process_commands().await.unwrap();
+        back
+    }
+
+    #[tokio::test]
+    async fn a_lost_decision_reaches_every_node_through_summaries() {
+        let Some((mut a, _da)) = engine_at("AAA", &["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (mut b, _db) = engine_at("BBB", &["peer:AAA"]).await.unwrap();
+        let (mut c, _dc) = engine_at("CCC", &["peer:AAA"]).await.unwrap();
+        trust(&a, &["BBB", "CCC"]).await;
+        trust(&b, &["AAA", "CCC"]).await;
+        trust(&c, &["AAA", "BBB"]).await;
+        let mut la = crate::link::Link::new(a.common.clone()).await.unwrap();
+        let mut lb = crate::link::Link::new(b.common.clone()).await.unwrap();
+        let mut lc = crate::link::Link::new(c.common.clone()).await.unwrap();
+
+        for s in 0..3 {
+            feed(
+                &mut a,
+                &[
+                    report("ais", "1", s, 32.0, -117.0, Some("1")),
+                    report("ais", "2", s, 32.1, -117.0, Some("2")),
+                ],
+            )
+            .await;
+        }
+        let (t1, t2) = (track_of(&a, "ais", "1"), track_of(&a, "ais", "2"));
+        for e in [&mut b, &mut c] {
+            for s in 0..3 {
+                feed(
+                    e,
+                    &[
+                        report("peer:AAA", &t1.to_string(), s, 32.0, -117.0, None),
+                        report("peer:AAA", &t2.to_string(), s, 32.1, -117.0, None),
+                    ],
+                )
+                .await;
+            }
+        }
+        let r = operator(
+            &mut a,
+            json!({"op": "pair", "tracks": [t1.doc_id(), t2.doc_id()], "actor": "tm@a"}),
+        )
+        .await;
+        assert_eq!(r["ok"], true, "{r}");
+        // A's broadcast of it is lost.
+        let lost = la.new_decisions().await.unwrap();
+        assert_eq!(lost.len(), 1);
+        assert!(b.tracks[&t1].paired_with.is_empty());
+
+        // A's summary reaches B (not C: A and C are out of range): B asks,
+        // A answers, B applies.
+        let want = deliver(vec![la.summary().await.unwrap()], &mut lb, &mut b).await;
+        assert_eq!(want.len(), 1);
+        assert_eq!(want[0].to.map(|s| s.to_string()), Some("AAA".into()));
+        let answer = deliver(want, &mut la, &mut a).await;
+        deliver(answer, &mut lb, &mut b).await;
+        assert_eq!(b.tracks[&t1].paired_with, vec![t2]);
+
+        // C hears only B, and gets A's decision from it.
+        let want = deliver(vec![lb.summary().await.unwrap()], &mut lc, &mut c).await;
+        assert_eq!(want[0].to.map(|s| s.to_string()), Some("BBB".into()));
+        let answer = deliver(want, &mut lb, &mut b).await;
+        deliver(answer, &mut lc, &mut c).await;
+        assert_eq!(c.tracks[&t1].paired_with, vec![t2]);
+
+        // Nothing more to ask for; and a stranger is not listened to.
+        assert!(
+            deliver(vec![lb.summary().await.unwrap()], &mut lc, &mut c)
+                .await
+                .is_empty()
+        );
+        let stranger = ot_sync::wire::Message::new(
+            "ZZZ".parse().unwrap(),
+            ot_sync::Hlc::new(1, 0),
+            ot_sync::wire::Body::Summary(Default::default()),
+        );
+        assert!(lc.handle(&stranger.encode()).await.unwrap().is_empty());
+        assert_eq!(lc.counts.untrusted, 1);
+        for e in [&a, &b, &c] {
+            e.redis.purge_namespace().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_receive_only_node_refuses_track_management_but_applies_others() {
+        let Some((mut e, _d)) = engine_at("BBB", &["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let v = json!({ "sync": { "enabled": true, "peers": ["AAA"], "receive_only": true } });
+        e.db(move |db| db.put_app_settings(&v, "test"))
+            .await
+            .unwrap();
+        e.refresh_attributes().await.unwrap();
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[
+                    report("ais", "1", s, 32.0, -117.0, Some("1")),
+                    report("ais", "2", s, 32.1, -117.0, Some("2")),
+                ],
+            )
+            .await;
+        }
+        let (t1, t2) = (track_of(&e, "ais", "1"), track_of(&e, "ais", "2"));
+        let r = operator(
+            &mut e,
+            json!({"op": "pair", "tracks": [t1.doc_id(), t2.doc_id()]}),
+        )
+        .await;
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("receive-only"));
+        let entry = ot_sync::Entry {
+            id: "AAA:1".parse().unwrap(),
+            hlc: ot_sync::Hlc::new(1, 0),
+            actor: "tm@a".into(),
+            role: "track_manager".into(),
+            command: json!({"op": "pair", "tracks": [t1.doc_id(), t2.doc_id()]}),
+        };
+        let r = operator(&mut e, json!({"op": "sync_entry", "entry": entry})).await;
+        assert_eq!(r["result"]["status"], "applied", "{r}");
+        assert_eq!(e.tracks[&t1].paired_with, vec![t2]);
+        // The shared profile: another node's correlation settings apply.
+        let mut settings = serde_json::to_value(CorrelationSettings::default()).unwrap();
+        settings["split"]["window_secs"] = json!(123.0);
+        let entry = ot_sync::Entry {
+            id: "AAA:2".parse().unwrap(),
+            hlc: ot_sync::Hlc::new(2, 0),
+            actor: "admin@a".into(),
+            role: "admin".into(),
+            command: json!({"op": "profile_correlation", "settings": settings}),
+        };
+        let r = operator(&mut e, json!({"op": "sync_entry", "entry": entry})).await;
+        assert_eq!(r["result"]["status"], "applied", "{r}");
+        assert_eq!(e.settings.correlation.split.window_secs, 123.0);
+        e.redis.purge_namespace().await.unwrap();
     }
 
     #[tokio::test]

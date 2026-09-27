@@ -81,6 +81,100 @@ impl Db {
         Ok(Hlc::from_i64(max.unwrap_or(0)))
     }
 
+    /// Log a decision of this node's: the next sequence, and a stamp later
+    /// than every stamp given or heard here (the log is the clock), in one
+    /// transaction, so the API and the engine can both log.
+    pub fn sync_append_own(
+        &mut self,
+        site: SiteCode,
+        actor: &str,
+        role: &str,
+        command: &Value,
+        now_ms: u64,
+    ) -> Result<Entry> {
+        self.write(|tx| {
+            let (seq, last): (i64, i64) = tx.query_row(
+                "SELECT (SELECT coalesce(max(seq), 0) + 1 FROM sync_log WHERE site = ?1),
+                        (SELECT coalesce(max(hlc), 0) FROM sync_log)",
+                [site.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let hlc = ot_sync::Clock::after(Hlc::from_i64(last)).tick(now_ms);
+            let e = Entry {
+                id: GlobalId {
+                    site,
+                    seq: seq as u64,
+                },
+                hlc,
+                actor: actor.to_owned(),
+                role: role.to_owned(),
+                command: command.clone(),
+            };
+            tx.execute(
+                "INSERT INTO sync_log
+                   (site, seq, hlc, actor, role, command, received_at_ms, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'applied')",
+                params![
+                    site.as_str(),
+                    seq,
+                    hlc.as_i64(),
+                    actor,
+                    role,
+                    command.to_string(),
+                    now_ms as i64
+                ],
+            )?;
+            Ok(e)
+        })
+    }
+
+    /// The highest sequence held from each site.
+    pub fn sync_heads(&self) -> Result<Vec<(SiteCode, u64)>> {
+        let mut st = self
+            .connection()
+            .prepare("SELECT site, max(seq) FROM sync_log GROUP BY site ORDER BY site")?;
+        let rows: Vec<(String, i64)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(s, n)| Some((s.parse().ok()?, n as u64)))
+            .collect())
+    }
+
+    /// Which of a site's sequences up to `upto` are missing here, as
+    /// inclusive ranges (at most `most`).
+    pub fn sync_missing(&self, site: SiteCode, upto: u64, most: usize) -> Result<Vec<(u64, u64)>> {
+        let mut st = self
+            .connection()
+            .prepare("SELECT seq FROM sync_log WHERE site = ?1 AND seq <= ?2 ORDER BY seq")?;
+        let have: Vec<i64> = st
+            .query_map(params![site.as_str(), upto as i64], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut out = Vec::new();
+        let mut next = 1u64;
+        for s in have.into_iter().map(|s| s as u64).chain([upto + 1]) {
+            if s > next {
+                out.push((next, s - 1));
+                if out.len() == most {
+                    break;
+                }
+            }
+            next = s + 1;
+        }
+        Ok(out)
+    }
+
+    /// A site's entries in `from..=to`, in order.
+    pub fn sync_range(&self, site: SiteCode, from: u64, to: u64) -> Result<Vec<Entry>> {
+        let mut st = self.connection().prepare(&format!(
+            "SELECT {COLUMNS} FROM sync_log WHERE site = ?1 AND seq BETWEEN ?2 AND ?3 ORDER BY seq"
+        ))?;
+        Ok(st
+            .query_map(params![site.as_str(), from as i64, to as i64], entry)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Keep an entry. False if it was here already (entries arrive twice).
     pub fn sync_record(
         &mut self,
@@ -302,6 +396,42 @@ mod tests {
         assert_eq!(db.sync_pending().unwrap(), vec![b.clone()]);
         db.sync_set_status(b.id, SyncStatus::Applied, None).unwrap();
         assert_eq!(db.sync_entry(b.id).unwrap().unwrap().1, SyncStatus::Applied);
+    }
+
+    #[test]
+    fn own_entries_follow_every_stamp_and_gaps_are_found() {
+        let mut db = Db::open_in_memory().unwrap();
+        let (a, b): (SiteCode, SiteCode) = ("AAA".parse().unwrap(), "BBB".parse().unwrap());
+        // Heard from B, stamped ahead of our wall clock.
+        for seq in [1, 2, 5, 8] {
+            let mut x = e(&format!("BBB:{seq}"), 9_000, json!({"op": "unpair"}));
+            x.hlc = Hlc::new(9_000, seq as u16);
+            db.sync_record(&x, SyncStatus::Applied, None).unwrap();
+        }
+        let mine = db
+            .sync_append_own(a, "tm", "admin", &json!({"op": "pair"}), 1_000)
+            .unwrap();
+        assert_eq!(mine.id.to_string(), "AAA:1");
+        assert!(mine.hlc > Hlc::new(9_000, 8));
+        let next = db
+            .sync_append_own(a, "tm", "admin", &json!({"op": "pair"}), 20_000)
+            .unwrap();
+        assert_eq!((next.id.seq, next.hlc), (2, Hlc::new(20_000, 0)));
+        assert_eq!(db.sync_heads().unwrap(), vec![(a, 2), (b, 8)]);
+        assert_eq!(db.sync_missing(b, 8, 10).unwrap(), vec![(3, 4), (6, 7)]);
+        assert_eq!(
+            db.sync_missing(b, 10, 10).unwrap(),
+            vec![(3, 4), (6, 7), (9, 10)]
+        );
+        assert_eq!(db.sync_missing(b, 10, 1).unwrap(), vec![(3, 4)]);
+        assert_eq!(db.sync_missing(a, 2, 10).unwrap(), vec![]);
+        let seqs: Vec<u64> = db
+            .sync_range(b, 2, 6)
+            .unwrap()
+            .iter()
+            .map(|e| e.id.seq)
+            .collect();
+        assert_eq!(seqs, [2, 5]);
     }
 
     #[test]

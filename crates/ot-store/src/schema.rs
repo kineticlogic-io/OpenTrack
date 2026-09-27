@@ -174,6 +174,104 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("schema version {version}")))
     }
 
+    /// Publish another node's output schema here as the next version. A
+    /// draft in progress keeps its fields and moves up one number, so it
+    /// still comes after every published version.
+    pub fn publish_schema_as(
+        &mut self,
+        fields: &[Value],
+        notes: Option<&str>,
+        actor: &str,
+    ) -> Result<SchemaVersion> {
+        let draft: Option<u32> = self
+            .connection()
+            .query_row(
+                "SELECT version FROM schema_versions WHERE status = 'draft'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(d) = draft {
+            self.write(|tx| {
+                tx.execute(
+                    "INSERT INTO schema_versions (version, status, notes)
+                     SELECT ?2, 'draft', notes FROM schema_versions WHERE version = ?1",
+                    params![d, d + 1],
+                )?;
+                tx.execute(
+                    "UPDATE extension_fields SET schema_version = ?2 WHERE schema_version = ?1",
+                    params![d, d + 1],
+                )?;
+                tx.execute("DELETE FROM schema_versions WHERE version = ?1", [d])?;
+                Ok(())
+            })?;
+            // The new draft sits above the version being published: stage
+            // it in the freed number, below the draft.
+            let version = self.write(|tx| {
+                tx.execute(
+                    "INSERT INTO schema_versions (version, status, notes) VALUES (?1, 'published', ?2)",
+                    params![d, notes],
+                )?;
+                Ok(d)
+            })?;
+            self.fill_published(version, fields, actor)
+        } else {
+            let version = self.write(|tx| {
+                let v: u32 = tx.query_row(
+                    "SELECT coalesce(max(version), 0) + 1 FROM schema_versions",
+                    [],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO schema_versions (version, status, notes) VALUES (?1, 'published', ?2)",
+                    params![v, notes],
+                )?;
+                Ok(v)
+            })?;
+            self.fill_published(version, fields, actor)
+        }
+    }
+
+    fn fill_published(
+        &mut self,
+        version: u32,
+        fields: &[Value],
+        actor: &str,
+    ) -> Result<SchemaVersion> {
+        self.write(|tx| {
+            let now = now_ms();
+            for f in fields {
+                let text = |k: &str| f.get(k).and_then(Value::as_str).map(str::to_owned);
+                tx.execute(
+                    "INSERT INTO extension_fields
+                       (schema_version, key, type, unit, required, default_json, enum_values, description, builtin)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        version,
+                        text("key"),
+                        text("type"),
+                        text("unit"),
+                        f.get("required").and_then(Value::as_bool).unwrap_or(false),
+                        f.get("default").filter(|v| !v.is_null()).map(Value::to_string),
+                        f.get("enum_values").filter(|v| !v.is_null()).map(Value::to_string),
+                        text("description"),
+                        text("builtin"),
+                    ],
+                )?;
+            }
+            tx.execute(
+                "UPDATE schema_versions SET published_at_ms = ?2 WHERE version = ?1",
+                params![version, now],
+            )?;
+            let d = Decision::new(actor, "publish_schema")
+                .evidence(json!({ "version": version, "from_another_node": true }));
+            record_decision(tx, &d, now)?;
+            Ok(())
+        })?;
+        self.schema_version_get(version)?
+            .ok_or_else(|| StoreError::NotFound(format!("schema version {version}")))
+    }
+
     pub fn discard_schema_draft(&mut self, actor: &str) -> Result<()> {
         self.write(|tx| {
             let n = tx.execute(
@@ -226,6 +324,35 @@ mod tests {
             db.publish_schema_draft("op:test"),
             Err(StoreError::NotFound(_))
         ));
+        // Another node's schema arrives while a draft is open here: it is
+        // published next, and the draft moves up with its fields.
+        let d = db.put_schema_draft(&fields, None, "op:test").unwrap();
+        assert_eq!(d.version, 3);
+        let p = db
+            .publish_schema_as(&fields[1..], Some("from BBB"), "tm@bbb")
+            .unwrap();
+        assert_eq!(
+            (p.version, p.status.as_str(), p.fields.len()),
+            (3, "published", 1)
+        );
+        assert_eq!(db.latest_published_schema().unwrap(), 3);
+        let d = db
+            .schema_versions()
+            .unwrap()
+            .into_iter()
+            .find(|v| v.status == "draft")
+            .unwrap();
+        assert_eq!((d.version, d.fields.len()), (4, 2));
+        db.discard_schema_draft("op:test").unwrap();
+        let p = db.publish_schema_as(&fields, None, "tm@bbb").unwrap();
+        assert_eq!(p.version, 4);
+        db.connection()
+            .execute("DELETE FROM extension_fields WHERE schema_version >= 3", [])
+            .unwrap();
+        db.connection()
+            .execute("DELETE FROM schema_versions WHERE version >= 3", [])
+            .unwrap();
+
         // The next draft is version 3; version 2 is untouched.
         let d = db.put_schema_draft(&fields, None, "op:test").unwrap();
         assert_eq!(d.version, 3);

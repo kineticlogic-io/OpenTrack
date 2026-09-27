@@ -39,6 +39,56 @@ pub struct AppSettings {
     /// At most one history point per track this often, in seconds (0:
     /// every update). Memory grows with tracks × hours ÷ this.
     pub history_interval_secs: Option<f64>,
+    /// Sharing the picture with other OpenTrack nodes.
+    pub sync: SyncSettings,
+}
+
+/// Sharing the picture with other nodes (see `docs/multi-node.md`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncSettings {
+    /// Exchange tracks and decisions with the peers below (the `link` role).
+    pub enabled: bool,
+    /// Site codes of the nodes this one trusts; anything else is dropped.
+    pub peers: Vec<String>,
+    /// Apply other nodes' track management but accept none here (a drone
+    /// with no operator, say).
+    pub receive_only: bool,
+    /// Share the output schema and correlation settings, so every node
+    /// publishes the same attributes and pairs by the same rules.
+    pub share_profile: bool,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            peers: Vec::new(),
+            receive_only: false,
+            share_profile: true,
+        }
+    }
+}
+
+/// Log a change to the shared profile for every node, when this node shares
+/// it.
+pub fn share_profile(
+    db: &mut ot_store::Db,
+    site: ot_core::SiteCode,
+    actor: &str,
+    command: &Value,
+) -> ot_store::sqlite::Result<()> {
+    let sync = sync_settings(&db.app_settings()?);
+    if sync.share_profile {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        db.sync_append_own(site, actor, "admin", command, now)?;
+    }
+    Ok(())
+}
+
+/// The sync settings the saved settings ask for.
+pub fn sync_settings(saved: &Value) -> SyncSettings {
+    serde_json::from_value(saved["sync"].clone()).unwrap_or_default()
 }
 
 /// History kept when the settings give no figure.
@@ -126,6 +176,13 @@ impl AppSettings {
         {
             return Err("history_interval_secs: 0 (every update) to 3600".into());
         }
+        for p in &self.sync.peers {
+            if p.parse::<ot_core::SiteCode>().is_err() {
+                return Err(format!(
+                    "sync peer {p:?} is not a site code (3 characters A-Z, 0-9)"
+                ));
+            }
+        }
         let w = &self.warning;
         if w.enabled && w.text.trim().is_empty() {
             return Err("warning: give the text users must accept".into());
@@ -164,6 +221,12 @@ async fn put_settings(
     Json(settings): Json<AppSettings>,
 ) -> Result<Json<Value>, ApiError> {
     settings.validate().map_err(ApiError::unprocessable)?;
+    if settings.sync.peers.contains(&s.common.site.to_string()) {
+        return Err(ApiError::unprocessable(format!(
+            "sync peers: {} is this node's own site code",
+            s.common.site
+        )));
+    }
     let (v, who) = (
         serde_json::to_value(&settings).unwrap_or_default(),
         actor(&headers),

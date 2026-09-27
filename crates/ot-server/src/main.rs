@@ -18,6 +18,7 @@ mod decisions_api;
 mod engine;
 mod history_api;
 mod https;
+mod link;
 mod manage_api;
 mod metrics;
 mod plugin_cli;
@@ -60,7 +61,11 @@ enum Command {
     Sources,
     /// Run the engine (source tracks to system tracks, lifecycle).
     Engine(EngineArgs),
-    /// Run every role in one process: control plane, sources, engine, writer.
+    /// Exchange tracks and decisions with other OpenTrack nodes over the
+    /// node's NATS (idle until sync is enabled in Settings).
+    Link(link::LinkArgs),
+    /// Run every role in one process: control plane, sources, engine,
+    /// writer, link.
     All {
         #[command(flatten)]
         serve: ServeArgs,
@@ -68,6 +73,8 @@ enum Command {
         writer: WriterArgs,
         #[command(flatten)]
         engine: EngineArgs,
+        #[command(flatten)]
+        link: link::LinkArgs,
     },
     /// Push synthetic tracks through the pipeline.
     Synthetic(synthetic::SyntheticArgs),
@@ -219,10 +226,12 @@ async fn main() -> anyhow::Result<()> {
             sources::run(common, shutdown_signal()).await
         }
         Command::Engine(args) => run_engine(common, args).await,
+        Command::Link(args) => link::run(common, args, shutdown_signal()).await,
         Command::All {
             serve: s,
             writer: w,
             engine: e,
+            link: l,
         } => {
             // Migrate once before the roles open the database concurrently.
             common.open_db()?;
@@ -231,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
                 serve(common.clone(), s),
                 run_writer(common.clone(), w),
                 sources::run(common.clone(), shutdown_signal()),
+                link::run(common.clone(), l, shutdown_signal()),
                 run_engine(common, e),
             )?;
             Ok(())

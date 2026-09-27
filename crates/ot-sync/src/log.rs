@@ -95,6 +95,9 @@ const REPLICATED: &[&str] = &[
     "group_dissolve",
     "delete_history_point",
     "undo",
+    // The swarm profile: the output schema and correlation settings.
+    "profile_schema",
+    "profile_correlation",
 ];
 
 pub fn replicated(op: &str) -> bool {
@@ -179,6 +182,13 @@ pub fn judge(entry: &Entry, applied: &[Entry]) -> Verdict {
             }
         }
     }
+    if entry.op().starts_with("profile_") {
+        for e in later.clone() {
+            if e.op() == entry.op() {
+                return Verdict::Superseded(e.id);
+            }
+        }
+    }
     if entry.op() == "group_update" {
         let g = &entry.command["group"];
         for e in later {
@@ -242,7 +252,10 @@ mod tests {
         assert_eq!(judge(&pair, &[]), Verdict::Apply);
         assert_eq!(judge(&dnp, std::slice::from_ref(&pair)), Verdict::Apply);
         // The earlier arrives last: it changes nothing.
-        assert_eq!(judge(&pair, std::slice::from_ref(&dnp)), Verdict::Superseded(dnp.id));
+        assert_eq!(
+            judge(&pair, std::slice::from_ref(&dnp)),
+            Verdict::Superseded(dnp.id)
+        );
     }
 
     #[test]
@@ -282,8 +295,31 @@ mod tests {
             200,
             json!({"op": "group_update", "group": "AAA000000009", "spec": {"name": "Bravo"}}),
         );
-        assert_eq!(judge(&a, std::slice::from_ref(&b)), Verdict::Superseded(b.id));
+        assert_eq!(
+            judge(&a, std::slice::from_ref(&b)),
+            Verdict::Superseded(b.id)
+        );
         assert_eq!(judge(&b, &[a]), Verdict::Apply);
+    }
+
+    #[test]
+    fn the_later_profile_wins() {
+        let a = entry(
+            "AAA:4",
+            100,
+            json!({"op": "profile_correlation", "settings": {}}),
+        );
+        let b = entry(
+            "BBB:7",
+            200,
+            json!({"op": "profile_correlation", "settings": {}}),
+        );
+        let s = entry("BBB:8", 300, json!({"op": "profile_schema", "fields": []}));
+        assert_eq!(
+            judge(&a, std::slice::from_ref(&b)),
+            Verdict::Superseded(b.id)
+        );
+        assert_eq!(judge(&b, std::slice::from_ref(&s)), Verdict::Apply);
     }
 
     #[test]

@@ -603,8 +603,19 @@ async fn publish_schema_draft(
     State(s): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let actor = actor(&headers);
-    let v = s.with_db(move |db| db.publish_schema_draft(&actor)).await?;
+    let (actor, site) = (actor(&headers), s.common.site);
+    let v = s
+        .with_db(move |db| {
+            let v = db.publish_schema_draft(&actor)?;
+            crate::settings_api::share_profile(
+                db,
+                site,
+                &actor,
+                &serde_json::json!({ "op": "profile_schema", "fields": v.fields, "notes": v.notes }),
+            )?;
+            Ok(v)
+        })
+        .await?;
     Ok(Json(serde_json::to_value(v).unwrap_or_default()))
 }
 

@@ -9,6 +9,9 @@
 
 mod hlc;
 mod log;
+mod quality;
+pub mod wire;
 
 pub use hlc::{Clock, Hlc};
 pub use log::{Entry, GlobalId, IdError, Verdict, judge, replicated, targets};
+pub use quality::quality;
