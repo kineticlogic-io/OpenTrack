@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.3 (alpha), unreleased
+
+### Protobuf inputs over gRPC
+
+A producer's `.proto` files are uploaded with the source and compiled when it runs, with no `protoc`,
+no generated code and no rebuild. Its messages decode into records the mapping reads. See
+[docs/protobuf-grpc.md](docs/protobuf-grpc.md).
+
+- **The `protobuf` codec** works over any transport: TCP with varint length framing, UDP, MQTT,
+  WebSocket, recorded files, or gRPC.
+  - Field names stay as written in the `.proto`, 64-bit integers are numbers, and fields at their
+    default are included (a latitude of 0 is 0).
+  - A `Timestamp` is an RFC 3339 string.
+- **`grpc_client`:** OpenTrack calls a producer's streaming method.
+  - The request is written as JSON, and metadata can carry `${env:}` secrets.
+  - TLS or mutual TLS, HTTP/2 keepalive pings, and a message size limit.
+  - When the producer hangs up or the connection drops, OpenTrack calls again with jittered backoff.
+- **`grpc_server`:** producers call methods of their own `.proto`.
+  - A bearer token, TLS or mutual TLS (each record carries the producer's certificate subject), and
+    limits on connections and message size, gzip bombs included.
+  - Every message is checked against the schema. A bad one fails the call with INVALID_ARGUMENT
+    saying why, rather than being dropped silently.
+  - Backpressure through HTTP/2 flow control: nothing is dropped.
+  - Refused calls and failed TLS handshakes show in the source's status.
+- **Saving a source checks it:** the `.proto` compiles (errors give `file:line`), and the method fits
+  the message.
+- **Source editor:** add `.proto` files and see them compile; pick the message, the records field
+  and the gRPC method. `POST /protobuf/describe` returns the same for the API.
+- **An example:** `docs/examples/grpc/` has a producer on Google's `grpcio` and source specs for both
+  directions.
+- **Tested against `grpcio`:**
+  - both directions, reconnecting after a producer restart, and mutual TLS;
+  - 16,000 records a second pushed for a minute with no loss.
+- **Fixed:** with NATS unreachable, shutting down waited forever on the multi-node link.
+
 ## 0.3.2 (alpha), 2026-09-27
 
 Multi-node: several OpenTrack nodes (server sites, or a drone swarm) share one track

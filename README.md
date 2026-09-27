@@ -71,7 +71,7 @@ the entity, e.g. an AIS destination). Saving an entity updates its live tracks a
 
 ```mermaid
 flowchart TB
-    feeds["<b>Feeds</b><br/>TCP · UDP · HTTP · WebSocket · MQTT · file"]
+    feeds["<b>Feeds</b><br/>TCP · UDP · HTTP · WebSocket · MQTT · gRPC · file"]
     sources["<b>sources</b> role<br/>transport → framing → codec → mapping → static join →<br/>entity links → affiliation → filter → throttle → tracker"]
     obs[("Redis<br/>tms:obs:&lt;source&gt; observation streams")]
     engine["<b>engine</b> role<br/>correlation · lifecycle · output schema ·<br/>track management · groups"]
@@ -152,7 +152,7 @@ The UI's tabs:
 ## Sources and pipelines
 
 A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
-`mqtt`, `file`), framing, a codec and a pipeline. Transport metadata reaches the mapping under
+`mqtt`, `grpc_client`, `grpc_server`, `file`), framing, a codec and a pipeline. Transport metadata reaches the mapping under
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
 
@@ -169,6 +169,15 @@ track another source keeps or, with a tracker stage, become tracks first. A mapp
 `static` caches identity fields (AIS static data) that the static join fills into later reports; a
 rule of kind `track` bypasses the tracker. A mapping can send a value straight to the matched entity
 with an `entity.<key>` destination.
+
+**Protobuf over gRPC.** Upload the producer's `.proto` files with the source (the `protobuf`
+codec). They are compiled when the source runs, with no `protoc` and no rebuild. Then either:
+- OpenTrack calls the producer's streaming method (`grpc_client`), or
+- producers call OpenTrack (`grpc_server`), with a bearer token, mutual TLS, size and connection
+  limits, and every message checked against the schema.
+
+Protobuf also works over the other transports. See [docs/protobuf-grpc.md](docs/protobuf-grpc.md)
+and the example producer in `docs/examples/grpc/`.
 
 **Codec plugins** decode formats beyond JSON and XML (`"codec": {"type": "plugin", "plugin":
 "stanag4607", "options": {...}}`), and **tracker plugins** run as a tracker stage (see Plugins
