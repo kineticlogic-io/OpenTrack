@@ -248,6 +248,7 @@ COLUMNS = [
     ("ID chg/h", lambda s: fmt(s["system"]["id_changes_per_truth_hour"], 1)),
     ("frag", lambda s: fmt(s["system"]["fragmentation"], 2)),
     ("longest", lambda s: fmt(s["system"]["longest_segment"], pct=True)),
+    ("IDF1", lambda s: fmt(s["system"].get("idf1"), pct=True)),
     ("pairing P / R", lambda s: " / ".join(fmt(s["correlation"][k], pct=True) for k in ("pairing_precision", "pairing_recall")) if "correlation" in s else "–"),
     ("× real time", lambda s: fmt(s["speed_x_real_time"], 0)),
 ]
@@ -276,11 +277,11 @@ def tracker_table(scores):
 HARBOUR = ("autoferry-", "solent-")
 
 
-def harbour(scores):
+def harbour(scores, key="correlation"):
     """Pooled pairing over the harbour fusion scenarios run, or None."""
     right = wrong = missed = 0
     for s in scores:
-        c = s.get("correlation")
+        c = s.get(key)
         if not c or not s["scenario"].endswith("-fusion") or not s["scenario"].startswith(HARBOUR):
             continue
         right, wrong, missed = right + c["pairs_right"], wrong + c["pairs_wrong"], missed + c["pairings_missed"]
@@ -292,6 +293,9 @@ def harbour(scores):
 
 def summarise(out, meta, scores):
     gate = harbour(scores)
+    strict = harbour(scores, "correlation_per_sample")
+    if gate and strict:
+        gate["per_sample_wrong"] = strict["wrong"]
     (out / "summary.json").write_text(json.dumps({"meta": meta, "scores": scores, "harbour": gate}, indent=2) + "\n")
     git = meta["git"]
     md = [
@@ -307,7 +311,9 @@ def summarise(out, meta, scores):
         table(scores),
         "",
         *([f"Harbour gate (Autoferry and Solent fusion, pooled): {gate['wrong'] * 100:.2f}% wrong pairings "
-           f"(target under 2%), recall {gate['recall'] * 100:.1f}%.", ""] if gate else []),
+           f"(target under 2%), recall {gate['recall'] * 100:.1f}%"
+           + (f"; judged at each moment, {gate['per_sample_wrong'] * 100:.2f}%." if 'per_sample_wrong' in gate else "."),
+           ""] if gate else []),
         "## Tracker stages (each sensor's own tracks)",
         "",
         tracker_table(scores),
@@ -315,13 +321,14 @@ def summarise(out, meta, scores):
         "tracks: distinct confirmed tracks over the run (mean live at a time; truths in view). GOSPA: mean per sample, p = 1, alpha = 2 (lower is better), split into localisation, missed and "
         "false. complete: share of truth samples with a track. spurious: share of tracks near no truth. "
         "ID chg/h: track number changes per truth hour. frag: distinct tracks per truth. longest: share of "
-        "a truth's time on its longest-held track. pairing P / R: correlation precision and recall.",
+        "a truth's time on its longest-held track. IDF1: identity F1, tracks matched one to one to truths over the run. pairing P / R: correlation precision and recall.",
     ]
     (out / "summary.md").write_text("\n".join(md) + "\n")
     print()
     print(table(scores))
     if gate:
-        print(f"\nHarbour gate: {gate['wrong'] * 100:.2f}% wrong pairings (target under 2%), recall {gate['recall'] * 100:.1f}%")
+        print(f"\nHarbour gate: {gate['wrong'] * 100:.2f}% wrong pairings (target under 2%), recall {gate['recall'] * 100:.1f}%"
+              + (f"; at each moment {gate['per_sample_wrong'] * 100:.2f}%" if "per_sample_wrong" in gate else ""))
     print(f"\n{out / 'summary.md'}")
 
 

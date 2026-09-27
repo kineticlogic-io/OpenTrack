@@ -135,6 +135,10 @@ class Scorer:
         self.history = defaultdict(list)  # truth id -> [(t, uid or None)]
         self.uids = set()
         self.live = []
+        # Identity: samples each (truth, track) spent within the cutoff, and
+        # each truth's and track's samples, for IDF1.
+        self.co = defaultdict(int)
+        self.truth_samples = self.track_samples = 0
 
     def add(self, t, truths, tracks):
         """truths: [(id, e, n, ve, vn, scored)]; tracks: [(uid, e, n, ve, vn)]."""
@@ -187,6 +191,32 @@ class Scorer:
                 self.vel_err.append(math.hypot(ve - tve, vn - tvn))
         for i in scored_truths:
             self.history[truths[i][0]].append((t, tracks[assigned[i]][0] if i in assigned else None))
+            for j in live:
+                if d[i, j] < c:
+                    self.co[(truths[i][0], tracks[j][0])] += 1
+        self.truth_samples += len(scored_truths)
+        # A track counts against identity precision only where truth is complete.
+        self.track_samples += len(live) if self.complete else sum(1 for j in live if (d[:, j] < c).any())
+
+    def identity(self):
+        """IDF1 (Ristani et al.): tracks matched one to one to truths over the
+        whole run, maximising the samples each pair spends within the cutoff.
+        ID recall is the share of truth samples on its matched track; ID
+        precision the share of track samples on its matched truth."""
+        if not self.co:
+            return {"idf1": None, "id_precision": None, "id_recall": 0.0 if self.truth_samples else None}
+        truths = sorted({k[0] for k in self.co})
+        tracks = sorted({k[1] for k in self.co})
+        ti, ki = {t: n for n, t in enumerate(truths)}, {u: n for n, u in enumerate(tracks)}
+        m = np.zeros((len(truths), len(tracks)))
+        for (t, u), n in self.co.items():
+            m[ti[t], ki[u]] = n
+        rows, cols = linear_sum_assignment(-m)
+        idtp = float(m[rows, cols].sum())
+        idr = idtp / self.truth_samples if self.truth_samples else None
+        idp = idtp / self.track_samples if self.track_samples else None
+        idf1 = 2 * idtp / (self.truth_samples + self.track_samples) if self.truth_samples + self.track_samples else None
+        return {"idf1": idf1, "id_precision": idp, "id_recall": idr}
 
     def result(self, sample_secs):
         switches, fragments, longest, first = [], [], [], []
@@ -229,6 +259,7 @@ class Scorer:
             "fragmentation": mean(fragments),
             "longest_segment": mean(longest),
             "time_to_first_track_s": float(np.median(first)) if first else None,
+            **self.identity(),
         }
         return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in out.items()}
 
@@ -289,9 +320,59 @@ def label_source_tracks(reports, truth, cutoff):
     return labels
 
 
+def labels_at(per_source, truth, cutoff):
+    """Which truth each source track follows at each sample: its key when a
+    feed keys by the truth id, else the nearest truth within the cutoff at
+    that moment (smoothed over time, below). A tracker that swaps targets is
+    judged on the one it follows at the time."""
+    out = defaultdict(dict)
+    for src, by_t in per_source.items():
+        for T, rows in by_t.items():
+            truths = truth.at(T)
+            keyed = [(k, e, n) for k, e, n, *_ in rows if k in truth.series]
+            for k, *_ in keyed:
+                out[T][f"{src}/{k}"] = k
+            rest = [(k, e, n) for k, e, n, *_ in rows if k not in truth.series]
+            if not rest or not truths:
+                continue
+            d = np.array([[math.hypot(e - x[1], n - x[2]) for x in truths] for _, e, n in rest])
+            # The nearest truth, not a one-to-one match: a sensor's two
+            # fragments of one vessel both follow that vessel.
+            for i, (k, _, _) in enumerate(rest):
+                order = np.argsort(d[i])
+                j = int(order[0])
+                if d[i, j] >= cutoff:
+                    out[T][f"{src}/{k}"] = "clutter"
+                # Between two vessels (the next no more than twice as far):
+                # no one can say which it follows, so it is not scored.
+                elif len(order) < 2 or d[i, int(order[1])] > 2 * max(d[i, j], 1.0):
+                    out[T][f"{src}/{k}"] = truths[j][0]
+    # Smooth each source track's labels over time (the commonest within
+    # LABEL_WINDOW samples): a noisy position near two vessels flips from
+    # sample to sample, a tracker that swapped targets stays swapped.
+    series = defaultdict(list)
+    for T in sorted(out):
+        for k, lab in out[T].items():
+            series[k].append((T, lab))
+    half = LABEL_WINDOW // 2
+    for k, xs in series.items():
+        labs = [lab for _, lab in xs]
+        for i, (T, _) in enumerate(xs):
+            out[T][k] = Counter(labs[max(0, i - half):i + half + 1]).most_common(1)[0][0]
+    return out
+
+
+# Samples each side of a source track's label that decide it.
+LABEL_WINDOW = 21
+
+
 def correlation(contributors, labels):
     right = wrong = missed = clutter = 0
+    per_sample = isinstance(labels, dict) and labels and isinstance(next(iter(labels.values())), dict)
+    whole_run = labels
     for T, tracks in contributors.items():
+        if per_sample:
+            labels = whole_run.get(T, {})
         where = defaultdict(set)  # truth -> system tracks holding its source tracks
         for uid, cs in tracks:
             ls = [(c, labels.get(c)) for c in cs if c.split("/")[-1] != "detections"]
@@ -360,7 +441,11 @@ def score(scenario_dir, run_dir):
         "trackers": trackers,
     }
     if len(run["sources"]) > 1:
-        labels = label_source_tracks(reports, truth, cutoff)
-        out["correlation"] = correlation(contributors, labels)
+        # The gate's measure: each source track labelled by the truth it
+        # follows four fifths of the time (others are not scored).
+        out["correlation"] = correlation(contributors, label_source_tracks(reports, truth, cutoff))
+        # Stricter: labelled at each moment (smoothed; skipped between two
+        # vessels), so tracks that wander between vessels count too.
+        out["correlation_per_sample"] = correlation(contributors, labels_at(per_source, truth, cutoff))
     (run_dir / "score.json").write_text(json.dumps(out, indent=2) + "\n")
     return out
