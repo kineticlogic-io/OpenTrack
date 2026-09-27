@@ -49,6 +49,26 @@ pub struct AttributeNotice {
     pub source_id: String,
 }
 
+/// A line of bearing associated with a track.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BearingContact {
+    pub source_id: String,
+    pub source_track_key: String,
+    pub observed_at: DateTime<Utc>,
+    /// Where the sensor was: the line's start.
+    pub latitude: f64,
+    pub longitude: f64,
+    pub bearing_deg: f64,
+    pub sigma_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_range_m: Option<f64>,
+    /// Measured bearing minus the bearing to the track, degrees.
+    pub residual_deg: f64,
+    /// The emitter's identity, as the sensor reported it (an ELNOT…).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identifiers: Vec<crate::schema::Identifier>,
+}
+
 /// What a system track stands for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +137,11 @@ pub struct SystemTrack {
     /// Why the output filter holds it back from publishing, when it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered: Option<String>,
+    /// Lines of bearing that point at this track, the latest from each
+    /// sensor's source track (see `docs/non-point-contacts.md`). They add
+    /// evidence and identity; they never move the track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bearings: Vec<BearingContact>,
     /// With other OpenTrack nodes sharing the picture: the site code of the
     /// node that reports this track to the others (this node's own when it
     /// does), if any does.
@@ -179,6 +204,7 @@ impl SystemTrack {
             published: Some(false),
             filtered: None,
             reported_by: None,
+            bearings: Vec::new(),
         }
     }
 }

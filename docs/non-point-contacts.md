@@ -1,6 +1,6 @@
 # Non-point contacts: design
 
-Status: **agreed scope** (2026-09-27); building.
+Status: **agreed scope** (2026-09-27); steps 1–3 built.
 
 ## What this adds
 
@@ -63,7 +63,7 @@ It looks for bearings **from different sensor positions** that agree on a point:
 3. **Ghosts.** With several emitters, pairs of bearings also cross where nothing is: the classic ghost problem. OpenTrack doesn't publish ghosts:
    - **Identity first.** Bearings carrying an emitter identity (an ELNOT, or parameters close enough) are only combined with each other. Two bearings of the same ELNOT from two sensors make a real fix.
    - **Otherwise, consensus.** Without identity, a fix needs **three or more sensors** agreeing within their gates. A ghost needs three unrelated lines to cross at one point, which happens rarely.
-   - **Otherwise, persistence.** A two-sensor fix without identity stays tentative. It is published only if later fixes agree, consistent with a moving object.
+   - **Otherwise, no fix.** Two anonymous lines are the ghost case itself, so they wait for a third sensor, or for the window to pass.
 4. **Into the picture.** A fix becomes an observation of the built-in source `fix`, with its position, its error ellipse and the identity of its bearings. From there, normal correlation takes it:
    - it updates the track it pairs with;
    - otherwise it starts a track, tentative until confirmed like any sensor's (default 3 reports).

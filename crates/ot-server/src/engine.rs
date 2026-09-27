@@ -48,6 +48,7 @@ use crate::config::Common;
 pub(crate) mod bench;
 mod history;
 mod manage;
+mod nonpoint;
 mod sync;
 mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
@@ -523,6 +524,8 @@ pub struct Engine {
     sync_budget_bps: f64,
     sync_allowance: f64,
     sync_topped: Instant,
+    /// Lines of bearing waiting to be crossed into fixes.
+    bearings: nonpoint::Bearings,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -626,6 +629,7 @@ impl Engine {
             sync_budget_bps: 0.0,
             sync_allowance: 0.0,
             sync_topped: Instant::now(),
+            bearings: Default::default(),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -950,47 +954,15 @@ impl Engine {
                 self.end_source_track(&obs, &mut counts).await?;
                 continue;
             }
-            if self.defer {
-                self.deferred_sources.insert(
-                    format!("{}/{}", obs.source_id, obs.source_track_key),
-                    obs.clone(),
-                );
-            } else {
-                self.redis
-                    .put_source_track(&obs, Duration::from_secs(24 * 3600))
-                    .await?;
-            }
-            let key = format!("{}/{}", obs.source_id, obs.source_track_key);
-            let uid = match self.reports.get(&key).copied() {
-                Some(uid) => self
-                    .maybe_merge(uid, &obs, &mut counts)
-                    .await?
-                    .unwrap_or(uid),
-                None => self.place(&obs, &mut counts).await?,
-            };
-            match self.observe(uid, obs.clone()).await? {
-                Some((_, urgent)) => {
-                    counts.observations += 1;
-                    counts.urgent += u64::from(urgent);
-                    if self.sync_on && sync::is_peer(&obs.source_id) {
-                        self.sync_heard(&obs);
-                    }
-                    self.save(uid, urgent).await?;
-                    self.pair_kinematically(uid, &obs, &mut counts).await?;
-                    if let Some(now) = self.reports.get(&key).copied() {
-                        self.check_split(now, &obs, &mut counts).await?;
-                    }
+            // A line of bearing is not a position: it goes to a track that
+            // lies along it, or waits for others to cross-fix with.
+            if matches!(obs.geometry, Some(ot_core::Geometry::Bearing { .. })) {
+                for fix in self.bearing(obs, &mut counts).await? {
+                    self.ingest(fix, &mut counts).await?;
                 }
-                None => counts.out_of_order += 1,
+                continue;
             }
-            if self.recording {
-                self.trace.push(json!({
-                    "t": obs.observed_at, "kind": "report", "source": obs.source_id,
-                    "key": obs.source_track_key, "lat": obs.position.latitude,
-                    "lon": obs.position.longitude,
-                    "uid": self.reports.get(&key).map(|u| u.doc_id()),
-                }));
-            }
+            self.ingest(obs, &mut counts).await?;
         }
         self.defer = false;
         self.flush_deferred().await?;
@@ -1002,6 +974,50 @@ impl Engine {
             .incr_metrics(crate::metrics::ENGINE, &counts.pairs())
             .await?;
         Ok(read)
+    }
+
+    /// Take in one report: place it on a system track, update the track and
+    /// look for pairings and splits.
+    async fn ingest(&mut self, obs: Observation, counts: &mut EngineCounts) -> anyhow::Result<()> {
+        if self.defer {
+            self.deferred_sources.insert(
+                format!("{}/{}", obs.source_id, obs.source_track_key),
+                obs.clone(),
+            );
+        } else {
+            self.redis
+                .put_source_track(&obs, Duration::from_secs(24 * 3600))
+                .await?;
+        }
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let uid = match self.reports.get(&key).copied() {
+            Some(uid) => self.maybe_merge(uid, &obs, counts).await?.unwrap_or(uid),
+            None => self.place(&obs, counts).await?,
+        };
+        match self.observe(uid, obs.clone()).await? {
+            Some((_, urgent)) => {
+                counts.observations += 1;
+                counts.urgent += u64::from(urgent);
+                if self.sync_on && sync::is_peer(&obs.source_id) {
+                    self.sync_heard(&obs);
+                }
+                self.save(uid, urgent).await?;
+                self.pair_kinematically(uid, &obs, counts).await?;
+                if let Some(now) = self.reports.get(&key).copied() {
+                    self.check_split(now, &obs, counts).await?;
+                }
+            }
+            None => counts.out_of_order += 1,
+        }
+        if self.recording {
+            self.trace.push(json!({
+                "t": obs.observed_at, "kind": "report", "source": obs.source_id,
+                "key": obs.source_track_key, "lat": obs.position.latitude,
+                "lon": obs.position.longitude,
+                "uid": self.reports.get(&key).map(|u| u.doc_id()),
+            }));
+        }
+        Ok(())
     }
 
     /// Record the identity keys a track's view carries, unless another live
@@ -2557,6 +2573,34 @@ impl Engine {
                 continue;
             }
             compared.push((other, correlate::kinematic(obs, &t.view, &s)));
+        }
+        // An area of uncertainty pairs with the one track it holds, never
+        // with several (a harbour's worth of ships sits inside an ELINT
+        // ellipse): until one fits clearly alone, it pairs with none.
+        let polygon = match &obs.geometry {
+            Some(ot_core::Geometry::Area { polygon }) => Some(polygon),
+            _ => None,
+        };
+        let large = obs
+            .uncertainty
+            .as_ref()
+            .and_then(|u| u.position_covariance())
+            .is_some_and(|[nn, _, ee]| (nn + ee).sqrt() > 2000.0);
+        if polygon.is_some() || large {
+            if let Some(poly) = polygon {
+                compared.retain(|(other, _)| {
+                    self.tracks.get(other).is_some_and(|t| {
+                        ot_core::geometry::contains(
+                            poly,
+                            t.view.position.latitude,
+                            t.view.position.longitude,
+                        )
+                    })
+                });
+            }
+            if compared.iter().filter(|(_, k)| k.pass).count() > 1 {
+                compared.clear();
+            }
         }
         let plugin_evidence = self.score_with_plugin(obs, &mut compared);
         let mut ready: Option<(Uid, correlate::Kinematic, f64, usize)> = None;
@@ -5014,6 +5058,93 @@ mod tests {
             "the merged-away number came back"
         );
         assert_eq!(track_of(&e, "peer:CCC", &p.to_string()), local);
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// A line of bearing from a sensor at (lat, lon) towards `to`.
+    fn lob(
+        source: &str,
+        secs: i64,
+        lat: f64,
+        lon: f64,
+        to: (f64, f64),
+        elnot: Option<&str>,
+    ) -> Observation {
+        let mut o = report(source, "e1", secs, lat, lon, None);
+        let (b, _) = ot_core::geometry::bearing_to(lat, lon, to.0, to.1);
+        o.geometry = Some(ot_core::Geometry::Bearing {
+            bearing_deg: b,
+            sigma_deg: 1.0,
+            max_range_m: None,
+            elevation_deg: None,
+        });
+        o.identifiers = elnot
+            .map(|v| vec![ot_core::schema::Identifier::new("elnot", v)])
+            .unwrap_or_default();
+        o
+    }
+
+    #[tokio::test]
+    async fn bearings_go_to_the_track_they_point_at_or_cross_into_a_track() {
+        let Some((mut e, _d)) = engine_at("TST", &["ais", "esm-a", "esm-b", "esm-c"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let ship = (50.70, -1.30);
+        for s in 0..3 {
+            feed(
+                &mut e,
+                &[report("ais", "1", s, ship.0, ship.1, Some("235000001"))],
+            )
+            .await;
+        }
+        let ship_uid = track_of(&e, "ais", "1");
+        let before = e.tracks[&ship_uid].view.position;
+        // A bearing through the ship: it goes to the ship, which stays put.
+        feed(&mut e, &[lob("esm-a", 3, 50.60, -1.60, ship, Some("A123"))]).await;
+        let t = &e.tracks[&ship_uid];
+        assert_eq!(t.bearings.len(), 1, "{:?}", t.bearings);
+        assert_eq!(t.bearings[0].identifiers[0].value, "A123");
+        assert!(t.bearings[0].residual_deg.abs() < 0.1);
+        assert_eq!(t.view.position, before, "a bearing never moves a track");
+        assert_eq!(e.tracks.len(), 1);
+
+        // An emitter no one tracks, 22 km north, seen by three sensors.
+        let emitter = (50.90, -1.30);
+        for s in 4..9 {
+            feed(
+                &mut e,
+                &[
+                    lob("esm-a", s, 50.60, -1.60, emitter, None),
+                    lob("esm-b", s, 51.05, -1.55, emitter, None),
+                    lob("esm-c", s, 50.95, -1.00, emitter, None),
+                ],
+            )
+            .await;
+        }
+        let fixes: Vec<&SystemTrack> = e
+            .tracks
+            .values()
+            .filter(|t| t.contributors.iter().any(|c| c.source_id == "fix"))
+            .collect();
+        assert_eq!(fixes.len(), 1, "one track from the fixes");
+        let f = fixes[0];
+        let (_, d) = ot_core::geometry::bearing_to(
+            emitter.0,
+            emitter.1,
+            f.view.position.latitude,
+            f.view.position.longitude,
+        );
+        assert!(d < 300.0, "the fix is {d} m off");
+        assert_eq!(
+            f.state,
+            TrackState::Confirmed,
+            "confirmed by repeated fixes"
+        );
+        assert!(
+            e.tracks[&ship_uid].bearings.len() == 1,
+            "the emitter's bearings did not go to the ship"
+        );
         e.redis.purge_namespace().await.unwrap();
     }
 
