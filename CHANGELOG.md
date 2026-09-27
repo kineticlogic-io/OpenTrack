@@ -1,5 +1,94 @@
 # Changelog
 
+## 0.4.0 (alpha), unreleased
+
+Phase 3, "multi-node": several OpenTrack nodes (server sites, or a drone swarm) share one track
+picture with no node in charge. The design is in [docs/multi-node.md](docs/multi-node.md), and the
+messages the nodes exchange are specified in [docs/sync-icd.md](docs/sync-icd.md).
+
+### One picture, one number, one reporter
+
+- **Each node reports what its own sensors see**, never what it heard from other nodes, so no node
+  gets its own data back disguised as a second sensor.
+- **Reporting responsibility:** for each track, the node that sees it best (track quality 0–15,
+  from its position error) reports it. The others hold it quietly.
+  - A node claims a track only when it beats the reporter's quality by 2.
+  - A reporter yields to a better report, and a silent one is taken over after 24 s.
+  - A node leaving releases its tracks at once.
+- **Dead reckoning sets the rate:** a track is sent when the others' prediction of it drifts past
+  50 m (200 m in the air), and otherwise every 12 s.
+- **Two numbers for one object become one.** Every node keeps the number with the older origin
+  (then the lower UID), whatever it has published. A `delete` on NATS carries `merged_into`, so
+  consumers can move their references.
+
+### Track management holds on every node
+
+- **What replicates:** pair, unpair, merge, do-not-pair, delete, groups, deleting a history point,
+  and undo.
+- **How:** each is logged under a global id (`<site>:<seq>`) and a hybrid logical clock stamp, and
+  applied on every node.
+  - Conflicting decisions settle the same way everywhere: the later decision on the same tracks
+    wins.
+  - A decision about a track a node has not heard of yet waits for it (up to 12 h).
+  - Undo works across nodes.
+- **Receive-only nodes** (a drone with no operator) apply other nodes' decisions and accept none of
+  their own.
+- **The profile is shared:** publishing an output schema or saving correlation settings applies on
+  every node. A local schema draft survives another node's publish.
+
+### Nodes exchange messages without trusting the network
+
+- **OpenTrack does not do the networking.** It publishes compact binary messages on its own NATS
+  (`ot.sync.out.*`) for a networking package to carry, and hears other nodes on `ot.sync.in.*`.
+  - A track report is 40 bytes.
+  - Messages are at most 1 KB.
+  - Only site codes an admin trusts are listened to.
+- **Missed decisions are repaired:** nodes compare which decisions they hold every 5 s and ask for
+  gaps from whoever has them. A decision made on one drone reaches a node that was never in range
+  of it.
+- **`opentrack link`** runs the boundary. It is part of `all`, and idle until sharing is enabled.
+- **`opentrack bridge`** carries the messages between server sites' NATS servers. It can also drop,
+  delay, duplicate, cap and partition, to stand in for a poor link.
+- **`docs/examples/two-sites`**: two sites and a bridge in docker compose.
+
+### Measured: `bench swarm`
+
+`bench swarm` runs K live nodes with overlapping sensors (AIS-like and radar-tracker-like) over the
+bridge, and scores every node's published picture against the truth. The gate run used 5 nodes and
+600 targets, with 10% loss, 300 ms jitter, 2% duplicate messages, and half the nodes cut off from
+the other half for 5 minutes:
+
+| | Result | Gate |
+|---|---|---|
+| Targets held under the same number on every node | 98.8% | ≥ 98% |
+| Duplicate tracks | 0.76% | < 1% |
+| One picture again after the cut heals | 2 s | ≤ 30 s |
+| Track reports per node | 6.9 kbit/s per 500 tracks | ≤ 20 |
+| Coverage (each node holds what any node sees) | 99.7% | |
+
+On a thin link the same swarm was capped at 16 kbit/s per node, with 10% loss. Each node had a sending
+budget of 14 kbit/s (Settings → Nodes). With the budget, 98.4% of what any node sees reaches every
+node, and 96.6% of targets have one number everywhere; without it, 83% and 61%. The budget
+sends the most urgent reports first: new tracks, state changes, then the largest drifts. A drift
+within a track's own position error is not sent at all.
+
+### Settings and UI
+
+- **Settings → Nodes:**
+  - share the picture, trusted nodes, receive-only, share the profile;
+  - each peer's link health and the decisions held from it;
+  - how many tracks this node reports.
+- **The track card** shows which node reports the track.
+- **The Management log** marks decisions made on other nodes.
+- **`GET /sync/status`** returns the same, for headless nodes.
+- **The Correlation tab** shows a bubble counting suggestions waiting for a track manager (the
+  stareSDK Tabs `badge`).
+
+### Upgrading
+
+Migration `0014_sync` adds the replicated log. Nothing is shared until an admin turns sharing on,
+and every node needs its own `OT_SITE_CODE`.
+
 ## 0.3.1 (alpha), 2026-09-27
 
 Phase 2, "proven at scale", is met: 16,000 live tracks at 1 Hz on one host, and fewer than 2% wrong

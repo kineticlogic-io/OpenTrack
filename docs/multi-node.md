@@ -1,6 +1,6 @@
 # Multi-node OpenTrack (v0.4): design
 
-Status: **agreed direction**; building step 1.
+Status: **built** (v0.4.0); the gates below are met.
 
 ## What we are building
 
@@ -195,6 +195,26 @@ A new benchmark, `bench swarm`, runs 3–10 OpenTrack nodes on one machine.
 | Tracks echoed back to their origin as a second track | 0 |
 | An operator decision on node A holds on every node | ≤ 2 s on a clean link |
 
+### Measured (2026-09-27)
+
+The gate run had 5 nodes and 600 targets, with 10% loss, 300 ms jitter and 2% duplicate messages. It cut 2 nodes off from 3 for 5 minutes. The result is in `results/swarm-20260927-063423-5n-gate4`.
+
+| Measure | Result |
+|---|---|
+| Same object, same number on every node | 98.8% of seen targets (99.2% on a clean link) |
+| Duplicate tracks | 0.76% |
+| Converged after the partition healed | 2 s |
+| Track reports per node | 6.9 kbit/s per 500 tracks |
+| Echoes | none: a report carries only the sender's own sources, and a test checks it |
+
+A thin link: each node capped at 16 kbit/s, 10% loss, a sending budget of 14 kbit/s. Result: coverage 98.4%, one number 96.6%. Sharing ~550 tracks takes about 80 s at the start, because it is paced.
+
+Four findings from getting there are now rules:
+- **The origin goes with every report.** Without it, a node that missed a track's first report could keep the other number in a merge.
+- **A report under a number merged away here goes to the survivor.** Otherwise the number comes back as a new track.
+- **A track held only from other nodes counts as current in kinematic comparisons.** Their estimate is re-sent whenever it drifts past the threshold, so its prediction is current, not a view already used.
+- **A drift within the track's own error is not sent, and a budget orders the rest by urgency.** Without that, radar noise used up a thin link.
+
 ## Build order
 
 1. **Decisions go global.** *(done)*
@@ -210,11 +230,11 @@ A new benchmark, `bench swarm`, runs 3–10 OpenTrack nodes on one machine.
    - Peer source, dead-reckoning rate.
    - R2 claim, yield and take-over.
    - Global survivor rule, `merged_into` on `delete` (an ICD addition).
-4. **Server-site bridge and `bench swarm`.**
+4. **Server-site bridge and `bench swarm`.** *(done)*
    - The built-in bridge between two NATS servers.
    - `bench swarm` with the link emulator, and the gates above.
    - `docker compose` with two nodes.
-5. **UI.** None of this needs the UI, but it helps operators to see it.
+5. **UI.** None of this needs the UI, but it helps operators to see it. *(done)*
    - A Nodes panel: peers, link health, R2 counts, clock offset.
    - The track card shows the reporting node.
    - The Management log shows decisions from other nodes.
