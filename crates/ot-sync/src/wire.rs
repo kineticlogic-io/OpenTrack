@@ -86,8 +86,8 @@ pub struct Report {
     pub domain: Option<Domain>,
     pub state: TrackState,
     /// When the node that minted the UID made the track, Unix ms: decides
-    /// which of two numbers for one object survives. Sent when it changes
-    /// and with heartbeats, not with every report.
+    /// which of two numbers for one object survives. OpenTrack sends it with
+    /// every report.
     pub origin_ms: Option<i64>,
     /// Identifiers `(scheme, value)`, sent when they change.
     pub identifiers: Option<Vec<(String, String)>>,

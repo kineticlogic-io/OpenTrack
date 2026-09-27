@@ -23,7 +23,7 @@ What OpenTrack needs from the package:
 - **No echo needed.** OpenTrack ignores its own messages if they come back.
 
 Expected volume per node (500 tracks at steady state):
-- `report`: about 12 kbit/s. It rises with manoeuvring targets and falls with fewer tracks.
+- `report`: about 6–8 kbit/s (measured with `bench swarm`). It rises with manoeuvring targets and falls with fewer tracks.
 - `summary`: a few bytes every 5 s.
 - The rest: rare.
 
@@ -63,7 +63,7 @@ Body: `u8` count, then that many reports. The first 32 bytes of each report are:
 | 31 | 1 | flags: bit 0, origin time follows; bit 1, identifiers follow; bits 2–3, state (0 tentative, 1 confirmed, 2 lost, 3 dropped) |
 
 Two optional parts follow, in this order:
-- **Origin time** (flag bit 0): an `i64`, Unix ms at which the node that minted the UID created the track.
+- **Origin time** (flag bit 0): an `i64`, Unix ms at which the node that minted the UID created the track. OpenTrack sends it with every report, because it decides which of two numbers for one object survives, and a node must not decide that on a guess.
 - **Identifiers** (flag bit 1): a `u8` count, then that many pairs of short strings, `(scheme, value)`, e.g. `("mmsi", "235009876")`.
 
 Track quality grades the position error. 15 means 10 m or better, and each step down doubles the error. Of the nodes that see a track, the one with the best quality reports it (see *reporting responsibility* in the design).

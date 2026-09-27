@@ -419,8 +419,6 @@ mod tests {
 pub(super) struct Shared {
     pub(super) resp: ot_sync::r2::Responsibility,
     sent: Option<ot_sync::dr::Sent>,
-    /// When the origin time was last sent (report time, ms).
-    origin_at: Option<i64>,
     ids: Option<Vec<(String, String)>>,
     attrs: Option<Value>,
 }
@@ -530,7 +528,6 @@ impl Engine {
         if !reporting {
             if was {
                 entry.sent = None;
-                entry.origin_at = None;
                 entry.ids = None;
                 entry.attrs = None;
                 if mine.is_none() {
@@ -557,13 +554,9 @@ impl Engine {
         if !ot_sync::dr::due(entry.sent.as_ref(), &sent, domain) {
             return;
         }
-        let origin_ms = entry
-            .origin_at
-            .is_none_or(|at| sent.time_ms - at >= ot_sync::r2::HEARTBEAT_MS)
-            .then_some(first_seen);
-        if origin_ms.is_some() {
-            entry.origin_at = Some(sent.time_ms);
-        }
+        // Every report carries the origin: a node that missed the first
+        // must not pick a different survivor in a merge meanwhile.
+        let origin_ms = Some(first_seen);
         let ids: Vec<(String, String)> = v
             .identifiers
             .iter()
@@ -729,7 +722,6 @@ impl Engine {
         for s in self.shared.values_mut() {
             if s.resp.reporting {
                 s.sent = None;
-                s.origin_at = None;
                 s.ids = None;
                 s.attrs = None;
             }
