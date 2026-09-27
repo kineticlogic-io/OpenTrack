@@ -5123,10 +5123,7 @@ mod tests {
             feed(&mut e, &batch).await;
         }
         let ship_uid = track_of(&e, "ais", "1");
-        assert_eq!(
-            track_of(&e, "fix", &e.bearings_fix_key("esm-a", "s")),
-            ship_uid
-        );
+        assert_eq!(e.bearing_track("esm-a", "s"), Some(ship_uid));
         let before = e.tracks[&ship_uid].view.position;
         feed(
             &mut e,
@@ -5183,6 +5180,87 @@ mod tests {
         e.redis.purge_namespace().await.unwrap();
     }
 
+    /// One step of the esm-crossfix scenario for the video: the truth, every
+    /// line and area with where it went, the fixes made and the tracks.
+    fn esm_frame(e: &Engine, secs: i64, batch: &[Observation], ships: &[(f64, f64)]) -> Value {
+        let now = t0() + chrono::Duration::seconds(secs);
+        let fixes: Vec<&Value> = e
+            .trace
+            .iter()
+            .filter(|t| t["kind"] == "fix")
+            .filter(|t| serde_json::from_value::<DateTime<Utc>>(t["t"].clone()).ok() == Some(now))
+            .collect();
+        let in_fix = |key: &str| {
+            fixes
+                .iter()
+                .any(|f| f["members"].as_array().unwrap().iter().any(|m| m == key))
+        };
+        let mut lines = Vec::new();
+        let mut areas = Vec::new();
+        for o in batch {
+            let key = format!("{}/{}", o.source_id, o.source_track_key);
+            match &o.geometry {
+                Some(ot_core::Geometry::Bearing {
+                    bearing_deg,
+                    sigma_deg,
+                    ..
+                }) => {
+                    let to = e.tracks.values().find(|t| {
+                        t.bearings.iter().any(|b| {
+                            b.source_id == o.source_id
+                                && b.source_track_key == o.source_track_key
+                                && b.observed_at == now
+                        })
+                    });
+                    let fate = if to.is_some() {
+                        "track"
+                    } else if in_fix(&key) {
+                        "fix"
+                    } else {
+                        "waiting"
+                    };
+                    lines.push(json!({
+                        "sensor": o.source_id, "emitter": o.source_track_key.trim_start_matches("em"),
+                        "lat": o.position.latitude, "lon": o.position.longitude,
+                        "bearing": bearing_deg, "sigma": sigma_deg, "fate": fate,
+                        "uid": to.map(|t| t.uid.doc_id()), "id": !o.identifiers.is_empty(),
+                    }));
+                }
+                _ if o.source_id == "elint" => areas.push(json!({
+                    "emitter": o.source_track_key.trim_start_matches('x'),
+                    "lat": o.position.latitude, "lon": o.position.longitude, "r": 3000.0,
+                    "uid": e.reports.get(&key).map(|u| u.doc_id()),
+                })),
+                _ => {}
+            }
+        }
+        let fixes: Vec<Value> = fixes
+            .iter()
+            .map(|f| {
+                let uid = e.reports.get(&format!("fix/{}", f["key"].as_str().unwrap())).map(|u| u.doc_id());
+                json!({"lat": f["lat"], "lon": f["lon"], "sigma": f["sigma"], "members": f["members"], "uid": uid})
+            })
+            .collect();
+        let tracks: Vec<Value> = e
+            .tracks
+            .values()
+            .filter(|t| t.kind.is_track() && t.state != TrackState::Lost)
+            .map(|t| {
+                let sigma = t.view.uncertainty.as_ref().and_then(|u| u.position_covariance())
+                    .map(|[nn, _, ee]| (nn + ee).sqrt());
+                json!({
+                    "uid": t.uid.doc_id(), "lat": t.view.position.latitude, "lon": t.view.position.longitude,
+                    "sigma": sigma, "confirmed": t.state == TrackState::Confirmed,
+                    "sources": t.contributors.iter().map(|c| c.source_id.as_str()).collect::<Vec<_>>(),
+                    "ids": t.view.identifiers.iter().map(|i| format!("{}:{}", i.scheme, i.value)).collect::<Vec<_>>(),
+                    "bearings": t.bearings.len(),
+                })
+            })
+            .collect();
+        json!({"kind": "step", "t": secs, "ships": ships, "lines": lines, "areas": areas,
+               "fixes": fixes, "tracks": tracks})
+    }
+
     /// The `esm-crossfix` scenario (docs/non-point-contacts.md): 20 ships
     /// with radars sailing a 60 km box, half on AIS; four ESM sensors
     /// reporting a bearing to each emitter in range every 5 s (1.5 degrees
@@ -5233,6 +5311,26 @@ mod tests {
         let mut seen_at: Vec<Option<i64>> = vec![None; 20];
         let mut truth: Vec<Vec<(f64, f64)>> = Vec::new();
         let mut wrong_by: std::collections::BTreeMap<String, usize> = Default::default();
+        // With OT_REPLAY_TRACE=<dir>, a frame per step for
+        // scripts/benchmark/replay/esm-video.py; with OT_ESM_NAIVE=1, the
+        // ghost rules are off (three-sensor consensus only), to compare.
+        // Open water: 20 ships in 2,500 km². The default density (1 per km²,
+        // a harbour) makes a fix with a kilometre of error weaker evidence
+        // than chance, so it would never pair with the ship's AIS track.
+        e.settings.correlation.kinematic.object_density_per_km2 = 0.02;
+        let naive = std::env::var("OT_ESM_NAIVE").is_ok();
+        e.bearings.naive = naive;
+        let mut frames = std::env::var("OT_REPLAY_TRACE").ok().map(|_| {
+            let s: Vec<(f64, f64)> = sensors.iter().map(|(n, e)| pos(*n, *e)).collect();
+            vec![
+                json!({"kind": "header", "sensors": s, "ais": 10, "elnot_even": true,
+                "elint_from": 15, "naive": naive}),
+            ]
+        });
+        fn ships_now(ships: &[Ship], pos: &dyn Fn(f64, f64) -> (f64, f64)) -> Vec<(f64, f64)> {
+            ships.iter().map(|s| pos(s.n, s.e)).collect()
+        }
+        let mut per_ship = [0usize; 20];
         for step in 0..120i64 {
             let secs = step * 5;
             for s in &mut ships {
@@ -5303,6 +5401,9 @@ mod tests {
             }
             truth.push(ships.iter().map(|s| (s.n, s.e)).collect());
             feed(&mut e, &batch).await;
+            if let Some(frames) = frames.as_mut() {
+                frames.push(esm_frame(&e, secs, &batch, &ships_now(&ships, &pos)));
+            }
             // Which emitter each live track is (the nearest within 2 km).
             // By its MMSI or ELNOT when it has one, else by position.
             let nearest = |t: &SystemTrack| -> Option<usize> {
@@ -5335,6 +5436,17 @@ mod tests {
                     .min_by(|a, b| a.0.total_cmp(&b.0))
                     .map(|(_, i)| i)
             };
+            if step == 119 {
+                for t in e
+                    .tracks
+                    .values()
+                    .filter(|t| t.state == TrackState::Confirmed && t.kind.is_track())
+                {
+                    if let Some(i) = nearest(t) {
+                        per_ship[i] += 1;
+                    }
+                }
+            }
             for t in e.tracks.values() {
                 if let Some(i) = nearest(t)
                     && seen_at[i].is_none()
@@ -5361,8 +5473,9 @@ mod tests {
                             .join("+");
                         *wrong_by
                             .entry(format!(
-                                "{kind} near {:?}",
-                                nearest(t).map(|n| n == emitter)
+                                "{kind} #{:?} got {}/em{emitter}",
+                                nearest(t),
+                                b.source_id
                             ))
                             .or_insert(0) += 1;
                     }
@@ -5396,6 +5509,9 @@ mod tests {
                 within += 1;
             }
         }
+        // Duplicates: ships with more than one confirmed track at the end.
+        let duplicates = per_ship.iter().filter(|&&n| n > 1).count();
+        eprintln!("tracks per ship at the end: {per_ship:?} ({duplicates} with two)");
         let precision = assigned.0 as f64 / (assigned.0 + assigned.1).max(1) as f64;
         let non_ais_found = (10..20).filter(|&i| seen_at[i].is_some()).count();
         eprintln!(
@@ -5408,6 +5524,19 @@ mod tests {
             seen_at
         );
         eprintln!("wrong by track: {wrong_by:?}");
+        if let (Some(frames), Ok(dir)) = (frames, std::env::var("OT_REPLAY_TRACE")) {
+            let name = if naive {
+                "esm-crossfix-naive"
+            } else {
+                "esm-crossfix"
+            };
+            let lines: Vec<String> = frames.iter().map(|v| v.to_string()).collect();
+            std::fs::write(format!("{dir}/{name}.jsonl"), lines.join("\n") + "\n").unwrap();
+        }
+        if naive {
+            e.redis.purge_namespace().await.unwrap();
+            return;
+        }
         assert!(
             precision >= 0.95,
             "bearing association precision {precision:.3}"
@@ -5417,6 +5546,10 @@ mod tests {
             "emitters without AIS tracked: {non_ais_found}/10"
         );
         assert!(fixes > 0);
+        // Left with two tracks: an emitter only two sensors see beside its
+        // AIS ship, one with a close neighbour, one known only by a
+        // kilometres-wide ELINT area.
+        assert!(duplicates <= 3, "{duplicates} ships with two tracks");
         assert!(
             ghosts as f64 <= 0.02 * fixes as f64,
             "{ghosts} ghost fixes of {fixes}"

@@ -115,8 +115,27 @@ pub(super) struct Bearings {
     members: HashMap<(String, String), String>,
     /// When the newest line not yet swept for fixes came in.
     fresh: Option<DateTime<Utc>>,
+    /// Ghost rules off (three-sensor consensus only), to show what they do.
+    #[cfg(test)]
+    pub(super) naive: bool,
+    /// The track each sensor track's lines were found pointing at together.
+    bound: HashMap<(String, String), Uid>,
     /// Anonymous sets seen once, waiting to fix again: where, error, when.
     combos: HashMap<String, (f64, f64, f64, DateTime<Utc>)>,
+}
+
+/// How a bearing fits a track.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    /// Squared residual in sigmas (the bearing's and the track's).
+    d2: f64,
+    residual: f64,
+    sigma: f64,
+    /// Where the track is at the bearing's time.
+    lat: f64,
+    lon: f64,
+    /// The emitter identity matches the track's.
+    same: bool,
 }
 
 /// A fix: position, covariance `[nn, ne, ee]` and the bearings in it.
@@ -306,7 +325,7 @@ impl Bearings {
                 break;
             };
             let mut again = true;
-            if self.waiting[members[0]].identity().is_none() {
+            if self.waiting[members[0]].identity().is_none() && !self.naive() {
                 let set: Vec<&Lob> = members.iter().map(|&m| &self.waiting[m]).collect();
                 let at = set
                     .iter()
@@ -387,13 +406,15 @@ impl Bearings {
                 return;
             }
             let set: Vec<&Lob> = pick.iter().map(|&m| &self.waiting[m]).collect();
-            if need > 2 && !self.one_emitter(&set) {
+            if need > 2 && !self.naive() && !self.one_emitter(&set) {
                 return;
             }
             let Some(fix) = cross(&set) else {
                 return;
             };
-            if !consistent(&set, &fix) || !no_outlier(&set) || (need > 2 && explained(&set, &fix)) {
+            if !consistent(&set, &fix)
+                || (!self.naive() && (!no_outlier(&set) || (need > 2 && explained(&set, &fix))))
+            {
                 return;
             }
             let fit = rank(&set, &fix);
@@ -409,6 +430,14 @@ impl Bearings {
             self.search(groups, g + 1, pick, need, best);
             pick.pop();
         }
+    }
+
+    /// Whether the ghost rules are off (only ever in tests).
+    fn naive(&self) -> bool {
+        #[cfg(test)]
+        return self.naive;
+        #[cfg(not(test))]
+        false
     }
 
     /// Whether a set keeps together the sensor tracks whose emitters fixed
@@ -485,60 +514,76 @@ impl Engine {
             return Ok(());
         }
         for (used, fix) in self.bearings.sweep() {
+            // The emitter is a track we have: its lines go to it from now on.
+            if let Some((uid, residuals)) = self.pointed_at(&used) {
+                for (l, r) in used.iter().zip(residuals) {
+                    self.attach(uid, l, r);
+                    self.bearings.bound.insert(
+                        (l.obs.source_id.clone(), l.obs.source_track_key.clone()),
+                        uid,
+                    );
+                    counts.paired += 1;
+                }
+                self.save(uid, false).await?;
+                continue;
+            }
             let report = self.fix_report(&used, &fix);
             self.ingest(report, counts).await?;
         }
         Ok(())
     }
 
-    /// The one track a bearing points at, if exactly one fits clearly best;
-    /// the bearing is recorded on it.
-    fn lob_track(&mut self, lob: &mut Lob) -> Option<Uid> {
+    /// How a bearing fits a track: `None` when the track is out of its
+    /// range, behind it, outside its gate, kept up only by fixes, or its
+    /// emitter identity conflicts.
+    fn fit(&self, lob: &Lob, t: &ot_core::SystemTrack) -> Option<Fit> {
+        // A track only fixes keep up is kept up by fixes, not bearings.
+        if t.contributors.iter().all(|c| c.source_id == FIX) {
+            return None;
+        }
+        self.fit_any(lob, t)
+    }
+
+    /// `fit`, for any live track, fixes' own included.
+    fn fit_any(&self, lob: &Lob, t: &ot_core::SystemTrack) -> Option<Fit> {
+        if !t.kind.is_track() || t.state == ot_core::TrackState::Lost {
+            return None;
+        }
         let (olat, olon) = lob.origin();
         let at = lob.obs.observed_at;
-        let id = lob.identity();
-        let mut fits: Vec<(Uid, f64, f64, bool)> = Vec::new();
-        let mut through = Vec::new();
-        for t in self.tracks.values() {
-            // A track only fixes keep up is kept up by fixes, not bearings.
-            if !t.kind.is_track()
-                || t.state == ot_core::TrackState::Lost
-                || t.contributors.iter().all(|c| c.source_id == FIX)
-            {
-                continue;
-            }
-            let dt =
-                ((at - t.view.observed_at).num_milliseconds() as f64 / 1000.0).clamp(-300.0, 300.0);
-            let (mut lat, mut lon) = (t.view.position.latitude, t.view.position.longitude);
-            if let (Some(c), Some(v)) = (t.view.kinematics.course_deg, t.view.kinematics.speed_mps)
-            {
-                let d = v * dt;
-                (lat, lon) = offset(lat, lon, d * c.to_radians().cos(), d * c.to_radians().sin());
-            }
-            let (b, range) = bearing_to(olat, olon, lat, lon);
-            let r = wrap(lob.bearing - b);
-            if range > lob.range || r.abs() > 90.0 {
-                continue;
-            }
-            // The track's own error across the line, and its drift since.
-            let across = t
-                .view
-                .uncertainty
-                .as_ref()
-                .and_then(|u| u.position_covariance())
-                .map(|[nn, ne, ee]| {
-                    let (s, c) = b.to_radians().sin_cos();
-                    // Unit normal to the line: (-sin, cos) in (north, east).
-                    (nn * s * s - 2.0 * ne * s * c + ee * c * c).max(0.0).sqrt()
-                })
-                .unwrap_or(100.0)
-                + dt.abs();
-            let sigma = (lob.sigma.powi(2) + (across / range.max(1.0)).to_degrees().powi(2)).sqrt();
-            let d2 = (r / sigma).powi(2);
-            if d2 > GATE_D2 {
-                continue;
-            }
-            // Emitter identity: a different one is a veto, the same one decisive.
+        let dt =
+            ((at - t.view.observed_at).num_milliseconds() as f64 / 1000.0).clamp(-300.0, 300.0);
+        let (mut lat, mut lon) = (t.view.position.latitude, t.view.position.longitude);
+        if let (Some(c), Some(v)) = (t.view.kinematics.course_deg, t.view.kinematics.speed_mps) {
+            let d = v * dt;
+            (lat, lon) = offset(lat, lon, d * c.to_radians().cos(), d * c.to_radians().sin());
+        }
+        let (b, range) = bearing_to(olat, olon, lat, lon);
+        let r = wrap(lob.bearing - b);
+        if range > lob.range || r.abs() > 90.0 {
+            return None;
+        }
+        // The track's own error across the line, and its drift since.
+        let across = t
+            .view
+            .uncertainty
+            .as_ref()
+            .and_then(|u| u.position_covariance())
+            .map(|[nn, ne, ee]| {
+                let (s, c) = b.to_radians().sin_cos();
+                // Unit normal to the line: (-sin, cos) in (north, east).
+                (nn * s * s - 2.0 * ne * s * c + ee * c * c).max(0.0).sqrt()
+            })
+            .unwrap_or(100.0)
+            + dt.abs();
+        let sigma = (lob.sigma.powi(2) + (across / range.max(1.0)).to_degrees().powi(2)).sqrt();
+        let d2 = (r / sigma).powi(2);
+        if d2 > GATE_D2 {
+            return None;
+        }
+        // Emitter identity: a different one is a veto, the same one decisive.
+        let mut same = false;
+        if let Some(id) = lob.identity() {
             let theirs: Vec<String> = t
                 .bearings
                 .iter()
@@ -550,29 +595,49 @@ impl Engine {
                         .map(|i| format!("{}:{}", i.scheme, i.value)),
                 )
                 .collect();
-            let mut score = (-0.5 * d2).exp() / sigma;
-            let mut same = false;
-            if let Some(id) = &id {
-                let scheme = id.split(':').next().unwrap_or_default();
-                if theirs.iter().any(|x| x == id) {
-                    score *= 1e6;
-                    same = true;
-                } else if theirs.iter().any(|x| x.split(':').next() == Some(scheme)) {
-                    continue;
-                }
+            let scheme = id.split(':').next().unwrap_or_default();
+            if theirs.contains(&id) {
+                same = true;
+            } else if theirs.iter().any(|x| x.split(':').next() == Some(scheme)) {
+                return None;
             }
-            fits.push((t.uid, score, r, same));
-            through.push((lat, lon));
         }
-        // A bearing goes to the track its emitter's fixes report for; else
-        // only on a matching emitter identity. One line through a track
-        // proves little: an emitter with no track of its own often lies on
-        // a line through someone else's, so it waits to be fixed instead.
-        let learned = self
-            .bearings
-            .members
-            .get(&(lob.obs.source_id.clone(), lob.obs.source_track_key.clone()))
-            .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied());
+        Some(Fit {
+            d2,
+            residual: r,
+            sigma,
+            lat,
+            lon,
+            same,
+        })
+    }
+
+    /// The one track a bearing points at, if exactly one fits clearly best;
+    /// the bearing is recorded on it.
+    fn lob_track(&mut self, lob: &mut Lob) -> Option<Uid> {
+        let mut fits: Vec<(Uid, f64, f64, bool)> = Vec::new();
+        let mut through = Vec::new();
+        for t in self.tracks.values() {
+            let Some(f) = self.fit(lob, t) else {
+                continue;
+            };
+            let score = (-0.5 * f.d2).exp() / f.sigma * if f.same { 1e6 } else { 1.0 };
+            fits.push((t.uid, score, f.residual, f.same));
+            through.push((f.lat, f.lon));
+        }
+        // A bearing goes to the track its emitter was found on (its lines
+        // from several sensors pointed at it together, or its fixes report
+        // for it); else only on a matching emitter identity. One line
+        // through a track proves little: an emitter with no track of its
+        // own often lies on a line through someone else's, so it waits to be
+        // fixed instead.
+        let member = (lob.obs.source_id.clone(), lob.obs.source_track_key.clone());
+        let learned = self.bearings.bound.get(&member).copied().or_else(|| {
+            self.bearings
+                .members
+                .get(&member)
+                .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied())
+        });
         lob.through = through;
         fits.sort_by(|a, b| b.1.total_cmp(&a.1));
         let (uid, _, residual, _) = match learned.and_then(|u| fits.iter().find(|f| f.0 == u)) {
@@ -585,6 +650,13 @@ impl Engine {
                 (uid, best, residual, same)
             }
         };
+        self.attach(uid, lob, residual)
+    }
+
+    /// Record a bearing on a track.
+    fn attach(&mut self, uid: Uid, lob: &Lob, residual: f64) -> Option<Uid> {
+        let (olat, olon) = lob.origin();
+        let at = lob.obs.observed_at;
         let keep = chrono::Duration::seconds(KEEP_S);
         let t = self.tracks.get_mut(&uid)?;
         t.bearings.retain(|b| {
@@ -604,6 +676,49 @@ impl Engine {
             identifiers: lob.obs.identifiers.clone(),
         });
         Some(uid)
+    }
+
+    /// The one track every line of a fixed set points at, within their
+    /// errors and the track's (chi-square at 99%). Lines from several
+    /// sensors all passing through a track's own, precise position say the
+    /// emitter is that track far more surely than the fix's position,
+    /// kilometres uncertain, ever can.
+    fn pointed_at(&self, used: &[Lob]) -> Option<(Uid, Vec<f64>)> {
+        // Two lines meet somewhere: any ship near their crossing fits them.
+        let n = used.len();
+        if n < 3 {
+            return None;
+        }
+        let mut found = None;
+        // Every track the lines could all be pointing at, of any kind: two
+        // (ships close together along the lines) and it is not for the
+        // lines to say which.
+        for t in self.tracks.values() {
+            let fits: Option<Vec<Fit>> = used.iter().map(|l| self.fit_any(l, t)).collect();
+            let Some(fits) = fits else {
+                continue;
+            };
+            if fits.iter().map(|f| f.d2).sum::<f64>() > CHI2_99[n.min(4) - 1] {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some((t, fits));
+        }
+        let (t, fits) = found?;
+        // Only a track at least as precise as the lines can say so: a
+        // kilometres-wide ELINT area fits any line passing nearby. Nor is a
+        // track fixes alone keep up one to bind lines to.
+        if t.contributors.iter().all(|c| c.source_id == FIX)
+            || fits
+                .iter()
+                .zip(used)
+                .any(|(f, l)| f.sigma > l.sigma * std::f64::consts::SQRT_2)
+        {
+            return None;
+        }
+        Some((t.uid, fits.iter().map(|f| f.residual).collect()))
     }
 
     /// A fix as a report of the `fix` source: the same object's successive
@@ -685,9 +800,15 @@ impl Engine {
 
 #[cfg(test)]
 impl Engine {
-    /// The fix key a sensor track's emitter went into.
-    pub(super) fn bearings_fix_key(&self, source: &str, key: &str) -> String {
-        self.bearings.members[&(source.to_owned(), key.to_owned())].clone()
+    /// The track a sensor track's emitter was found on, if any.
+    pub(super) fn bearing_track(&self, source: &str, key: &str) -> Option<Uid> {
+        let member = (source.to_owned(), key.to_owned());
+        self.bearings.bound.get(&member).copied().or_else(|| {
+            self.bearings
+                .members
+                .get(&member)
+                .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied())
+        })
     }
 }
 

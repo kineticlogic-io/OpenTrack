@@ -127,3 +127,4 @@ on the map. The benchmark does not use them.
 - `autoferry.py`: builds the Autoferry test fixtures for the engine's `replay_autoferry_*` tests
 - `autoferry-replay.py`
 - `replay-video.py`: renders an engine trace
+- `esm-video.py`: renders the `esm-crossfix` scenario (bearings, ELINT areas, cross-fixes): an overview, ghost rules off against on, and one ship followed

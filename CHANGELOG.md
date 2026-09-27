@@ -10,9 +10,11 @@ Lines of bearing, areas of uncertainty and emitter identities (ELNOT) are fused 
 - **The model:** an observation's `geometry` is a `bearing` (from the sensor's position, with its
   error and range) or an `area` polygon. Mapping destinations `geometry.bearing_deg`, `sigma_deg`,
   `max_range_m`, `elevation_deg` and `geometry.polygon`.
-- **Association:** a bearing goes to a track when its emitter identity matches, or once the emitter
-  has been cross-fixed onto the track. It adds evidence and identity but never moves the track. An
-  area, or an ellipse over 2 km, pairs only with the one track it holds.
+- **Association:** a bearing goes to a track when its emitter identity matches, or once its emitter
+  has been found on the track: lines from three or more sensors all pointing at its precise
+  position and no other track's, or a cross-fix that pairs with it. It adds evidence and identity
+  but never moves the track. An area, or an ellipse over 2 km, pairs only with the one track it
+  holds.
 - **Cross-fixing:** bearings from several sensors are crossed by weighted least squares into fixes
   with an honest error ellipse. The fixes start or update tracks as reports of the built-in `fix`
   source. Ghosts are kept out by emitter identity, three-sensor consensus with outlier tests,
@@ -20,8 +22,11 @@ Lines of bearing, areas of uncertainty and emitter identities (ELNOT) are fused 
 - **Output:** tracks carry `area` and `bearings`; bearings no track took are published live on
   `contacts.bearing.<source>.<key>`.
 - **Map and track card:** a selected track's bearing lines and area; the card lists its bearings.
-- **Benchmark** (`esm-crossfix`): 100% of bearings to the right track, 10 of 10 emitters without
-  AIS tracked, 0.25% ghost fixes, 94% of fixes within 2σ.
+- **Benchmark** (`esm-crossfix`): 100% of 2,448 bearings to the right track, 10 of 10 emitters
+  without AIS tracked, 0.45% ghost fixes, 92% of fixes within 2σ, 3 of 20 ships left with a
+  duplicate track. Videos render from the run (`scripts/benchmark/replay/esm-video.py`).
+- **Open water:** set `kinematic.object_density_per_km2` to the real density; the default (1 per km²)
+  keeps kilometre-uncertain fixes from pairing by position.
 
 ## 0.3.3 (alpha), 2026-09-27
 
