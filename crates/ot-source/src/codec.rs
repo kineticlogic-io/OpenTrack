@@ -30,6 +30,25 @@ pub enum CodecConfig {
     CotXml,
     /// Generic XML: one record per `record_element`.
     Xml { record_element: String },
+    /// Protobuf: one message per frame, of type `message`, decoded with the
+    /// producer's own `.proto` files (uploaded with the source; see
+    /// [`crate::proto`]). Over gRPC, `message` is the method's response
+    /// (or, for a gRPC server, request) type.
+    Protobuf {
+        /// The producer's `.proto` files, name → contents. They may import
+        /// each other and the `google/protobuf/*.proto` well-known types.
+        files: std::collections::BTreeMap<String, String>,
+        /// Full name of the message each frame holds, e.g.
+        /// `acme.tracks.v1.TrackBatch`.
+        message: String,
+        /// Path to the repeated field holding the records (e.g. `tracks`);
+        /// without it the message itself is the record.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        records: Option<Path>,
+        /// Message-level fields copied into every record under `_frame`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        context: Vec<Path>,
+    },
     /// A codec plugin (see [`crate::plugin`]), e.g. STANAG 4607.
     Plugin {
         plugin: String,
@@ -44,7 +63,19 @@ impl CodecConfig {
             CodecConfig::Json { .. } => "json",
             CodecConfig::CotXml => "cot_xml",
             CodecConfig::Xml { .. } => "xml",
+            CodecConfig::Protobuf { .. } => "protobuf",
             CodecConfig::Plugin { .. } => "plugin",
+        }
+    }
+
+    /// The compiled `.proto` files of a protobuf codec.
+    pub fn proto(&self) -> Result<Option<std::sync::Arc<crate::proto::ProtoSet>>, CodecError> {
+        match self {
+            CodecConfig::Protobuf { files, .. } => Ok(Some(
+                crate::proto::ProtoSet::compile(files)
+                    .map_err(|e| CodecError::Protobuf(e.to_string()))?,
+            )),
+            _ => Ok(None),
         }
     }
 }
@@ -61,12 +92,19 @@ pub enum CodecError {
     Xml(String),
     #[error("{0}")]
     Plugin(String),
+    #[error("protobuf: {0}")]
+    Protobuf(String),
 }
 
 pub struct Codec {
     config: CodecConfig,
     /// The plugin's decoder for this stream, for a plugin codec.
     plugin: Option<Box<dyn crate::plugin::PluginDecoder>>,
+    /// The compiled schema and the message each frame holds, for protobuf.
+    proto: Option<(
+        std::sync::Arc<crate::proto::ProtoSet>,
+        prost_reflect::MessageDescriptor,
+    )>,
 }
 
 impl Codec {
@@ -81,7 +119,20 @@ impl Codec {
             ),
             _ => None,
         };
-        Ok(Self { config, plugin })
+        let proto = match (&config, config.proto()?) {
+            (CodecConfig::Protobuf { message, .. }, Some(set)) => {
+                let desc = set
+                    .message(message)
+                    .map_err(|e| CodecError::Protobuf(e.to_string()))?;
+                Some((set, desc))
+            }
+            _ => None,
+        };
+        Ok(Self {
+            config,
+            plugin,
+            proto,
+        })
     }
 
     pub fn config(&self) -> &CodecConfig {
@@ -105,6 +156,18 @@ impl Codec {
                 .map_err(CodecError::Plugin),
             CodecConfig::Json { records, context } => {
                 decode_json(&frame.bytes, records.as_ref(), context)
+            }
+            CodecConfig::Protobuf {
+                records, context, ..
+            } => {
+                let (set, desc) = self
+                    .proto
+                    .as_ref()
+                    .expect("a protobuf codec has its schema");
+                let value = set
+                    .decode(desc, &frame.bytes)
+                    .map_err(|e| CodecError::Protobuf(e.to_string()))?;
+                split_with_context(value, records.as_ref(), context)
             }
             CodecConfig::CotXml => decode_xml(&frame.bytes, "event"),
             CodecConfig::Xml { record_element } => decode_xml(&frame.bytes, record_element),
@@ -132,7 +195,15 @@ fn decode_json(
     records: Option<&Path>,
     context: &[Path],
 ) -> Result<Vec<Value>, CodecError> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    split_with_context(serde_json::from_slice(bytes)?, records, context)
+}
+
+/// Split a decoded tree into records, copying `context` fields into each.
+fn split_with_context(
+    value: Value,
+    records: Option<&Path>,
+    context: &[Path],
+) -> Result<Vec<Value>, CodecError> {
     let mut out = split_json(value.clone(), records)?;
     if !context.is_empty() {
         let mut frame = Map::new();

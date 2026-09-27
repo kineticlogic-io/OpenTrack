@@ -33,6 +33,9 @@ rumqttc = "0.25"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 # Default trust for feed TLS with a client certificate: the system roots.
@@ -68,6 +71,14 @@ uuid = { version = "1", features = ["v4"] }
 # samael 0.0.20, which builds against libxmlsec1 1.2.41 and on arm64.
 samael = { path = "third_party/samael", features = ["xmlsec"] }
 flate2 = "1"
+# Protobuf inputs: a producer's .proto compiled at runtime (no protoc), messages
+# decoded by reflection (carried over gRPC, which OpenTrack speaks on hyper).
+prost = "0.14"
+prost-reflect = { version = "0.16", features = ["serde"] }
+protox = "0.9"
+# Where in a .proto a compile error is (protox reports spans through it).
+miette = "7"
+
 url = "2"
 
 [workspace.lints.rust]

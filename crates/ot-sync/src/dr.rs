@@ -52,7 +52,12 @@ pub fn distance_m(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// sent; none: not due. A drift within the track's own position error
 /// (`error_m`, the error ellipse's semi-major axis) is noise the receivers
 /// already allow for, so it is not worth a report.
-pub fn urgency(sent: Option<&Sent>, now: &Sent, domain: Option<Domain>, error_m: f64) -> Option<f64> {
+pub fn urgency(
+    sent: Option<&Sent>,
+    now: &Sent,
+    domain: Option<Domain>,
+    error_m: f64,
+) -> Option<f64> {
     let Some(s) = sent else {
         return Some(URGENT);
     };

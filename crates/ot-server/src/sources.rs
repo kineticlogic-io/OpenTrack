@@ -296,13 +296,23 @@ async fn run_source(
     let (tx, rx) = mpsc::channel::<Frame>(10_000);
 
     let transport_cfg = spec.transport.clone();
+    // A protobuf codec's schema, compiled once for the transport (validated
+    // with the spec, so this only fails if the spec was not).
+    let proto = match transport::ProtoContext::of(&spec.pipeline.codec) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(source = %id, error = %e, "protobuf schema does not compile");
+            None
+        }
+    };
     let link_t = link.clone();
     let tid = id.clone();
     let supervisor = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(2);
         loop {
             let started = tokio::time::Instant::now();
-            let res = transport::run(&transport_cfg, tx.clone(), link_t.clone()).await;
+            let res =
+                transport::run(&transport_cfg, proto.as_ref(), tx.clone(), link_t.clone()).await;
             if let Ok(mut s) = link_t.lock() {
                 s.connected = false;
                 if let Err(e) = &res {
@@ -323,7 +333,10 @@ async fn run_source(
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(2);
             }
-            tokio::time::sleep(backoff).await;
+            // Up to a quarter more, so sources that failed together do not
+            // all come back at the same instant.
+            let jitter = backoff.mul_f64(rand_fraction() * 0.25);
+            tokio::time::sleep(backoff + jitter).await;
             backoff = (backoff * 2).min(Duration::from_secs(60));
         }
     });
@@ -459,4 +472,18 @@ async fn pipeline_loop(
             last_error = out.last_error;
         }
     }
+}
+
+/// A number in [0, 1) that differs between calls (backoff jitter; not for
+/// anything that needs real randomness).
+fn rand_fraction() -> f64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
+    (h.finish() >> 11) as f64 / (1u64 << 53) as f64
 }

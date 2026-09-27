@@ -130,6 +130,61 @@ pub enum TransportConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tls: Option<ClientTls>,
     },
+    /// Call a producer's gRPC method and read the messages it streams back,
+    /// one frame each (the protobuf codec decodes them). A call that ends is
+    /// made again, with backoff.
+    GrpcClient {
+        /// `http://host:port` or `https://host:port`.
+        url: String,
+        /// `package.Service/Method`, from the codec's `.proto` files. Its
+        /// response type is the codec's message.
+        method: String,
+        /// The request message as JSON (field names as in the `.proto`);
+        /// unset: an empty request.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        request: Value,
+        /// gRPC metadata sent with the call (lowercase names), e.g.
+        /// `authorization: Bearer ${env:ACME_TOKEN}`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        metadata: BTreeMap<String, String>,
+        /// TLS for `https://`: a private CA, a client certificate, …
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ClientTls>,
+        /// Largest message accepted, KiB.
+        #[serde(default = "four_mib")]
+        max_message_kib: u64,
+        /// HTTP/2 keepalive pings, seconds (0: none), so a quiet stream
+        /// through a NAT or firewall is not silently cut.
+        #[serde(default = "twenty")]
+        keepalive_secs: f64,
+    },
+    /// Accept producers' gRPC calls: every message they send is a frame
+    /// (the protobuf codec decodes them). A malformed message fails the
+    /// producer's call with INVALID_ARGUMENT, saying why.
+    GrpcServer {
+        bind: String,
+        /// Methods producers may call, `package.Service/Method`. Unset:
+        /// every method of the `.proto` files whose request type is the
+        /// codec's message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        methods: Vec<String>,
+        /// Accept TLS only; with `client_ca_file`, only producers holding a
+        /// certificate that CA signed (mutual TLS).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tls: Option<ServerTls>,
+        /// A bearer token producers must send (`authorization: Bearer …`).
+        /// Use `${env:NAME}` to keep it out of the source spec.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+        /// Largest message accepted, KiB.
+        #[serde(default = "four_mib")]
+        max_message_kib: u64,
+        /// Producers connected at once; more are refused.
+        #[serde(default = "sixty_four")]
+        max_connections: usize,
+        #[serde(default = "twenty")]
+        keepalive_secs: f64,
+    },
     /// Replay recorded data: a file, or every file in a directory (by name,
     /// optionally only those with `extension`), split by `framing`. The file
     /// name is available to mappings as `_frame.file`.
@@ -159,6 +214,12 @@ fn lines() -> Framing {
 }
 fn five() -> f64 {
     5.0
+}
+fn four_mib() -> u64 {
+    4096
+}
+fn sixty_four() -> usize {
+    64
 }
 fn twenty() -> f64 {
     20.0
@@ -195,6 +256,8 @@ impl TransportConfig {
             TransportConfig::Websocket { .. } => "websocket",
             TransportConfig::Mqtt { .. } => "mqtt",
             TransportConfig::File { .. } => "file",
+            TransportConfig::GrpcClient { .. } => "grpc_client",
+            TransportConfig::GrpcServer { .. } => "grpc_server",
         }
     }
 
@@ -226,6 +289,58 @@ impl TransportConfig {
                     return Err("set the MQTT CA once: tls.ca_file (or the older ca_file)".into());
                 }
                 t.check()?;
+            }
+            TransportConfig::GrpcClient {
+                url, tls: Some(t), ..
+            } => {
+                tls_url(url, "https://")?;
+                t.check()?;
+            }
+            TransportConfig::GrpcServer { tls: Some(t), .. } => t.check()?,
+            _ => {}
+        }
+        match self {
+            TransportConfig::GrpcClient {
+                url,
+                metadata,
+                max_message_kib,
+                keepalive_secs,
+                ..
+            } => {
+                if !(url.starts_with("http://")
+                    || url.starts_with("https://")
+                    || url.starts_with("${env:"))
+                {
+                    return Err(format!(
+                        "gRPC url must start with http:// or https://, got {url:?}"
+                    ));
+                }
+                for k in metadata.keys() {
+                    let ok = !k.is_empty()
+                        && k.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.".contains(&b)
+                        })
+                        && !k.starts_with("grpc-")
+                        && !matches!(k.as_str(), "content-type" | "te" | "user-agent");
+                    if !ok {
+                        return Err(format!(
+                            "gRPC metadata name {k:?}: lowercase letters, digits, - _ . \
+                             (not grpc-*, content-type, te or user-agent)"
+                        ));
+                    }
+                }
+                grpc_limits(*max_message_kib, *keepalive_secs)?;
+            }
+            TransportConfig::GrpcServer {
+                max_message_kib,
+                max_connections,
+                keepalive_secs,
+                ..
+            } => {
+                grpc_limits(*max_message_kib, *keepalive_secs)?;
+                if !(1..=10_000).contains(max_connections) {
+                    return Err("max_connections: 1 to 10000".into());
+                }
             }
             _ => {}
         }
@@ -285,7 +400,99 @@ impl TransportConfig {
             | TransportConfig::Websocket { url, .. }
             | TransportConfig::Mqtt { url, .. } => url.clone(),
             TransportConfig::File { path, .. } => path.clone(),
+            TransportConfig::GrpcClient { url, method, .. } => {
+                format!(
+                    "{}/{}",
+                    url.trim_end_matches('/'),
+                    method.trim_start_matches('/')
+                )
+            }
+            TransportConfig::GrpcServer { bind, .. } => bind.clone(),
         }
+    }
+}
+
+fn grpc_limits(max_message_kib: u64, keepalive_secs: f64) -> Result<(), String> {
+    if !(1..=65_536).contains(&max_message_kib) {
+        return Err("max_message_kib: 1 to 65536 (64 MiB)".into());
+    }
+    if !(keepalive_secs == 0.0 || (1.0..=3600.0).contains(&keepalive_secs)) {
+        return Err("keepalive_secs: 0 (none) or 1 to 3600".into());
+    }
+    Ok(())
+}
+
+/// The protobuf schema a gRPC transport works with: the codec's compiled
+/// `.proto` files and the message each frame holds.
+#[derive(Clone)]
+pub struct ProtoContext {
+    pub set: Arc<crate::proto::ProtoSet>,
+    pub message: String,
+}
+
+impl ProtoContext {
+    /// From a source's codec (none unless it is protobuf).
+    pub fn of(codec: &crate::codec::CodecConfig) -> Result<Option<Self>, String> {
+        match codec {
+            crate::codec::CodecConfig::Protobuf { message, .. } => Ok(Some(Self {
+                set: codec
+                    .proto()
+                    .map_err(|e| e.to_string())?
+                    .expect("a protobuf codec compiles"),
+                message: message.clone(),
+            })),
+            _ => Ok(None),
+        }
+    }
+
+    /// The methods a gRPC server accepts: those listed, or every method
+    /// whose request is the codec's message. Each must send that message.
+    pub fn server_methods(&self, listed: &[String]) -> Result<Vec<crate::proto::Method>, String> {
+        let wanted = self.message.trim_start_matches('.');
+        let methods = if listed.is_empty() {
+            self.set
+                .methods()
+                .into_iter()
+                .filter(|m| m.input == wanted)
+                .collect::<Vec<_>>()
+        } else {
+            listed
+                .iter()
+                .map(|m| self.set.method(m).map_err(|e| e.to_string()))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        if methods.is_empty() {
+            return Err(format!(
+                "no method in the .proto files takes {wanted}: list the methods producers call"
+            ));
+        }
+        for m in &methods {
+            if m.input != wanted {
+                return Err(format!(
+                    "{} takes {}, but the codec decodes {wanted}",
+                    m.name, m.input
+                ));
+            }
+        }
+        Ok(methods)
+    }
+
+    /// Check a gRPC client's method and request against the schema; the
+    /// request, encoded.
+    pub fn client_request(&self, method: &str, request: &Value) -> Result<Vec<u8>, String> {
+        let m = self.set.method(method).map_err(|e| e.to_string())?;
+        let wanted = self.message.trim_start_matches('.');
+        if m.output != wanted {
+            return Err(format!(
+                "{} answers {}, but the codec decodes {wanted}",
+                m.name, m.output
+            ));
+        }
+        let input = self.set.message(&m.input).map_err(|e| e.to_string())?;
+        let empty = serde_json::json!({});
+        self.set
+            .encode(&input, if request.is_null() { &empty } else { request })
+            .map_err(|e| format!("request: {e}"))
     }
 }
 
@@ -353,10 +560,112 @@ async fn emit(tx: &mpsc::Sender<Frame>, status: &SharedStatus, frame: Frame) -> 
 /// (peer closed); either way the supervisor decides when to reconnect.
 pub async fn run(
     config: &TransportConfig,
+    proto: Option<&ProtoContext>,
     tx: mpsc::Sender<Frame>,
     status: SharedStatus,
 ) -> anyhow::Result<()> {
+    let need_proto =
+        || proto.ok_or_else(|| anyhow::anyhow!("a gRPC source decodes with the protobuf codec"));
     match config {
+        TransportConfig::GrpcClient {
+            url,
+            method,
+            request,
+            metadata,
+            tls,
+            max_message_kib,
+            keepalive_secs,
+        } => {
+            let proto = need_proto()?;
+            let request = proto
+                .client_request(method, request)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let url = resolve_env(url)?;
+            let host = url
+                .split("://")
+                .nth(1)
+                .and_then(|r| r.split(['/', ':']).next())
+                .unwrap_or_default()
+                .to_owned();
+            let tls = match tls {
+                Some(t) => {
+                    let name = match t.server_name()? {
+                        Some(n) => n,
+                        None => crate::tls::server_name(&host)?,
+                    };
+                    Some((t.client_config()?, name))
+                }
+                None => None,
+            };
+            let metadata = metadata
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), resolve_env(v)?)))
+                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+            let path = format!("/{}", method.trim_start_matches('/'));
+            let call = crate::grpc::Subscription {
+                url: url.clone(),
+                path: path.clone(),
+                request,
+                metadata,
+                tls,
+                max_message: (*max_message_kib as usize) << 10,
+                keepalive: (*keepalive_secs > 0.0)
+                    .then(|| Duration::from_secs_f64(*keepalive_secs)),
+                connect_timeout: Duration::from_secs(10),
+            };
+            let origin = url.clone();
+            let ended = crate::grpc::subscribe(
+                &call,
+                || connected(&status),
+                |bytes| {
+                    let mut f = Frame::new(bytes);
+                    f.origin = Some(origin.clone());
+                    f.meta.insert("method".into(), Value::String(path.clone()));
+                    let (tx, status) = (tx.clone(), status.clone());
+                    async move { emit(&tx, &status, f).await }
+                },
+            )
+            .await?;
+            tracing::info!(%url, method = %path, messages = ended.messages, "gRPC call ended");
+            Ok(())
+        }
+        TransportConfig::GrpcServer {
+            bind,
+            methods,
+            tls,
+            token,
+            max_message_kib,
+            max_connections,
+            keepalive_secs,
+        } => {
+            let proto = need_proto()?;
+            let accepted = proto
+                .server_methods(methods)
+                .map_err(|e| anyhow::anyhow!(e))?
+                .into_iter()
+                .map(|m| {
+                    let input = proto.set.message(&m.input)?;
+                    Ok((format!("/{}", m.name), crate::grpc::Accepted { input }))
+                })
+                .collect::<Result<BTreeMap<_, _>, crate::proto::ProtoError>>()?;
+            let token = token.as_deref().map(resolve_env).transpose()?;
+            let acceptor = tls.as_ref().map(ServerTls::acceptor).transpose()?;
+            let service = Arc::new(crate::grpc::Service {
+                schema: proto.set.clone(),
+                methods: accepted,
+                token,
+                max_message: (*max_message_kib as usize) << 10,
+                max_connections: *max_connections,
+                keepalive: (*keepalive_secs > 0.0)
+                    .then(|| Duration::from_secs_f64(*keepalive_secs)),
+            });
+            let listener = tokio::net::TcpListener::bind(resolve_env(bind)?.as_str())
+                .await
+                .with_context(|| format!("binding {bind}"))?;
+            connected(&status);
+            let counts = Arc::new(crate::grpc::ServeCounts::default());
+            crate::grpc::serve(listener, acceptor, service, tx, counts).await
+        }
         TransportConfig::TcpClient {
             host,
             port,
@@ -1009,7 +1318,7 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::channel(8);
         let status = SharedStatus::default();
-        let task = tokio::spawn(async move { run(&config, tx, status).await });
+        let task = tokio::spawn(async move { run(&config, None, tx, status).await });
         let mut client = loop {
             match tokio::net::TcpStream::connect(addr).await {
                 Ok(c) => break c,
@@ -1039,7 +1348,8 @@ mod tests {
             multicast_interface: None,
         };
         let (tx, mut rx) = mpsc::channel(8);
-        let task = tokio::spawn(async move { run(&config, tx, SharedStatus::default()).await });
+        let task =
+            tokio::spawn(async move { run(&config, None, tx, SharedStatus::default()).await });
         let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let frame = loop {
             sender.send_to(b"{\"id\":1}", addr).await.unwrap();
@@ -1125,7 +1435,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let status = SharedStatus::default();
         let task_status = status.clone();
-        let task = tokio::spawn(async move { run(&config, tx, task_status).await });
+        let task = tokio::spawn(async move { run(&config, None, tx, task_status).await });
         for _ in 0..100 {
             if status.lock().unwrap().connected {
                 break;
@@ -1266,7 +1576,7 @@ mod tests {
         let status = SharedStatus::default();
         let task_status = status.clone();
         let task = tokio::spawn(async move {
-            let _ = run(&config, tx, task_status).await;
+            let _ = run(&config, None, tx, task_status).await;
         });
         while tokio::net::TcpStream::connect(addr).await.is_err() {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1289,7 +1599,7 @@ mod tests {
             tls: Some(tls),
         };
         let (tx, _rx) = mpsc::channel(8);
-        tokio::time::timeout(wait, run(&config, tx, SharedStatus::default()))
+        tokio::time::timeout(wait, run(&config, None, tx, SharedStatus::default()))
             .await
             .ok()
     }
@@ -1418,7 +1728,8 @@ mod tests {
 
     async fn first_frame(config: TransportConfig) -> Frame {
         let (tx, mut rx) = mpsc::channel(8);
-        let task = tokio::spawn(async move { run(&config, tx, SharedStatus::default()).await });
+        let task =
+            tokio::spawn(async move { run(&config, None, tx, SharedStatus::default()).await });
         let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("no frame")

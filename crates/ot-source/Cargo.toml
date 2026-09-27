@@ -12,6 +12,16 @@ anyhow.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
+flate2.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "server", "http2"] }
+hyper-util = { workspace = true, features = ["tokio", "server-auto", "http2"] }
+prost.workspace = true
+prost-reflect.workspace = true
+protox.workspace = true
+miette.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
 reqwest.workspace = true

@@ -43,6 +43,7 @@ pub struct ProbeRequest {
 /// Capture frames from a transport until either limit is reached.
 async fn capture(
     t: &TransportConfig,
+    proto: Option<transport::ProtoContext>,
     max_frames: usize,
     max_secs: f64,
 ) -> (Vec<Frame>, Option<String>) {
@@ -50,7 +51,8 @@ async fn capture(
     let status = SharedStatus::default();
     let t = t.clone();
     let task_status = status.clone();
-    let task = tokio::spawn(async move { transport::run(&t, tx, task_status).await });
+    let task =
+        tokio::spawn(async move { transport::run(&t, proto.as_ref(), tx, task_status).await });
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(max_secs);
     let mut frames = Vec::new();
     let mut ended: Option<String> = None;
@@ -89,7 +91,12 @@ pub async fn probe(
         return Err(ApiError::unprocessable("save_as must be a valid source id"));
     }
     let started = std::time::Instant::now();
-    let (frames, link_error) = capture(&req.transport, max_frames, max_secs).await;
+    // A gRPC probe needs the protobuf codec's schema.
+    let proto = match transport::ProtoContext::of(&req.codec) {
+        Ok(p) => p,
+        Err(e) => return Err(ApiError::unprocessable(format!("protobuf: {e}"))),
+    };
+    let (frames, link_error) = capture(&req.transport, proto, max_frames, max_secs).await;
     let elapsed = started.elapsed().as_secs_f64();
 
     // For JSON without a record path, see whether frames wrap an array.
@@ -232,7 +239,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         });
-        let (frames, err) = capture(&t, 5, 10.0).await;
+        let (frames, err) = capture(&t, None, 5, 10.0).await;
         sender.abort();
         assert_eq!(frames.len(), 5);
         assert!(err.is_none());
@@ -247,7 +254,7 @@ mod tests {
             send_on_connect: None,
             tls: None,
         };
-        let (frames, err) = capture(&t, 5, 2.0).await;
+        let (frames, err) = capture(&t, None, 5, 2.0).await;
         assert!(frames.is_empty());
         assert!(err.unwrap().contains("connecting"));
     }

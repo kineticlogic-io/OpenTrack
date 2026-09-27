@@ -121,11 +121,38 @@ impl SourceSpec {
         if let Some(t) = &self.pipeline.tracker {
             t.validate().map_err(SourceError::Tracker)?;
         }
-        if let crate::codec::CodecConfig::Plugin { .. } = &self.pipeline.codec {
+        if let crate::codec::CodecConfig::Plugin { .. }
+        | crate::codec::CodecConfig::Protobuf { .. } = &self.pipeline.codec
+        {
             crate::codec::Codec::new(self.pipeline.codec.clone())
                 .map_err(|e| SourceError::Tracker(e.to_string()))?;
         }
         self.transport.check().map_err(SourceError::Transport)?;
+        // gRPC carries protobuf: the method must fit the codec's message.
+        if let TransportConfig::GrpcClient { .. } | TransportConfig::GrpcServer { .. } =
+            &self.transport
+        {
+            let proto = crate::transport::ProtoContext::of(&self.pipeline.codec)
+                .map_err(SourceError::Transport)?
+                .ok_or_else(|| {
+                    SourceError::Transport("a gRPC source decodes with the protobuf codec".into())
+                })?;
+            match &self.transport {
+                TransportConfig::GrpcClient {
+                    method, request, ..
+                } => {
+                    proto
+                        .client_request(method, request)
+                        .map_err(SourceError::Transport)?;
+                }
+                TransportConfig::GrpcServer { methods, .. } => {
+                    proto
+                        .server_methods(methods)
+                        .map_err(SourceError::Transport)?;
+                }
+                _ => {}
+            }
+        }
         if let TransportConfig::TcpClient { framing, .. }
         | TransportConfig::TcpServer { framing, .. } = &self.transport
         {
@@ -198,5 +225,150 @@ mod tests {
             let s: SourceSpec = serde_json::from_value(spec(bad)).unwrap();
             assert!(matches!(s.validate(), Err(SourceError::BadId(_))), "{bad}");
         }
+    }
+
+    /// A gRPC source over the test producer's schema (see `proto::tests`).
+    fn grpc_spec(transport: serde_json::Value, message: &str) -> serde_json::Value {
+        json!({
+            "id": "acme", "name": "ACME feed", "transport": transport,
+            "pipeline": {
+                "codec": { "type": "protobuf", "files": crate::proto::tests::files(),
+                           "message": message, "records": "tracks" },
+                "mapping": { "rules": [ { "name": "track", "key": "track_id", "fields": {
+                    "position.latitude": "position.lat", "position.longitude": "position.lon" } } ] }
+            }
+        })
+    }
+
+    fn check(v: serde_json::Value) -> Result<(), String> {
+        let s: SourceSpec = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        s.validate().map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_grpc_source_must_fit_its_protobuf_schema() {
+        let client = |method: &str, request: serde_json::Value| {
+            json!({"type": "grpc_client", "url": "https://feed.acme.example:443", "method": method, "request": request,
+                   "metadata": {"authorization": "Bearer ${env:ACME_TOKEN}"}})
+        };
+        let batch = "acme.tracks.v1.TrackBatch";
+        check(grpc_spec(
+            client("acme.tracks.v1.TrackFeed/Stream", json!({"area": "solent"})),
+            batch,
+        ))
+        .unwrap();
+        check(grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            batch,
+        ))
+        .unwrap();
+        let e = check(grpc_spec(
+            client("acme.tracks.v1.TrackFeed/Nope", json!(null)),
+            batch,
+        ))
+        .unwrap_err();
+        assert!(e.contains("no method"), "{e}");
+        let e = check(grpc_spec(
+            client("acme.tracks.v1.TrackFeed/Stream", json!(null)),
+            "acme.tracks.v1.Track",
+        ))
+        .unwrap_err();
+        assert!(e.contains("answers acme.tracks.v1.TrackBatch"), "{e}");
+        let e = check(grpc_spec(
+            client("acme.tracks.v1.TrackFeed/Stream", json!({"area": 7})),
+            batch,
+        ))
+        .unwrap_err();
+        assert!(e.contains("request"), "{e}");
+        let e = check(grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051", "methods": ["acme.tracks.v1.TrackFeed/Stream"]}),
+            batch,
+        ))
+        .unwrap_err();
+        assert!(e.contains("takes acme.tracks.v1.Subscribe"), "{e}");
+        let e = check(grpc_spec(json!({"type": "grpc_client", "url": "feed:443", "method": "acme.tracks.v1.TrackFeed/Stream"}), batch))
+            .unwrap_err();
+        assert!(e.contains("http://"), "{e}");
+        let e = check(grpc_spec(
+            json!({"type": "grpc_client", "url": "http://f:1", "method": "acme.tracks.v1.TrackFeed/Stream",
+                   "metadata": {"grpc-timeout": "1S"}}),
+            batch,
+        ))
+        .unwrap_err();
+        assert!(e.contains("metadata"), "{e}");
+        // gRPC needs the protobuf codec.
+        let mut v = grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            batch,
+        );
+        v["pipeline"]["codec"] = json!({"type": "json"});
+        assert!(check(v).unwrap_err().contains("protobuf codec"));
+        // A broken .proto is caught when the source is saved.
+        let mut v = grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            batch,
+        );
+        v["pipeline"]["codec"]["files"]["tracks.proto"] = json!("syntax = \"proto3\"; message {");
+        assert!(check(v).unwrap_err().contains("tracks.proto:1"));
+    }
+
+    #[tokio::test]
+    async fn producers_push_through_a_grpc_server_source_to_records() {
+        let v = grpc_spec(
+            json!({"type": "grpc_server", "bind": "127.0.0.1:0", "token": "abc"}),
+            "acme.tracks.v1.TrackBatch",
+        );
+        let spec: SourceSpec = serde_json::from_value(v).unwrap();
+        spec.validate().unwrap();
+        // Bind a known free port for the test.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut transport = spec.transport.clone();
+        if let TransportConfig::GrpcServer { bind, .. } = &mut transport {
+            *bind = format!("127.0.0.1:{port}");
+        }
+        let proto = crate::transport::ProtoContext::of(&spec.pipeline.codec).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            let _ = crate::transport::run(&transport, proto.as_ref(), tx, Default::default()).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // A producer pushes one batch of two tracks.
+        let set = crate::proto::ProtoSet::compile(&crate::proto::tests::files()).unwrap();
+        let batch = set.message("acme.tracks.v1.TrackBatch").unwrap();
+        let push = crate::grpc::Subscription {
+            url: format!("http://127.0.0.1:{port}"),
+            path: "/acme.tracks.v1.TrackFeed/Push".into(),
+            request: set
+                .encode(
+                    &batch,
+                    &json!({"tracks": [
+                    {"track_id": "V1", "position": {"lat": 50.8, "lon": -1.1}},
+                    {"track_id": "V2", "position": {"lat": 50.7, "lon": -1.3}}]}),
+                )
+                .unwrap(),
+            metadata: [("authorization".to_owned(), "Bearer abc".to_owned())].into(),
+            tls: None,
+            max_message: 1 << 16,
+            keepalive: None,
+            connect_timeout: std::time::Duration::from_secs(5),
+        };
+        let ended = crate::grpc::subscribe(&push, || {}, |_ack| async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(ended.messages, 1, "the Ack");
+        let frame = rx.recv().await.unwrap();
+        let mut codec = crate::codec::Codec::new(spec.pipeline.codec.clone()).unwrap();
+        let records = codec.decode(&frame).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1]["track_id"], "V2");
+        assert_eq!(records[1]["position"]["lon"], -1.3);
+        assert_eq!(
+            records[0]["_frame"]["method"],
+            "/acme.tracks.v1.TrackFeed/Push"
+        );
     }
 }
