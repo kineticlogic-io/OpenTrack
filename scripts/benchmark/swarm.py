@@ -198,7 +198,7 @@ class Pictures:
             return {s: dict(p) for s, p in self.by.items()}
 
 
-def score(world, nodes, pics):
+def score(world, nodes, pics, misses=None):
     """Each track goes to its nearest seen target (within MATCH_M); a target
     with more than one track on a node has duplicates there."""
     seen = [t for t in world.targets if any(n.sees(t) for n in nodes)]
@@ -222,8 +222,14 @@ def score(world, nodes, pics):
                 dup += len(tracks) - 1
             else:
                 uids.append(None)
+        doubled = any(len(got[i]) > 1 for got in per_node)
         if None not in uids and len(set(uids)) == 1:
             one += 1
+        if misses is not None and (doubled or None in uids or len(set(uids)) > 1):
+            t = seen[i]
+            misses.append({"target": t["mmsi"], "lat": round(t["lat"], 5), "lon": round(t["lon"], 5),
+                           "seen_by": [n.site for n in nodes if n.sees(t)],
+                           "tracks": {n.site: [[u, round(d)] for d, u in sorted(per_node[j][i])] for j, n in enumerate(nodes)}})
     k = max(1, len(seen))
     pairs = max(1, len(seen) * len(nodes))
     return {"seen": len(seen), "coverage": held / pairs, "one_number": one / k, "duplicates": dup / pairs}
@@ -322,8 +328,11 @@ def main(argv):
         while feeder.is_alive():
             time.sleep(10)
             now = time.time()
-            s = score(world, nodes, pics.snapshot())
+            misses = []
+            s = score(world, nodes, pics.snapshot(), misses)
             s["t"] = round(now - t0)
+            with open(out / "misses.jsonl", "a") as f:
+                f.write(json.dumps({"t": s["t"], "misses": misses}) + "\n")
             try:
                 stats = json.loads((out / "bridge.json").read_text())["nodes"]
             except Exception:

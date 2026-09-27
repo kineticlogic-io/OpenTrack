@@ -2576,9 +2576,18 @@ impl Engine {
                 let (r, v) = (k.sigma_report_m.powi(2), k.sigma_view_m.powi(2));
                 (s.reuse_views && r + v > 0.0).then(|| r / (r + v))
             };
+            // A track only other nodes report is their estimate, which they
+            // re-send whenever it drifts from its prediction: the prediction
+            // is current, not a view already used.
+            let other_at =
+                if self.sync_on && t.contributors.iter().all(|c| sync::is_peer(&c.source_id)) {
+                    obs.observed_at.max(t.view.observed_at)
+                } else {
+                    t.view.observed_at
+                };
             let Some(tally) = self.candidates.entry(key).or_default().record_reusing(
                 (&uid.to_string(), obs.observed_at),
-                (&other.to_string(), t.view.observed_at),
+                (&other.to_string(), other_at),
                 k.ln_lr,
                 !k.pass,
                 (s.n, &s),
@@ -4961,6 +4970,42 @@ mod tests {
         for n in &nodes {
             n.e.redis.purge_namespace().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn a_report_under_a_number_merged_away_goes_to_the_survivor() {
+        let Some((mut e, _d)) = engine_at("BBB", &["radar", "peer:AAA", "peer:CCC"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let p: Uid = "AAA000000009".parse().unwrap();
+        // B's radar has had it for a while when A's report of it arrives:
+        // correlation merges A's number into B's older one.
+        for s in 0..20 {
+            let mut batch = vec![report("radar", "1", s, 32.0, -117.0, None)];
+            if s >= 10 {
+                batch.push(report("peer:AAA", &p.to_string(), s, 32.0, -117.0, None));
+            }
+            feed(&mut e, &batch).await;
+        }
+        let local = track_of(&e, "radar", "1");
+        assert_eq!(local.site().as_str(), "BBB");
+        assert!(
+            !e.tracks.contains_key(&p),
+            "A's number merged into B's older track"
+        );
+        // C still calls it by A's number.
+        feed(
+            &mut e,
+            &[report("peer:CCC", &p.to_string(), 4, 32.0, -117.0, None)],
+        )
+        .await;
+        assert!(
+            !e.tracks.contains_key(&p),
+            "the merged-away number came back"
+        );
+        assert_eq!(track_of(&e, "peer:CCC", &p.to_string()), local);
+        e.redis.purge_namespace().await.unwrap();
     }
 
     #[tokio::test]

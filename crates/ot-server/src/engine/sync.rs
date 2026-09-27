@@ -205,6 +205,15 @@ impl Engine {
         counts: &mut super::EngineCounts,
     ) -> anyhow::Result<Uid> {
         let (source, key) = (obs.source_id.clone(), obs.source_track_key.clone());
+        // A number this node merged away: the report is of the survivor.
+        let uid = if self.tracks.contains_key(&uid) {
+            uid
+        } else {
+            self.tracks
+                .values()
+                .find(|t| t.aliases.contains(&uid))
+                .map_or(uid, |t| t.uid)
+        };
         if self.tracks.contains_key(&uid) {
             let attrs = json!({ "pairing": "auto", "confidence": 1.0 });
             let d = super::engine_decision("pair")
