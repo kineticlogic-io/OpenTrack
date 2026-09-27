@@ -52,6 +52,8 @@ export interface SystemTrack {
   uid: string
   state: 'tentative' | 'confirmed' | 'lost' | 'dropped'
   view: Observation
+  /** With other nodes sharing the picture: the site code of the node that reports it to them. */
+  reported_by?: string
   /** The registry entity this track resolves to. */
   entity_id?: string
   kind?: 'track' | 'group'
@@ -381,6 +383,35 @@ export interface AppSettings {
   history_hours?: number | null
   /** At most one history point per track this often, in seconds (0: every update; unset: 10). */
   history_interval_secs?: number | null
+  /** Sharing the picture with other OpenTrack nodes. */
+  sync?: SyncSettings
+}
+
+/** Sharing the picture with other OpenTrack nodes (docs/multi-node.md). */
+export interface SyncSettings {
+  enabled: boolean
+  /** Site codes of the nodes trusted. */
+  peers: string[]
+  /** Apply other nodes' track management; accept none here. */
+  receive_only: boolean
+  /** Share the output schema and correlation settings. */
+  share_profile: boolean
+}
+
+export const DEFAULT_SYNC: SyncSettings = { enabled: false, peers: [], receive_only: false, share_profile: true }
+
+export interface SyncStatus {
+  site: string
+  settings: SyncSettings
+  log: { heads: { site: string; seq: number }[]; by_status: Record<string, number> }
+  /** Written by the link every few seconds; absent when no link runs. */
+  link?: {
+    at: string
+    /** Site code → when last heard. */
+    heard: Record<string, string>
+    counts: Record<string, number>
+  } | null
+  engine?: { at: string; reporting: number; shared: number; from_other_nodes: number } | null
 }
 
 // --- Sign-in ---------------------------------------------------------------------------------
@@ -795,6 +826,7 @@ export interface EntityView {
 
 export const api = {
   status: () => get<ServerStatus>('/status'),
+  syncStatus: () => get<SyncStatus>('/sync/status'),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
   tracks: (limit = 10000) => get<{ total: number; tracks: TrackRow[] }>(`/tracks?limit=${limit}`),
   track: (uid: string) => get<TrackResponse>(`/tracks/${enc(uid)}`),

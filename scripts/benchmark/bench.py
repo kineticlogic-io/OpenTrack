@@ -373,6 +373,11 @@ def main():
         import live_load
         live_load.main(sys.argv[2:])
         return
+    # So does `swarm` (see swarm.py).
+    if len(sys.argv) > 1 and sys.argv[1] == "swarm":
+        import swarm
+        swarm.main(sys.argv[2:])
+        return
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list").set_defaults(fn=cmd_list)

@@ -440,6 +440,29 @@ impl RedisStore {
         Ok(())
     }
 
+    /// Record how one part of sharing (`link`, `engine`) is going.
+    pub async fn put_sync_status(&self, part: &str, status: &serde_json::Value) -> Result<()> {
+        redis::cmd("HSET")
+            .arg(self.keys.sync_status())
+            .arg(part)
+            .arg(status.to_string())
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Every part's last status.
+    pub async fn sync_status(&self) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let raw: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+            .arg(self.keys.sync_status())
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?)))
+            .collect())
+    }
+
     /// Take up to `n` queued sync messages, oldest first.
     pub async fn pop_sync_out(&self, n: usize) -> Result<Vec<Vec<u8>>> {
         let raw: Option<Vec<Vec<u8>>> = redis::cmd("LPOP")

@@ -4698,7 +4698,10 @@ mod tests {
         let want = deliver(vec![la.summary().await.unwrap()], &mut lb, &mut b).await;
         // B has not heard A before: it asks for A's tracks too.
         assert_eq!(want.len(), 2);
-        assert!(want.iter().all(|w| w.to.map(|s| s.to_string()) == Some("AAA".into())));
+        assert!(
+            want.iter()
+                .all(|w| w.to.map(|s| s.to_string()) == Some("AAA".into()))
+        );
         let answer = deliver(want, &mut la, &mut a).await;
         deliver(answer, &mut lb, &mut b).await;
         assert_eq!(b.tracks[&t1].paired_with, vec![t2]);

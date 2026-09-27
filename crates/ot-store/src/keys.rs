@@ -83,6 +83,12 @@ impl Keys {
         format!("{}:sync:out", self.ns)
     }
 
+    /// How sharing with other nodes is going, as the link and the engine
+    /// last wrote it (a hash of JSON by part).
+    pub fn sync_status(&self) -> String {
+        format!("{}:sync:status", self.ns)
+    }
+
     /// Cached static (identity) fields of a source track, for the static join.
     pub fn static_cache(&self, source: &str, key: &str) -> String {
         format!("{}:cache:{source}:{key}", self.ns)

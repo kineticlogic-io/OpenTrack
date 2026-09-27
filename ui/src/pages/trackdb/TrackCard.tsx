@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { TbAlertTriangle, TbArrowBackUp, TbArrowsSplit, TbPencil, TbUnlink } from 'react-icons/tb'
 import { Badge, Button, DataTable, TabPanel, Tabs, useToast, type DataTableColumn } from 'staresdk'
+import { InfoTip } from '../../components/InfoTip'
 import { api, type ExtensionField, type GraphEdge, type HistoryPoint, type SystemTrack, type TrackResponse } from '../../api/client'
 import { ago, errorMessage, fmtNum, fmtTime, show, STATE_COLOR } from '../../lib/format'
 import { standardName, symbolUrl } from '../../lib/symbol'
@@ -305,6 +306,18 @@ export function TrackCard({
               </dd>
               <dt>Subject</dt>
               <dd className="mono">{data.subject}</dd>
+              {t.reported_by && (
+                <>
+                  <dt>Reported by</dt>
+                  <dd className="num-row">
+                    <span className="mono">{t.reported_by}</span>
+                    <InfoTip label="Reported by">
+                      With other OpenTrack nodes sharing the picture, the node that sees this track best reports it to the others; the rest hold it
+                      quietly and take over if it stops.
+                    </InfoTip>
+                  </dd>
+                </>
+              )}
               <dt>Entity</dt>
               <dd className="mono">{entityId ?? <span className="muted">none</span>}</dd>
               {(t.members ?? []).length > 0 && (

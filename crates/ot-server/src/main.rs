@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod api;
 mod auth;
+mod bridge;
 mod config;
 mod control;
 mod correlate;
@@ -30,6 +31,7 @@ mod registry_api;
 mod registry_sheet;
 mod settings_api;
 mod sources;
+mod sync_api;
 mod synthetic;
 mod user_cli;
 mod writer;
@@ -64,6 +66,10 @@ enum Command {
     /// Exchange tracks and decisions with other OpenTrack nodes over the
     /// node's NATS (idle until sync is enabled in Settings).
     Link(link::LinkArgs),
+    /// Carry sync messages between nodes' NATS servers (server sites
+    /// without a networking package, and tests: it can drop, delay,
+    /// duplicate, cap and partition).
+    Bridge(bridge::BridgeArgs),
     /// Run every role in one process: control plane, sources, engine,
     /// writer, link.
     All {
@@ -227,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Engine(args) => run_engine(common, args).await,
         Command::Link(args) => link::run(common, args, shutdown_signal()).await,
+        Command::Bridge(args) => bridge::run(args, shutdown_signal()).await,
         Command::All {
             serve: s,
             writer: w,

@@ -51,6 +51,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::registry_api::routes())
         .merge(crate::settings_api::routes())
         .merge(crate::correlation_api::routes())
+        .merge(crate::sync_api::routes())
         .merge(crate::manage_api::routes())
         .merge(crate::plugins_api::routes())
         .merge(crate::profiles::routes())

@@ -502,7 +502,23 @@ impl Engine {
         });
         let entry = self.shared.entry(uid).or_default();
         let was = entry.resp.reporting;
-        if !entry.resp.decide(me, mine, now) {
+        let reporting = entry.resp.decide(me, mine, now);
+        let reporter = if reporting {
+            Some(me.to_string())
+        } else {
+            entry
+                .resp
+                .other
+                .filter(|h| now - h.at_ms < ot_sync::r2::TAKE_OVER_MS)
+                .map(|h| h.site.to_string())
+        };
+        if let Some(t) = self.tracks.get_mut(&uid)
+            && t.reported_by != reporter
+        {
+            t.reported_by = reporter;
+        }
+        let entry = self.shared.entry(uid).or_default();
+        if !reporting {
             if was {
                 entry.sent = None;
                 entry.origin_at = None;
@@ -658,6 +674,18 @@ impl Engine {
                 self.shared.remove(&uid);
             }
         }
+        let reporting = self.shared.values().filter(|s| s.resp.reporting).count();
+        self.redis
+            .put_sync_status(
+                "engine",
+                &json!({
+                    "at": Utc::now(), "reporting": reporting, "shared": self.shared.len(),
+                    "from_other_nodes": self.tracks.values()
+                        .filter(|t| t.contributors.iter().all(|c| is_peer(&c.source_id)))
+                        .count(),
+                }),
+            )
+            .await?;
         self.sync_flush().await
     }
 

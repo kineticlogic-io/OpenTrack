@@ -17,6 +17,9 @@ services:
       OT_NATS_STREAM: ${OT_NATS_STREAM:-TRACKS}
       OT_NATS_TRACKS_SUBJECT: ${OT_NATS_TRACKS_SUBJECT:-tracks}
       OT_SITE_CODE: ${OT_SITE_CODE:-OTK}
+      # Other OpenTrack nodes (docs/multi-node.md): the sync boundary on
+      # this NATS, for a networking package or `opentrack bridge`.
+      OT_SYNC_PREFIX: ${OT_SYNC_PREFIX:-ot.sync}
       # Sign-in (see the README): the first admin, where browsers reach
       # OpenTrack (for SAML), and TLS with optional client certificates.
       OT_AUTH: ${OT_AUTH:-on}

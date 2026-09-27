@@ -128,6 +128,19 @@ impl Db {
         })
     }
 
+    /// Entries by where they stand here, e.g. `{"applied": 12, "pending": 1}`.
+    pub fn sync_counts(&self) -> Result<std::collections::BTreeMap<String, u64>> {
+        let mut st = self
+            .connection()
+            .prepare("SELECT status, count(*) FROM sync_log GROUP BY status")?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// The highest sequence held from each site.
     pub fn sync_heads(&self) -> Result<Vec<(SiteCode, u64)>> {
         let mut st = self

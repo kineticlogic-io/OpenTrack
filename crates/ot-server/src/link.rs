@@ -189,6 +189,22 @@ impl Link {
             .collect())
     }
 
+    /// How the link is going, for the Settings page.
+    pub async fn write_status(&mut self) -> anyhow::Result<()> {
+        let now = chrono::Utc::now();
+        let heard: serde_json::Map<String, serde_json::Value> = self
+            .heard
+            .iter()
+            .map(|(site, at)| {
+                let ago = chrono::Duration::from_std(at.elapsed()).unwrap_or_default();
+                (site.to_string(), json!(now - ago))
+            })
+            .collect();
+        let status = json!({ "at": now, "heard": heard, "counts": self.counts });
+        self.redis().await?.put_sync_status("link", &status).await?;
+        Ok(())
+    }
+
     /// What this node holds, for everyone.
     pub async fn summary(&self) -> anyhow::Result<Out> {
         let heads = self.db(|db| db.sync_heads()).await?;
@@ -531,6 +547,9 @@ pub async fn run(
                 }
                 if now >= next_summary {
                     next_summary = now + summary_every;
+                    if let Err(e) = link.write_status().await {
+                        tracing::warn!(error = %format!("{e:#}"), "sync status failed");
+                    }
                     match link.summary().await {
                         Ok(o) => send(vec![o]).await,
                         Err(e) => tracing::warn!(error = %format!("{e:#}"), "summary failed"),

@@ -117,6 +117,11 @@ pub struct SystemTrack {
     /// Why the output filter holds it back from publishing, when it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered: Option<String>,
+    /// With other OpenTrack nodes sharing the picture: the site code of the
+    /// node that reports this track to the others (this node's own when it
+    /// does), if any does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_by: Option<String>,
 }
 
 impl SystemTrack {
@@ -173,6 +178,7 @@ impl SystemTrack {
             notices: Vec::new(),
             published: Some(false),
             filtered: None,
+            reported_by: None,
         }
     }
 }

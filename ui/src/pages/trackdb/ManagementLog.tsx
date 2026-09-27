@@ -16,6 +16,10 @@ export function ManagementLog({ rev, onChanged }: { rev: number; onChanged: () =
   const undo = useUndo()
   const [rows, setRows] = useState<DecisionRow[] | null>(null)
   const [busy, setBusy] = useState<number | null>(null)
+  const [site, setSite] = useState<string | null>(null)
+  useEffect(() => {
+    api.status().then((s) => setSite(s.site), () => {})
+  }, [])
   const load = useCallback(() => {
     api.decisions(OPS, 200).then(setRows, () => setRows((r) => r ?? []))
   }, [])
@@ -38,7 +42,26 @@ export function ManagementLog({ rev, onChanged }: { rev: number; onChanged: () =
   const columns: DataTableColumn<DecisionRow>[] = [
     { key: 'id', header: '#', width: 60, mono: true, render: (d) => d.id, sortValue: (d) => d.id },
     { key: 'at', header: 'Time', width: 170, mono: true, render: (d) => fmtTime(d.at_ms), sortValue: (d) => d.at_ms },
-    { key: 'actor', header: 'By', width: 160, render: (d) => <span title={d.actor}>{d.actor}</span>, sortValue: (d) => d.actor },
+    {
+      key: 'actor',
+      header: 'By',
+      width: 190,
+      render: (d) => {
+        // Made on another node (its global id is <site>:<seq>).
+        const from = typeof d.evidence?.sync === 'string' ? d.evidence.sync.split(':')[0] : null
+        return (
+          <span className="num-row" title={d.actor}>
+            <span>{d.actor}</span>
+            {from && site && from !== site && (
+              <Badge color="grey" size="sm" title={`Decided on node ${from} (${String(d.evidence?.sync)})`}>
+                {from}
+              </Badge>
+            )}
+          </span>
+        )
+      },
+      sortValue: (d) => d.actor,
+    },
     {
       key: 'op',
       header: 'Decision',

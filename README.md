@@ -308,8 +308,29 @@ OpenTrack needs no UI or operator to run. The UI is only a client of the REST AP
 - **What a node needs:** the `opentrack` binary and Redis, plus NATS to publish.
 
 This suits unattended or embedded nodes, such as a vehicle, a drone or a remote sensor site. Each
-node gets its own `OT_SITE_CODE`, so track IDs from different nodes never clash. Nodes don't yet
-share one picture: synchronisation between nodes is on the roadmap.
+node gets its own `OT_SITE_CODE`, so track IDs from different nodes never clash.
+
+### Several nodes, one picture
+
+OpenTrack nodes (server sites, or a drone swarm) can share one track picture with no node in
+charge ([design](docs/multi-node.md)):
+- **One number per object.** The same object has the same track number on every node.
+- **One reporter per track.** For each track, the node that sees it best reports it, as often as
+  dead reckoning needs, and only from its own sensors.
+- **Decisions hold everywhere.** A track manager's pair, merge, delete, group or undo on any node
+  holds on every node, and so does a change to the output schema or the correlation settings.
+
+OpenTrack does not do the networking. It hands its sync messages
+([ICD](docs/sync-icd.md)) to whatever carries them, on its own NATS as `ot.sync.out.*` and
+`ot.sync.in.*`. Nothing depends on that link delivering everything: nodes repair missed decisions
+themselves.
+
+Turning it on:
+- Enable it in Settings → Nodes, and list the site codes of the trusted nodes.
+- Between server sites, `opentrack bridge --node nats://a:4222 --node nats://b:4222` carries the
+  messages. See `docs/examples/two-sites/`.
+- `scripts/benchmark/bench swarm` measures how it copes with loss, a bandwidth cap and a
+  partition.
 
 ### Configuration
 
@@ -333,6 +354,8 @@ share one picture: synchronisation between nodes is on the roadmap.
 | `OT_PUBLIC_URL` | | where browsers reach OpenTrack (`https://host:8090`); SAML needs it |
 | `OT_TLS_CERT`, `OT_TLS_KEY` | | serve the API and UI over TLS (cookies become `Secure`) |
 | `OT_TLS_CLIENT_CA` | | with TLS, accept client certificates this CA signed, as the accounts Settings → Security maps them to |
+| `OT_SYNC_PREFIX` | `ot.sync` | subject prefix of the sync boundary with other nodes (`<prefix>.out.*`, `<prefix>.in.*`) |
+| `OT_SYNC_SUMMARY_SECS` | `5` | seconds between the summaries that let nodes find missed decisions |
 | `OT_LOG`, `OT_LOG_FORMAT` | `info`, text | `OT_LOG_FORMAT=json` for JSON logs |
 
 ## Tests
