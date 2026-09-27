@@ -7,9 +7,11 @@
 //! reach other nodes in any order, late or twice; the rules here make every
 //! node end up with the same result without asking anyone.
 
+pub mod dr;
 mod hlc;
 mod log;
 mod quality;
+pub mod r2;
 pub mod wire;
 
 pub use hlc::{Clock, Hlc};

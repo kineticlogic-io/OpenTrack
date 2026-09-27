@@ -7,7 +7,7 @@
 //! it waits.
 
 use chrono::Utc;
-use ot_core::{Observation, Uid};
+use ot_core::{Observation, SystemTrack, Uid};
 use ot_store::SyncStatus;
 use ot_sync::{Entry, GlobalId, Verdict};
 use serde_json::{Value, json};
@@ -68,6 +68,9 @@ impl Engine {
     /// `{"op": "sync_entry", "entry": ...}`.
     pub(super) async fn command(&mut self, cmd: &Value) -> anyhow::Result<Value> {
         let op = cmd["op"].as_str().unwrap_or_default();
+        if let Some(answer) = self.link_command(cmd).await? {
+            return Ok(answer);
+        }
         if op == "sync_entry" {
             let entry: Entry = serde_json::from_value(cmd["entry"].clone())
                 .map_err(|e| anyhow::anyhow!("entry: {e}"))?;
@@ -391,5 +394,351 @@ mod tests {
         assert_eq!(c["group"], "tms-AAA000000009");
         assert!(canonical(&json!({"op": "split"}), &json!({})).is_none());
         assert!(canonical(&json!({"op": "purge"}), &json!({})).is_none());
+    }
+}
+
+// --- Tracks between nodes ----------------------------------------------------
+//
+// Each node reports what its own sources say about the tracks it holds
+// reporting responsibility for (`ot_sync::r2`), as often as dead reckoning
+// needs (`ot_sync::dr`); never what it heard from other nodes. Another
+// node's report arrives as a source track of `peer:<site>`, keyed by its
+// UID, and reports for the system track of that UID here.
+
+/// What this node has shared about one track.
+#[derive(Debug, Default)]
+pub(super) struct Shared {
+    pub(super) resp: ot_sync::r2::Responsibility,
+    sent: Option<ot_sync::dr::Sent>,
+    /// When the origin time was last sent (report time, ms).
+    origin_at: Option<i64>,
+    ids: Option<Vec<(String, String)>>,
+    attrs: Option<Value>,
+}
+
+/// Sync messages waiting for the end of the batch.
+#[derive(Debug, Default)]
+pub(super) struct SyncOut {
+    reports: Vec<ot_sync::wire::Report>,
+    attrs: Vec<(Uid, Value)>,
+    release: Vec<Uid>,
+}
+
+pub(super) fn is_peer(source: &str) -> bool {
+    source.starts_with(PEER)
+}
+
+/// A view's position error as an ellipse (none: unknown).
+fn error_ellipse(o: &Observation) -> Option<ot_core::schema::Ellipse> {
+    let u = o.uncertainty.as_ref()?;
+    u.ellipse.or_else(|| {
+        u.position_covariance()
+            .map(ot_core::schema::Ellipse::from_covariance)
+    })
+}
+
+/// Track quality of a view, from its error rounded as the wire carries it.
+fn quality_of(o: &Observation) -> u8 {
+    error_ellipse(o).map_or(0, |e| ot_sync::quality(e.semi_major_m.round()))
+}
+
+impl Engine {
+    /// The view of a track from this node's own sources only (none when
+    /// only other nodes report it).
+    pub(super) fn local_view(&self, uid: Uid) -> Option<Observation> {
+        let t = self.tracks.get(&uid)?;
+        let local = t
+            .contributors
+            .iter()
+            .filter(|c| !is_peer(&c.source_id))
+            .count();
+        if local == 0 {
+            None
+        } else if local == t.contributors.len() {
+            Some(t.view.clone())
+        } else {
+            self.best_of_where(uid, |c| !is_peer(&c.source_id))
+                .map(|(v, _)| v)
+        }
+    }
+
+    /// Whether this node's own sources make the track worth sharing: it is
+    /// confirmed or lost (not tentative), and one of them may stand alone.
+    fn locally_authoritative(&self, t: &SystemTrack) -> bool {
+        t.kind.is_track()
+            && t.state != ot_core::TrackState::Tentative
+            && t.contributors.iter().any(|c| {
+                !is_peer(&c.source_id) && self.alone.get(&c.source_id).copied().unwrap_or(true)
+            })
+    }
+
+    fn sync_now_ms(&self) -> i64 {
+        self.now().timestamp_millis()
+    }
+
+    /// Decide whether this node reports a track, and queue a report (and
+    /// its attributes) when one is due.
+    pub(super) fn sync_consider(&mut self, uid: Uid) {
+        if !self.sync_on {
+            return;
+        }
+        let Some(t) = self.tracks.get(&uid) else {
+            return;
+        };
+        if !t.kind.is_track() {
+            return;
+        }
+        let local = if self.locally_authoritative(t) {
+            self.local_view(uid)
+        } else {
+            None
+        };
+        let (me, now) = (self.common.site, self.sync_now_ms());
+        let mine = local.as_ref().map(quality_of);
+        let (state, first_seen) = (t.state, t.first_seen.timestamp_millis());
+        let attrs = json!({
+            "name": t.view.name, "callsign": t.view.callsign,
+            "classification": t.view.classification, "attributes": t.attributes,
+        });
+        let entry = self.shared.entry(uid).or_default();
+        let was = entry.resp.reporting;
+        if !entry.resp.decide(me, mine, now) {
+            if was {
+                entry.sent = None;
+                entry.origin_at = None;
+                entry.ids = None;
+                entry.attrs = None;
+                if mine.is_none() {
+                    // Its sources lost it: whoever else sees it takes over now.
+                    self.sync_out.release.push(uid);
+                }
+            }
+            return;
+        }
+        let v = local.expect("reporting needs a view");
+        let sent = ot_sync::dr::Sent {
+            time_ms: v.observed_at.timestamp_millis(),
+            lat: v.position.latitude,
+            lon: v.position.longitude,
+            course_deg: v.kinematics.course_deg,
+            speed_mps: v.kinematics.speed_mps,
+            state,
+        };
+        let domain = v.classification.effective_domain();
+        if entry.attrs.as_ref() != Some(&attrs) {
+            self.sync_out.attrs.push((uid, attrs.clone()));
+            entry.attrs = Some(attrs);
+        }
+        if !ot_sync::dr::due(entry.sent.as_ref(), &sent, domain) {
+            return;
+        }
+        let origin_ms = entry
+            .origin_at
+            .is_none_or(|at| sent.time_ms - at >= ot_sync::r2::HEARTBEAT_MS)
+            .then_some(first_seen);
+        if origin_ms.is_some() {
+            entry.origin_at = Some(sent.time_ms);
+        }
+        let ids: Vec<(String, String)> = v
+            .identifiers
+            .iter()
+            .map(|i| (i.scheme.clone(), i.value.clone()))
+            .collect();
+        let identifiers = (entry.ids.as_ref() != Some(&ids)).then(|| ids.clone());
+        entry.ids = Some(ids);
+        let e = error_ellipse(&v);
+        self.sync_out.reports.push(ot_sync::wire::Report {
+            uid,
+            time_ms: sent.time_ms,
+            lat: sent.lat,
+            lon: sent.lon,
+            alt_m: v.position.altitude_hae_m,
+            course_deg: sent.course_deg,
+            speed_mps: sent.speed_mps,
+            error: e.map_or(
+                ot_sync::wire::Ellipse {
+                    major_m: f64::INFINITY,
+                    minor_m: f64::INFINITY,
+                    orientation_deg: 0.0,
+                },
+                |e| ot_sync::wire::Ellipse {
+                    major_m: e.semi_major_m,
+                    minor_m: e.semi_minor_m,
+                    orientation_deg: e.orientation_deg,
+                },
+            ),
+            quality: mine.unwrap_or(0),
+            domain,
+            state,
+            origin_ms,
+            identifiers,
+        });
+        entry.sent = Some(sent);
+    }
+
+    /// Another node's report was applied: note who reports the track.
+    pub(super) fn sync_heard(&mut self, obs: &Observation) {
+        let Some(site) = obs
+            .source_id
+            .strip_prefix(PEER)
+            .and_then(|s| s.parse::<ot_core::SiteCode>().ok())
+        else {
+            return;
+        };
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let Some(&uid) = self.reports.get(&key) else {
+            return;
+        };
+        if obs.state == Some(ot_core::TrackState::Dropped) {
+            let now = self.sync_now_ms();
+            if let Some(s) = self.shared.get_mut(&uid) {
+                s.resp.released(site, now);
+            }
+            return;
+        }
+        // Only a report under this track's own number makes its sender the
+        // track's reporter.
+        if obs.source_track_key != uid.to_string() {
+            return;
+        }
+        let mine = self
+            .tracks
+            .get(&uid)
+            .filter(|t| self.locally_authoritative(t))
+            .and_then(|_| self.local_view(uid))
+            .map(|v| quality_of(&v));
+        let heard = ot_sync::r2::Heard {
+            site,
+            quality: quality_of(obs),
+            at_ms: self.sync_now_ms(),
+        };
+        let me = self.common.site;
+        self.shared
+            .entry(uid)
+            .or_default()
+            .resp
+            .heard(me, mine, heard);
+    }
+
+    /// A track retired here: peers stop holding it for this node.
+    pub(super) fn sync_retired(&mut self, uid: Uid) {
+        let Some(s) = self.shared.remove(&uid) else {
+            return;
+        };
+        if let (true, Some(sent)) = (s.resp.reporting, s.sent) {
+            self.sync_out.reports.push(ot_sync::wire::Report {
+                uid,
+                time_ms: sent.time_ms,
+                lat: sent.lat,
+                lon: sent.lon,
+                alt_m: None,
+                course_deg: None,
+                speed_mps: None,
+                error: Default::default(),
+                quality: 0,
+                domain: None,
+                state: ot_core::TrackState::Dropped,
+                origin_ms: None,
+                identifiers: None,
+            });
+        }
+    }
+
+    /// Heartbeats and take-overs: look at every track this node shares or
+    /// has heard of.
+    pub(super) async fn sync_tick(&mut self) -> anyhow::Result<()> {
+        if !self.sync_on {
+            return Ok(());
+        }
+        let uids: Vec<Uid> = self.shared.keys().copied().collect();
+        for uid in uids {
+            if self.tracks.contains_key(&uid) {
+                self.sync_consider(uid);
+            } else {
+                self.shared.remove(&uid);
+            }
+        }
+        self.sync_flush().await
+    }
+
+    /// Send what the batch queued.
+    pub(super) async fn sync_flush(&mut self) -> anyhow::Result<()> {
+        let out = std::mem::take(&mut self.sync_out);
+        if out.reports.is_empty() && out.attrs.is_empty() && out.release.is_empty() {
+            return Ok(());
+        }
+        let (site, hlc) = (
+            self.common.site,
+            ot_sync::Hlc::new(Utc::now().timestamp_millis() as u64, 0),
+        );
+        let mut msgs = ot_sync::wire::encode_reports(site, hlc, &out.reports);
+        for chunk in out.release.chunks(140) {
+            msgs.push(
+                ot_sync::wire::Message::new(
+                    site,
+                    hlc,
+                    ot_sync::wire::Body::Release(chunk.to_vec()),
+                )
+                .encode(),
+            );
+        }
+        msgs.extend(ot_sync::wire::encode_attrs(site, hlc, &out.attrs));
+        self.redis.push_sync_out(&msgs).await?;
+        Ok(())
+    }
+
+    /// The link heard a node that asked for everything this node reports.
+    fn sync_snapshot(&mut self) {
+        for s in self.shared.values_mut() {
+            if s.resp.reporting {
+                s.sent = None;
+                s.origin_at = None;
+                s.ids = None;
+                s.attrs = None;
+            }
+        }
+    }
+
+    /// Commands from the link (not logged, not replicated).
+    pub(super) async fn link_command(&mut self, cmd: &Value) -> anyhow::Result<Option<Value>> {
+        match cmd["op"].as_str().unwrap_or_default() {
+            "sync_snapshot" => {
+                self.sync_snapshot();
+                self.sync_tick().await?;
+                Ok(Some(json!({})))
+            }
+            "sync_release" => {
+                let site: ot_core::SiteCode = cmd["site"].as_str().unwrap_or_default().parse()?;
+                let now = self.sync_now_ms();
+                for u in uid_strings(&cmd["uids"]) {
+                    let key = format!("{PEER}{site}/{u}");
+                    if let Some(uid) = self.reports.get(&key).copied()
+                        && let Some(s) = self.shared.get_mut(&uid)
+                    {
+                        s.resp.released(site, now);
+                    }
+                }
+                Ok(Some(json!({})))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Stopping: give up every track this node reports.
+    pub(super) async fn sync_leave(&mut self) -> anyhow::Result<()> {
+        if !self.sync_on {
+            return Ok(());
+        }
+        self.sync_out.release = self
+            .shared
+            .iter()
+            .filter(|(_, s)| s.resp.reporting)
+            .map(|(u, _)| *u)
+            .collect();
+        self.sync_flush().await?;
+        // Gone: nothing more is shared until the node starts again.
+        self.sync_on = false;
+        self.shared.clear();
+        Ok(())
     }
 }

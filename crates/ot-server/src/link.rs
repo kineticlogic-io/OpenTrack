@@ -56,6 +56,7 @@ pub struct LinkCounts {
     pub unreadable: u64,
     /// From a site not in the trusted list.
     pub untrusted: u64,
+    pub reports_in: u64,
     pub decisions_in: u64,
     pub decisions_out: u64,
     pub wants_in: u64,
@@ -72,8 +73,21 @@ pub struct Link {
     asked: HashMap<SiteCode, Instant>,
     /// When each peer was last heard.
     pub heard: HashMap<SiteCode, Instant>,
+    /// What each peer last said about its tracks' identity and attributes
+    /// (sent only when they change), put on every report of theirs.
+    identity: HashMap<(SiteCode, ot_core::Uid), Identity>,
     pub counts: LinkCounts,
+    redis: Option<ot_store::RedisStore>,
 }
+
+#[derive(Debug, Default, Clone)]
+struct Identity {
+    identifiers: Vec<ot_core::schema::Identifier>,
+    attrs: Option<serde_json::Value>,
+}
+
+/// A peer not heard for this long is asked for a snapshot when it returns.
+const SILENT: Duration = Duration::from_secs(30);
 
 impl Link {
     pub async fn new(common: Common) -> anyhow::Result<Self> {
@@ -89,7 +103,9 @@ impl Link {
             sent,
             asked: HashMap::new(),
             heard: HashMap::new(),
+            identity: HashMap::new(),
             counts: LinkCounts::default(),
+            redis: None,
         };
         link.refresh().await?;
         Ok(link)
@@ -116,6 +132,34 @@ impl Link {
         let saved = self.db(|db| db.app_settings()).await?;
         self.settings = sync_settings(&saved);
         Ok(())
+    }
+
+    async fn redis(&mut self) -> anyhow::Result<ot_store::RedisStore> {
+        if self.redis.is_none() {
+            self.redis = Some(self.common.open_redis().await?);
+        }
+        Ok(self.redis.clone().expect("opened above"))
+    }
+
+    /// Messages the engine queued (reports, attributes, releases).
+    pub async fn engine_messages(&mut self) -> anyhow::Result<Vec<Out>> {
+        let redis = self.redis().await?;
+        let mut outs = Vec::new();
+        loop {
+            let batch = redis.pop_sync_out(500).await?;
+            let n = batch.len();
+            outs.extend(batch.into_iter().filter_map(|bytes| {
+                let kind = bytes.get(3).copied().and_then(kind_of)?;
+                Some(Out {
+                    kind,
+                    to: None,
+                    bytes,
+                })
+            }));
+            if n < 500 {
+                return Ok(outs);
+            }
+        }
     }
 
     fn now_hlc(&self) -> Hlc {
@@ -181,11 +225,36 @@ impl Link {
             self.counts.untrusted += 1;
             return Ok(Vec::new());
         }
-        self.heard.insert(m.site, Instant::now());
+        let returning = self
+            .heard
+            .insert(m.site, Instant::now())
+            .is_none_or(|at| at.elapsed() > SILENT);
+        let mut outs = Vec::new();
+        if returning {
+            // A node new to this one (or back): ask for its whole picture.
+            outs.push(Out {
+                kind: Kind::Want,
+                to: Some(m.site),
+                bytes: Message::new(
+                    self.common.site,
+                    self.now_hlc(),
+                    Body::Want(Want {
+                        decisions: Vec::new(),
+                        snapshot: true,
+                    }),
+                )
+                .encode(),
+            });
+        }
+        outs.extend(self.dispatch(m).await?);
+        Ok(outs)
+    }
+
+    async fn dispatch(&mut self, m: Message) -> anyhow::Result<Vec<Out>> {
         match m.body {
             Body::Decisions(entries) => {
                 self.counts.decisions_in += entries.len() as u64;
-                let redis = self.common.open_redis().await?;
+                let redis = self.redis().await?;
                 for entry in entries {
                     // Only trusted sites' decisions, whoever relays them.
                     if entry.id.site != self.common.site && self.trusted(entry.id.site) {
@@ -199,11 +268,107 @@ impl Link {
             Body::Summary(s) => self.wants_for(m.site, s).await,
             Body::Want(w) => {
                 self.counts.wants_in += 1;
+                if w.snapshot {
+                    self.redis()
+                        .await?
+                        .push_command(&json!({ "op": "sync_snapshot" }))
+                        .await?;
+                }
                 self.answer(m.site, w).await
             }
-            // Tracks: step 3.
-            Body::Reports(_) | Body::Attrs(_) | Body::Release(_) => Ok(Vec::new()),
+            Body::Reports(reports) => {
+                self.counts.reports_in += reports.len() as u64;
+                let obs: Vec<ot_core::Observation> = reports
+                    .into_iter()
+                    .map(|r| self.observation(m.site, r))
+                    .collect();
+                self.redis()
+                    .await?
+                    .append_observations(&format!("peer:{}", m.site), &obs)
+                    .await?;
+                Ok(Vec::new())
+            }
+            Body::Attrs(items) => {
+                for (uid, v) in items {
+                    self.identity.entry((m.site, uid)).or_default().attrs = Some(v);
+                }
+                Ok(Vec::new())
+            }
+            Body::Release(uids) => {
+                let uids: Vec<String> = uids.iter().map(|u| u.to_string()).collect();
+                self.redis()
+                    .await?
+                    .push_command(
+                        &json!({ "op": "sync_release", "site": m.site.as_str(), "uids": uids }),
+                    )
+                    .await?;
+                Ok(Vec::new())
+            }
         }
+    }
+
+    /// A peer's report as an observation of source `peer:<site>`, keyed by
+    /// the track's UID, with the identity the peer last gave it.
+    fn observation(&mut self, site: SiteCode, r: wire::Report) -> ot_core::Observation {
+        use ot_core::schema::{Ellipse, Identifier, Uncertainty};
+        let key = (site, r.uid);
+        if r.state == ot_core::TrackState::Dropped {
+            self.identity.remove(&key);
+        } else if let Some(ids) = &r.identifiers {
+            self.identity.entry(key).or_default().identifiers = ids
+                .iter()
+                .map(|(s, v)| Identifier::new(s.clone(), v.clone()))
+                .collect();
+        }
+        let who = self.identity.get(&key).cloned().unwrap_or_default();
+        let at = chrono::DateTime::from_timestamp_millis(r.time_ms).unwrap_or_default();
+        let known = |m: f64| m.is_finite().then_some(m);
+        let uncertainty = known(r.error.major_m).map(|major| Uncertainty {
+            ellipse: Some(Ellipse {
+                semi_major_m: major,
+                semi_minor_m: known(r.error.minor_m).unwrap_or(major).min(major),
+                orientation_deg: r.error.orientation_deg,
+            }),
+            circular_error_m: None,
+            vertical_error_m: None,
+            covariance: None,
+        });
+        let mut v = json!({
+            "schema_version": 1,
+            "source_id": format!("peer:{site}"),
+            "source_track_key": r.uid.to_string(),
+            "observed_at": at,
+            "received_at": chrono::Utc::now(),
+            "position": {"latitude": r.lat, "longitude": r.lon, "altitude_hae_m": r.alt_m},
+            "kinematics": {"course_deg": r.course_deg, "speed_mps": r.speed_mps},
+            "classification": {"domain": r.domain},
+            "state": r.state,
+            "identifiers": who.identifiers,
+        });
+        if let Some(a) = &who.attrs {
+            for k in ["name", "callsign"] {
+                if a[k].is_string() {
+                    v[k] = a[k].clone();
+                }
+            }
+            if let Some(c) = a["classification"].as_object() {
+                let mut c = c.clone();
+                if r.domain.is_some() {
+                    c.insert("domain".into(), json!(r.domain));
+                }
+                v["classification"] = serde_json::Value::Object(c);
+            }
+            if a["attributes"].is_object() {
+                v["ext"] = a["attributes"].clone();
+            }
+        }
+        let mut obs: ot_core::Observation =
+            serde_json::from_value(strip_nulls(v)).expect("a peer report is an observation");
+        obs.uncertainty = uncertainty;
+        obs.origin = r
+            .origin_ms
+            .and_then(chrono::DateTime::from_timestamp_millis);
+        obs
     }
 
     /// Ask `from` for the decisions its summary shows this node lacks.
@@ -270,6 +435,32 @@ impl Link {
     }
 }
 
+fn kind_of(b: u8) -> Option<Kind> {
+    [
+        Kind::Report,
+        Kind::Attrs,
+        Kind::Decision,
+        Kind::Summary,
+        Kind::Want,
+        Kind::Release,
+    ]
+    .into_iter()
+    .find(|k| *k as u8 == b)
+}
+
+/// Drop null members (absent optional fields).
+fn strip_nulls(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 /// Run the link against the node's NATS until shutdown.
 pub async fn run(
     common: Common,
@@ -303,7 +494,7 @@ pub async fn run(
         }
     };
     let summary_every = Duration::from_secs_f64(args.summary_secs.max(0.5));
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     let (mut next_summary, mut next_refresh) = (Instant::now(), Instant::now());
     tokio::pin!(shutdown);
     loop {
@@ -333,6 +524,10 @@ pub async fn run(
                 match link.new_decisions().await {
                     Ok(outs) => send(outs).await,
                     Err(e) => tracing::warn!(error = %format!("{e:#}"), "sending decisions failed"),
+                }
+                match link.engine_messages().await {
+                    Ok(outs) => send(outs).await,
+                    Err(e) => tracing::warn!(error = %format!("{e:#}"), "sending tracks failed"),
                 }
                 if now >= next_summary {
                     next_summary = now + summary_every;

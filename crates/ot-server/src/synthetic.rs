@@ -180,6 +180,7 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
         // Generated, not real-world: GOLD's simulated training track.
         track_type: Some(ot_core::TrackType::SimulatedTraining),
         ext: Default::default(),
+        origin: None,
     }
 }
 

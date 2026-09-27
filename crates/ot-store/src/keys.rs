@@ -77,6 +77,12 @@ impl Keys {
         format!("{}:out:ctl", self.ns)
     }
 
+    /// Sync messages the engine has for other nodes, oldest first, for the
+    /// link role to send (see `ot_sync::wire`).
+    pub fn sync_out(&self) -> String {
+        format!("{}:sync:out", self.ns)
+    }
+
     /// Cached static (identity) fields of a source track, for the static join.
     pub fn static_cache(&self, source: &str, key: &str) -> String {
         format!("{}:cache:{source}:{key}", self.ns)

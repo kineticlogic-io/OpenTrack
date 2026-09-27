@@ -511,6 +511,13 @@ pub struct Engine {
     receive_only: bool,
     /// Settings: other nodes' output schema and correlation settings apply.
     share_profile: bool,
+    /// Settings: sharing the picture with other nodes, and the site codes
+    /// of the nodes trusted.
+    sync_on: bool,
+    peers: Vec<String>,
+    /// Reporting responsibility and what was sent, per track.
+    shared: HashMap<Uid, sync::Shared>,
+    sync_out: sync::SyncOut,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -607,6 +614,10 @@ impl Engine {
             remote: false,
             receive_only: false,
             share_profile: true,
+            sync_on: false,
+            peers: Vec::new(),
+            shared: HashMap::new(),
+            sync_out: Default::default(),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -633,6 +644,7 @@ impl Engine {
         // observations and deferred writes): timers and shutdown are looked
         // at between batches, and a batch waits at most `read_block`.
         let (mut next_refresh, mut next_reap) = (Instant::now(), Instant::now());
+        let mut next_sync = Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -658,6 +670,12 @@ impl Engine {
                     tracing::warn!(error = %format!("{e:#}"), "pending decisions retry failed");
                 }
             }
+            if now >= next_sync {
+                next_sync = now + Duration::from_secs(2);
+                if let Err(e) = self.sync_tick().await {
+                    tracing::warn!(error = %format!("{e:#}"), "sync heartbeat failed");
+                }
+            }
             if now >= next_reap {
                 next_reap = now + Duration::from_secs(10);
                 if let Err(e) = self.reap().await {
@@ -668,6 +686,9 @@ impl Engine {
                 tracing::warn!(error = %format!("{e:#}"), "engine cycle failed; retrying");
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
+        }
+        if let Err(e) = self.sync_leave().await {
+            tracing::warn!(error = %format!("{e:#}"), "releasing shared tracks failed");
         }
         tracing::info!(tracks = self.tracks.len(), "engine stopped");
         Ok(())
@@ -717,6 +738,10 @@ impl Engine {
         self.alone = rows.iter().map(|r| (r.0.clone(), r.3)).collect();
         self.detection_sources = rows.iter().filter(|r| r.2).map(|r| r.0.clone()).collect();
         let mut ids: Vec<String> = rows.into_iter().map(|r| r.0).collect();
+        // Other nodes' reports, when sharing the picture.
+        if self.sync_on {
+            ids.extend(self.peers.iter().map(|p| format!("{}{p}", sync::PEER)));
+        }
         ids.sort();
         if ids != self.sources {
             self.redis.ensure_obs_groups(&ids, GROUP).await?;
@@ -738,6 +763,8 @@ impl Engine {
         .await??;
         self.receive_only = sync.receive_only;
         self.share_profile = sync.share_profile;
+        self.sync_on = sync.enabled;
+        self.peers = sync.peers;
         self.history_keep = (hours > 0.0).then(|| Duration::from_secs_f64(hours * 3600.0));
         self.history_every_ms = (every * 1000.0) as i64;
         let c = self.common.clone();
@@ -908,6 +935,9 @@ impl Engine {
                 continue;
             }
             if obs.state == Some(TrackState::Dropped) {
+                if self.sync_on && sync::is_peer(&obs.source_id) {
+                    self.sync_heard(&obs);
+                }
                 self.end_source_track(&obs, &mut counts).await?;
                 continue;
             }
@@ -933,6 +963,9 @@ impl Engine {
                 Some((_, urgent)) => {
                     counts.observations += 1;
                     counts.urgent += u64::from(urgent);
+                    if self.sync_on && sync::is_peer(&obs.source_id) {
+                        self.sync_heard(&obs);
+                    }
                     self.save(uid, urgent).await?;
                     self.pair_kinematically(uid, &obs, &mut counts).await?;
                     if let Some(now) = self.reports.get(&key).copied() {
@@ -952,6 +985,7 @@ impl Engine {
         }
         self.defer = false;
         self.flush_deferred().await?;
+        self.sync_flush().await?;
         for (source, ids) in acks {
             self.redis.ack_observations(&source, GROUP, &ids).await?;
         }
@@ -1209,6 +1243,16 @@ impl Engine {
     /// one, so consumers keep the id they know; else the older.
     fn merge_order(&self, a: Uid, b: Uid) -> (Uid, Uid) {
         let (ta, tb) = (&self.tracks[&a], &self.tracks[&b]);
+        // A number another node gave: every node must pick the same
+        // survivor, whatever it has published: the older origin, then the
+        // lower UID.
+        if a.site() != self.common.site || b.site() != self.common.site {
+            return if (tb.first_seen, b) < (ta.first_seen, a) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+        }
         match (ta.is_published(), tb.is_published()) {
             (true, false) => (b, a),
             (false, true) => (a, b),
@@ -1219,7 +1263,13 @@ impl Engine {
 
     /// Tombstone a retired track for consumers if they ever saw it, else
     /// just forget it.
-    async fn retire_in_redis(&self, uid: Uid, published: bool, reason: &str) -> anyhow::Result<()> {
+    async fn retire_in_redis(
+        &mut self,
+        uid: Uid,
+        published: bool,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        self.sync_retired(uid);
         if published {
             self.redis.retire_system_track(uid, reason).await?;
         } else {
@@ -2068,6 +2118,7 @@ impl Engine {
         let Some(decision) = self.decide_save(uid, urgent) else {
             return Ok(());
         };
+        self.sync_consider(uid);
         if self.defer {
             let merged = match (self.deferred_saves.remove(&uid), decision) {
                 // A withdrawal stands unless the track is published again.
@@ -2309,7 +2360,12 @@ impl Engine {
                 .get(&obs.source_id)
                 .copied()
                 .unwrap_or(self.settings.confirm_after);
+            let origin = obs.origin;
             let mut t = SystemTrack::from_first_observation(uid, obs);
+            // Another node's track: it began when that node made it.
+            if let Some(o) = origin {
+                t.first_seen = t.first_seen.min(o);
+            }
             if t.observation_count >= confirm {
                 t.state = TrackState::Confirmed;
             }
@@ -2327,6 +2383,9 @@ impl Engine {
         let best = multi.then(|| self.best_of(uid)).flatten();
         let confirm = self.confirm_for(uid);
         let t = self.tracks.get_mut(&uid).expect("checked above");
+        if let Some(o) = obs.origin {
+            t.first_seen = t.first_seen.min(o);
+        }
         let before = t.entity_id.clone();
         let outcome = match best {
             Some((view, provenance)) => {
@@ -2356,10 +2415,20 @@ impl Engine {
 
     /// The best view of a system track from its contributors' latest reports.
     fn best_of(&self, uid: Uid) -> Option<(Observation, BTreeMap<String, String>)> {
+        self.best_of_where(uid, |_| true)
+    }
+
+    /// The best view from the contributors `keep` accepts.
+    fn best_of_where(
+        &self,
+        uid: Uid,
+        keep: impl Fn(&Contributor) -> bool,
+    ) -> Option<(Observation, BTreeMap<String, String>)> {
         let t = self.tracks.get(&uid)?;
         let contribs: Vec<Contribution<'_>> = t
             .contributors
             .iter()
+            .filter(|c| keep(c))
             .filter_map(|c| {
                 self.latest
                     .get(&latest_key(uid, &c.source_id, &c.source_track_key))
@@ -4627,8 +4696,9 @@ mod tests {
         // A's summary reaches B (not C: A and C are out of range): B asks,
         // A answers, B applies.
         let want = deliver(vec![la.summary().await.unwrap()], &mut lb, &mut b).await;
-        assert_eq!(want.len(), 1);
-        assert_eq!(want[0].to.map(|s| s.to_string()), Some("AAA".into()));
+        // B has not heard A before: it asks for A's tracks too.
+        assert_eq!(want.len(), 2);
+        assert!(want.iter().all(|w| w.to.map(|s| s.to_string()) == Some("AAA".into())));
         let answer = deliver(want, &mut la, &mut a).await;
         deliver(answer, &mut lb, &mut b).await;
         assert_eq!(b.tracks[&t1].paired_with, vec![t2]);
@@ -4711,6 +4781,183 @@ mod tests {
         assert_eq!(r["result"]["status"], "applied", "{r}");
         assert_eq!(e.settings.correlation.split.window_secs, 123.0);
         e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// A node for the multi-node tests: an engine, its link, trusting the
+    /// other sites.
+    struct Node {
+        e: Engine,
+        l: crate::link::Link,
+        _dir: tempfile::TempDir,
+        inbox: Vec<crate::link::Out>,
+    }
+
+    async fn node(site: &str, sources: &[&str], peers: &[&str]) -> Option<Node> {
+        let (mut e, dir) = engine_at(site, sources).await?;
+        trust(&e, peers).await;
+        e.refresh_attributes().await.unwrap();
+        e.read_block = Duration::ZERO;
+        e.sources.extend(peers.iter().map(|p| format!("peer:{p}")));
+        e.redis.ensure_obs_groups(&e.sources, GROUP).await.unwrap();
+        let l = crate::link::Link::new(e.common.clone()).await.unwrap();
+        Some(Node {
+            e,
+            l,
+            _dir: dir,
+            inbox: Vec::new(),
+        })
+    }
+
+    /// One round of the network: every node sends what it has (to every
+    /// other node, or the one it is for), and every engine takes in what
+    /// arrived. Returns the bytes of track reports sent.
+    async fn exchange(nodes: &mut [Node]) -> usize {
+        let mut sent = Vec::new();
+        for n in nodes.iter_mut() {
+            let mut outs = std::mem::take(&mut n.inbox);
+            outs.extend(n.l.new_decisions().await.unwrap());
+            outs.extend(n.l.engine_messages().await.unwrap());
+            sent.push((n.e.common.site, outs));
+        }
+        let mut report_bytes = 0;
+        for (from, outs) in sent {
+            for o in outs {
+                if o.kind == ot_sync::wire::Kind::Report {
+                    report_bytes += o.bytes.len();
+                }
+                for n in nodes.iter_mut() {
+                    let site = n.e.common.site;
+                    if site == from || o.to.is_some_and(|t| t != site) {
+                        continue;
+                    }
+                    let back = n.l.handle(&o.bytes).await.unwrap();
+                    n.inbox.extend(back);
+                }
+            }
+        }
+        for n in nodes.iter_mut() {
+            n.e.pump(false).await.unwrap();
+            n.e.sync_tick().await.unwrap();
+        }
+        report_bytes
+    }
+
+    #[tokio::test]
+    async fn nodes_share_one_picture_under_one_number() {
+        let Some(a) = node("AAA", &["ais"], &["BBB", "CCC"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let b = node("BBB", &["radar"], &["AAA", "CCC"]).await.unwrap();
+        let c = node("CCC", &[], &["AAA", "BBB"]).await.unwrap();
+        let mut nodes = [a, b, c];
+        // A ship: A's AIS sees it first, B's radar a little later.
+        for s in 0..40 {
+            let lat = 32.0 + 0.00001 * s as f64;
+            let mut ais = report("ais", "1", s, lat, -117.0, Some("366000001"));
+            ais.uncertainty = serde_json::from_value(json!({"circular_error_m": 10.0})).unwrap();
+            nodes[0]
+                .e
+                .redis
+                .append_observations("ais", &[ais])
+                .await
+                .unwrap();
+            if s >= 3 {
+                let mut radar = report("radar", "7", s, lat + 0.0002, -117.0, None);
+                radar.uncertainty =
+                    serde_json::from_value(json!({"circular_error_m": 60.0})).unwrap();
+                nodes[1]
+                    .e
+                    .redis
+                    .append_observations("radar", &[radar])
+                    .await
+                    .unwrap();
+            }
+            exchange(&mut nodes).await;
+        }
+        for _ in 0..3 {
+            exchange(&mut nodes).await;
+        }
+        let a_uid = track_of(&nodes[0].e, "ais", "1");
+        assert_eq!(a_uid.site().as_str(), "AAA");
+        // One object, one number, on every node.
+        for n in &nodes {
+            let live: Vec<Uid> = n.e.tracks.keys().copied().collect();
+            assert_eq!(live, vec![a_uid], "{}: {live:?}", n.e.common.site);
+        }
+        // B's radar track merged into A's number: A's is older.
+        assert_eq!(track_of(&nodes[1].e, "radar", "7"), a_uid);
+        let aliases = &nodes[1].e.tracks[&a_uid].aliases;
+        eprintln!("B's aliases of {a_uid}: {aliases:?}");
+        // One reporter: A (the better view).
+        let reporters: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.e.shared.get(&a_uid).is_some_and(|s| s.resp.reporting))
+            .map(|n| n.e.common.site.to_string())
+            .collect();
+        assert_eq!(reporters, ["AAA"]);
+        // C, with no sensor of its own, holds it from A's reports.
+        let on_c = &nodes[2].e.tracks[&a_uid];
+        assert!(
+            on_c.contributors
+                .iter()
+                .all(|c| c.source_id.starts_with("peer:"))
+        );
+        assert!(on_c.view.identifiers.iter().any(|i| i.value == "366000001"));
+        // No echo: A's track holds only what A's AIS and B say, never A's
+        // own reports come back.
+        assert!(
+            !nodes[0].e.tracks[&a_uid]
+                .contributors
+                .iter()
+                .any(|c| c.source_id == "peer:AAA")
+        );
+
+        // A steady ship costs a report per heartbeat, not per second.
+        let mut bytes = 0;
+        for s in 40..100 {
+            let lat = 32.0 + 0.00001 * 40.0;
+            let mut ais = report("ais", "1", s, lat, -117.0, Some("366000001"));
+            ais.uncertainty = serde_json::from_value(json!({"circular_error_m": 10.0})).unwrap();
+            nodes[0]
+                .e
+                .redis
+                .append_observations("ais", &[ais])
+                .await
+                .unwrap();
+            bytes += exchange(&mut nodes).await;
+        }
+        eprintln!("60 s of a still ship: {bytes} bytes of reports");
+        assert!(
+            (64..=6 * 64).contains(&bytes),
+            "60 s of a still ship cost {bytes} bytes"
+        );
+
+        // A leaves: B's radar takes the track over at once, not after 24 s.
+        nodes[0].e.sync_leave().await.unwrap();
+        let radar = |s: i64| {
+            let mut r = report("radar", "7", s, 32.0004, -117.0, None);
+            r.uncertainty = serde_json::from_value(json!({"circular_error_m": 60.0})).unwrap();
+            r
+        };
+        nodes[1]
+            .e
+            .redis
+            .append_observations("radar", &[radar(100)])
+            .await
+            .unwrap();
+        exchange(&mut nodes).await;
+        nodes[1]
+            .e
+            .redis
+            .append_observations("radar", &[radar(101)])
+            .await
+            .unwrap();
+        exchange(&mut nodes).await;
+        assert!(nodes[1].e.shared[&a_uid].resp.reporting, "B took it over");
+        for n in &nodes {
+            n.e.redis.purge_namespace().await.unwrap();
+        }
     }
 
     #[tokio::test]

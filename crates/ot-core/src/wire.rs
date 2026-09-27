@@ -174,6 +174,10 @@ pub struct DeleteMessage {
     pub uid: Uid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The track it became one with (`tms-<UID>`), when it was merged:
+    /// consumers re-point what they held for this one there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<String>,
     pub deleted_at: DateTime<Utc>,
     pub publisher: PublishContext,
 }
@@ -279,12 +283,19 @@ pub fn delete_message(
     ctx: &PublishContext,
     deleted_at: DateTime<Utc>,
 ) -> DeleteMessage {
+    // The engine retires a merged track "merged into tms-<UID>".
+    let merged_into = reason
+        .as_deref()
+        .and_then(|r| r.strip_prefix("merged into "))
+        .filter(|d| Uid::from_doc_id(d).is_ok())
+        .map(str::to_owned);
     DeleteMessage {
         schema: TRACK_SCHEMA.into(),
         op: Op::Delete,
         track_id: uid.doc_id(),
         uid,
         reason,
+        merged_into,
         deleted_at,
         publisher: ctx.clone(),
     }
@@ -432,6 +443,31 @@ mod tests {
         let v = serde_json::to_value(to_message(&t, &ctx(), at())).unwrap();
         assert_eq!(v["sidc"]["code"], "10033000001211000000");
         assert_eq!(v["force_code"], 9);
+    }
+
+    #[test]
+    fn a_merged_track_says_which_it_became() {
+        let ctx = PublishContext {
+            node_id: "opentrack-AAA".into(),
+            version: "0".into(),
+            correlation: String::new(),
+        };
+        let uid: Uid = "AAA000000002".parse().unwrap();
+        let m = delete_message(
+            uid,
+            Some("merged into tms-BBB000000007".into()),
+            &ctx,
+            Utc::now(),
+        );
+        assert_eq!(m.merged_into.as_deref(), Some("tms-BBB000000007"));
+        let m = delete_message(uid, Some("dropped".into()), &ctx, Utc::now());
+        assert!(m.merged_into.is_none());
+        assert!(
+            serde_json::to_value(&m)
+                .unwrap()
+                .get("merged_into")
+                .is_none()
+        );
     }
 
     #[test]

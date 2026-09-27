@@ -830,6 +830,7 @@ impl Tracker {
             state: r.dropped.then_some(ot_core::TrackState::Dropped),
             track_type: det.track_type,
             ext: Default::default(),
+            origin: None,
         }
     }
 }

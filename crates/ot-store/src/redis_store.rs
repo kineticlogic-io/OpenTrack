@@ -418,6 +418,38 @@ impl RedisStore {
         Ok(())
     }
 
+    /// Queue sync messages for the link to send. The queue is capped: with
+    /// no link running, the oldest go (the next heartbeat replaces them).
+    pub async fn push_sync_out(&self, messages: &[Vec<u8>]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let key = self.keys.sync_out();
+        let mut pipe = redis::pipe();
+        pipe.cmd("RPUSH").arg(&key);
+        for m in messages {
+            pipe.arg(m.as_slice());
+        }
+        pipe.ignore()
+            .cmd("LTRIM")
+            .arg(&key)
+            .arg(-10_000)
+            .arg(-1)
+            .ignore();
+        pipe.query_async::<()>(&mut self.conn.clone()).await?;
+        Ok(())
+    }
+
+    /// Take up to `n` queued sync messages, oldest first.
+    pub async fn pop_sync_out(&self, n: usize) -> Result<Vec<Vec<u8>>> {
+        let raw: Option<Vec<Vec<u8>>> = redis::cmd("LPOP")
+            .arg(self.keys.sync_out())
+            .arg(n)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw.unwrap_or_default())
+    }
+
     /// Take up to `n` queued commands, oldest first.
     pub async fn pop_commands(&self, n: usize) -> Result<Vec<serde_json::Value>> {
         let raw: Option<Vec<String>> = redis::cmd("RPOP")

@@ -464,6 +464,11 @@ pub struct Observation {
     /// Admin-defined extension fields, published under `attributes_json.ext`.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub ext: serde_json::Map<String, serde_json::Value>,
+    /// Another OpenTrack node's report of its track: when the node that
+    /// minted the track's UID made it (which of two numbers for one object
+    /// survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -631,6 +636,7 @@ pub(crate) mod tests {
             state: None,
             track_type: None,
             ext: Default::default(),
+            origin: None,
         }
     }
 

@@ -173,6 +173,11 @@ ages out, so a consumer that starts later still learns of it.
 }
 ```
 
+When the track was merged into another, `merged_into` names the survivor (`"merged_into":
+"tms-OTK000000007"`, with `reason` `"merged into tms-OTK000000007"`). A consumer that keeps
+references to tracks (a selection, a note, a history) should move them there. With several
+OpenTrack nodes sharing one picture, this is how two numbers for one object become one.
+
 ## `delete_history_point`
 
 A track manager deleted a bad point from the track's position history. The consumer drops the

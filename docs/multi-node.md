@@ -105,11 +105,11 @@ Every node stays able to report every track it can see. R2 only decides who spen
 A peer's report enters the engine as a source track of a built-in source, `peer:<site>`. From there it goes through the same kinematic and identifier pairing as any source, with two differences:
 
 1. **It never reports for a system track of its own.** Either it pairs with a local track, or it becomes that peer's track in the local picture, under the peer's UID.
-2. **Pairing it is a replicated decision.** When A decides that `BBB000000007` is its own `AAA000000012`, A logs `correlate(AAA000000012, BBB000000007)` with the evidence. B receives it and checks it against its own vetoes: a do-not-pair, conflicting identifiers, or its own kinematics.
-   - B agrees: it merges the same way.
-   - B disagrees: it logs a `decorrelate`. The later HLC wins, and the losing side's evidence stays in the log.
+2. **Correlation is not replicated; its outcome converges anyway.** Each node pairs other nodes' tracks with its own using its own correlation, and a merge that involves another node's number keeps the survivor the global rule picks (earlier origin, then lower UID). The nodes reach the same result without exchanging the decision:
+   - Say B merges A's `AAA000000012` with its own `BBB000000007`. B then reports the survivor.
+   - A adopts B's report, and its own correlation makes the same pairing, with the same survivor.
 
-   Operators see these as they see suggestions today.
+   Only a report under a track's own number makes its sender that track's reporter. So while the nodes still disagree, both numbers stay reported, and the one that has not merged yet gets the data it needs to merge.
 
 A peer's track that no local source sees is still in the local picture, and still published on this node's NATS output. Every node's consumers get the whole picture. A peer's track goes stale when its reporter stops and nobody takes it over, just as a local one does.
 
@@ -197,16 +197,16 @@ A new benchmark, `bench swarm`, runs 3–10 OpenTrack nodes on one machine.
 
 ## Build order
 
-1. **Decisions go global.**
+1. **Decisions go global.** *(done)*
    - Global decision ids and HLC stamps; migration `0014_sync`.
    - Decisions refer to UIDs and site-qualified source tracks.
    - Conflict rules, and undo across nodes.
    - This is testable in-process with two engines.
-2. **Sync messages.**
+2. **Sync messages.** *(done)*
    - The binary encoding and `docs/sync-icd.md`.
    - `summary`/`want` anti-entropy, snapshots, the trusted peer list, receive-only nodes.
    - The swarm profile.
-3. **Peer tracks.**
+3. **Peer tracks.** *(done)*
    - Peer source, dead-reckoning rate.
    - R2 claim, yield and take-over.
    - Global survivor rule, `merged_into` on `delete` (an ICD addition).
