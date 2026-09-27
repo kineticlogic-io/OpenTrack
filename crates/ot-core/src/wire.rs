@@ -36,6 +36,11 @@ use crate::uid::Uid;
 /// Schema name, in the `OT-Schema` header and the body's `schema`.
 pub const TRACK_SCHEMA: &str = "opentrack.track.v2";
 
+/// Subject prefix and schema of non-point contacts no track took (lines of
+/// bearing), published live on core NATS: `contacts.bearing.<source>.<key>`.
+pub const CONTACTS_SUBJECT: &str = "contacts";
+pub const CONTACT_SCHEMA: &str = "opentrack.contact.v1";
+
 /// Default subject prefix for system tracks.
 pub const TRACKS_SUBJECT: &str = "tracks";
 
@@ -161,8 +166,26 @@ pub struct TrackMessage {
     /// separate tracks), `tms-<UID>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paired_with: Vec<String>,
+    /// When the position comes from an area of uncertainty: the area, as a
+    /// polygon (`[lat, lon]` vertices) or, failing that, the 1-sigma error
+    /// ellipse around `lat`/`lon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<AreaOut>,
+    /// Lines of bearing pointing at this track, the latest from each sensor:
+    /// where each starts, its direction and error, for drawing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bearings: Vec<crate::BearingContact>,
     pub publisher: PublishContext,
     pub published_at: DateTime<Utc>,
+}
+
+/// A track's area of uncertainty in the published message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AreaOut {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ellipse: Option<crate::schema::Ellipse>,
 }
 
 /// Body of a `delete`.
@@ -180,6 +203,22 @@ pub struct DeleteMessage {
     pub merged_into: Option<String>,
     pub deleted_at: DateTime<Utc>,
     pub publisher: PublishContext,
+}
+
+/// The area to publish: the view's polygon, or its error ellipse when that
+/// is large enough to be an area rather than a point (over 2 km).
+fn area_of(view: &crate::Observation) -> Option<AreaOut> {
+    if let Some(crate::Geometry::Area { polygon }) = &view.geometry {
+        return Some(AreaOut {
+            polygon: Some(polygon.clone()),
+            ellipse: None,
+        });
+    }
+    let cov = view.uncertainty.as_ref()?.position_covariance()?;
+    ((cov[0] + cov[2]).sqrt() > 2000.0).then(|| AreaOut {
+        polygon: None,
+        ellipse: Some(crate::schema::Ellipse::from_covariance(cov)),
+    })
 }
 
 fn lower(v: impl Serialize) -> Option<String> {
@@ -269,6 +308,8 @@ pub fn to_message(
         security: track.view.security.clone(),
         kind: track.kind,
         members: track.members.iter().map(|u| u.doc_id()).collect(),
+        area: area_of(&track.view),
+        bearings: track.bearings.clone(),
         groups: track.groups.clone(),
         paired_with: track.paired_with.iter().map(|u| u.doc_id()).collect(),
         publisher: ctx.clone(),

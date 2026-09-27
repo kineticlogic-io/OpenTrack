@@ -74,6 +74,19 @@ fn identity(ids: &[ot_core::schema::Identifier]) -> Option<String> {
     ids.first().map(|i| format!("{}:{}", i.scheme, i.value))
 }
 
+/// A NATS subject token: no dots, spaces or wildcards.
+fn token(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '.' || c == '*' || c == '>' || c.is_whitespace() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// Angle difference in (-180, 180].
 fn wrap(d: f64) -> f64 {
     let d = d.rem_euclid(360.0);
@@ -233,6 +246,23 @@ impl Engine {
             self.save(uid, false).await?;
             return Ok(Vec::new());
         }
+        // Published live for consumers to draw, until a track or a fix takes it.
+        let subject = format!(
+            "{}.bearing.{}.{}",
+            ot_core::wire::CONTACTS_SUBJECT,
+            token(&lob.obs.source_id),
+            token(&lob.obs.source_track_key)
+        );
+        let body = json!({
+            "schema": ot_core::wire::CONTACT_SCHEMA, "op": "bearing",
+            "source_id": lob.obs.source_id, "source_track_key": lob.obs.source_track_key,
+            "observed_at": lob.obs.observed_at,
+            "latitude": lob.obs.position.latitude, "longitude": lob.obs.position.longitude,
+            "bearing_deg": lob.bearing, "sigma_deg": lob.sigma,
+            "max_range_m": (lob.range != DEFAULT_RANGE_M).then_some(lob.range),
+            "identifiers": lob.obs.identifiers,
+        });
+        self.redis.push_contact(&subject, &body).await?;
         let now = lob.obs.observed_at;
         let window = chrono::Duration::seconds(WINDOW_S);
         self.bearings

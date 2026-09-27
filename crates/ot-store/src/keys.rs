@@ -83,6 +83,12 @@ impl Keys {
         format!("{}:sync:out", self.ns)
     }
 
+    /// Non-point contacts no track took (lines of bearing), for the writer
+    /// to publish live on `contacts.>`.
+    pub fn contacts_out(&self) -> String {
+        format!("{}:contacts:out", self.ns)
+    }
+
     /// How sharing with other nodes is going, as the link and the engine
     /// last wrote it (a hash of JSON by part).
     pub fn sync_status(&self) -> String {

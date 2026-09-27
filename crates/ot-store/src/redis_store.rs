@@ -463,6 +463,39 @@ impl RedisStore {
             .collect())
     }
 
+    /// Queue a contact for the writer to publish live (capped: they perish).
+    pub async fn push_contact(&self, subject: &str, body: &serde_json::Value) -> Result<()> {
+        let key = self.keys.contacts_out();
+        redis::pipe()
+            .cmd("RPUSH")
+            .arg(&key)
+            .arg(serde_json::json!({"subject": subject, "body": body}).to_string())
+            .ignore()
+            .cmd("LTRIM")
+            .arg(&key)
+            .arg(-2000)
+            .arg(-1)
+            .ignore()
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Take up to `n` queued contacts: (subject, body).
+    pub async fn pop_contacts(&self, n: usize) -> Result<Vec<(String, serde_json::Value)>> {
+        let raw: Option<Vec<String>> = redis::cmd("LPOP")
+            .arg(self.keys.contacts_out())
+            .arg(n)
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .filter_map(|v| Some((v["subject"].as_str()?.to_owned(), v["body"].clone())))
+            .collect())
+    }
+
     /// Take up to `n` queued sync messages, oldest first.
     pub async fn pop_sync_out(&self, n: usize) -> Result<Vec<Vec<u8>>> {
         let raw: Option<Vec<Vec<u8>>> = redis::cmd("LPOP")

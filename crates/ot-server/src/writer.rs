@@ -188,6 +188,16 @@ impl<S: TrackSink> Writer<S> {
     /// One read-and-flush cycle. With `pending`, drain this consumer's
     /// unacknowledged entries instead of waiting for new ones.
     pub async fn pump(&mut self, pending: bool) -> anyhow::Result<()> {
+        // Perishable contacts first: they go live, not through the outbox.
+        for (subject, body) in self.redis.pop_contacts(1000).await? {
+            if let Err(e) = self
+                .sink
+                .publish_live(subject, bytes::Bytes::from(body.to_string()))
+                .await
+            {
+                tracing::debug!(error = %e, "contact not published");
+            }
+        }
         let now = Instant::now();
         let next_due = [
             self.schedule.next_due(),

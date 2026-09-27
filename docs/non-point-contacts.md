@@ -77,7 +77,7 @@ Bearings-only target motion analysis (fixing a moving target from one sensor's b
 - **Tracks carry their non-point evidence.** A track message gains two optional fields:
   - `area`: the polygon, or the ellipse, when the track's position comes from an area;
   - `bearings`: the latest bearing from each sensor reporting for it, with origin, direction and error, so a consumer can draw the lines.
-- **Bearings no track took** go on their own subject, `contacts.bearing.<source>.<key>`, in a separate stream (`CONTACTS`, latest per subject, aged out after 10 minutes). This keeps consumers of `tracks.>` unaffected.
+- **Bearings no track took** go on their own subject, `contacts.bearing.<source>.<key>`. They are published live on core NATS and not stored, because they go stale within a minute. This keeps consumers of `tracks.>` unaffected.
 - **Fixes** are tracks like any other; their `provenance` says they came from cross-fixing and from which sensors.
 
 ## Display

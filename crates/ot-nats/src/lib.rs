@@ -91,6 +91,16 @@ pub trait TrackSink: Send + Sync {
     }
 
     fn publish(&self, msg: Outgoing) -> impl Future<Output = Result<(), NatsError>> + Send;
+
+    /// Publish a perishable message on core NATS (not stored in a stream),
+    /// e.g. a line of bearing no track took.
+    fn publish_live(
+        &self,
+        _subject: String,
+        _body: Bytes,
+    ) -> impl Future<Output = Result<(), NatsError>> + Send {
+        async { Ok(()) }
+    }
 }
 
 /// Connection and stream state, for the status endpoint.
@@ -277,6 +287,17 @@ impl Nats {
 impl TrackSink for Nats {
     async fn prepare(&self) -> Result<(), NatsError> {
         self.ensure_stream().await
+    }
+
+    async fn publish_live(&self, subject: String, body: Bytes) -> Result<(), NatsError> {
+        self.client
+            .publish(subject.clone(), body)
+            .await
+            .map_err(|e| NatsError::Publish {
+                subject,
+                message: e.to_string(),
+                transient: true,
+            })
     }
 
     async fn publish(&self, msg: Outgoing) -> Result<(), NatsError> {

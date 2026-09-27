@@ -155,6 +155,36 @@ For each output schema field, OpenTrack takes the value from, in order:
    tracker's tracks carry their existence probability and track feeds count as 1 unless they
    report their own (see [algorithms.md](algorithms.md), correlation-3).
 
+### Non-point contacts
+
+Two optional fields carry evidence that isn't a point (see [non-point-contacts.md](non-point-contacts.md)):
+
+- **`area`**: when the track's position comes from an area of uncertainty. It is either:
+  - `{"polygon": [[lat, lon], …]}`, the area as reported; or
+  - `{"ellipse": {"semi_major_m", "semi_minor_m", "orientation_deg"}}`, the 1-sigma error ellipse around `lat`/`lon`, when the error is over 2 km.
+
+  Draw the area rather than a point.
+- **`bearings`**: lines of bearing that point at the track, the latest from each sensor. Each gives:
+  - the sensor's position (`latitude`, `longitude`);
+  - `bearing_deg` (degrees true) and `sigma_deg` (one standard deviation);
+  - `max_range_m`, if known;
+  - `residual_deg`: how far the line misses the track;
+  - the emitter's `identifiers`, such as an ELNOT.
+
+A track made from cross-fixed bearings is an ordinary track. Its `provenance` names the `crossfix` sensor and the sensors whose bearings made it.
+
+### Bearings no track took: `contacts.bearing.<source>.<key>`
+
+A line of bearing that points at no single track is published live on core NATS: it isn't stored in a stream, and it goes stale in about a minute. It is either cross-fixed into a track or given up.
+
+```json
+{"schema": "opentrack.contact.v1", "op": "bearing", "source_id": "esm-a", "source_track_key": "e1",
+ "observed_at": "2026-09-27T12:00:04Z", "latitude": 50.6, "longitude": -1.6,
+ "bearing_deg": 47.5, "sigma_deg": 1.0, "identifiers": [{"scheme": "elnot", "value": "A123"}]}
+```
+
+Subscribe to `contacts.>` to draw them.
+
 ## `delete`
 
 The track was retired (dropped after going stale, merged away, or deleted by an operator). The
