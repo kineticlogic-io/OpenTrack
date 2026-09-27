@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3 (alpha), unreleased
+## 0.3.3 (alpha), 2026-09-27
 
 ### Protobuf inputs over gRPC
 
