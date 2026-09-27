@@ -69,6 +69,7 @@ export function TrackCard({
   onEdit,
   editLabel = 'Edit',
   onHistory,
+  onTrack,
   historyOnMap,
   onHistoryOnMap,
   onZoom,
@@ -79,6 +80,8 @@ export function TrackCard({
   editLabel?: string
   /** The track's position history, whenever it is (re)loaded (the map draws it as a line when asked). */
   onHistory?: (points: HistoryPoint[]) => void
+  /** The track as loaded, for the map (its bearings and area). */
+  onTrack?: (t: SystemTrack) => void
   /** The history is drawn on the map (the map's owner holds this). */
   historyOnMap?: boolean
   onHistoryOnMap?: (on: boolean) => void
@@ -127,7 +130,12 @@ export function TrackCard({
     let cancelled = false
     const load = () =>
       api.track(uid).then(
-        (r) => !cancelled && (setData(r), setMissing(null)),
+        (r) => {
+          if (cancelled) return
+          setData(r)
+          setMissing(null)
+          onTrack?.(r.track)
+        },
         (e) => !cancelled && setMissing(errorMessage(e)),
       )
     load()
@@ -306,6 +314,19 @@ export function TrackCard({
               </dd>
               <dt>Subject</dt>
               <dd className="mono">{data.subject}</dd>
+              {(t.bearings ?? []).length > 0 && (
+                <>
+                  <dt>Bearings</dt>
+                  <dd className="stack" style={{ gap: 2 }}>
+                    {(t.bearings ?? []).map((b) => (
+                      <span key={`${b.source_id}/${b.source_track_key}`} className="mono" title={`at ${fmtTime(b.observed_at)}`}>
+                        {b.source_id} {b.bearing_deg.toFixed(1)}° ±{b.sigma_deg.toFixed(1)}, misses by {Math.abs(b.residual_deg).toFixed(1)}°
+                        {(b.identifiers ?? []).map((i) => ` · ${i.scheme} ${i.value}`).join('')}
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              )}
               {t.reported_by && (
                 <>
                   <dt>Reported by</dt>

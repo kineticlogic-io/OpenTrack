@@ -13,7 +13,7 @@ import { InfoTip } from '../../components/InfoTip'
 import { GroupEditor } from './GroupEditor'
 import { TrackCard } from './TrackCard'
 import { ManagementLog } from './ManagementLog'
-import type { HistoryPoint } from '../../api/client'
+import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
@@ -141,6 +141,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const { toast } = useToast()
   const [logRev, setLogRev] = useState(0)
   const [trail, setTrail] = useState<{ uid: string; points: HistoryPoint[] } | null>(null)
+  // The selected track as its card loaded it: its bearings and area.
+  const [selTrack, setSelTrack] = useState<SystemTrack | null>(null)
   // The track whose history is drawn on the map: off until asked, and off again for the next track.
   const [trailOn, setTrailOn] = useState<string | null>(null)
   // Zoom to track requests: the key counts clicks, so each click moves the map once.
@@ -222,9 +224,34 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, trailOn, trail, here?.[0], here?.[1]])
   const trailColor = row ? affiliationColor(row.affiliation) : undefined
+  // Non-point evidence of the selected track: a dashed line from each
+  // bearing's sensor to the track, and the outline of its area.
+  const evidence: MapLine[] = useMemo(() => {
+    if (!selTrack || selTrack.uid !== selected || !here) return []
+    const out: MapLine[] = (selTrack.bearings ?? []).map((b) => ({
+      id: `bearing-${b.source_id}-${b.source_track_key}`,
+      coordinates: [[b.longitude, b.latitude], here],
+      color: '#d4a017',
+      width: 1.5,
+      dashed: true,
+    }))
+    const g = selTrack.view.geometry
+    let ring: [number, number][] = []
+    if (g?.type === 'area') ring = g.polygon.map(([lat, lon]): [number, number] => [lon, lat])
+    else {
+      const e = selTrack.view.uncertainty?.ellipse
+      if (e && e.semi_major_m > 2000) ring = ellipseRing(here[1], here[0], e.semi_major_m, e.semi_minor_m, e.orientation_deg)
+    }
+    if (ring.length >= 3) out.push({ id: 'area', coordinates: [...ring, ring[0]], color: trailColor, width: 1.5, dashed: true })
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selTrack, selected, here?.[0], here?.[1], trailColor])
   const lines: MapLine[] = useMemo(
-    () => (trailCoords.length >= 2 ? [{ id: 'history', coordinates: trailCoords, color: trailColor, width: 2.5 }] : []),
-    [trailCoords, trailColor],
+    () => [
+      ...(trailCoords.length >= 2 ? [{ id: 'history', coordinates: trailCoords, color: trailColor, width: 2.5 }] : []),
+      ...evidence,
+    ],
+    [trailCoords, trailColor, evidence],
   )
   const fitTo: MapFitTo | undefined = useMemo(() => {
     if (!zoom || zoom.uid !== selected) return undefined
@@ -344,6 +371,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 key={selected}
                 uid={selected}
                 onHistory={(points) => setTrail({ uid: selected, points })}
+                onTrack={setSelTrack}
                 historyOnMap={trailOn === selected}
                 onHistoryOnMap={(on) => setTrailOn(on ? selected : null)}
                 onZoom={() => setZoom((z) => ({ uid: selected, n: (z?.n ?? 0) + 1 }))}
@@ -526,4 +554,19 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       )}
     </div>
   )
+}
+
+/** An error ellipse as a ring of [lon, lat] points (semi-axes in metres, orientation degrees true). */
+function ellipseRing(lat: number, lon: number, a: number, b: number, orientationDeg: number): [number, number][] {
+  const R = 6371008.8
+  const t = (orientationDeg * Math.PI) / 180
+  const out: [number, number][] = []
+  for (let i = 0; i < 48; i++) {
+    const u = (2 * Math.PI * i) / 48
+    const [x, y] = [a * Math.cos(u), b * Math.sin(u)]
+    const n = x * Math.cos(t) - y * Math.sin(t)
+    const e = x * Math.sin(t) + y * Math.cos(t)
+    out.push([lon + ((e / (R * Math.cos((lat * Math.PI) / 180))) * 180) / Math.PI, lat + ((n / R) * 180) / Math.PI])
+  }
+  return out
 }

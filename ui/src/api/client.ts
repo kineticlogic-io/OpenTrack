@@ -27,7 +27,31 @@ export interface ServerStatus {
   }
 }
 
+/** A line of bearing on a track (docs/non-point-contacts.md). */
+export interface BearingContact {
+  source_id: string
+  source_track_key: string
+  observed_at: string
+  latitude: number
+  longitude: number
+  bearing_deg: number
+  sigma_deg: number
+  max_range_m?: number
+  residual_deg: number
+  identifiers?: { scheme: string; value: string }[]
+}
+
+/** A bearing or an area instead of a point. */
+export type Geometry =
+  | { type: 'bearing'; bearing_deg: number; sigma_deg: number; max_range_m?: number; elevation_deg?: number }
+  | { type: 'area'; polygon: [number, number][] }
+
 export interface Observation {
+  geometry?: Geometry
+  uncertainty?: {
+    ellipse?: { semi_major_m: number; semi_minor_m: number; orientation_deg: number }
+    circular_error_m?: number
+  }
   source_id: string
   source_track_key: string
   name?: string
@@ -54,6 +78,8 @@ export interface SystemTrack {
   view: Observation
   /** With other nodes sharing the picture: the site code of the node that reports it to them. */
   reported_by?: string
+  /** Lines of bearing that point at this track, the latest from each sensor. */
+  bearings?: BearingContact[]
   /** The registry entity this track resolves to. */
   entity_id?: string
   kind?: 'track' | 'group'
