@@ -5,6 +5,8 @@ import { api, type Banner, type ServerStatus } from './api/client'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
 import { UserChip } from './auth/UserChip'
+import { useCan } from './auth/context'
+import { usePendingSuggestions } from './lib/pendingSuggestions'
 
 // Code editor and map (CodeMirror, MapLibre) load only with the pages that use them.
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
@@ -30,6 +32,13 @@ export default function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null)
   const onStatus = useCallback((s: ServerStatus | null) => setStatus(s), [])
   const active = VIEWS.some((v) => v.id === view) ? view : 'overview'
+  // Suggestions waiting for a track manager: a bubble on the Correlation tab.
+  const pending = usePendingSuggestions(useCan('track_manager'))
+  const tabs = VIEWS.map((v) =>
+    v.id === 'correlation'
+      ? { ...v, badge: pending, badgeLabel: `${pending} pending correlation${pending === 1 ? '' : 's'}` }
+      : v,
+  )
   // Links from before the Track Database replaced the Cards workspace.
   useEffect(() => {
     if (view === 'cards') go('tracks')
@@ -90,7 +99,7 @@ export default function App() {
             </Badge>
           )}
         </PageHeader>
-        <Tabs variant="bar" aria-label="Workspaces" value={active} onChange={(id) => go(id)} tabs={VIEWS} />
+        <Tabs variant="bar" aria-label="Workspaces" value={active} onChange={(id) => go(id)} tabs={tabs} />
         <main className="content">
           {active === 'overview' && <OverviewPage onStatus={onStatus} />}
           <Suspense fallback={<span className="muted">LOADING…</span>}>

@@ -173,6 +173,17 @@ impl Db {
     }
 
     /// Suggestions with this status (all when None), newest first.
+    /// Suggestions by status, e.g. `{"open": 3}` (statuses with none left out).
+    pub fn suggestion_counts(&self) -> Result<std::collections::BTreeMap<String, u64>> {
+        let mut stmt = self.connection().prepare(
+            "SELECT status, count(*) FROM correlation_suggestions GROUP BY status",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     pub fn suggestions(&self, status: Option<&str>, limit: usize) -> Result<Vec<Suggestion>> {
         let mut stmt = self.connection().prepare(&format!(
             "SELECT {SUGGESTION_COLUMNS} FROM correlation_suggestions

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { TbCheck, TbRestore, TbX } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, SaveButton, useToast, type DataTableColumn } from 'staresdk'
+import { SUGGESTIONS_CHANGED } from '../../lib/pendingSuggestions'
 import { api, type CorrelationSettings, type DecisionRow, type Suggestion, type SuggestionTrack } from '../../api/client'
 import { errorMessage, fmtTime } from '../../lib/format'
 import { SettingsForm } from './SettingsForm'
@@ -84,6 +85,8 @@ export default function CorrelationPage() {
     setBusy(s.id)
     try {
       await api.decideSuggestion(s.id, decision)
+      // The tab bar's pending count follows at once.
+      window.dispatchEvent(new Event(SUGGESTIONS_CHANGED))
       toast({ variant: 'success', title: decision === 'accept' ? 'Accepted' : 'Rejected', message: `Suggestion ${s.id}` })
     } catch (e) {
       toast({ variant: 'error', title: `Could not ${decision}`, message: errorMessage(e) })

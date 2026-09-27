@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/correlation/settings", get(get_settings).put(put_settings))
         .route("/correlation/suggestions", get(list_suggestions))
+        .route("/correlation/suggestions/count", get(count_suggestions))
         .route(
             "/correlation/suggestions/{id}/{decision}",
             post(decide_suggestion),
@@ -92,6 +93,13 @@ async fn track_summary(s: &AppState, uid: &str) -> Value {
         }),
         _ => json!({ "uid": uid.to_string(), "track_id": uid.doc_id(), "live": false }),
     }
+}
+
+/// How many suggestions wait for a track manager (`open`), cheap enough for
+/// the tab bar to poll.
+async fn count_suggestions(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let counts = s.with_db(|db| db.suggestion_counts()).await?;
+    Ok(Json(json!({ "open": counts.get("open").copied().unwrap_or(0), "by_status": counts })))
 }
 
 async fn list_suggestions(

@@ -801,6 +801,7 @@ export const api = {
   explain: (uid: string) => get<{ uid: string; edges: GraphEdge[] }>(`/tracks/${enc(uid)}/explain`),
   correlationSettings: () => get<CorrelationSettingsResponse>('/correlation/settings'),
   saveCorrelationSettings: (s: CorrelationSettings) => request<{ settings: CorrelationSettings }>('PUT', '/correlation/settings', s),
+  suggestionCount: () => get<{ open: number }>('/correlation/suggestions/count'),
   suggestions: (status = 'open') => get<{ suggestions: Suggestion[] }>(`/correlation/suggestions?status=${enc(status)}`),
   decideSuggestion: (id: number, decision: 'accept' | 'reject') =>
     request<Record<string, unknown>>('POST', `/correlation/suggestions/${id}/${decision}`),
