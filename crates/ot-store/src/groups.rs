@@ -137,6 +137,27 @@ impl Db {
         members: &[Uid],
         decision: Decision,
     ) -> Result<(Uid, i64)> {
+        self.form_group(Err(site), spec, members, decision)
+    }
+
+    /// Form a group under the UID another node gave it.
+    pub fn create_group_as(
+        &mut self,
+        uid: Uid,
+        spec: &GroupSpec,
+        members: &[Uid],
+        decision: Decision,
+    ) -> Result<(Uid, i64)> {
+        self.form_group(Ok(uid), spec, members, decision)
+    }
+
+    fn form_group(
+        &mut self,
+        uid: std::result::Result<Uid, SiteCode>,
+        spec: &GroupSpec,
+        members: &[Uid],
+        decision: Decision,
+    ) -> Result<(Uid, i64)> {
         let mut spec = spec.clone();
         spec.validate()?;
         if members.is_empty() {
@@ -146,7 +167,10 @@ impl Db {
         }
         self.write(|tx| {
             let now = now_ms();
-            let uid = allocate_uid(tx, site)?;
+            let uid = match uid {
+                Ok(uid) => uid,
+                Err(site) => allocate_uid(tx, site)?,
+            };
             let decision_id = record_decision(
                 tx,
                 &decision.evidence(json!({

@@ -99,7 +99,9 @@ async fn track_summary(s: &AppState, uid: &str) -> Value {
 /// the tab bar to poll.
 async fn count_suggestions(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     let counts = s.with_db(|db| db.suggestion_counts()).await?;
-    Ok(Json(json!({ "open": counts.get("open").copied().unwrap_or(0), "by_status": counts })))
+    Ok(Json(
+        json!({ "open": counts.get("open").copied().unwrap_or(0), "by_status": counts }),
+    ))
 }
 
 async fn list_suggestions(

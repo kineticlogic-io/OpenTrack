@@ -48,6 +48,7 @@ use crate::config::Common;
 pub(crate) mod bench;
 mod history;
 mod manage;
+mod sync;
 mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
@@ -500,6 +501,13 @@ pub struct Engine {
     /// How long a read waits for observations when none are queued (zero:
     /// not at all; Redis checks block timeouts only every 100 ms or so).
     pub(crate) read_block: Duration,
+    /// This node's clock for the replicated decision log.
+    hlc: ot_sync::Clock,
+    /// Set by a command whose logged form is not what it was given (an
+    /// accepted suggestion is logged as the merge it made).
+    canonical: Option<Value>,
+    /// Applying another node's decision: UIDs it minted are kept.
+    remote: bool,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -536,8 +544,9 @@ impl Engine {
         common.share_db()?;
         let redis = common.open_redis().await?;
         let c = common.clone();
-        let reports = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            Ok(c.open_db()?.live_reports()?)
+        let (reports, last_hlc) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let db = c.open_db()?;
+            Ok((db.live_reports()?, db.sync_last_hlc()?))
         })
         .await??;
         let (stored_groups, tracks): (Vec<SystemTrack>, Vec<SystemTrack>) = redis
@@ -592,6 +601,9 @@ impl Engine {
             )),
             history_every_ms: (crate::settings_api::DEFAULT_HISTORY_INTERVAL_SECS * 1000.0) as i64,
             history_last: HashMap::new(),
+            hlc: ot_sync::Clock::after(last_hlc),
+            canonical: None,
+            remote: false,
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -638,6 +650,9 @@ impl Engine {
                 }
                 if let Err(e) = self.refresh_groups().await {
                     tracing::warn!(error = %format!("{e:#}"), "group refresh failed");
+                }
+                if let Err(e) = self.retry_pending().await {
+                    tracing::warn!(error = %format!("{e:#}"), "pending decisions retry failed");
                 }
             }
             if now >= next_reap {
@@ -998,6 +1013,11 @@ impl Engine {
 
     /// Where a new source track goes: onto a matching system track, or a new one.
     async fn place(&mut self, obs: &Observation, counts: &mut EngineCounts) -> anyhow::Result<Uid> {
+        if obs.source_id.starts_with(sync::PEER)
+            && let Ok(uid) = obs.source_track_key.parse::<Uid>()
+        {
+            return self.adopt(obs, uid, counts).await;
+        }
         let key = format!("{}/{}", obs.source_id, obs.source_track_key);
         let (source, track_key) = (obs.source_id.clone(), obs.source_track_key.clone());
         let c = self.common.clone();
@@ -1730,7 +1750,8 @@ impl Engine {
         Ok(())
     }
 
-    async fn command(&mut self, cmd: &Value) -> anyhow::Result<Value> {
+    /// Run a command as given (see [`Self::command`] for the log).
+    async fn run_command(&mut self, cmd: &Value) -> anyhow::Result<Value> {
         let actor = cmd["actor"].as_str().unwrap_or("operator").to_owned();
         let uid = |k: &str| -> anyhow::Result<Uid> {
             let s = cmd[k]
@@ -1781,24 +1802,21 @@ impl Engine {
                         }
                         if accept {
                             close("accepted", None).await??;
+                            let reason = format!("accepted suggestion {id}: {reason}");
                             let into = self
-                                .operator_merge(
-                                    b,
-                                    a,
-                                    &actor,
-                                    format!("accepted suggestion {id}: {reason}"),
-                                    s.evidence.clone(),
-                                )
+                                .operator_merge(b, a, &actor, reason.clone(), s.evidence.clone())
                                 .await?;
+                            self.canonical = Some(json!({
+                                "op": "merge", "from": b.doc_id(), "into": into.doc_id(), "reason": reason,
+                            }));
                             Ok(json!({ "merged_into": into.doc_id() }))
                         } else {
-                            self.operator_do_not_pair(
-                                a,
-                                b,
-                                &actor,
-                                format!("rejected suggestion {id}: {reason}"),
-                            )
-                            .await?;
+                            let reason = format!("rejected suggestion {id}: {reason}");
+                            self.operator_do_not_pair(a, b, &actor, reason.clone())
+                                .await?;
+                            self.canonical = Some(json!({
+                                "op": "do_not_pair", "a": a.doc_id(), "b": b.doc_id(), "reason": reason,
+                            }));
                             close("rejected", None).await??;
                             Ok(json!({}))
                         }
@@ -2895,17 +2913,21 @@ mod tests {
     /// An engine on a throwaway Redis namespace and database; None (test
     /// skipped) without OT_TEST_REDIS_URL.
     async fn engine(sources: &[&str]) -> Option<(Engine, tempfile::TempDir)> {
+        engine_at("TST", sources).await
+    }
+
+    async fn engine_at(site: &str, sources: &[&str]) -> Option<(Engine, tempfile::TempDir)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
         let dir = tempfile::tempdir().unwrap();
         let common = Common {
             sqlite: dir.path().join("ot.db"),
             redis: url,
             redis_namespace: format!(
-                "ot-engine-test-{}-{}",
+                "ot-engine-test-{site}-{}-{}",
                 std::process::id(),
                 Utc::now().timestamp_micros()
             ),
-            site: ot_core::SiteCode::new("TST").unwrap(),
+            site: ot_core::SiteCode::new(site).unwrap(),
             nats: crate::config::NatsArgs {
                 url: "nats://127.0.0.1:9".into(),
                 creds: None,
@@ -4372,6 +4394,153 @@ mod tests {
         assert!(e.tracks[&t[0]].paired_with.is_empty());
         assert!(e.tracks[&t[2]].paired_with.is_empty());
         e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// Hand every entry `from` logged since `after` to `to`, as the sync
+    /// link will; returns the last sequence handed over.
+    async fn hand_over(from: &Engine, to: &mut Engine, after: u64) -> u64 {
+        let site = from.common.site;
+        let entries = from
+            .db(move |db| db.sync_since(site, after, 1000))
+            .await
+            .unwrap();
+        let mut last = after;
+        for entry in entries {
+            last = entry.id.seq;
+            let a = operator(to, json!({"op": "sync_entry", "entry": entry})).await;
+            assert_eq!(a["ok"], true, "{a}");
+        }
+        last
+    }
+
+    async fn sync_status(e: &Engine, id: &str) -> ot_store::SyncStatus {
+        let id: ot_sync::GlobalId = id.parse().unwrap();
+        e.db(move |db| db.sync_entry(id)).await.unwrap().unwrap().1
+    }
+
+    #[tokio::test]
+    async fn track_management_on_one_node_holds_on_another() {
+        let Some((mut a, _da)) = engine_at("AAA", &["ais"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (mut b, _db) = engine_at("BBB", &["peer:AAA"]).await.unwrap();
+        let ships = |s: i64| {
+            (1..=3)
+                .map(|i| {
+                    report(
+                        "ais",
+                        &i.to_string(),
+                        s,
+                        32.0 + 0.05 * i as f64,
+                        -117.0,
+                        Some(&i.to_string()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for s in 0..3 {
+            feed(&mut a, &ships(s)).await;
+        }
+        let t: Vec<Uid> = (1..=3)
+            .map(|i| track_of(&a, "ais", &i.to_string()))
+            .collect();
+        let id = |u: Uid| u.doc_id();
+        // B hears A's reports of its first two tracks, under A's UIDs.
+        let peer =
+            |u: Uid, s: i64, lat: f64| report("peer:AAA", &u.to_string(), s, lat, -117.0, None);
+        for s in 0..3 {
+            feed(&mut b, &[peer(t[0], s, 32.05), peer(t[1], s, 32.10)]).await;
+        }
+        assert!(b.tracks.contains_key(&t[0]) && b.tracks.contains_key(&t[1]));
+
+        // A pair on A holds on B.
+        let r = operator(
+            &mut a,
+            json!({"op": "pair", "tracks": [id(t[0]), id(t[1])], "actor": "tm@a"}),
+        )
+        .await;
+        assert_eq!(r["ok"], true, "{r}");
+        let mut seen = hand_over(&a, &mut b, 0).await;
+        assert_eq!(seen, 1);
+        assert_eq!(b.tracks[&t[0]].paired_with, vec![t[1]]);
+        assert_eq!(
+            sync_status(&b, "AAA:1").await,
+            ot_store::SyncStatus::Applied
+        );
+
+        // A group keeps A's UID on B.
+        let r = operator(&mut a, json!({"op": "group_create", "members": [id(t[0]), id(t[1])], "actor": "tm@a",
+            "spec": {"name": "TG 1", "sidc": "SFSPGG----", "affiliation": "friend", "echelon": "G"}})).await;
+        assert_eq!(r["ok"], true, "{r}");
+        let g: Uid = r["result"]["group"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("tms-")
+            .parse()
+            .unwrap();
+        assert_eq!(g.site().as_str(), "AAA");
+        seen = hand_over(&a, &mut b, seen).await;
+        assert!(b.groups.contains_key(&g));
+
+        // Undone on A: undone on B (the group first; it blocks the pair's undo).
+        for op in ["create_group", "pair_tracks"] {
+            let d = last_decision(&a, op).await;
+            let r = operator(
+                &mut a,
+                json!({"op": "undo", "decision": d, "actor": "tm@a"}),
+            )
+            .await;
+            assert_eq!(r["ok"], true, "{r}");
+            seen = hand_over(&a, &mut b, seen).await;
+        }
+        assert!(b.groups.is_empty());
+        assert!(b.tracks[&t[0]].paired_with.is_empty());
+
+        // A decision about a track B has not heard of waits for it.
+        let r = operator(
+            &mut a,
+            json!({"op": "delete", "tracks": [id(t[2])], "actor": "tm@a"}),
+        )
+        .await;
+        assert_eq!(r["ok"], true, "{r}");
+        let del = format!("AAA:{}", seen + 1);
+        hand_over(&a, &mut b, seen).await;
+        assert_eq!(sync_status(&b, &del).await, ot_store::SyncStatus::Pending);
+        feed(&mut b, &[peer(t[2], 3, 32.15)]).await;
+        assert!(b.tracks.contains_key(&t[2]));
+        b.retry_pending().await.unwrap();
+        assert_eq!(sync_status(&b, &del).await, ot_store::SyncStatus::Applied);
+        assert!(!b.tracks.contains_key(&t[2]));
+
+        // B's own word, and a late one from A on the same pair: the later
+        // stamp wins on both nodes.
+        let r = operator(
+            &mut b,
+            json!({"op": "do_not_pair", "a": id(t[0]), "b": id(t[1]), "actor": "tm@b"}),
+        )
+        .await;
+        assert_eq!(r["ok"], true, "{r}");
+        let early = ot_sync::Entry {
+            id: "AAA:99".parse().unwrap(),
+            hlc: ot_sync::Hlc::new(1, 0),
+            actor: "tm@a".into(),
+            role: "track_manager".into(),
+            command: json!({"op": "pair", "tracks": [id(t[0]), id(t[1])]}),
+        };
+        let r = operator(&mut b, json!({"op": "sync_entry", "entry": early})).await;
+        assert_eq!(r["result"]["status"], "superseded", "{r}");
+        assert!(b.tracks[&t[0]].paired_with.is_empty());
+        // Heard twice: kept once.
+        let r = operator(&mut b, json!({"op": "sync_entry", "entry": early})).await;
+        assert_eq!(r["result"]["status"], "superseded", "{r}");
+        // And B's decision reaches A.
+        hand_over(&b, &mut a, 0).await;
+        let bb = b.common.site;
+        let on_a = a.db(move |db| db.sync_since(bb, 0, 10)).await.unwrap();
+        assert_eq!(on_a.len(), 1);
+        a.redis.purge_namespace().await.unwrap();
+        b.redis.purge_namespace().await.unwrap();
     }
 
     #[tokio::test]

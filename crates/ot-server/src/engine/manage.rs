@@ -399,8 +399,17 @@ impl Engine {
                 self.live(&members)?;
                 let (site, s2, m2) = (self.common.site, spec.clone(), members.clone());
                 let d = decision("create_group", "formed by a track manager");
+                // Another node's group keeps the UID that node gave it.
+                let given = if self.remote {
+                    Some(uid(cmd, "group")?)
+                } else {
+                    None
+                };
                 let (g, _) = self
-                    .db(move |db| db.create_group(site, &s2, &m2, d))
+                    .db(move |db| match given {
+                        Some(g) => db.create_group_as(g, &s2, &m2, d),
+                        None => db.create_group(site, &s2, &m2, d),
+                    })
                     .await?;
                 let mut track = self.new_group_track(g, &spec);
                 track.members = members;

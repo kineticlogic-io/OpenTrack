@@ -2511,6 +2511,7 @@ dependencies = [
  "ot-plugin",
  "ot-source",
  "ot-store",
+ "ot-sync",
  "reqwest",
  "rumqttc",
  "rust_xlsxwriter",
@@ -2563,6 +2564,7 @@ version = "0.3.1"
 dependencies = [
  "chrono",
  "ot-core",
+ "ot-sync",
  "redis",
  "rusqlite",
  "serde",
@@ -2571,6 +2573,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ot-sync"
+version = "0.3.1"
+dependencies = [
+ "ot-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

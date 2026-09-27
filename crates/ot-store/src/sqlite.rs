@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_entity_publish.sql"),
     include_str!("../migrations/0012_plugins.sql"),
     include_str!("../migrations/0013_auth.sql"),
+    include_str!("../migrations/0014_sync.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -181,27 +182,23 @@ impl Db {
         decision: Decision,
     ) -> Result<(Uid, i64)> {
         self.write(|tx| {
-            let now = now_ms();
             let uid = allocate_uid(tx, site)?;
-            let decision_id = record_decision(tx, &decision, now)?;
-            let sys = graph::upsert_node(tx, NodeKind::SystemTrack, &uid.to_string(), now)?;
-            let src = graph::upsert_node(
-                tx,
-                NodeKind::SourceTrack,
-                &graph::source_track_key(source_id, source_track_key),
-                now,
-            )?;
-            graph::add_edge(
-                tx,
-                EdgeKind::ReportsFor,
-                src,
-                sys,
-                decision_id,
-                &serde_json::json!({ "pairing": "auto", "confidence": 1.0 }),
-                now,
-            )?;
+            let decision_id = open_system_track(tx, uid, source_id, source_track_key, &decision)?;
             Ok((uid, decision_id))
         })
+    }
+
+    /// Create a system track under a UID another node minted, for that
+    /// node's report of it (a track it retired here comes back under the
+    /// same UID). Returns the decision id.
+    pub fn adopt_system_track(
+        &mut self,
+        uid: Uid,
+        source_id: &str,
+        source_track_key: &str,
+        decision: Decision,
+    ) -> Result<i64> {
+        self.write(|tx| open_system_track(tx, uid, source_id, source_track_key, &decision))
     }
 
     /// Retire a system track: record the decision, close every live edge
@@ -474,6 +471,37 @@ pub fn allocate_uid(tx: &Transaction<'_>, site: SiteCode) -> Result<Uid> {
     Uid::new(site, seq as u64).map_err(|_| StoreError::UidExhausted(site.to_string()))
 }
 
+/// A system track node `uid` (live again if it was retired), with the source
+/// track reporting for it.
+fn open_system_track(
+    tx: &Transaction<'_>,
+    uid: Uid,
+    source_id: &str,
+    source_track_key: &str,
+    decision: &Decision,
+) -> Result<i64> {
+    let now = now_ms();
+    let decision_id = record_decision(tx, decision, now)?;
+    let sys = graph::upsert_node(tx, NodeKind::SystemTrack, &uid.to_string(), now)?;
+    tx.execute("UPDATE nodes SET retired_at_ms = NULL WHERE id = ?1", [sys])?;
+    let src = graph::upsert_node(
+        tx,
+        NodeKind::SourceTrack,
+        &graph::source_track_key(source_id, source_track_key),
+        now,
+    )?;
+    graph::add_edge(
+        tx,
+        EdgeKind::ReportsFor,
+        src,
+        sys,
+        decision_id,
+        &serde_json::json!({ "pairing": "auto", "confidence": 1.0 }),
+        now,
+    )?;
+    Ok(decision_id)
+}
+
 pub fn record_decision(tx: &Transaction<'_>, d: &Decision, at_ms: i64) -> Result<i64> {
     tx.execute(
         "INSERT INTO decisions (at_ms, actor, op, reason, evidence, before, after)
@@ -507,9 +535,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 13);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 14);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 13);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 14);
     }
 
     #[test]

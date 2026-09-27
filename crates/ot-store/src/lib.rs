@@ -19,6 +19,7 @@ pub mod registry;
 pub mod schema;
 pub mod sources;
 pub mod sqlite;
+pub mod sync;
 pub mod undo;
 
 pub use auth::{ApiToken, NewUser, User};
@@ -35,4 +36,5 @@ pub use registry::{
 pub use schema::SchemaVersion;
 pub use sources::{SourceRevision, SourceRow, SourceWrite};
 pub use sqlite::{Db, Decision, StoreError};
+pub use sync::SyncStatus;
 pub use undo::Undone;

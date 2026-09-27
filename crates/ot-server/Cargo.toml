@@ -15,6 +15,7 @@ ot-nats.workspace = true
 ot-source.workspace = true
 ot-plugin.workspace = true
 ot-store.workspace = true
+ot-sync.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
 jsonwebtoken.workspace = true
