@@ -518,6 +518,11 @@ pub struct Engine {
     /// Reporting responsibility and what was sent, per track.
     shared: HashMap<Uid, sync::Shared>,
     sync_out: sync::SyncOut,
+    /// Settings: what this node may send to the others, bytes a second (0:
+    /// no cap), and what it has left.
+    sync_budget_bps: f64,
+    sync_allowance: f64,
+    sync_topped: Instant,
     /// Where each ended source track last reported, for scoring replays.
     #[cfg(test)]
     ended_on: HashMap<String, Uid>,
@@ -618,6 +623,9 @@ impl Engine {
             peers: Vec::new(),
             shared: HashMap::new(),
             sync_out: Default::default(),
+            sync_budget_bps: 0.0,
+            sync_allowance: 0.0,
+            sync_topped: Instant::now(),
             #[cfg(test)]
             ended_on: HashMap::new(),
         };
@@ -765,6 +773,7 @@ impl Engine {
         self.share_profile = sync.share_profile;
         self.sync_on = sync.enabled;
         self.peers = sync.peers;
+        self.sync_budget_bps = sync.budget_kbps * 1000.0 / 8.0;
         self.history_keep = (hours > 0.0).then(|| Duration::from_secs_f64(hours * 3600.0));
         self.history_every_ms = (every * 1000.0) as i64;
         let c = self.common.clone();

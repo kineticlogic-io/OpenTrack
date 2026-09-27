@@ -423,10 +423,20 @@ pub(super) struct Shared {
     attrs: Option<Value>,
 }
 
+/// A report waiting to be sent, with what to restore if the budget defers
+/// it (so it is due again).
+#[derive(Debug)]
+struct Queued {
+    urgency: f64,
+    report: ot_sync::wire::Report,
+    prev_sent: Option<ot_sync::dr::Sent>,
+    prev_ids: Option<Vec<(String, String)>>,
+}
+
 /// Sync messages waiting for the end of the batch.
 #[derive(Debug, Default)]
 pub(super) struct SyncOut {
-    reports: Vec<ot_sync::wire::Report>,
+    reports: Vec<Queued>,
     attrs: Vec<(Uid, Value)>,
     release: Vec<Uid>,
 }
@@ -551,9 +561,12 @@ impl Engine {
             self.sync_out.attrs.push((uid, attrs.clone()));
             entry.attrs = Some(attrs);
         }
-        if !ot_sync::dr::due(entry.sent.as_ref(), &sent, domain) {
+        let error_m = error_ellipse(&v).map_or(f64::INFINITY, |e| e.semi_major_m);
+        let Some(urgency) = ot_sync::dr::urgency(entry.sent.as_ref(), &sent, domain, error_m)
+        else {
             return;
-        }
+        };
+        let (prev_sent, prev_ids) = (entry.sent.clone(), entry.ids.clone());
         // Every report carries the origin: a node that missed the first
         // must not pick a different survivor in a merge meanwhile.
         let origin_ms = Some(first_seen);
@@ -565,7 +578,7 @@ impl Engine {
         let identifiers = (entry.ids.as_ref() != Some(&ids)).then(|| ids.clone());
         entry.ids = Some(ids);
         let e = error_ellipse(&v);
-        self.sync_out.reports.push(ot_sync::wire::Report {
+        let report = ot_sync::wire::Report {
             uid,
             time_ms: sent.time_ms,
             lat: sent.lat,
@@ -590,6 +603,12 @@ impl Engine {
             state,
             origin_ms,
             identifiers,
+        };
+        self.sync_out.reports.push(Queued {
+            urgency,
+            report,
+            prev_sent,
+            prev_ids,
         });
         entry.sent = Some(sent);
     }
@@ -644,7 +663,7 @@ impl Engine {
             return;
         };
         if let (true, Some(sent)) = (s.resp.reporting, s.sent) {
-            self.sync_out.reports.push(ot_sync::wire::Report {
+            let report = ot_sync::wire::Report {
                 uid,
                 time_ms: sent.time_ms,
                 lat: sent.lat,
@@ -658,6 +677,12 @@ impl Engine {
                 state: ot_core::TrackState::Dropped,
                 origin_ms: None,
                 identifiers: None,
+            };
+            self.sync_out.reports.push(Queued {
+                urgency: f64::INFINITY,
+                report,
+                prev_sent: None,
+                prev_ids: None,
             });
         }
     }
@@ -701,7 +726,8 @@ impl Engine {
             self.common.site,
             ot_sync::Hlc::new(Utc::now().timestamp_millis() as u64, 0),
         );
-        let mut msgs = ot_sync::wire::encode_reports(site, hlc, &out.reports);
+        let (reports, attrs) = self.within_budget(out.reports, out.attrs);
+        let mut msgs = ot_sync::wire::encode_reports(site, hlc, &reports);
         for chunk in out.release.chunks(140) {
             msgs.push(
                 ot_sync::wire::Message::new(
@@ -712,9 +738,67 @@ impl Engine {
                 .encode(),
             );
         }
-        msgs.extend(ot_sync::wire::encode_attrs(site, hlc, &out.attrs));
+        msgs.extend(ot_sync::wire::encode_attrs(site, hlc, &attrs));
         self.redis.push_sync_out(&msgs).await?;
         Ok(())
+    }
+
+    /// What of the queue the sending budget allows, most urgent first: new
+    /// tracks, state changes and retirements, then the largest drifts, then
+    /// heartbeats, then attributes. What does not fit waits for the next
+    /// flush (it is due again). No budget: everything.
+    fn within_budget(
+        &mut self,
+        mut reports: Vec<Queued>,
+        attrs: Vec<(Uid, Value)>,
+    ) -> (Vec<ot_sync::wire::Report>, Vec<(Uid, Value)>) {
+        if self.sync_budget_bps <= 0.0 {
+            return (reports.into_iter().map(|q| q.report).collect(), attrs);
+        }
+        let now = std::time::Instant::now();
+        let rate = self.sync_budget_bps;
+        self.sync_allowance = (self.sync_allowance
+            + now.duration_since(self.sync_topped).as_secs_f64() * rate)
+            .min(2.0 * rate);
+        self.sync_topped = now;
+        reports.sort_by(|a, b| b.urgency.total_cmp(&a.urgency));
+        let (mut sent, mut deferred) = (Vec::new(), 0usize);
+        for q in reports {
+            // A report and its share of a message's envelope.
+            let size = ot_sync::wire::REPORT_BASE as f64
+                + 8.0
+                + q.report.identifiers.as_ref().map_or(0.0, |ids| {
+                    ids.iter()
+                        .map(|(a, b)| 2 + a.len() + b.len())
+                        .sum::<usize>() as f64
+                        + 1.0
+                })
+                + 0.6;
+            if q.urgency.is_infinite() || self.sync_allowance >= size {
+                self.sync_allowance -= size;
+                sent.push(q.report);
+            } else {
+                deferred += 1;
+                if let Some(s) = self.shared.get_mut(&q.report.uid) {
+                    s.sent = q.prev_sent;
+                    s.ids = q.prev_ids;
+                }
+            }
+        }
+        let mut kept = Vec::new();
+        for (uid, v) in attrs {
+            let size = 9.0 + v.to_string().len() as f64;
+            if self.sync_allowance >= size {
+                self.sync_allowance -= size;
+                kept.push((uid, v));
+            } else if let Some(s) = self.shared.get_mut(&uid) {
+                s.attrs = None;
+            }
+        }
+        if deferred > 0 {
+            tracing::debug!(deferred, "sync budget: reports wait");
+        }
+        (sent, kept)
     }
 
     /// The link heard a node that asked for everything this node reports.

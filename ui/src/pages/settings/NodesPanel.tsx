@@ -96,6 +96,20 @@ export function NodesPanel({
             }
           />
         </Row>
+        <Row label="Sending budget" hint="What this node may send to the others for its tracks, kbit/s: its share of the link (0: no cap). Past it, new tracks, state changes and the largest drifts go first and the rest wait. A track costs about 40 bytes a report; a steady one is reported every 12 s.">
+          <div className="num-row">
+            <Input
+              style={{ ...INPUT, width: 90 }}
+              type="number"
+              min={0}
+              step="any"
+              aria-label="Sending budget kbit/s"
+              value={sync.budget_kbps ?? 0}
+              onChange={(ev) => set({ budget_kbps: ev.target.value === '' ? 0 : Number(ev.target.value) })}
+            />
+            <span className="muted">kbit/s</span>
+          </div>
+        </Row>
         <Row label="Receive only" hint="Apply other nodes' track management here, but accept none from this node's own users: for a node with no operator, such as a drone.">
           <Toggle value={sync.receive_only} onChange={(receive_only) => set({ receive_only })} aria-label="Receive only" />
         </Row>

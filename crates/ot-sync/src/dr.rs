@@ -48,15 +48,32 @@ pub fn distance_m(a: (f64, f64), b: (f64, f64)) -> f64 {
     R * (x * x + y * y).sqrt()
 }
 
-/// Whether `now` (this node's estimate) must be sent, given what was sent.
-pub fn due(sent: Option<&Sent>, now: &Sent, domain: Option<Domain>) -> bool {
+/// How urgently `now` (this node's estimate) must be sent, given what was
+/// sent; none: not due. A drift within the track's own position error
+/// (`error_m`, the error ellipse's semi-major axis) is noise the receivers
+/// already allow for, so it is not worth a report.
+pub fn urgency(sent: Option<&Sent>, now: &Sent, domain: Option<Domain>, error_m: f64) -> Option<f64> {
     let Some(s) = sent else {
-        return true;
+        return Some(URGENT);
     };
-    if s.state != now.state || now.time_ms - s.time_ms >= HEARTBEAT_MS {
-        return true;
+    if s.state != now.state {
+        return Some(URGENT);
     }
-    distance_m(predict(s, now.time_ms), (now.lat, now.lon)) > threshold_m(domain)
+    let allowed = threshold_m(domain).max(if error_m.is_finite() { error_m } else { 0.0 });
+    let drift = distance_m(predict(s, now.time_ms), (now.lat, now.lon)) / allowed;
+    if drift > 1.0 {
+        return Some(drift);
+    }
+    (now.time_ms - s.time_ms >= HEARTBEAT_MS).then_some(HEARTBEAT)
+}
+
+/// Urgency of a new track or a state change, and of a heartbeat.
+pub const URGENT: f64 = 1000.0;
+pub const HEARTBEAT: f64 = 0.5;
+
+/// Whether `now` must be sent (see [`urgency`]).
+pub fn due(sent: Option<&Sent>, now: &Sent, domain: Option<Domain>) -> bool {
+    urgency(sent, now, domain, 0.0).is_some()
 }
 
 #[cfg(test)]
@@ -91,6 +108,20 @@ mod tests {
             Some(Domain::Surface)
         ));
         assert!(due(None, &first, None));
+    }
+
+    #[test]
+    fn noise_within_the_tracks_own_error_is_not_sent() {
+        let first = at(0, 50.0, -1.0);
+        let (lat, lon) = predict(&first, 5_000);
+        // 80 m off the prediction: past the 50 m threshold, but within a
+        // radar track's 100 m error.
+        let off = at(5_000, lat + (80.0 / R).to_degrees(), lon);
+        assert!(urgency(Some(&first), &off, Some(Domain::Surface), 100.0).is_none());
+        assert!(urgency(Some(&first), &off, Some(Domain::Surface), 10.0).unwrap() > 1.0);
+        assert_eq!(urgency(None, &off, None, 100.0), Some(URGENT));
+        let late = at(12_000, lat, lon);
+        assert_eq!(urgency(Some(&first), &late, None, 100.0), Some(HEARTBEAT));
     }
 
     #[test]

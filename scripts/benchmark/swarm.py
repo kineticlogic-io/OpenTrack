@@ -246,7 +246,8 @@ def main(argv):
     ap.add_argument("--delay-ms", type=int, default=0)
     ap.add_argument("--jitter-ms", type=int, default=0)
     ap.add_argument("--duplicate", type=float, default=0.0)
-    ap.add_argument("--rate-kbps", type=float, default=0.0)
+    ap.add_argument("--rate-kbps", type=float, default=0.0, help="the link's cap per node (the bridge drops past it)")
+    ap.add_argument("--budget-kbps", type=float, default=0.0, help="each node's own sending budget (Settings)")
     ap.add_argument("--partition", help="<from>-<to> seconds: the first half of the nodes cut off from the rest")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--label", default="")
@@ -306,7 +307,8 @@ def main(argv):
                 spec["publish_alone"] = True
             http(n.api, "POST", "/sources", spec)
             http(n.api, "POST", "/sources/sensor/enable")
-            http(n.api, "PUT", "/settings", {"sync": {"enabled": True, "peers": [s for s in sites if s != n.site]}})
+            http(n.api, "PUT", "/settings", {"sync": {"enabled": True, "peers": [s for s in sites if s != n.site],
+                                                      "budget_kbps": a.budget_kbps}})
         blog = open(out / "bridge.log", "w")
         bridge = subprocess.Popen(bridge_cmd, env={"PATH": "/usr/bin:/bin", "OT_LOG": "info"}, stdout=blog, stderr=blog)
         procs.append(bridge)
@@ -361,7 +363,7 @@ def main(argv):
         summary = {
             "run": run, "nodes": a.nodes, "targets": a.targets, "seconds": seconds,
             "loss": a.loss, "delay_ms": a.delay_ms, "jitter_ms": a.jitter_ms, "duplicate": a.duplicate,
-            "rate_kbps": a.rate_kbps, "partition": a.partition,
+            "rate_kbps": a.rate_kbps, "budget_kbps": a.budget_kbps, "partition": a.partition,
             "seen_mean": mean("seen", steady),
             "coverage": mean("coverage", steady), "one_number": mean("one_number", steady),
             "duplicates": mean("duplicates", steady),

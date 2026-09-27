@@ -396,9 +396,11 @@ export interface SyncSettings {
   receive_only: boolean
   /** Share the output schema and correlation settings. */
   share_profile: boolean
+  /** What this node may send for its tracks, kbit/s (0: no cap). */
+  budget_kbps: number
 }
 
-export const DEFAULT_SYNC: SyncSettings = { enabled: false, peers: [], receive_only: false, share_profile: true }
+export const DEFAULT_SYNC: SyncSettings = { enabled: false, peers: [], receive_only: false, share_profile: true, budget_kbps: 0 }
 
 export interface SyncStatus {
   site: string

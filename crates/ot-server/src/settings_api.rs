@@ -57,6 +57,10 @@ pub struct SyncSettings {
     /// Share the output schema and correlation settings, so every node
     /// publishes the same attributes and pairs by the same rules.
     pub share_profile: bool,
+    /// What this node may send to the others for its tracks, kbit/s (0: no
+    /// cap): its share of the link. Past it, the most urgent reports go
+    /// first and the rest wait.
+    pub budget_kbps: f64,
 }
 
 impl Default for SyncSettings {
@@ -66,6 +70,7 @@ impl Default for SyncSettings {
             peers: Vec::new(),
             receive_only: false,
             share_profile: true,
+            budget_kbps: 0.0,
         }
     }
 }
@@ -175,6 +180,9 @@ impl AppSettings {
             && !(0.0..=3600.0).contains(&s)
         {
             return Err("history_interval_secs: 0 (every update) to 3600".into());
+        }
+        if !(0.0..=100_000.0).contains(&self.sync.budget_kbps) {
+            return Err("sync budget_kbps: 0 (no cap) to 100000".into());
         }
         for p in &self.sync.peers {
             if p.parse::<ot_core::SiteCode>().is_err() {
