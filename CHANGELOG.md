@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.4.0 (alpha), unreleased
+## 0.3.2 (alpha), 2026-09-27
 
-Phase 3, "multi-node": several OpenTrack nodes (server sites, or a drone swarm) share one track
+Multi-node: several OpenTrack nodes (server sites, or a drone swarm) share one track
 picture with no node in charge. The design is in [docs/multi-node.md](docs/multi-node.md), and the
 messages the nodes exchange are specified in [docs/sync-icd.md](docs/sync-icd.md).
 

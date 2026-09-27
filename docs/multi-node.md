@@ -1,6 +1,6 @@
-# Multi-node OpenTrack (v0.4): design
+# Multi-node OpenTrack: design
 
-Status: **built** (v0.4.0); the gates below are met.
+Status: **built** (0.3.2); the gates below are met.
 
 ## What we are building
 
@@ -18,11 +18,11 @@ It must work in two places:
 
 Designing for the swarm covers the sites as well. Sites only add more bandwidth and longer-lived nodes.
 
-Out of scope for v0.4:
+Out of scope for now:
 - networking between nodes: an external package carries OpenTrack's sync messages (see Transport)
 - sharing the registry or entities
 - sharing source and tracker configuration
-- data links (JREAP, Link 16): that is v0.5, but this design borrows their rules
+- data links (JREAP, Link 16): not yet on the roadmap, but this design borrows their rules
 
 ## Principles
 
@@ -165,13 +165,13 @@ Decision logs converge by anti-entropy. A node reads its peers' `summary` and as
 - `ot.sync.out.<kind>` for messages leaving the node, marked broadcast or addressed to one peer (for `want` replies);
 - `ot.sync.in.<kind>` for messages arriving, with the sender's site.
 
-In v0.4 these are subjects on the node's local NATS. A package bridges them to the network, and so does a small built-in bridge for server sites that links two NATS servers directly. Messages have a versioned binary encoding documented as an ICD (`docs/sync-icd.md`), so the package needs nothing from OpenTrack but that document.
+In 0.3.2 these are subjects on the node's local NATS. A package bridges them to the network, and so does a small built-in bridge for server sites that links two NATS servers directly. Messages have a versioned binary encoding documented as an ICD (`docs/sync-icd.md`), so the package needs nothing from OpenTrack but that document.
 
 The site code is the sender's identity. Proving it belongs to the package or the link (NKeys, mTLS, radio crypto), and OpenTrack drops and counts messages whose sender is not in its trusted peer list.
 
 ## Configuration travels as a swarm profile
 
-The output schema and correlation settings are shared, so the same track has the same attributes and pairs by the same rules on every node. Each is a versioned document. A change made by an admin on any node is a decision like any other: it replicates, and the later HLC wins. Source, tracker and plugin configuration stay local, since they describe each node's own sensors. The registry and entities stay local in v0.4.
+The output schema and correlation settings are shared, so the same track has the same attributes and pairs by the same rules on every node. Each is a versioned document. A change made by an admin on any node is a decision like any other: it replicates, and the later HLC wins. Source, tracker and plugin configuration stay local, since they describe each node's own sensors. The registry and entities stay local for now.
 
 ## Time
 
