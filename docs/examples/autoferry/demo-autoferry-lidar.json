@@ -36,7 +36,7 @@
       ]
     },
     "tracker": {
-      "algorithm": "gnn",
+      "algorithm": "mht",
       "measurement_sigma_m": 4.0,
       "cluster_m": 10.0,
       "domain": "surface",

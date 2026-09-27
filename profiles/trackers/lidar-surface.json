@@ -6,9 +6,9 @@
     "kind": "lidar",
     "domain": "surface"
   },
-  "basis": "Benchmark, Autoferry lidar: the settings of docs/examples/autoferry, GNN with plot clustering.",
+  "basis": "Benchmark, Autoferry lidar: the settings of docs/examples/autoferry, with plot clustering. MHT, not GNN: two boats passing within metres swap under GNN (harbour gate 2.00% -> 1.51% wrong pairings, autoferry-4 pairing precision 79% -> 100%).",
   "tracker": {
-    "algorithm": "gnn",
+    "algorithm": "mht",
     "measurement_sigma_m": 4.0,
     "cluster_m": 10.0,
     "domain": "surface",
