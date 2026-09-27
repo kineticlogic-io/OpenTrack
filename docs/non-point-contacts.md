@@ -1,6 +1,6 @@
 # Non-point contacts: design
 
-Status: **agreed scope** (2026-09-27); steps 1–3 built.
+Status: **built** (2026-09-27), all six steps; the benchmark meets its gates (below).
 
 ## What this adds
 
@@ -43,9 +43,11 @@ An `Observation` gains one optional field, `geometry`:
 
 The comparison is a chi-square gate with one degree of freedom. A track beyond `max_range_m`, or behind the sensor, is out.
 
-A bearing then **reports for** a track, the way a detection's plot does, if both hold:
-- **Only one track passes the gate.** Or the best passes clearly better than the next: a likelihood ratio above a threshold, default 10.
-- **Its emitter identity doesn't conflict with the track's.** An ELNOT the track already carries from a different emitter is a veto, and a matching one is strong evidence.
+A bearing then **reports for** a track, the way a detection's plot does, in either of two cases:
+- **Its emitter identity matches the track's,** and the track fits clearly better than any other: a likelihood ratio above 10. An ELNOT the track already carries from a different emitter is a veto.
+- **Its emitter was fixed onto the track.** The sensor track's earlier bearings went into a cross-fix, and that fix now reports for this track. From then on, the sensor track's bearings go to it directly, as long as they pass its gate.
+
+One anonymous line through a track is **not** enough. An emitter with no track of its own often lies on a line through someone else's, so this rule attached a third of such lines to the wrong ship in the benchmark. Instead the line waits and is cross-fixed. The fix pairs with the track by normal correlation, and after that the emitter's lines go to the track.
 
 Two consequences:
 - **It never moves the track.** A bearing contributes identity (the emitter's ELNOT and parameters), confidence that the track exists, and evidence for the track card. A track seen only by bearings gets its position from cross-fixes, below.
@@ -62,8 +64,15 @@ It looks for bearings **from different sensor positions** that agree on a point:
 2. **The fix.** A least-squares intersection of the set, weighted by each bearing's error, gives a position and a covariance. The covariance comes from the geometry, so a narrow crossing angle shows as a long ellipse. Each member's residual must pass its gate.
 3. **Ghosts.** With several emitters, pairs of bearings also cross where nothing is: the classic ghost problem. OpenTrack doesn't publish ghosts:
    - **Identity first.** Bearings carrying an emitter identity (an ELNOT, or parameters close enough) are only combined with each other. Two bearings of the same ELNOT from two sensors make a real fix.
-   - **Otherwise, consensus.** Without identity, a fix needs **three or more sensors** agreeing within their gates. A ghost needs three unrelated lines to cross at one point, which happens rarely.
+   - **Otherwise, consensus.** Without identity, a fix needs **three or more sensors** agreeing:
+     - the set passes a chi-square test at 99%;
+     - each line agrees with the fix of the others (so a line from another emitter passing close by can't hide by dragging the fix towards itself);
+     - it doesn't split sensor tracks whose emitters already fixed apart.
+   - **Twice.** An anonymous set fixes only the second time the same sensor tracks cross where the first crossing could have moved to (40 m/s). Three unrelated lines meeting once is chance; twice is not.
+   - **Not already explained.** A set whose every line passes through some other track is rejected: each line is accounted for, and their crossing is a ghost of those tracks' lines.
    - **Otherwise, no fix.** Two anonymous lines are the ghost case itself, so they wait for a third sensor, or for the window to pass.
+
+   Sets are chosen **once a moment's lines are all in**, not as each line arrives: sets that fit well (chi-square at 95%) come first, the most sensors first among them. Choosing on arrival let a line join a set before the emitter's own lines from the other sensors were in.
 4. **Into the picture.** A fix becomes an observation of the built-in source `fix`, with its position, its error ellipse and the identity of its bearings. From there, normal correlation takes it:
    - it updates the track it pairs with;
    - otherwise it starts a track, tentative until confirmed like any sensor's (default 3 reports).
@@ -102,6 +111,17 @@ A synthetic scenario, `esm-crossfix`:
 | Fix error | within 2σ of its own ellipse, 90% of the time |
 | Ghost tracks published (no emitter within 3σ) | < 2% of published fix tracks |
 | Areas paired with the right track | ≥ 95%, and never with several |
+
+**Results** (`esm_crossfix_scenario_meets_its_gates` in `crates/ot-server/src/engine.rs`): 20 ships in a 50 km box, 10 on AIS; 4 ESM sensors at 1.5°, half the emitters with an ELNOT; an ELINT source with 3 km areas for 5 of them; 10 minutes.
+
+| Measure | Result |
+|---|---|
+| Bearings associated with the right track | 100% (708 of 708) |
+| Emitters without AIS that got a track | 10 of 10; 9 within 60 s |
+| Ghost fixes (no emitter within 3σ) | 0.25% (3 of 1209) |
+| Fixes within 2σ of their own ellipse | 94% |
+
+Area pairing is covered by unit tests, not yet scored by the scenario.
 
 ## Build order
 

@@ -179,6 +179,11 @@ codec). They are compiled when the source runs, with no `protoc` and no rebuild.
 Protobuf also works over the other transports. See [docs/protobuf-grpc.md](docs/protobuf-grpc.md)
 and the example producer in `docs/examples/grpc/`.
 
+**Non-point contacts.** Lines of bearing (ESM, direction finding) and areas of uncertainty (ELINT)
+map to an observation's `geometry`. A bearing goes to the track its emitter belongs to; bearings
+from several sensors are cross-fixed into positions that start or update tracks, with ghosts kept
+out. See [docs/non-point-contacts.md](docs/non-point-contacts.md).
+
 **Codec plugins** decode formats beyond JSON and XML (`"codec": {"type": "plugin", "plugin":
 "stanag4607", "options": {...}}`), and **tracker plugins** run as a tracker stage (see Plugins
 below). **STANAG 4607** GMTI streams over TCP; [docs/examples/stanag4607.json](docs/examples/stanag4607.json)

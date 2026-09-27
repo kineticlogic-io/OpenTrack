@@ -935,6 +935,8 @@ impl Engine {
         self.defer = true;
         let mut reports = reports.into_iter().peekable();
         while let Some(obs) = reports.next() {
+            self.sweep_bearings(Some(obs.observed_at), &mut counts)
+                .await?;
             self.clock = Some(obs.observed_at);
             if self.detection_sources.contains(&obs.source_id) {
                 // One scan: every plot of this source at this instant.
@@ -957,13 +959,12 @@ impl Engine {
             // A line of bearing is not a position: it goes to a track that
             // lies along it, or waits for others to cross-fix with.
             if matches!(obs.geometry, Some(ot_core::Geometry::Bearing { .. })) {
-                for fix in self.bearing(obs, &mut counts).await? {
-                    self.ingest(fix, &mut counts).await?;
-                }
+                self.bearing(obs, &mut counts).await?;
                 continue;
             }
             self.ingest(obs, &mut counts).await?;
         }
+        self.sweep_bearings(None, &mut counts).await?;
         self.defer = false;
         self.flush_deferred().await?;
         self.sync_flush().await?;
@@ -1014,6 +1015,8 @@ impl Engine {
                 "t": obs.observed_at, "kind": "report", "source": obs.source_id,
                 "key": obs.source_track_key, "lat": obs.position.latitude,
                 "lon": obs.position.longitude,
+                "sigma": obs.uncertainty.as_ref().and_then(|u| u.position_covariance())
+                    .map(|[nn, _, ee]| (nn + ee).sqrt()),
                 "uid": self.reports.get(&key).map(|u| u.doc_id()),
             }));
         }
@@ -5064,13 +5067,14 @@ mod tests {
     /// A line of bearing from a sensor at (lat, lon) towards `to`.
     fn lob(
         source: &str,
+        key: &str,
         secs: i64,
         lat: f64,
         lon: f64,
         to: (f64, f64),
         elnot: Option<&str>,
     ) -> Observation {
-        let mut o = report(source, "e1", secs, lat, lon, None);
+        let mut o = report(source, key, secs, lat, lon, None);
         let (b, _) = ot_core::geometry::bearing_to(lat, lon, to.0, to.1);
         o.geometry = Some(ot_core::Geometry::Bearing {
             bearing_deg: b,
@@ -5099,25 +5103,53 @@ mod tests {
             .await;
         }
         let ship_uid = track_of(&e, "ais", "1");
+        // Close in, so the fixes are tight (tens of metres) and pair quickly.
+        let sensors = [
+            ("esm-a", 50.68, -1.33),
+            ("esm-b", 50.72, -1.32),
+            ("esm-c", 50.69, -1.27),
+        ];
+        // One line through the ship proves nothing yet: it waits.
+        feed(&mut e, &[lob("esm-a", "s", 3, 50.68, -1.33, ship, None)]).await;
+        assert!(e.tracks[&ship_uid].bearings.is_empty());
+        // Three sensors fix the ship's radar twice; the fix pairs with the
+        // ship, and from then on the radar's bearings go to the ship.
+        for s in 4..10 {
+            let batch: Vec<_> = sensors
+                .iter()
+                .map(|(src, lat, lon)| lob(src, "s", s, *lat, *lon, ship, None))
+                .chain([report("ais", "1", s, ship.0, ship.1, Some("235000001"))])
+                .collect();
+            feed(&mut e, &batch).await;
+        }
+        let ship_uid = track_of(&e, "ais", "1");
+        assert_eq!(
+            track_of(&e, "fix", &e.bearings_fix_key("esm-a", "s")),
+            ship_uid
+        );
         let before = e.tracks[&ship_uid].view.position;
-        // A bearing through the ship: it goes to the ship, which stays put.
-        feed(&mut e, &[lob("esm-a", 3, 50.60, -1.60, ship, Some("A123"))]).await;
+        feed(
+            &mut e,
+            &[lob("esm-a", "s", 10, 50.68, -1.33, ship, Some("A123"))],
+        )
+        .await;
         let t = &e.tracks[&ship_uid];
-        assert_eq!(t.bearings.len(), 1, "{:?}", t.bearings);
-        assert_eq!(t.bearings[0].identifiers[0].value, "A123");
-        assert!(t.bearings[0].residual_deg.abs() < 0.1);
+        assert_eq!(t.bearings.len(), 3, "the latest from each sensor");
+        let a = t.bearings.iter().find(|b| b.source_id == "esm-a").unwrap();
+        assert_eq!(a.identifiers[0].value, "A123");
+        assert!(t.bearings.iter().all(|b| b.residual_deg.abs() < 0.1));
         assert_eq!(t.view.position, before, "a bearing never moves a track");
         assert_eq!(e.tracks.len(), 1);
 
         // An emitter no one tracks, 22 km north, seen by three sensors.
         let emitter = (50.90, -1.30);
-        for s in 4..9 {
+        for s in 11..16 {
             feed(
                 &mut e,
                 &[
-                    lob("esm-a", s, 50.60, -1.60, emitter, None),
-                    lob("esm-b", s, 51.05, -1.55, emitter, None),
-                    lob("esm-c", s, 50.95, -1.00, emitter, None),
+                    lob("esm-a", "n", s, 50.60, -1.60, emitter, None),
+                    lob("esm-b", "n", s, 51.05, -1.55, emitter, None),
+                    lob("esm-c", "n", s, 50.95, -1.00, emitter, None),
                 ],
             )
             .await;
@@ -5125,7 +5157,7 @@ mod tests {
         let fixes: Vec<&SystemTrack> = e
             .tracks
             .values()
-            .filter(|t| t.contributors.iter().any(|c| c.source_id == "fix"))
+            .filter(|t| t.contributors.iter().all(|c| c.source_id == "fix"))
             .collect();
         assert_eq!(fixes.len(), 1, "one track from the fixes");
         let f = fixes[0];
@@ -5142,8 +5174,256 @@ mod tests {
             "confirmed by repeated fixes"
         );
         assert!(
-            e.tracks[&ship_uid].bearings.len() == 1,
+            e.tracks[&ship_uid]
+                .bearings
+                .iter()
+                .all(|b| b.source_track_key == "s"),
             "the emitter's bearings did not go to the ship"
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// The `esm-crossfix` scenario (docs/non-point-contacts.md): 20 ships
+    /// with radars sailing a 60 km box, half on AIS; four ESM sensors
+    /// reporting a bearing to each emitter in range every 5 s (1.5 degrees
+    /// of noise, half with the emitter's ELNOT); an ELINT source reporting a
+    /// 3 km area for a few of them every 30 s. Ten minutes, scored against
+    /// the truth with the design's gates.
+    #[tokio::test]
+    async fn esm_crossfix_scenario_meets_its_gates() {
+        let sources = ["ais", "esm-1", "esm-2", "esm-3", "esm-4", "elint"];
+        let Some((mut e, _d)) = engine_at("TST", &sources).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // A small deterministic generator and normal noise.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut unit = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let normal = |u: &mut dyn FnMut() -> f64| {
+            (-2.0 * u().max(1e-12).ln()).sqrt() * (2.0 * std::f64::consts::PI * u()).cos()
+        };
+        let (lat0, lon0) = (50.6, -1.4);
+        struct Ship {
+            n: f64,
+            e: f64,
+            course: f64,
+            speed: f64,
+        }
+        let mut ships: Vec<Ship> = (0..20)
+            .map(|_| Ship {
+                n: (unit() - 0.5) * 50_000.0,
+                e: (unit() - 0.5) * 50_000.0,
+                course: unit() * 360.0,
+                speed: 3.0 + unit() * 9.0,
+            })
+            .collect();
+        let sensors = [
+            (-35_000.0, -35_000.0),
+            (35_000.0, -30_000.0),
+            (30_000.0, 35_000.0),
+            (-30_000.0, 35_000.0),
+        ];
+        let pos = |n: f64, e: f64| ot_core::geometry::offset(lat0, lon0, n, e);
+        let mut assigned = (0usize, 0usize); // (right, wrong)
+        let mut seen_at: Vec<Option<i64>> = vec![None; 20];
+        let mut truth: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut wrong_by: std::collections::BTreeMap<String, usize> = Default::default();
+        for step in 0..120i64 {
+            let secs = step * 5;
+            for s in &mut ships {
+                let d = s.speed * 5.0;
+                s.n += d * s.course.to_radians().cos();
+                s.e += d * s.course.to_radians().sin();
+            }
+            let mut batch = Vec::new();
+            for (i, s) in ships.iter().enumerate() {
+                let (lat, lon) = pos(s.n, s.e);
+                if i < 10 {
+                    let mut o = report(
+                        "ais",
+                        &i.to_string(),
+                        secs,
+                        lat,
+                        lon,
+                        Some(&format!("2350000{i:02}")),
+                    );
+                    o.kinematics.course_deg = Some(s.course);
+                    o.kinematics.speed_mps = Some(s.speed);
+                    o.uncertainty =
+                        serde_json::from_value(json!({"circular_error_m": 10.0})).unwrap();
+                    batch.push(o);
+                }
+                for (k, (sn, se)) in sensors.iter().enumerate() {
+                    let (slat, slon) = pos(*sn, *se);
+                    let (b, d) = ot_core::geometry::bearing_to(slat, slon, lat, lon);
+                    if d > 60_000.0 {
+                        continue;
+                    }
+                    let mut o = report(
+                        &format!("esm-{}", k + 1),
+                        &format!("em{i}"),
+                        secs,
+                        slat,
+                        slon,
+                        None,
+                    );
+                    o.geometry = Some(ot_core::Geometry::Bearing {
+                        bearing_deg: (b + 1.5 * normal(&mut unit)).rem_euclid(360.0),
+                        sigma_deg: 1.5,
+                        max_range_m: Some(60_000.0),
+                        elevation_deg: None,
+                    });
+                    if i % 2 == 0 {
+                        o.identifiers = vec![ot_core::schema::Identifier::new(
+                            "elnot",
+                            format!("E{i:02}"),
+                        )];
+                    }
+                    batch.push(o);
+                }
+                if i >= 15 && step % 6 == 0 {
+                    let (n, e) = (
+                        s.n + 1500.0 * normal(&mut unit),
+                        s.e + 1500.0 * normal(&mut unit),
+                    );
+                    let (alat, alon) = pos(n, e);
+                    let mut o = report("elint", &format!("x{i}"), secs, alat, alon, None);
+                    o.uncertainty = serde_json::from_value(json!({"ellipse": {"semi_major_m": 3000.0, "semi_minor_m": 3000.0, "orientation_deg": 0.0}})).unwrap();
+                    o.identifiers = vec![ot_core::schema::Identifier::new(
+                        "elnot",
+                        format!("E{i:02}"),
+                    )];
+                    batch.push(o);
+                }
+            }
+            truth.push(ships.iter().map(|s| (s.n, s.e)).collect());
+            feed(&mut e, &batch).await;
+            // Which emitter each live track is (the nearest within 2 km).
+            // By its MMSI or ELNOT when it has one, else by position.
+            let nearest = |t: &SystemTrack| -> Option<usize> {
+                let named = t
+                    .view
+                    .identifiers
+                    .iter()
+                    .find_map(|x| match x.scheme.as_str() {
+                        "mmsi" => x.value.strip_prefix("2350000").and_then(|v| v.parse().ok()),
+                        "elnot" => x.value.strip_prefix('E').and_then(|v| v.parse().ok()),
+                        _ => None,
+                    });
+                if named.is_some() {
+                    return named;
+                }
+                ships
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let (lat, lon) = pos(s.n, s.e);
+                        let (_, d) = ot_core::geometry::bearing_to(
+                            lat,
+                            lon,
+                            t.view.position.latitude,
+                            t.view.position.longitude,
+                        );
+                        (d, i)
+                    })
+                    .filter(|(d, _)| *d < 2000.0)
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, i)| i)
+            };
+            for t in e.tracks.values() {
+                if let Some(i) = nearest(t)
+                    && seen_at[i].is_none()
+                    && t.state == TrackState::Confirmed
+                {
+                    seen_at[i] = Some(secs);
+                }
+                for b in t
+                    .bearings
+                    .iter()
+                    .filter(|b| b.observed_at == t0() + chrono::Duration::seconds(secs))
+                {
+                    let emitter: usize =
+                        b.source_track_key.trim_start_matches("em").parse().unwrap();
+                    if nearest(t) == Some(emitter) {
+                        assigned.0 += 1;
+                    } else {
+                        assigned.1 += 1;
+                        let kind = t
+                            .contributors
+                            .iter()
+                            .map(|c| c.source_id.as_str())
+                            .collect::<Vec<_>>()
+                            .join("+");
+                        *wrong_by
+                            .entry(format!(
+                                "{kind} near {:?}",
+                                nearest(t).map(|n| n == emitter)
+                            ))
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        // Every fix as it was made, against where the ships were then: near
+        // one (not a ghost), and within its own error.
+        let (mut fixes, mut ghosts, mut within) = (0, 0, 0);
+        for t in e
+            .trace
+            .iter()
+            .filter(|t| t["kind"] == "report" && t["source"] == "fix")
+        {
+            let at: DateTime<Utc> = serde_json::from_value(t["t"].clone()).unwrap();
+            let step = ((at - t0()).num_seconds() / 5) as usize;
+            let (lat, lon) = (t["lat"].as_f64().unwrap(), t["lon"].as_f64().unwrap());
+            let sigma = t["sigma"].as_f64().unwrap_or(1000.0);
+            let best = truth[step.min(truth.len() - 1)]
+                .iter()
+                .map(|(n, e2)| {
+                    let (tl, tn) = pos(*n, *e2);
+                    ot_core::geometry::bearing_to(tl, tn, lat, lon).1
+                })
+                .fold(f64::INFINITY, f64::min);
+            fixes += 1;
+            if best > 3.0 * sigma.max(300.0) {
+                ghosts += 1;
+            }
+            if best <= 2.0 * sigma {
+                within += 1;
+            }
+        }
+        let precision = assigned.0 as f64 / (assigned.0 + assigned.1).max(1) as f64;
+        let non_ais_found = (10..20).filter(|&i| seen_at[i].is_some()).count();
+        eprintln!(
+            "esm-crossfix: bearings to tracks {} right / {} wrong (precision {:.1}%), \
+             emitters without AIS tracked {non_ais_found}/10, fixes {fixes} (ghosts {ghosts}, \
+             within 2 sigma {within}), first seen {:?}",
+            assigned.0,
+            assigned.1,
+            100.0 * precision,
+            seen_at
+        );
+        eprintln!("wrong by track: {wrong_by:?}");
+        assert!(
+            precision >= 0.95,
+            "bearing association precision {precision:.3}"
+        );
+        assert!(
+            non_ais_found >= 9,
+            "emitters without AIS tracked: {non_ais_found}/10"
+        );
+        assert!(fixes > 0);
+        assert!(
+            ghosts as f64 <= 0.02 * fixes as f64,
+            "{ghosts} ghost fixes of {fixes}"
+        );
+        assert!(
+            within as f64 >= 0.9 * fixes as f64,
+            "{within}/{fixes} fixes within 2 sigma"
         );
         e.redis.purge_namespace().await.unwrap();
     }

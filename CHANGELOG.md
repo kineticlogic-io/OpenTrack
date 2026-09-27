@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.4 (unreleased)
+
+### Non-point contacts
+
+Lines of bearing, areas of uncertainty and emitter identities (ELNOT) are fused into tracks. See
+[docs/non-point-contacts.md](docs/non-point-contacts.md).
+
+- **The model:** an observation's `geometry` is a `bearing` (from the sensor's position, with its
+  error and range) or an `area` polygon. Mapping destinations `geometry.bearing_deg`, `sigma_deg`,
+  `max_range_m`, `elevation_deg` and `geometry.polygon`.
+- **Association:** a bearing goes to a track when its emitter identity matches, or once the emitter
+  has been cross-fixed onto the track. It adds evidence and identity but never moves the track. An
+  area, or an ellipse over 2 km, pairs only with the one track it holds.
+- **Cross-fixing:** bearings from several sensors are crossed by weighted least squares into fixes
+  with an honest error ellipse. The fixes start or update tracks as reports of the built-in `fix`
+  source. Ghosts are kept out by emitter identity, three-sensor consensus with outlier tests,
+  repetition, and rejecting sets that other tracks already explain.
+- **Output:** tracks carry `area` and `bearings`; bearings no track took are published live on
+  `contacts.bearing.<source>.<key>`.
+- **Map and track card:** a selected track's bearing lines and area; the card lists its bearings.
+- **Benchmark** (`esm-crossfix`): 100% of bearings to the right track, 10 of 10 emitters without
+  AIS tracked, 0.25% ghost fixes, 94% of fixes within 2σ.
+
 ## 0.3.3 (alpha), 2026-09-27
 
 ### Protobuf inputs over gRPC

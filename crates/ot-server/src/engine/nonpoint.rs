@@ -1,13 +1,16 @@
 //! Lines of bearing (see `docs/non-point-contacts.md`).
 //!
-//! A bearing goes to the one track that lies along it (within its gate,
-//! clearly better than any other, its emitter identity not in conflict),
-//! where it adds evidence and identity but never moves the track. A bearing
-//! no track takes waits, for a minute, to be crossed with bearings from
-//! other sensors into a position: a fix, which enters the picture as a
-//! report of the built-in source `fix`. Ghosts (lines crossing where
-//! nothing is) are kept out: bearings with an emitter identity only fix
-//! with the same identity; without one, a fix needs three sensors to agree.
+//! A bearing goes to a track when its emitter identity matches, or when
+//! its emitter was cross-fixed onto the track; there it adds evidence and
+//! identity but never moves the track. Any other bearing waits, for a
+//! minute, to be crossed with bearings from other sensors into a position:
+//! a fix, which enters the picture as a report of the built-in source `fix`.
+//! Ghosts (lines crossing where nothing is) are kept out: bearings with an
+//! emitter identity only fix with the same identity; without one, a fix
+//! needs three sensors agreeing, twice, and not all explained by other
+//! tracks.
+
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use ot_core::geometry::{bearing_to, local, offset};
@@ -32,6 +35,13 @@ const MIN_BASELINE_M: f64 = 200.0;
 const DEFAULT_RANGE_M: f64 = 250_000.0;
 /// Source id of cross-fixes.
 pub const FIX: &str = "fix";
+/// Chi-square at 99% for 1 to 4 degrees of freedom (a set of n lines fixing
+/// two coordinates has n - 2).
+const CHI2_99: [f64; 4] = [6.63, 9.21, 11.34, 13.28];
+/// And at 95%: a set within it fits well; one between the two, marginally.
+const CHI2_95: [f64; 4] = [3.84, 5.99, 7.81, 9.49];
+/// Fastest an emitter moves between an anonymous set's two fixes.
+const MAX_SPEED_MPS: f64 = 40.0;
 
 /// A bearing's parts.
 #[derive(Debug, Clone)]
@@ -40,6 +50,8 @@ struct Lob {
     bearing: f64,
     sigma: f64,
     range: f64,
+    /// Where the tracks it passes through are, when no track took it.
+    through: Vec<(f64, f64)>,
 }
 
 impl Lob {
@@ -54,6 +66,7 @@ impl Lob {
                 bearing: bearing_deg,
                 sigma: sigma_deg,
                 range: max_range_m.unwrap_or(DEFAULT_RANGE_M),
+                through: Vec::new(),
                 obs,
             }),
             _ => None,
@@ -97,10 +110,13 @@ fn wrap(d: f64) -> f64 {
 #[derive(Debug, Default)]
 pub(super) struct Bearings {
     waiting: Vec<Lob>,
-    /// Recent fixes: key, where, when (to give the next fix of the same
-    /// object the same source track).
-    fixes: Vec<(String, f64, f64, DateTime<Utc>)>,
-    seq: u64,
+    /// The fix key each sensor track's emitter went into: once that fix
+    /// reports for a track, the emitter's bearings go to the track directly.
+    members: HashMap<(String, String), String>,
+    /// When the newest line not yet swept for fixes came in.
+    fresh: Option<DateTime<Utc>>,
+    /// Anonymous sets seen once, waiting to fix again: where, error, when.
+    combos: HashMap<String, (f64, f64, f64, DateTime<Utc>)>,
 }
 
 /// A fix: position, covariance `[nn, ne, ee]` and the bearings in it.
@@ -115,6 +131,11 @@ pub(super) struct Fix {
 /// error at its range; `None` when the lines do not cross ahead of every
 /// sensor or cross too flat.
 fn cross(lobs: &[&Lob]) -> Option<Fix> {
+    cross_at(lobs, MIN_CROSS_DEG)
+}
+
+/// `cross`, with lines crossing at least `steepest` degrees.
+fn cross_at(lobs: &[&Lob], steepest: f64) -> Option<Fix> {
     let (lat0, lon0) = lobs[0].origin();
     let pts: Vec<(f64, f64, f64, f64)> = lobs
         .iter()
@@ -128,7 +149,7 @@ fn cross(lobs: &[&Lob]) -> Option<Fix> {
     let steep = lobs.iter().enumerate().any(|(i, a)| {
         lobs[i + 1..].iter().any(|b| {
             let d = wrap(a.bearing - b.bearing).abs();
-            (MIN_CROSS_DEG..=180.0 - MIN_CROSS_DEG).contains(&d)
+            (steepest..=180.0 - steepest).contains(&d)
         })
     });
     if !steep {
@@ -178,73 +199,244 @@ fn apart(a: &Lob, b: &Lob) -> bool {
     n.hypot(e) >= MIN_BASELINE_M
 }
 
-impl Bearings {
-    /// Try to fix the newest waiting bearing with the others. Returns the
-    /// bearings used and the fix.
-    fn try_fix(&mut self) -> Option<(Vec<Lob>, Fix)> {
-        let n = self.waiting.len().checked_sub(1)?;
-        let new = &self.waiting[n];
-        let id = new.identity();
-        let others: Vec<usize> = (0..n)
-            .filter(|&j| apart(new, &self.waiting[j]))
-            .filter(|&j| match (&id, self.waiting[j].identity()) {
-                (Some(a), Some(b)) => *a == b,
-                _ => true,
-            })
+/// Sum of the lines' squared residuals, in sigmas, about a point.
+fn consistency(lobs: &[&Lob], fix: &Fix) -> f64 {
+    lobs.iter()
+        .map(|l| {
+            let (b, _) = bearing_to(l.origin().0, l.origin().1, fix.lat, fix.lon);
+            (wrap(l.bearing - b) / l.sigma).powi(2)
+        })
+        .sum()
+}
+
+/// Whether three or more lines meet at one point as well as chance allows
+/// (99%); two lines always meet.
+fn consistent(lobs: &[&Lob], fix: &Fix) -> bool {
+    lobs.len() < 3 || consistency(lobs, fix) <= CHI2_99[(lobs.len() - 3).min(3)]
+}
+
+/// How good a set is, lower better: sets that fit well come first, the
+/// most lines first among them; then marginal ones. A large set whose extra
+/// line only just fits is often another emitter's line passing close by.
+fn rank(lobs: &[&Lob], fix: &Fix) -> f64 {
+    let chi2 = consistency(lobs, fix);
+    let dof = lobs.len().saturating_sub(2);
+    let good = dof == 0 || chi2 <= CHI2_95[(dof - 1).min(3)];
+    let per = chi2 / dof.max(1) as f64;
+    // Per-line fit is at most a few units within a tier.
+    (if good { 0.0 } else { 1000.0 }) - 100.0 * lobs.len() as f64 + per
+}
+
+/// Whether every line agrees with the fix of the others (where they fix
+/// without it), within its own error and theirs at 99%. A line from another
+/// emitter that passes near drags a joint fix towards itself and so can
+/// hide in it, but not from the others' fix.
+fn no_outlier(lobs: &[&Lob]) -> bool {
+    if lobs.len() < 3 {
+        return true;
+    }
+    (0..lobs.len()).all(|i| {
+        let rest: Vec<&Lob> = (0..lobs.len())
+            .filter(|&j| j != i)
+            .map(|j| lobs[j])
             .collect();
-        for &j in &others {
-            let pair = [new, &self.waiting[j]];
-            let Some(fix) = cross(&pair) else {
-                continue;
+        let Some(fix) = cross(&rest) else {
+            return true;
+        };
+        let l = lobs[i];
+        let (b, d) = bearing_to(l.origin().0, l.origin().1, fix.lat, fix.lon);
+        let [nn, ne, ee] = fix.cov;
+        let (s, c) = b.to_radians().sin_cos();
+        let across = (nn * s * s - 2.0 * ne * s * c + ee * c * c).max(0.0).sqrt();
+        let var = l.sigma.powi(2) + (across / d.max(1.0)).to_degrees().powi(2);
+        wrap(l.bearing - b).powi(2) / var <= CHI2_99[0]
+    })
+}
+
+/// Whether every line of a set passes through a track somewhere other than
+/// the fix: each is already accounted for, and their crossing is a ghost of
+/// those tracks' lines. (An untracked emitter whose every line also passes
+/// through someone else's track is rare.)
+fn explained(lobs: &[&Lob], fix: &Fix) -> bool {
+    let near = 3.0 * (fix.cov[0] + fix.cov[2]).sqrt().max(300.0);
+    lobs.iter().all(|l| {
+        l.through.iter().any(|&(lat, lon)| {
+            let (n, e) = local(fix.lat, fix.lon, lat, lon);
+            n.hypot(e) > near
+        })
+    })
+}
+
+/// A set of bearings by sensor track, in a fixed order.
+fn set_of(lobs: &[&Lob]) -> String {
+    let mut v: Vec<String> = lobs
+        .iter()
+        .map(|l| format!("{}/{}", l.obs.source_id, l.obs.source_track_key))
+        .collect();
+    v.sort_unstable();
+    v.join(",")
+}
+
+/// Candidates kept per sensor when searching for the best set.
+const PER_SENSOR: usize = 4;
+
+impl Bearings {
+    /// Fix what the waiting lines allow. Sets are chosen together, once a
+    /// moment's lines are all in, best first: the most sensors, then the
+    /// tightest. Choosing as each line arrives would let a line join a set
+    /// before the emitter's own lines from the other sensors are in.
+    ///
+    /// Ghosts are kept out three ways:
+    /// - lines with an emitter identity only fix with the same identity;
+    /// - an anonymous set needs three sensors, and must not split sensor
+    ///   tracks whose emitters already fixed apart;
+    /// - an anonymous set fixes only the second time the same sensor tracks
+    ///   cross where the first crossing could have moved to: three unrelated
+    ///   lines meeting once is chance, twice is not.
+    ///
+    /// Lines in a set are used up either way.
+    fn sweep(&mut self) -> Vec<(Vec<Lob>, Fix)> {
+        self.fresh = None;
+        let mut out = Vec::new();
+        loop {
+            let best = (0..self.waiting.len())
+                .filter_map(|a| self.best_set(a))
+                .min_by(|x, y| x.2.total_cmp(&y.2));
+            let Some((mut members, fix, _)) = best else {
+                break;
             };
-            let same_identity = id.is_some() && id == self.waiting[j].identity();
-            // Everything else waiting that agrees (and is from yet another place).
-            let mut members = vec![n, j];
-            for &k in &others {
-                if k == j
-                    || !members
-                        .iter()
-                        .all(|&m| apart(&self.waiting[m], &self.waiting[k]))
-                {
-                    continue;
-                }
-                let mut set: Vec<&Lob> = members.iter().map(|&m| &self.waiting[m]).collect();
-                set.push(&self.waiting[k]);
-                if cross(&set).is_some() {
-                    members.push(k);
-                }
+            let mut again = true;
+            if self.waiting[members[0]].identity().is_none() {
+                let set: Vec<&Lob> = members.iter().map(|&m| &self.waiting[m]).collect();
+                let at = set
+                    .iter()
+                    .map(|l| l.obs.observed_at)
+                    .max()
+                    .unwrap_or_else(Utc::now);
+                let spread = (fix.cov[0] + fix.cov[2]).sqrt();
+                let key = set_of(&set);
+                let recent = chrono::Duration::seconds(WINDOW_S * 5);
+                self.combos.retain(|_, c| (at - c.3).abs() <= recent);
+                again = self.combos.get(&key).is_some_and(|&(lat, lon, s, t)| {
+                    let (dn, de) = local(lat, lon, fix.lat, fix.lon);
+                    let dt = (at - t).num_milliseconds().abs() as f64 / 1000.0;
+                    dt > 0.0 && dn.hypot(de) <= MAX_SPEED_MPS * dt + 3.0 * s.hypot(spread)
+                });
+                self.combos.insert(key, (fix.lat, fix.lon, spread, at));
             }
-            if !same_identity && members.len() < 3 {
-                continue;
-            }
-            let set: Vec<&Lob> = members.iter().map(|&m| &self.waiting[m]).collect();
-            let fix = cross(&set).unwrap_or(fix);
             members.sort_unstable_by(|a, b| b.cmp(a));
             let used = members
                 .into_iter()
                 .map(|m| self.waiting.remove(m))
                 .collect();
-            return Some((used, fix));
+            if again {
+                out.push((used, fix));
+            }
         }
-        None
+        out
+    }
+
+    /// The best set waiting line `a` fixes in: members, fix and fit.
+    fn best_set(&self, a: usize) -> Option<(Vec<usize>, Fix, f64)> {
+        let line = &self.waiting[a];
+        let id = line.identity();
+        // Lines from elsewhere that cross this one, best first, by sensor.
+        let mut groups: Vec<(String, Vec<(f64, usize)>)> = Vec::new();
+        for (j, other) in self.waiting.iter().enumerate() {
+            let same = match (&id, other.identity()) {
+                (Some(a), Some(b)) => *a == b,
+                (None, None) => true,
+                _ => false,
+            };
+            if j == a || !same || !apart(line, other) {
+                continue;
+            }
+            // Any crossing: lines from opposite sides of an emitter are
+            // nearly parallel, yet fix it with a third.
+            let Some(fix) = cross_at(&[line, other], 1.0) else {
+                continue;
+            };
+            let d2 = consistency(&[line, other], &fix);
+            match groups.iter_mut().find(|g| g.0 == other.obs.source_id) {
+                Some(g) => g.1.push((d2, j)),
+                None => groups.push((other.obs.source_id.clone(), vec![(d2, j)])),
+            }
+        }
+        for g in &mut groups {
+            g.1.sort_by(|a, b| a.0.total_cmp(&b.0));
+            g.1.truncate(PER_SENSOR);
+        }
+        let need = if id.is_some() { 2 } else { 3 };
+        let mut best = None;
+        self.search(&groups, 0, &mut vec![a], need, &mut best);
+        best
+    }
+
+    /// Every choice of at most one line per sensor from `groups[g..]`,
+    /// added to `pick`; keeps the best set that fixes.
+    fn search(
+        &self,
+        groups: &[(String, Vec<(f64, usize)>)],
+        g: usize,
+        pick: &mut Vec<usize>,
+        need: usize,
+        best: &mut Option<(Vec<usize>, Fix, f64)>,
+    ) {
+        if g == groups.len() {
+            if pick.len() < need {
+                return;
+            }
+            let set: Vec<&Lob> = pick.iter().map(|&m| &self.waiting[m]).collect();
+            if need > 2 && !self.one_emitter(&set) {
+                return;
+            }
+            let Some(fix) = cross(&set) else {
+                return;
+            };
+            if !consistent(&set, &fix) || !no_outlier(&set) || (need > 2 && explained(&set, &fix)) {
+                return;
+            }
+            let fit = rank(&set, &fix);
+            let better = best.as_ref().is_none_or(|(_, _, f)| fit < *f);
+            if better {
+                *best = Some((pick.clone(), fix, fit));
+            }
+            return;
+        }
+        self.search(groups, g + 1, pick, need, best);
+        for &(_, j) in &groups[g].1 {
+            pick.push(j);
+            self.search(groups, g + 1, pick, need, best);
+            pick.pop();
+        }
+    }
+
+    /// Whether a set keeps together the sensor tracks whose emitters fixed
+    /// together before (those not yet in any fix may join).
+    fn one_emitter(&self, set: &[&Lob]) -> bool {
+        let mut keys = set.iter().filter_map(|l| {
+            self.members
+                .get(&(l.obs.source_id.clone(), l.obs.source_track_key.clone()))
+        });
+        let first = keys.next();
+        keys.all(|k| Some(k) == first)
     }
 }
 
 impl Engine {
-    /// A line of bearing: to a track, or waiting to be fixed. Returns the
-    /// fixes it completed, as reports for the picture.
+    /// A line of bearing: to a track, or waiting to be fixed.
     pub(super) async fn bearing(
         &mut self,
         obs: Observation,
         counts: &mut EngineCounts,
-    ) -> anyhow::Result<Vec<Observation>> {
-        let Some(lob) = Lob::of(obs) else {
-            return Ok(Vec::new());
+    ) -> anyhow::Result<()> {
+        let Some(mut lob) = Lob::of(obs) else {
+            return Ok(());
         };
-        if let Some(uid) = self.lob_track(&lob) {
+        if let Some(uid) = self.lob_track(&mut lob) {
             counts.paired += 1;
             self.save(uid, false).await?;
-            return Ok(Vec::new());
+            return Ok(());
         }
         // Published live for consumers to draw, until a track or a fix takes it.
         let subject = format!(
@@ -268,20 +460,45 @@ impl Engine {
         self.bearings
             .waiting
             .retain(|l| (now - l.obs.observed_at).abs() <= window);
+        // A sensor track's newer bearing replaces its older one.
+        self.bearings.waiting.retain(|l| {
+            l.obs.source_id != lob.obs.source_id
+                || l.obs.source_track_key != lob.obs.source_track_key
+        });
         self.bearings.waiting.push(lob);
-        let Some((used, fix)) = self.bearings.try_fix() else {
-            return Ok(Vec::new());
+        self.bearings.fresh = Some(now);
+        Ok(())
+    }
+
+    /// Cross-fix the waiting lines once time has moved past the newest
+    /// (`at`), or at the end of a batch (`None`); the fixes go into the
+    /// picture as reports.
+    pub(super) async fn sweep_bearings(
+        &mut self,
+        at: Option<DateTime<Utc>>,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<()> {
+        let Some(fresh) = self.bearings.fresh else {
+            return Ok(());
         };
-        Ok(vec![self.fix_report(&used, &fix)])
+        if at.is_some_and(|at| at <= fresh) {
+            return Ok(());
+        }
+        for (used, fix) in self.bearings.sweep() {
+            let report = self.fix_report(&used, &fix);
+            self.ingest(report, counts).await?;
+        }
+        Ok(())
     }
 
     /// The one track a bearing points at, if exactly one fits clearly best;
     /// the bearing is recorded on it.
-    fn lob_track(&mut self, lob: &Lob) -> Option<Uid> {
+    fn lob_track(&mut self, lob: &mut Lob) -> Option<Uid> {
         let (olat, olon) = lob.origin();
         let at = lob.obs.observed_at;
         let id = lob.identity();
-        let mut fits: Vec<(Uid, f64, f64)> = Vec::new();
+        let mut fits: Vec<(Uid, f64, f64, bool)> = Vec::new();
+        let mut through = Vec::new();
         for t in self.tracks.values() {
             // A track only fixes keep up is kept up by fixes, not bearings.
             if !t.kind.is_track()
@@ -334,21 +551,40 @@ impl Engine {
                 )
                 .collect();
             let mut score = (-0.5 * d2).exp() / sigma;
+            let mut same = false;
             if let Some(id) = &id {
                 let scheme = id.split(':').next().unwrap_or_default();
                 if theirs.iter().any(|x| x == id) {
                     score *= 1e6;
+                    same = true;
                 } else if theirs.iter().any(|x| x.split(':').next() == Some(scheme)) {
                     continue;
                 }
             }
-            fits.push((t.uid, score, r));
+            fits.push((t.uid, score, r, same));
+            through.push((lat, lon));
         }
+        // A bearing goes to the track its emitter's fixes report for; else
+        // only on a matching emitter identity. One line through a track
+        // proves little: an emitter with no track of its own often lies on
+        // a line through someone else's, so it waits to be fixed instead.
+        let learned = self
+            .bearings
+            .members
+            .get(&(lob.obs.source_id.clone(), lob.obs.source_track_key.clone()))
+            .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied());
+        lob.through = through;
         fits.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let (uid, best, residual) = *fits.first()?;
-        if fits.get(1).is_some_and(|s| best < AMBIGUITY * s.1) {
-            return None;
-        }
+        let (uid, _, residual, _) = match learned.and_then(|u| fits.iter().find(|f| f.0 == u)) {
+            Some(f) => *f,
+            None => {
+                let (uid, best, residual, same) = *fits.first()?;
+                if !same || fits.get(1).is_some_and(|s| best < AMBIGUITY * s.1) {
+                    return None;
+                }
+                (uid, best, residual, same)
+            }
+        };
         let keep = chrono::Duration::seconds(KEEP_S);
         let t = self.tracks.get_mut(&uid)?;
         t.bearings.retain(|b| {
@@ -380,32 +616,45 @@ impl Engine {
             .max()
             .unwrap_or_else(Utc::now);
         let id = used.iter().find_map(|l| l.identity());
-        let recent = chrono::Duration::seconds(WINDOW_S * 5);
-        self.bearings.fixes.retain(|f| (at - f.3).abs() <= recent);
-        let spread = (fix.cov[0] + fix.cov[2]).sqrt() * 3.0 + 1000.0;
         let key = match &id {
             Some(id) => format!("id:{id}"),
-            None => self
-                .bearings
-                .fixes
-                .iter()
-                .filter(|f| !f.0.starts_with("id:"))
-                .map(|f| {
-                    let (n, e) = local(f.1, f.2, fix.lat, fix.lon);
-                    (n.hypot(e), f.0.clone())
-                })
-                .filter(|(d, _)| *d <= spread)
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, k)| k)
-                .unwrap_or_else(|| {
-                    self.bearings.seq += 1;
-                    format!("fix-{}", self.bearings.seq)
-                }),
+            // The key its members' earlier fixes had (most of them), else a
+            // new one named after the set.
+            None => {
+                let mut count: HashMap<&String, usize> = HashMap::new();
+                for l in used {
+                    let m = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
+                    if let Some(k) = self.bearings.members.get(&m) {
+                        *count.entry(k).or_default() += 1;
+                    }
+                }
+                count
+                    .into_iter()
+                    .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                    .map(|(k, _)| k.clone())
+                    .unwrap_or_else(|| {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        set_of(&used.iter().collect::<Vec<_>>()).hash(&mut h);
+                        format!("set-{:08x}", h.finish() as u32)
+                    })
+            }
         };
-        self.bearings.fixes.retain(|f| f.0 != key);
-        self.bearings
-            .fixes
-            .push((key.clone(), fix.lat, fix.lon, at));
+        if self.recording {
+            self.trace.push(json!({
+                "t": at, "kind": "fix", "key": key, "lat": fix.lat, "lon": fix.lon,
+                "sigma": (fix.cov[0] + fix.cov[2]).sqrt(),
+                "members": used.iter()
+                    .map(|l| format!("{}/{}", l.obs.source_id, l.obs.source_track_key))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        for l in used {
+            self.bearings.members.insert(
+                (l.obs.source_id.clone(), l.obs.source_track_key.clone()),
+                key.clone(),
+            );
+        }
         let mut sensors: Vec<&str> = used.iter().map(|l| l.obs.source_id.as_str()).collect();
         sensors.sort_unstable();
         sensors.dedup();
@@ -431,6 +680,14 @@ impl Engine {
             "provenance": {"sensor_code": "crossfix", "source_code": sensors.join(",")},
         }))
         .expect("a fix is an observation")
+    }
+}
+
+#[cfg(test)]
+impl Engine {
+    /// The fix key a sensor track's emitter went into.
+    pub(super) fn bearings_fix_key(&self, source: &str, key: &str) -> String {
+        self.bearings.members[&(source.to_owned(), key.to_owned())].clone()
     }
 }
 
@@ -481,10 +738,24 @@ mod tests {
         let mut w = Bearings::default();
         w.waiting.push(lob("esm-a", 50.60, -1.60, SHIP, 1.0, None));
         w.waiting.push(lob("esm-b", 50.85, -1.45, SHIP, 1.0, None));
-        assert!(w.try_fix().is_none(), "two anonymous lines may be a ghost");
+        assert!(w.sweep().is_empty(), "two anonymous lines may be a ghost");
         w.waiting.push(lob("esm-c", 50.55, -1.10, SHIP, 1.0, None));
-        let (used, fix) = w.try_fix().unwrap();
-        assert_eq!(used.len(), 3, "three sensors agreeing");
+        assert!(
+            w.sweep().is_empty(),
+            "three lines meeting once may be chance"
+        );
+        assert!(w.waiting.is_empty(), "and are used up");
+        for (s, lat, lon) in [
+            ("esm-a", 50.60, -1.60),
+            ("esm-b", 50.85, -1.45),
+            ("esm-c", 50.55, -1.10),
+        ] {
+            let mut l = lob(s, lat, lon, SHIP, 1.0, None);
+            l.obs.observed_at += chrono::Duration::seconds(5);
+            w.waiting.push(l);
+        }
+        let (used, fix) = w.sweep().pop().unwrap();
+        assert_eq!(used.len(), 3, "three sensors agreeing twice");
         let (n, e) = local(SHIP.0, SHIP.1, fix.lat, fix.lon);
         assert!(n.hypot(e) < 100.0, "{n} {e}");
         assert!(w.waiting.is_empty());
@@ -495,12 +766,12 @@ mod tests {
         w.waiting
             .push(lob("esm-b", 50.85, -1.45, SHIP, 1.0, Some("B999")));
         assert!(
-            w.try_fix().is_none(),
+            w.sweep().is_empty(),
             "different emitters never fix together"
         );
         w.waiting
             .push(lob("esm-c", 50.55, -1.10, SHIP, 1.0, Some("A123")));
-        let (used, _) = w.try_fix().unwrap();
+        let (used, _) = w.sweep().pop().unwrap();
         assert_eq!(used.len(), 2, "the same emitter from two sensors");
         assert!(
             used.iter()
@@ -516,7 +787,7 @@ mod tests {
         // A third sensor looking at something else, 25 km away.
         w.waiting
             .push(lob("esm-c", 50.55, -1.10, (50.90, -1.05), 1.0, None));
-        assert!(w.try_fix().is_none());
+        assert!(w.sweep().is_empty());
         assert_eq!(w.waiting.len(), 3);
     }
 }
