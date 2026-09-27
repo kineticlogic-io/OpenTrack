@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/validate", post(validate_source))
+        .route("/protobuf/describe", post(describe_protobuf))
         .route(
             "/sources/{id}",
             get(get_source).put(put_source).delete(delete_source),
@@ -598,6 +599,25 @@ async fn put_schema_draft(
         .with_db(move |db| db.put_schema_draft(&normalised, body.notes.as_deref(), &actor))
         .await?;
     Ok(Json(serde_json::to_value(draft).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct ProtoFiles {
+    /// `.proto` files, name → contents.
+    files: std::collections::BTreeMap<String, String>,
+}
+
+/// Compile a producer's `.proto` files and say what they define (methods,
+/// messages and their fields), for the source editor; or why they do not
+/// compile (`file:line: what`).
+async fn describe_protobuf(Json(req): Json<ProtoFiles>) -> Result<Json<Value>, ApiError> {
+    let set = tokio::task::spawn_blocking(move || ot_source::proto::ProtoSet::compile(&req.files))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(set.describe()).unwrap_or_default(),
+    ))
 }
 
 async fn publish_schema_draft(

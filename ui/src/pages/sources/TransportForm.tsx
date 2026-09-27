@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { CollapsiblePanel, FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
-import { api, type PluginInfo, type SourceSpec } from '../../api/client'
+import { api, type PluginInfo, type ProtoDescription, type SourceSpec } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { PluginOptions, PluginPicker } from '../../components/PluginOptions'
+import { ProtoSchema } from './ProtoSchema'
 
 type Transport = SourceSpec['transport']
 type Codec = SourceSpec['pipeline']['codec']
@@ -15,6 +16,8 @@ const TRANSPORTS: Record<string, { label: string; initial: Transport }> = {
   tcp_server: { label: 'TCP server (listen)', initial: { type: 'tcp_server', bind: '0.0.0.0:8087', framing: { type: 'lines' } } },
   udp: { label: 'UDP (unicast or multicast)', initial: { type: 'udp', bind: '0.0.0.0:6969' } },
   mqtt: { label: 'MQTT subscribe', initial: { type: 'mqtt', url: '', topics: [] } },
+  grpc_client: { label: 'gRPC client (call the producer)', initial: { type: 'grpc_client', url: '', method: '' } },
+  grpc_server: { label: 'gRPC server (producers call)', initial: { type: 'grpc_server', bind: '0.0.0.0:50051' } },
 }
 
 const QOS: Record<string, { label: string }> = {
@@ -34,6 +37,7 @@ const CODECS: Record<string, { label: string; initial: Codec }> = {
   json: { label: 'JSON', initial: { type: 'json' } },
   cot_xml: { label: 'Cursor-on-Target XML', initial: { type: 'cot_xml' } },
   xml: { label: 'XML (generic)', initial: { type: 'xml', record_element: 'record' } },
+  protobuf: { label: 'Protobuf (.proto)', initial: { type: 'protobuf', files: {}, message: '' } },
   plugin: { label: 'Plugin', initial: { type: 'plugin', plugin: '', options: {} } },
 }
 
@@ -157,11 +161,11 @@ function ListSetting({
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s))
 
 /** Transports that can run over TLS (the URL ones only for https://, wss://, mqtts://). */
-const TLS_TRANSPORTS = ['tcp_client', 'tcp_server', 'http_poll', 'websocket', 'mqtt']
+const TLS_TRANSPORTS = ['tcp_client', 'tcp_server', 'http_poll', 'websocket', 'mqtt', 'grpc_client', 'grpc_server']
 
 /** The transport's `tls` settings: trust, client certificate (mutual TLS) and, for the TCP server, its own certificate. */
 function TlsSettings({ transport, onTransport }: { transport: Transport; onTransport: (t: Transport) => void }) {
-  const server = transport.type === 'tcp_server'
+  const server = transport.type === 'tcp_server' || transport.type === 'grpc_server'
   const tls = (transport.tls as Record<string, unknown> | undefined) ?? {}
   const setTls = (k: string, v: unknown) => {
     const nextTls = { ...tls, [k]: v }
@@ -261,6 +265,8 @@ export function TransportForm({
       onTransport({ ...transport, framing: structuredClone(p.framing) })
     }
   }
+  const [proto, setProto] = useState<ProtoDescription | null>(null)
+  const grpc = transport.type === 'grpc_client' || transport.type === 'grpc_server'
   const framing = (transport.framing as Record<string, unknown> | undefined) ?? { type: 'lines' }
   const setFraming = (k: string, v: unknown) => set('framing', { ...framing, [k]: v })
 
@@ -308,6 +314,55 @@ export function TransportForm({
               </div>
             )}
           />
+        </>
+      )}
+      {codec.type === 'protobuf' && <ProtoSchema codec={codec} onCodec={onCodec} onDescription={setProto} />}
+      {grpc && codec.type !== 'protobuf' && (
+        <div className="field wide notice">gRPC carries protobuf: choose the Protobuf codec and add the producer&apos;s .proto files.</div>
+      )}
+      {transport.type === 'grpc_client' && (
+        <>
+          <Text label="URL" wide value={transport.url} onChange={(v) => set('url', v)} placeholder="https://feed.example:443 (http:// without TLS)" />
+          <div className="field wide">
+            <Label size="sm">Method</Label>
+            <FieldSelect
+              ariaLabel="Method"
+              fields={(proto?.methods ?? []).map((m) => ({ name: m.name, type: m.server_streaming ? 'stream' : 'unary' }))}
+              value={(transport.method as string) || null}
+              onChange={(name) => {
+                const m = proto?.methods.find((x) => x.name === name)
+                if (!m) return
+                onTransport({ ...transport, method: m.name })
+                // Frames are the method's responses.
+                if (codec.type === 'protobuf' && codec.message !== m.output) {
+                  const next: Codec = { ...codec, message: m.output }
+                  delete next.records
+                  onCodec(next)
+                }
+              }}
+            />
+          </div>
+          <JsonSetting label="Request" value={transport.request} onChange={(v) => set('request', v)} />
+          <JsonSetting label="Metadata" value={transport.metadata} onChange={(v) => set('metadata', v)} />
+          <Text label="Keepalive (s)" type="number" value={transport.keepalive_secs} onChange={(v) => set('keepalive_secs', num(v))} placeholder="20" />
+          <Text label="Max message (KiB)" type="number" value={transport.max_message_kib} onChange={(v) => set('max_message_kib', num(v))} placeholder="4096" />
+        </>
+      )}
+      {transport.type === 'grpc_server' && (
+        <>
+          <Text label="Bind address" value={transport.bind} onChange={(v) => set('bind', v)} placeholder="0.0.0.0:50051" />
+          <ListSetting
+            label="Methods producers call"
+            value={transport.methods}
+            onChange={(v) => (v.length ? onTransport({ ...transport, methods: v }) : set('methods', undefined))}
+            placeholder={
+              proto?.methods.filter((m) => m.input === codec.message).map((m) => m.name).join(', ') ||
+              "blank: every method sending the codec's message"
+            }
+          />
+          <Text label="Bearer token" value={transport.token} onChange={(v) => set('token', v)} placeholder="${env:NAME}; blank: none" />
+          <Text label="Max connections" type="number" value={transport.max_connections} onChange={(v) => set('max_connections', num(v))} placeholder="64" />
+          <Text label="Max message (KiB)" type="number" value={transport.max_message_kib} onChange={(v) => set('max_message_kib', num(v))} placeholder="4096" />
         </>
       )}
       {codec.type === 'xml' && (

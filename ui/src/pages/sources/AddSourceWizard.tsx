@@ -55,7 +55,19 @@ function connectProblems(spec: SourceSpec): string[] {
     if (t.clean_session === false && !String(t.client_id ?? '').trim()) p.push('a client id for a persistent session')
   }
   if (t.type === 'tcp_client' && (!String(t.host ?? '').trim() || !t.port)) p.push('a host and port')
-  if ((t.type === 'tcp_server' || t.type === 'udp') && !String(t.bind ?? '').trim()) p.push('a bind address')
+  if ((t.type === 'tcp_server' || t.type === 'udp' || t.type === 'grpc_server') && !String(t.bind ?? '').trim()) p.push('a bind address')
+  const c = spec.pipeline.codec
+  if (t.type === 'grpc_client' || t.type === 'grpc_server' || c.type === 'protobuf') {
+    if (c.type !== 'protobuf') p.push('the Protobuf codec (gRPC carries protobuf)')
+    else {
+      if (Object.keys((c.files as Record<string, string> | undefined) ?? {}).length === 0) p.push("the producer's .proto files")
+      if (!String(c.message ?? '').trim()) p.push('the message each frame holds')
+    }
+  }
+  if (t.type === 'grpc_client') {
+    if (!/^https?:\/\/./.test(String(t.url ?? '').trim())) p.push('a URL (http:// or https://)')
+    if (!String(t.method ?? '').trim()) p.push('the method to call')
+  }
   return p
 }
 

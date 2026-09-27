@@ -391,6 +391,23 @@ pub struct Service {
     pub max_message: usize,
     pub max_connections: usize,
     pub keepalive: Option<Duration>,
+    /// Told of every call refused or failed (`peer: why`), so the source's
+    /// status shows a producer in trouble.
+    pub on_problem: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+impl Service {
+    fn problem(&self, peer: &Peer, what: &str) {
+        tracing::debug!(peer = %peer.addr, %what, "gRPC call refused");
+        if let Some(f) = &self.on_problem {
+            f(format!(
+                "{}: {what}",
+                peer.subject
+                    .as_deref()
+                    .map_or_else(|| peer.addr.to_string(), str::to_owned)
+            ));
+        }
+    }
 }
 
 /// A connection's peer, as frames record it.
@@ -437,13 +454,13 @@ async fn handle(
 ) -> Result<Response<RespBody>, Infallible> {
     use std::sync::atomic::Ordering::Relaxed;
     let path = req.uri().path().to_owned();
+    let fail = |code: u32, what: String| {
+        service.problem(&peer, &what);
+        Ok(reply(code, &what, None))
+    };
     let Some(accepted) = service.methods.get(&path).cloned() else {
         counts.rejected.fetch_add(1, Relaxed);
-        return Ok(reply(
-            code::UNIMPLEMENTED,
-            &format!("{path} is not accepted here"),
-            None,
-        ));
+        return fail(code::UNIMPLEMENTED, format!("{path} is not accepted here"));
     };
     let ct = req
         .headers()
@@ -452,7 +469,7 @@ async fn handle(
         .unwrap_or("");
     if req.method() != http::Method::POST || !ct.starts_with("application/grpc") {
         counts.rejected.fetch_add(1, Relaxed);
-        return Ok(reply(code::INTERNAL, "not a gRPC call", None));
+        return fail(code::INTERNAL, "not a gRPC call".into());
     }
     if let Some(token) = &service.token {
         let given = req
@@ -462,16 +479,15 @@ async fn handle(
             .and_then(|v| v.strip_prefix("Bearer "));
         if !given.is_some_and(|g| constant_time_eq(g.as_bytes(), token.as_bytes())) {
             counts.rejected.fetch_add(1, Relaxed);
-            return Ok(reply(
+            return fail(
                 code::UNAUTHENTICATED,
-                "a valid bearer token is required",
-                None,
-            ));
+                "a valid bearer token is required".into(),
+            );
         }
     }
     let gzip = match gzip_encoded(req.headers()) {
         Ok(g) => g,
-        Err(e) => return Ok(reply(e.code(), &e.to_string(), None)),
+        Err(e) => return fail(e.code(), e.to_string()),
     };
     let mut deframer = Deframer::new(service.max_message, gzip);
     let mut body = req.into_body();
@@ -483,11 +499,7 @@ async fn handle(
             Some(Ok(f)) => f,
             Some(Err(e)) => {
                 counts.failed.fetch_add(1, Relaxed);
-                return Ok(reply(
-                    code::UNAVAILABLE,
-                    &format!("reading the call: {e}"),
-                    None,
-                ));
+                return fail(code::UNAVAILABLE, format!("reading the call: {e}"));
             }
         };
         let Some(data) = frame.data_ref() else {
@@ -500,7 +512,7 @@ async fn handle(
                 Ok(None) => break,
                 Err(e) => {
                     counts.failed.fetch_add(1, Relaxed);
-                    return Ok(reply(e.code(), &e.to_string(), None));
+                    return fail(e.code(), e.to_string());
                 }
             };
             // Tell the producer now, not by a silent drop later.
@@ -508,15 +520,14 @@ async fn handle(
                 prost_reflect::DynamicMessage::decode(accepted.input.clone(), &message[..])
             {
                 counts.failed.fetch_add(1, Relaxed);
-                return Ok(reply(
+                return fail(
                     code::INVALID_ARGUMENT,
-                    &format!(
+                    format!(
                         "message {} is not a valid {}: {e}",
                         received + 1,
                         accepted.input.full_name()
                     ),
-                    None,
-                ));
+                );
             }
             let mut f = Frame::new(message);
             f.origin = Some(origin.clone());
@@ -626,6 +637,13 @@ pub async fn serve(
                     }
                     Err(e) => {
                         tracing::warn!(%addr, error = %e, "gRPC TLS client rejected");
+                        service.problem(
+                            &Peer {
+                                addr,
+                                subject: None,
+                            },
+                            &format!("TLS: {e}"),
+                        );
                         return;
                     }
                 },
@@ -662,6 +680,8 @@ mod tests {
 
     use super::*;
     use crate::proto::tests::files;
+
+    static PROBLEMS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
     #[test]
     fn messages_are_found_in_any_split_of_the_bytes() {
@@ -732,6 +752,7 @@ mod tests {
             max_message: 1 << 16,
             max_connections: 4,
             keepalive: None,
+            on_problem: Some(Arc::new(|p: String| PROBLEMS.lock().unwrap().push(p))),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -851,6 +872,12 @@ mod tests {
         assert_eq!(counts.messages.load(Relaxed), 3);
         assert_eq!(counts.rejected.load(Relaxed), 2);
         assert_eq!(counts.failed.load(Relaxed), 2);
+        let problems = PROBLEMS.lock().unwrap().clone();
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        assert!(
+            problems[0].ends_with(": a valid bearer token is required"),
+            "{problems:?}"
+        );
     }
 
     /// A producer that streams `n` batches to whoever calls
@@ -882,7 +909,9 @@ mod tests {
                                     d.push(data);
                                 }
                             }
-                            let request = schema.decode(&sub, &d.next_message().unwrap().unwrap()).unwrap();
+                            let request = schema
+                                .decode(&sub, &d.next_message().unwrap().unwrap())
+                                .unwrap();
                             if let Some((code, msg)) = fail {
                                 return Ok::<_, Infallible>(reply(code, msg, None));
                             }

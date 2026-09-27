@@ -150,6 +150,19 @@ impl ServerTls {
 
     /// A TLS acceptor for these settings.
     pub fn acceptor(&self) -> anyhow::Result<tokio_rustls::TlsAcceptor> {
+        Ok(tokio_rustls::TlsAcceptor::from(Arc::new(
+            self.server_config()?,
+        )))
+    }
+
+    /// The same, offering HTTP/2 (ALPN `h2`), which gRPC clients require.
+    pub fn h2_acceptor(&self) -> anyhow::Result<tokio_rustls::TlsAcceptor> {
+        let mut config = self.server_config()?;
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+    }
+
+    fn server_config(&self) -> anyhow::Result<rustls::ServerConfig> {
         self.check().map_err(anyhow::Error::msg)?;
         let provider = provider();
         let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
@@ -179,7 +192,7 @@ impl ServerTls {
                 private_key("tls.key_file", &self.key_file)?,
             )
             .context("tls.cert_file / tls.key_file: the key does not fit the certificate")?;
-        Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+        Ok(config)
     }
 }
 

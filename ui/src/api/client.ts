@@ -387,6 +387,12 @@ export interface AppSettings {
   sync?: SyncSettings
 }
 
+/** What a producer's .proto files define (POST /protobuf/describe). */
+export interface ProtoDescription {
+  methods: { name: string; input: string; output: string; client_streaming: boolean; server_streaming: boolean }[]
+  messages: { name: string; fields: { name: string; type: string; repeated: boolean }[] }[]
+}
+
 /** Sharing the picture with other OpenTrack nodes (docs/multi-node.md). */
 export interface SyncSettings {
   enabled: boolean
@@ -829,6 +835,7 @@ export interface EntityView {
 export const api = {
   status: () => get<ServerStatus>('/status'),
   syncStatus: () => get<SyncStatus>('/sync/status'),
+  describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
   tracks: (limit = 10000) => get<{ total: number; tracks: TrackRow[] }>(`/tracks?limit=${limit}`),
   track: (uid: string) => get<TrackResponse>(`/tracks/${enc(uid)}`),

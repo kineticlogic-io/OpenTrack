@@ -649,7 +649,7 @@ pub async fn run(
                 })
                 .collect::<Result<BTreeMap<_, _>, crate::proto::ProtoError>>()?;
             let token = token.as_deref().map(resolve_env).transpose()?;
-            let acceptor = tls.as_ref().map(ServerTls::acceptor).transpose()?;
+            let acceptor = tls.as_ref().map(ServerTls::h2_acceptor).transpose()?;
             let service = Arc::new(crate::grpc::Service {
                 schema: proto.set.clone(),
                 methods: accepted,
@@ -658,6 +658,16 @@ pub async fn run(
                 max_connections: *max_connections,
                 keepalive: (*keepalive_secs > 0.0)
                     .then(|| Duration::from_secs_f64(*keepalive_secs)),
+                // A producer in trouble shows in the source's status.
+                on_problem: Some({
+                    let status = status.clone();
+                    Arc::new(move |what: String| {
+                        set(&status, |s| {
+                            s.errors += 1;
+                            s.last_error = Some(what);
+                        })
+                    })
+                }),
             });
             let listener = tokio::net::TcpListener::bind(resolve_env(bind)?.as_str())
                 .await
@@ -1479,6 +1489,82 @@ mod tests {
         assert!(rx.try_recv().is_err());
         task.abort();
         publisher.abort();
+    }
+
+    /// A gRPC server source with mutual TLS: only producers holding a
+    /// certificate from the trusted CA get in, and the refusals show in the
+    /// source's status.
+    #[tokio::test]
+    async fn a_grpc_server_with_mutual_tls_admits_only_trusted_producers() {
+        let pki = Pki::new();
+        let files = crate::proto::tests::files();
+        let codec = crate::codec::CodecConfig::Protobuf {
+            files: files.clone(),
+            message: "acme.tracks.v1.TrackBatch".into(),
+            records: None,
+            context: Vec::new(),
+        };
+        let proto = ProtoContext::of(&codec).unwrap();
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let config = TransportConfig::GrpcServer {
+            bind: addr.to_string(),
+            methods: Vec::new(),
+            tls: Some(pki.server(true)),
+            token: None,
+            max_message_kib: 64,
+            max_connections: 8,
+            keepalive_secs: 0.0,
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let status = SharedStatus::default();
+        let task_status = status.clone();
+        let task = tokio::spawn(async move {
+            let _ = run(&config, proto.as_ref(), tx, task_status).await;
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let set = crate::proto::ProtoSet::compile(&files).unwrap();
+        let batch = set.message("acme.tracks.v1.TrackBatch").unwrap();
+        let body = set
+            .encode(&batch, &serde_json::json!({"tracks": [{"track_id": "M1"}]}))
+            .unwrap();
+        let push = |cert: Option<&str>| {
+            let t = pki.client(cert);
+            crate::grpc::Subscription {
+                url: format!("https://localhost:{}", addr.port()),
+                path: "/acme.tracks.v1.TrackFeed/Push".into(),
+                request: body.clone(),
+                metadata: BTreeMap::new(),
+                tls: Some((
+                    t.client_config().unwrap(),
+                    crate::tls::server_name("localhost").unwrap(),
+                )),
+                max_message: 1 << 16,
+                keepalive: None,
+                connect_timeout: Duration::from_secs(5),
+            }
+        };
+        let ok = crate::grpc::subscribe(&push(Some("client-a")), || {}, |_| async { Ok(()) }).await;
+        assert!(ok.is_ok(), "{ok:?}");
+        let f = rx.recv().await.unwrap();
+        assert!(
+            f.meta["peer_subject"]
+                .as_str()
+                .unwrap()
+                .contains("client-a"),
+            "{:?}",
+            f.meta
+        );
+        for who in [None, Some("client-x")] {
+            let refused = crate::grpc::subscribe(&push(who), || {}, |_| async { Ok(()) }).await;
+            assert!(refused.is_err(), "{who:?} got in");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let s = status.lock().unwrap().clone();
+        assert!(s.errors >= 2, "{s:?}");
+        assert!(s.last_error.unwrap().contains("TLS"));
+        task.abort();
     }
 
     /// Test certificates: a CA, a server certificate for localhost and

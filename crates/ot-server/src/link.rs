@@ -558,7 +558,8 @@ pub async fn run(
             }
         }
     }
-    let _ = client.flush().await;
+    // Bounded: with NATS unreachable a flush would wait forever.
+    let _ = tokio::time::timeout(Duration::from_secs(2), client.flush()).await;
     tracing::info!(counts = ?link.counts, "link stopped");
     Ok(())
 }
