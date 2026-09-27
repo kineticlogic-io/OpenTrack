@@ -172,7 +172,7 @@ def legend(ax, items, x=0.02, y0=0.05, dy=0.04, scale=1.0):
         elif kind == "dash":
             ax.plot([x - 0.008, x + 0.012], [y, y], transform=ax.transAxes, color=c, lw=1.2, ls=(0, (3, 2)))
         else:
-            ax.scatter([x + 0.002], [y], transform=ax.transAxes, marker=kind, s=40 * scale, color=c, edgecolors=c)
+            ax.scatter([x + 0.002], [y], transform=ax.transAxes, marker=kind, s=40 * scale, color=c)
         ax.text(x + 0.022, y, text, transform=ax.transAxes, color=FG, fontsize=9 * scale, va="center")
         y -= dy
 
@@ -180,7 +180,7 @@ def legend(ax, items, x=0.02, y0=0.05, dy=0.04, scale=1.0):
 class Video:
     def __init__(self, out):
         self.fig = plt.figure(figsize=(12.8, 7.2), dpi=100, facecolor=BG)
-        self.w = imageio_ffmpeg.write_frames(out, (1280, 720), fps=FPS, quality=7, macro_block_size=8)
+        self.w = imageio_ffmpeg.write_frames(out, (1280, 720), fps=FPS, quality=5, macro_block_size=8)
         self.w.send(None)
         self.out = out
 
@@ -212,6 +212,8 @@ def overview(path, out):
             side.cla()
             side.set_facecolor(BG)
             side.axis("off")
+            side.set_xlim(0, 1)
+            side.set_ylim(0, 1)
             side.text(0.04, 0.95, "esm-crossfix · the whole picture", color=FG, fontsize=15, weight="bold", va="top")
             side.text(0.04, 0.895, f"t = {f['t']:3d} s   ×25 speed", color=MUTED, fontsize=10, family="monospace", va="top")
             side.text(0.04, 0.84, "20 ships with radars, 10 on AIS. 4 ESM sensors report a bearing\n"
@@ -267,6 +269,8 @@ def ghosts(naive_path, path, out):
             top.cla()
             top.set_facecolor(BG)
             top.axis("off")
+            top.set_xlim(0, 1)
+            top.set_ylim(0, 1)
             top.text(0.012, 0.78, "Ghost fixes: anonymous bearings only (no ELNOT)", color=FG, fontsize=15, weight="bold", va="top")
             top.text(0.012, 0.36, f"t = {off[k]['t']:3d} s  ×25   ·   white + = fix near a ship   ·   red × = ghost, no ship within 3σ   ·   "
                      "dashed grey = waiting   ·   rings = true positions", color=MUTED, fontsize=9.5, va="top")

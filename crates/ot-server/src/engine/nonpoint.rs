@@ -515,7 +515,7 @@ impl Engine {
         }
         for (used, fix) in self.bearings.sweep() {
             // The emitter is a track we have: its lines go to it from now on.
-            if let Some((uid, residuals)) = self.pointed_at(&used) {
+            if let Some((uid, residuals)) = self.pointed_at(&used, &fix) {
                 for (l, r) in used.iter().zip(residuals) {
                     self.attach(uid, l, r);
                     self.bearings.bound.insert(
@@ -639,6 +639,13 @@ impl Engine {
                 .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied())
         });
         lob.through = through;
+        // A line that no longer fits the track it was bound to (a neighbour
+        // that passed close by and has moved on) is bound no more.
+        if let Some(u) = self.bearings.bound.get(&member).copied()
+            && !fits.iter().any(|f| f.0 == u)
+        {
+            self.bearings.bound.remove(&member);
+        }
         fits.sort_by(|a, b| b.1.total_cmp(&a.1));
         let (uid, _, residual, _) = match learned.and_then(|u| fits.iter().find(|f| f.0 == u)) {
             Some(f) => *f,
@@ -683,17 +690,39 @@ impl Engine {
     /// sensors all passing through a track's own, precise position say the
     /// emitter is that track far more surely than the fix's position,
     /// kilometres uncertain, ever can.
-    fn pointed_at(&self, used: &[Lob]) -> Option<(Uid, Vec<f64>)> {
+    fn pointed_at(&self, used: &[Lob], fix: &Fix) -> Option<(Uid, Vec<f64>)> {
         // Two lines meet somewhere: any ship near their crossing fits them.
         let n = used.len();
         if n < 3 {
             return None;
         }
-        let mut found = None;
-        // Every track the lines could all be pointing at, of any kind: two
-        // (ships close together along the lines) and it is not for the
-        // lines to say which.
-        for t in self.tracks.values() {
+        // The fix tracks these lines made themselves are no rival: they are
+        // the lines' own estimate of where the emitter is.
+        let own: Vec<String> = used
+            .iter()
+            .filter_map(|l| {
+                let m = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
+                self.bearings.members.get(&m).cloned()
+            })
+            .chain(
+                used.iter()
+                    .find_map(|l| l.identity())
+                    .map(|id| format!("id:{id}")),
+            )
+            .collect();
+        let mine = |t: &ot_core::SystemTrack| {
+            t.contributors
+                .iter()
+                .all(|c| c.source_id == FIX && own.contains(&c.source_track_key))
+        };
+        // Every track the lines could all be pointing at, of any kind, by
+        // how likely the lines are if it is the emitter: the best must be
+        // clearly likelier than the next (ships close together along the
+        // lines, and it is not for the lines to say which). A wide ELINT
+        // area fits loosely, so it is far less likely than a precise ship
+        // the lines pass right through.
+        let mut found: Vec<(&ot_core::SystemTrack, Vec<Fit>, f64)> = Vec::new();
+        for t in self.tracks.values().filter(|t| !mine(t)) {
             let fits: Option<Vec<Fit>> = used.iter().map(|l| self.fit_any(l, t)).collect();
             let Some(fits) = fits else {
                 continue;
@@ -701,12 +730,32 @@ impl Engine {
             if fits.iter().map(|f| f.d2).sum::<f64>() > CHI2_99[n.min(4) - 1] {
                 continue;
             }
-            if found.is_some() {
-                return None;
+            // The fix against the track, with both their errors.
+            let [pn, pne, pe] = t
+                .view
+                .uncertainty
+                .as_ref()
+                .and_then(|u| u.position_covariance())
+                .unwrap_or([1e4, 0.0, 1e4]);
+            let (a, b, c) = (fix.cov[0] + pn, fix.cov[1] + pne, fix.cov[2] + pe);
+            let det = a * c - b * b;
+            if det <= 0.0 {
+                continue;
             }
-            found = Some((t, fits));
+            let (dn, de) = local(fits[0].lat, fits[0].lon, fix.lat, fix.lon);
+            let m2 = (c * dn * dn - 2.0 * b * dn * de + a * de * de) / det;
+            let ln_l = -0.5 * m2 - 0.5 * det.ln();
+            found.push((t, fits, ln_l));
         }
-        let (t, fits) = found?;
+        found.sort_by(|a, b| b.2.total_cmp(&a.2));
+        let mut found = found.into_iter();
+        let (t, fits, best) = found.next()?;
+        if found
+            .next()
+            .is_some_and(|next| best - next.2 < AMBIGUITY.ln())
+        {
+            return None;
+        }
         // Only a track at least as precise as the lines can say so: a
         // kilometres-wide ELINT area fits any line passing nearby. Nor is a
         // track fixes alone keep up one to bind lines to.

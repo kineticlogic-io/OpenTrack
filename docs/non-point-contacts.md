@@ -46,10 +46,10 @@ The comparison is a chi-square gate with one degree of freedom. A track beyond `
 A bearing then **reports for** a track, the way a detection's plot does, in either of two cases:
 - **Its emitter identity matches the track's,** and the track fits clearly better than any other: a likelihood ratio above 10. An ELNOT the track already carries from a different emitter is a veto.
 - **Its emitter was found on the track.** Either:
-  - lines from three or more sensors, fixed together, all point at the track's own position within their errors and the track's, and at no other track of any kind. The track must be at least as precise as the lines (an AIS ship, not a kilometres-wide ELINT area), since an imprecise track fits any line passing nearby. Two lines always meet somewhere, so two aren't enough;
+  - lines from three or more sensors, fixed together, all point at the track's own position within their errors and the track's. The track must be clearly the likeliest of all the tracks they could point at, of any kind: their fix is weighed against each track's position with both errors, and the best must beat the next by 10. A kilometres-wide ELINT area fits loosely and so scores low, while a precise AIS ship the lines pass right through scores high. Only a track at least as precise as the lines can bind them, and two lines always meet somewhere, so two aren't enough;
   - or the sensor track's earlier bearings went into a cross-fix that now reports for this track.
 
-  From then on, the sensor track's bearings go to it directly, as long as they pass its gate.
+  From then on, the sensor track's bearings go to it directly while they pass its gate. A line that stops fitting (a neighbour that passed close by and moved on) is unbound.
 
 One anonymous line through a track is **not** enough. An emitter with no track of its own often lies on a line through someone else's, so this rule attached a third of such lines to the wrong ship in the benchmark. Instead the line waits and is cross-fixed.
 
@@ -124,18 +124,16 @@ A synthetic scenario, `esm-crossfix`:
 
 | Measure | Result |
 |---|---|
-| Bearings associated with the right track | 100% (2,448 of 2,448) |
+| Bearings associated with the right track | 99% (2,547 of 2,573) |
 | Emitters without AIS that got a track | 10 of 10; 9 within 60 s |
-| Ghost fixes (no emitter within 3σ) | 0.45% (3 of 665) |
+| Ghost fixes (no emitter within 3σ) | 0.46% (3 of 656) |
 | Fixes within 2σ of their own ellipse | 92% |
-| Ships with two tracks at the end | 3 of 20 (gate: 3 or fewer) |
+| Ships with two tracks at the end | 2 of 20 (gate: 3 or fewer) |
 
-The three duplicates are the hard cases:
-- an ELNOT emitter only two sensors see, beside its own AIS ship: two lines can't bind, and its fix is too uncertain to pair by position;
-- a ship with a close neighbour along the lines;
-- a ship known otherwise only by a kilometres-wide ELINT area.
-
-Linking an ELNOT to an MMSI on the entity would join the first kind. Two of the emitters without AIS had no track at the end, having gone out of three sensors' range.
+The hard cases that remain:
+- **An emitter only two sensors see, beside its own AIS ship.** Two lines can't bind, and its fix is too uncertain to pair by position. That leaves a duplicate for an ELNOT emitter, and unattached lines for an anonymous one. Linking an ELNOT to an MMSI on the entity would join the first kind.
+- **Two ships in line with two sensors' baseline.** Those sensors' lines to them coincide, so their sets mix and neither binds; the 26 wrong bearings are of this kind too.
+- **A ship known otherwise only by a kilometres-wide ELINT area** can end with a fix track beside it. Two of the emitters without AIS had no track at the end, having gone out of three sensors' range.
 
 The videos render from the same run: `OT_REPLAY_TRACE=<dir>` writes a frame per step, and `scripts/benchmark/replay/esm-video.py` draws them. `OT_ESM_NAIVE=1` turns the ghost rules off, for comparison.
 
