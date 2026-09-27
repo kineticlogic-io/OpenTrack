@@ -42,7 +42,17 @@ def xy(lat, lon):
 
 def load(path):
     rows = [json.loads(line) for line in open(path) if line.strip()]
-    return rows[0], rows[1:]
+    header, frames = rows[0], rows[1:]
+    # ELINT areas come every 30 s: keep showing each, faded, until the next.
+    last = {}
+    for f in frames:
+        for a in f["areas"]:
+            last[a["emitter"]] = (f["t"], a)
+        fresh = {a["emitter"] for a in f["areas"]}
+        for em, (t, a) in last.items():
+            if em not in fresh and f["t"] - t < 30:
+                f["areas"].append({**a, "stale": True})
+    return header, frames
 
 
 class Colours:
@@ -128,10 +138,13 @@ def draw(ax, header, frame, colour, sub, *, only_anonymous=False, show_tracks=Tr
                 continue
             x, y = xy(ar["lat"], ar["lon"])
             c = colour(ar["uid"])
-            ax.add_patch(Circle((x, y), ar["r"], fill=True, fc=c, alpha=0.08 * fade, ec="none", zorder=2))
-            ax.add_patch(Circle((x, y), ar["r"], fill=False, ec=c, alpha=0.8 * fade, lw=1.2, ls="--", zorder=2))
+            k = 0.4 if ar.get("stale") else fade
+            ax.add_patch(Circle((x, y), ar["r"], fill=True, fc=c, alpha=0.08 * k, ec="none", zorder=2))
+            ax.add_patch(Circle((x, y), ar["r"], fill=False, ec=c, alpha=0.8 * k, lw=1.2, ls="--", zorder=2))
     # Fixes made this step: 1-sigma circle; a ghost (no emitter within 3 sigma) in red.
     for fx in frame["fixes"]:
+        if only_anonymous and not anonymous(fx):
+            continue
         x, y = xy(fx["lat"], fx["lon"])
         if focus is not None and not any(m.endswith(f"/em{focus}") for m in fx["members"]):
             continue
@@ -154,10 +167,17 @@ def draw(ax, header, frame, colour, sub, *, only_anonymous=False, show_tracks=Tr
         ax.text(x + 900, y - 1600, label(t), color=c, fontsize=8 * text_scale, weight="bold", zorder=6)
 
 
-def counters(frames, upto, naive_ids=False):
+def anonymous(fx):
+    """A fix of lines without an emitter identity (the scenario gives odd emitters none)."""
+    return int(fx["members"][0].rsplit("/em", 1)[1]) % 2 == 1
+
+
+def counters(frames, upto, only_anonymous=False):
     fixes = ghosts = to_track = 0
     for f in frames[: upto + 1]:
         for fx in f["fixes"]:
+            if only_anonymous and not anonymous(fx):
+                continue
             fixes += 1
             ghosts += is_ghost(fx, f["ships"])
         to_track += sum(1 for ln in f["lines"] if ln["fate"] == "track")
@@ -256,16 +276,17 @@ def ghosts(naive_path, path, out):
     top = v.fig.add_axes([0.0, 0.86, 1.0, 0.14])
     ca, cb = Colours(), Colours()
     for k in range(min(len(off), len(on))):
-        stats = [counters(off, k), counters(on, k)]
+        stats = [counters(off, k, True), counters(on, k, True)]
         for sub in range(PER_STEP):
             for ax, frames, colour, title, (fixes, gh, _) in zip(
                 axes, (off, on), (ca, cb), ("Consensus only: three sensors agree", "With the ghost rules"), stats
             ):
                 style(ax, (-BOX, BOX), (-BOX, BOX))
                 draw(ax, header, frames[k], colour, sub, only_anonymous=True, show_tracks=False, text_scale=0.8)
-                ax.text(0.03, 0.97, title, transform=ax.transAxes, color=FG, fontsize=12, weight="bold", va="top")
-                ax.text(0.03, 0.915, f"fixes {fixes}   ghosts {gh} ({100 * gh / max(fixes, 1):.1f}%)",
-                        transform=ax.transAxes, color=GHOST if gh else FG, fontsize=10, family="monospace", va="top")
+                box = {"facecolor": BG, "edgecolor": "none", "alpha": 0.85, "pad": 2}
+                ax.text(0.5, 0.985, title, transform=ax.transAxes, color=FG, fontsize=12, weight="bold", va="top", ha="center", bbox=box)
+                ax.text(0.5, 0.93, f"fixes {fixes}   ghosts {gh} ({100 * gh / max(fixes, 1):.1f}%)", ha="center",
+                        transform=ax.transAxes, color=GHOST if gh else FG, fontsize=10, family="monospace", va="top", bbox=box)
             top.cla()
             top.set_facecolor(BG)
             top.axis("off")
@@ -300,7 +321,7 @@ def follow(path, emitter, out):
         area = [a for a in f["areas"] if int(a["emitter"]) == emitter]
         if area and area[0]["uid"] and not any("ELINT area" in e[1] for e in events):
             events.append((k, "ELINT area pairs with the track"))
-        if to_track and not any("bearings go" in e[1] for e in events):
+        if to_track and not any("go to its track" in e[1] for e in events):
             seen_uid = to_track[0]["uid"]
             events.append((k, "the emitter's bearings now go to its track directly"))
         for sub in range(PER_STEP):
