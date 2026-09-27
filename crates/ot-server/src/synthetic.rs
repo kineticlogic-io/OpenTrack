@@ -181,6 +181,7 @@ fn observation(key: &str, lat: f64, lon: f64) -> Observation {
         track_type: Some(ot_core::TrackType::SimulatedTraining),
         ext: Default::default(),
         origin: None,
+        geometry: None,
     }
 }
 

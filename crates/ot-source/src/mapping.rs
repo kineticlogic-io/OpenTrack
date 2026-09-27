@@ -114,6 +114,8 @@ enum FieldType {
     State,
     TrackType,
     Sidc,
+    /// `[[lat, lon], …]`, `[{lat, lon}, …]` or "lat lon, lat lon, …".
+    Polygon,
 }
 
 /// Every core field a mapping may write. Extension fields are `ext.<key>`.
@@ -147,6 +149,14 @@ const TARGETS: &[(&str, FieldType)] = &[
     ("provenance.confidence", FieldType::Number),
     ("state", FieldType::State),
     ("track_type", FieldType::TrackType),
+    // A line of bearing from the position (the sensor's): its direction,
+    // one-sigma error, and the sensor's range, all optional but the first.
+    ("geometry.bearing_deg", FieldType::Number),
+    ("geometry.sigma_deg", FieldType::Number),
+    ("geometry.max_range_m", FieldType::Number),
+    ("geometry.elevation_deg", FieldType::Number),
+    // An area of uncertainty; with no position mapped, its centre is.
+    ("geometry.polygon", FieldType::Polygon),
 ];
 
 fn target_type(field: &str) -> Option<FieldType> {
@@ -214,6 +224,7 @@ impl MappingSpec {
                 }
             }
             if rule.kind.reports()
+                && !rule.fields.contains_key("geometry.polygon")
                 && !(rule.fields.contains_key("position.latitude")
                     && rule.fields.contains_key("position.longitude"))
             {
@@ -342,6 +353,9 @@ fn coerce(target: &str, v: Value) -> Value {
                 .and_then(|t| serde_json::to_value(t).ok())
                 .unwrap_or(Value::Null)
         }
+        Some(FieldType::Polygon) => parse_polygon(&v)
+            .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null),
         None => Value::Null,
     }
 }
@@ -392,6 +406,40 @@ pub enum FinalizeError {
     Invalid(String),
 }
 
+/// A polygon as `[[lat, lon], …]` from the shapes feeds use.
+fn parse_polygon(v: &Value) -> Option<Vec<[f64; 2]>> {
+    let pair = |p: &Value| -> Option<[f64; 2]> {
+        match p {
+            Value::Array(a) if a.len() >= 2 => Some([as_f64(&a[0])?, as_f64(&a[1])?]),
+            Value::Object(o) => {
+                let get = |ks: &[&str]| ks.iter().find_map(|k| o.get(*k)).and_then(as_f64);
+                Some([
+                    get(&["lat", "latitude"])?,
+                    get(&["lon", "lng", "longitude"])?,
+                ])
+            }
+            _ => None,
+        }
+    };
+    let pts: Vec<[f64; 2]> = match v {
+        Value::Array(a) => a.iter().map(pair).collect::<Option<_>>()?,
+        Value::String(s) => s
+            .split(',')
+            .map(|p| {
+                let mut it = p.split_whitespace().map(|x| x.parse::<f64>().ok());
+                Some([it.next()??, it.next()??])
+            })
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    // A closed ring repeats its first vertex: keep one.
+    let mut pts = pts;
+    if pts.len() > 3 && pts.first() == pts.last() {
+        pts.pop();
+    }
+    Some(pts)
+}
+
 /// Build the typed observation from mapped fields plus pipeline context.
 pub fn finalize(
     source_id: &str,
@@ -399,12 +447,35 @@ pub fn finalize(
     mapped: &Mapped,
     received_at: DateTime<Utc>,
 ) -> Result<Observation, FinalizeError> {
-    let f = &mapped.fields;
+    let mut f = mapped.fields.clone();
+    // Non-point contacts: the geometry's type follows from what was mapped,
+    // and an area with no position mapped stands at its centre.
+    if let Some(g) = f.get_mut("geometry").and_then(Value::as_object_mut) {
+        if g.contains_key("bearing_deg") {
+            g.insert("type".into(), "bearing".into());
+        } else if g.contains_key("polygon") {
+            g.insert("type".into(), "area".into());
+        } else {
+            f.as_object_mut().map(|o| o.remove("geometry"));
+        }
+    }
+    if let Some(poly) = f.pointer("/geometry/polygon").cloned()
+        && f.pointer("/position/latitude").is_none()
+        && let Ok(poly) = serde_json::from_value::<Vec<[f64; 2]>>(poly)
+        && !poly.is_empty()
+    {
+        let (lat, lon, cov) = ot_core::geometry::area_estimate(&poly);
+        let e = ot_core::schema::Ellipse::from_covariance(cov);
+        f["position"] = serde_json::json!({"latitude": lat, "longitude": lon});
+        if f.pointer("/uncertainty/ellipse").is_none() {
+            f["uncertainty"] = serde_json::json!({"ellipse": e});
+        }
+    }
     if f.pointer("/position/latitude").is_none() || f.pointer("/position/longitude").is_none() {
         return Err(FinalizeError::NoPosition);
     }
     let mut obj = match f {
-        Value::Object(m) => m.clone(),
+        Value::Object(m) => m,
         _ => Map::new(),
     };
     obj.insert("schema_version".into(), schema_version.into());
@@ -546,6 +617,59 @@ mod tests {
             bad["classification"].get("sidc").is_none_or(Value::is_null),
             "{bad}"
         );
+    }
+
+    #[test]
+    fn bearings_and_areas_map_to_non_point_observations() {
+        let spec: MappingSpec = serde_json::from_value(json!({"rules": [
+            {"name": "lob", "key": "id", "when": {"path": "kind", "eq": "lob"},
+             "fields": {"position.latitude": "lat", "position.longitude": "lon",
+                        "geometry.bearing_deg": "brg", "geometry.sigma_deg": "err"}},
+            {"name": "aou", "key": "id", "when": {"path": "kind", "eq": "aou"},
+             "fields": {"geometry.polygon": "poly"}}]}))
+        .unwrap();
+        spec.validate().unwrap();
+        let obs = |rec: Value| {
+            let MapOutcome::Mapped(out) = spec.apply(&rec) else {
+                panic!("not mapped")
+            };
+            finalize("esm", 1, &out[0], Utc::now()).unwrap()
+        };
+        let lob = obs(
+            json!({"kind": "lob", "id": "E1", "lat": 50.6, "lon": -1.9, "brg": "47.5", "err": 2}),
+        );
+        assert_eq!(
+            lob.geometry,
+            Some(ot_core::Geometry::Bearing {
+                bearing_deg: 47.5,
+                sigma_deg: 2.0,
+                max_range_m: None,
+                elevation_deg: None
+            })
+        );
+        assert_eq!(
+            lob.position.latitude, 50.6,
+            "a bearing's position is the sensor's"
+        );
+        let aou = obs(
+            json!({"kind": "aou", "id": "A1", "poly": "50.0 -1.0, 50.0 -0.9, 50.1 -0.9, 50.1 -1.0, 50.0 -1.0"}),
+        );
+        let Some(ot_core::Geometry::Area { polygon }) = &aou.geometry else {
+            panic!("{:?}", aou.geometry)
+        };
+        assert_eq!(polygon.len(), 4, "the closing vertex is dropped");
+        assert!(
+            (aou.position.latitude - 50.05).abs() < 1e-9,
+            "an area stands at its centre"
+        );
+        assert!(aou.uncertainty.unwrap().ellipse.unwrap().semi_major_m > 1000.0);
+        let pairs = obs(
+            json!({"kind": "aou", "id": "A2", "poly": [{"lat": 50.0, "lon": -1.0}, {"lat": 50.0, "lon": -0.9}, {"lat": 50.1, "lon": -0.95}]}),
+        );
+        assert!(matches!(
+            pairs.geometry,
+            Some(ot_core::Geometry::Area { .. })
+        ));
     }
 
     #[test]

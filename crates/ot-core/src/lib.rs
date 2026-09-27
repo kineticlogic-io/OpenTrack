@@ -5,6 +5,7 @@
 //! identity ([`uid`]), system tracks themselves ([`track`]) and the message
 //! they are published as ([`wire`]).
 
+pub mod geometry;
 pub mod gold;
 pub mod schema;
 pub mod sidc;
@@ -12,6 +13,7 @@ pub mod track;
 pub mod uid;
 pub mod wire;
 
+pub use geometry::Geometry;
 pub use schema::{
     Affiliation, Classification, Covariance, Domain, Ellipse, Identifier, Kinematics, Observation,
     Platform, Position, Provenance, SecurityLabel, TrackState, TrackType, Uncertainty,

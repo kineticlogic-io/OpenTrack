@@ -464,6 +464,10 @@ pub struct Observation {
     /// Admin-defined extension fields, published under `attributes_json.ext`.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub ext: serde_json::Map<String, serde_json::Value>,
+    /// Not a point: a line of bearing from `position`, or an area around it
+    /// (see [`crate::geometry`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<crate::geometry::Geometry>,
     /// Another OpenTrack node's report of its track: when the node that
     /// minted the track's UID made it (which of two numbers for one object
     /// survives).
@@ -487,6 +491,8 @@ pub enum ValidationError {
     EllipseAxes,
     #[error("uncertainty covariance is not a finite, positive semi-definite matrix")]
     Covariance,
+    #[error("geometry: {0}")]
+    Geometry(String),
 }
 
 impl Observation {
@@ -509,6 +515,9 @@ impl Observation {
         )?;
         finite_opt("altitude_hae_m", self.position.altitude_hae_m)?;
 
+        if let Some(g) = &self.geometry {
+            g.validate().map_err(ValidationError::Geometry)?;
+        }
         let k = &self.kinematics;
         opt_range("course_deg", k.course_deg, 0.0, 360.0, "[0, 360]")?;
         opt_range("heading_deg", k.heading_deg, 0.0, 360.0, "[0, 360]")?;
@@ -637,6 +646,7 @@ pub(crate) mod tests {
             track_type: None,
             ext: Default::default(),
             origin: None,
+            geometry: None,
         }
     }
 
