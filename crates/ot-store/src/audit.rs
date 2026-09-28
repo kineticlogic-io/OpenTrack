@@ -240,6 +240,16 @@ pub fn append_event(tx: &Transaction<'_>, e: &AuditEvent, at_ms: i64) -> Result<
 /// Start the chain on a database that has none, noting the decisions
 /// recorded before it (they are not in the chain).
 pub(crate) fn start_chain(db: &mut Db) -> Result<()> {
+    // Databases are opened often: only take the write lock when it may be
+    // needed.
+    let started: bool = db.connection().query_row(
+        "SELECT EXISTS (SELECT 1 FROM audit) OR EXISTS (SELECT 1 FROM audit_anchor)",
+        [],
+        |r| r.get(0),
+    )?;
+    if started {
+        return Ok(());
+    }
     db.write(|tx| {
         let empty: bool = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM audit) AND NOT EXISTS (SELECT 1 FROM audit_anchor)",
