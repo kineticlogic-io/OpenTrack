@@ -25,6 +25,14 @@ Lines of bearing, areas of uncertainty and emitter identities (ELNOT) are fused 
 - **Benchmark** (`esm-crossfix`): 99% of 2,573 bearings to the right track, 10 of 10 emitters
   without AIS tracked, 0.46% ghost fixes, 92% of fixes within 2σ, 2 of 20 ships left with a
   duplicate track. Videos render from the run (`scripts/benchmark/replay/esm-video.py`).
+- **Single-sensor location:** one moving ESM sensor locates what it hears from its own motion. It
+  fits a fixed emitter, or a moving one (bearings-only target motion analysis) when the bearings
+  say it moves, with an error that counts what the model can't see. The location enters the
+  picture as a `fix` report keyed by ELNOT, so ELINT and video converge on it. Scenario
+  `esm-patrol`: a patrol aircraft's ESM locates a fast boat with no AIS at 285 s; its ELINT joins
+  at 360 s and its video 20 s after it starts, leaving one track 22 m from the truth.
+- **Correlation:** a track close to another no longer counts itself in the local density it is
+  judged against, so a precise track (video) pairs with a wider one (ELINT) beside it.
 - **Open water:** set `kinematic.object_density_per_km2` to the real density; the default (1 per km²)
   keeps kilometre-uncertain fixes from pairing by position.
 

@@ -17,7 +17,7 @@ use ot_core::geometry::{bearing_to, local, offset};
 use ot_core::{BearingContact, Geometry, Observation, Uid};
 use serde_json::json;
 
-use super::{Engine, EngineCounts};
+use super::{Engine, EngineCounts, tma};
 
 /// Bearings wait this long to be crossed.
 const WINDOW_S: i64 = 60;
@@ -40,6 +40,14 @@ pub const FIX: &str = "fix";
 const CHI2_99: [f64; 4] = [6.63, 9.21, 11.34, 13.28];
 /// And at 95%: a set within it fits well; one between the two, marginally.
 const CHI2_95: [f64; 4] = [3.84, 5.99, 7.81, 9.49];
+/// Single-sensor location: the bearings it uses (seconds, most), and how
+/// far the platform must have moved over them.
+const TMA_WINDOW_S: i64 = 300;
+const TMA_MAX_LINES: usize = 120;
+const TMA_MIN_BASELINE_M: f64 = 1000.0;
+/// How hard a moving target may manoeuvre unseen by the model (m/s²): a
+/// small boat's weave or a ship's turn.
+const TMA_MANOEUVRE_MPS2: f64 = 0.1;
 /// Fastest an emitter moves between an anonymous set's two fixes.
 const MAX_SPEED_MPS: f64 = 40.0;
 
@@ -120,6 +128,14 @@ pub(super) struct Bearings {
     pub(super) naive: bool,
     /// The track each sensor track's lines were found pointing at together.
     bound: HashMap<(String, String), Uid>,
+    /// The track each sensor track's lines last went to, and when.
+    held: HashMap<(String, String), (Uid, DateTime<Utc>)>,
+    /// Sensor tracks whose emitter has been seen moving.
+    moving: std::collections::HashSet<(String, String)>,
+    /// Each sensor track's emitter range at its last single-sensor location.
+    ranges: HashMap<(String, String), f64>,
+    /// Each sensor track's recent bearings, for single-sensor location.
+    history: HashMap<(String, String), std::collections::VecDeque<Lob>>,
     /// Anonymous sets seen once, waiting to fix again: where, error, when.
     combos: HashMap<String, (f64, f64, f64, DateTime<Utc>)>,
 }
@@ -462,9 +478,72 @@ impl Engine {
         let Some(mut lob) = Lob::of(obs) else {
             return Ok(());
         };
-        if let Some(uid) = self.lob_track(&mut lob) {
+        let member = (lob.obs.source_id.clone(), lob.obs.source_track_key.clone());
+        let now = lob.obs.observed_at;
+        {
+            let h = self.bearings.history.entry(member.clone()).or_default();
+            h.retain(|l| {
+                let age = (now - l.obs.observed_at).num_milliseconds();
+                (0..=TMA_WINDOW_S * 1000).contains(&age) && age > 0
+            });
+            h.push_back(lob.clone());
+            while h.len() > TMA_MAX_LINES {
+                h.pop_front();
+            }
+        }
+        let attached = self.lob_track(&mut lob);
+        if let Some(uid) = attached {
             counts.paired += 1;
             self.save(uid, false).await?;
+            self.bearings.held.insert(member.clone(), (uid, now));
+        }
+        // One sensor's bearings over time: locate the emitter, unless the
+        // track the line went to already has it better located.
+        if let Some(sol) = self.single_sensor(&member) {
+            self.bearings.ranges.insert(member.clone(), sol.2);
+            // Seen moving once, it is a moving target from then on.
+            if sol.1.model == tma::Model::Moving {
+                self.bearings.moving.insert(member.clone());
+            }
+            let key = self.single_key(&lob);
+            let ours = |t: &ot_core::SystemTrack| {
+                t.contributors
+                    .iter()
+                    .any(|c| c.source_id == FIX && c.source_track_key == key)
+            };
+            // The track this sensor track's lines have lately gone to (this
+            // one, or one within the window: a line that misses its gate
+            // now and then must not restart a rival location).
+            let recent = attached.or_else(|| {
+                self.bearings
+                    .held
+                    .get(&member)
+                    .and_then(|&(u, at)| ((now - at).num_seconds() <= TMA_WINDOW_S).then_some(u))
+            });
+            let better = recent.and_then(|u| self.tracks.get(&u)).is_some_and(|t| {
+                t.state != ot_core::TrackState::Lost
+                    && !ours(t)
+                    && t.view
+                        .uncertainty
+                        .as_ref()
+                        .and_then(|u| u.position_covariance())
+                        .is_some_and(|[nn, _, ee]| (nn + ee).sqrt() <= sol.1.sigma_m())
+            });
+            if !better {
+                let report = self.single_report(&lob, &key, &sol.0, &sol.1);
+                self.ingest(report, counts).await?;
+                // The line is evidence for the track its own fix made.
+                if attached.is_none()
+                    && let Some(uid) = self.reports.get(&format!("{FIX}/{key}")).copied()
+                {
+                    self.attach(uid, &lob, 0.0);
+                    self.save(uid, false).await?;
+                    counts.paired += 1;
+                    return Ok(());
+                }
+            }
+        }
+        if attached.is_some() {
             return Ok(());
         }
         // Published live for consumers to draw, until a track or a fix takes it.
@@ -497,6 +576,124 @@ impl Engine {
         self.bearings.waiting.push(lob);
         self.bearings.fresh = Some(now);
         Ok(())
+    }
+
+    /// Where a moving sensor's bearings of one emitter put it: the frame's
+    /// origin (lat, lon) and the solution in it. `None` while the platform
+    /// has not moved enough to give a baseline, or the fit is too loose to
+    /// say anything (error over a quarter of the range, or 20 km).
+    fn single_sensor(&self, member: &(String, String)) -> Option<((f64, f64), tma::Solution, f64)> {
+        let h = self.bearings.history.get(member)?;
+        let newest = h.back()?;
+        let (lat0, lon0) = newest.origin();
+        let moved = h
+            .iter()
+            .map(|l| {
+                let (n, e) = local(lat0, lon0, l.origin().0, l.origin().1);
+                n.hypot(e)
+            })
+            .fold(0.0, f64::max);
+        if moved < TMA_MIN_BASELINE_M {
+            return None;
+        }
+        // A target's manoeuvres break the model over long windows, and matter
+        // more the closer it is: use a window that shrinks with range (the
+        // newest line's last located range, or the sensor's reach).
+        let reach = self
+            .bearings
+            .ranges
+            .get(member)
+            .copied()
+            .unwrap_or(newest.range);
+        let window = (reach / 200.0).clamp(60.0, TMA_WINDOW_S as f64);
+        let lines: Vec<tma::Line> = h
+            .iter()
+            .filter(|l| {
+                (newest.obs.observed_at - l.obs.observed_at).num_milliseconds() as f64 / 1000.0
+                    <= window
+            })
+            .map(|l| {
+                let (n, e) = local(lat0, lon0, l.origin().0, l.origin().1);
+                tma::Line {
+                    t: (l.obs.observed_at - newest.obs.observed_at).num_milliseconds() as f64
+                        / 1000.0,
+                    n,
+                    e,
+                    bearing: l.bearing.to_radians(),
+                    sigma: l.sigma.to_radians(),
+                    range: l.range,
+                }
+            })
+            .collect();
+        let mut sol = tma::locate(&lines, self.bearings.moving.contains(member))?;
+        let range = sol.n.hypot(sol.e);
+        // What the model cannot see sets a floor on the error: a moving
+        // target that manoeuvres (a weave, a turn) at up to
+        // TMA_MANOEUVRE_MPS2 strays up to half a T-squared from constant
+        // velocity over the window; and 2% of the range for everything else.
+        let span = lines.iter().map(|l| -l.t).fold(0.0, f64::max);
+        let manoeuvre = if sol.model == tma::Model::Moving {
+            0.5 * TMA_MANOEUVRE_MPS2 * span * span
+        } else {
+            0.0
+        };
+        let floor = (manoeuvre.powi(2) + (0.02 * range).powi(2)) / 2.0;
+        sol.cov[0][0] += floor;
+        sol.cov[1][1] += floor;
+        (sol.sigma_m() <= (0.25 * range).min(20_000.0)).then_some(((lat0, lon0), sol, range))
+    }
+
+    /// The `fix` source track a sensor track's own location reports under:
+    /// its emitter identity when it has one (so other fixes and ELINT of the
+    /// same emitter meet it), else the sensor track.
+    fn single_key(&self, lob: &Lob) -> String {
+        match lob.identity() {
+            Some(id) => format!("id:{id}"),
+            None => format!("tma:{}/{}", lob.obs.source_id, lob.obs.source_track_key),
+        }
+    }
+
+    /// A single-sensor location as a report of the `fix` source.
+    fn single_report(
+        &self,
+        lob: &Lob,
+        key: &str,
+        origin: &(f64, f64),
+        sol: &tma::Solution,
+    ) -> Observation {
+        let (lat, lon) = offset(origin.0, origin.1, sol.n, sol.e);
+        let c = &sol.cov;
+        let moving = sol.model == tma::Model::Moving;
+        let covariance = if moving {
+            json!({"position": [c[0][0], c[0][1], c[1][1]],
+                   "velocity": [c[2][2], c[2][3], c[3][3]],
+                   "cross": [c[0][2], c[0][3], c[1][2], c[1][3]]})
+        } else {
+            json!({"position": [c[0][0], c[0][1], c[1][1]]})
+        };
+        let kinematics = if moving {
+            json!({"course_deg": sol.ve.atan2(sol.vn).to_degrees().rem_euclid(360.0),
+                   "speed_mps": sol.vn.hypot(sol.ve)})
+        } else {
+            json!({})
+        };
+        serde_json::from_value(json!({
+            "schema_version": lob.obs.schema_version,
+            "source_id": FIX,
+            "source_track_key": key,
+            "observed_at": lob.obs.observed_at,
+            "received_at": Utc::now(),
+            "position": {"latitude": lat, "longitude": lon},
+            "kinematics": kinematics,
+            "uncertainty": {"covariance": covariance},
+            "identifiers": lob.obs.identifiers,
+            "classification": {"domain": lob.obs.classification.domain},
+            "provenance": {
+                "sensor_code": if moving { "tma-moving" } else { "tma-fixed" },
+                "source_code": lob.obs.source_id,
+            },
+        }))
+        .expect("a single-sensor location is an observation")
     }
 
     /// Cross-fix the waiting lines once time has moved past the newest

@@ -50,6 +50,7 @@ mod history;
 mod manage;
 mod nonpoint;
 mod sync;
+mod tma;
 mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
@@ -5617,7 +5618,7 @@ mod tests {
         let (mut an, mut ae, mut ahdg) = (20_000.0_f64, -10_000.0_f64, 180.0_f64);
         let legs = [(25_000.0, -10_000.0), (-35_000.0, -10_000.0)];
         let mut leg = 1usize;
-        let mut mode = "patrol";
+        let mut mode;
         // The boat: 20 m/s north-west, weaving.
         let (mut bn, mut be) = (-60_000.0_f64, 40_000.0_f64);
         let bv = 20.0;
@@ -5628,6 +5629,20 @@ mod tests {
             (-45_000.0, 30_000.0, 30.0, 4.0),
             (-60_000.0, -5_000.0, 80.0, 8.0),
         ];
+        // The boat's track, as a crew would pick it: the best-located one
+        // that reports for it (video, then ELINT, then ESM's location).
+        let boat_of = |e: &Engine| {
+            ["fmv/v1", "elint/x1", "fix/id:elnot:E-NAV1"]
+                .iter()
+                .filter_map(|k| e.reports.get(*k))
+                .find(|u| e.tracks.get(u).is_some_and(|t| t.state != TrackState::Lost))
+                .copied()
+        };
+        // On first contact, fly across the bearing for three minutes: the
+        // baseline a single sensor needs to locate the emitter.
+        let mut geolocate: Option<(i64, f64)> = None;
+        let mut esm_only_at = None;
+        let mut esm_elint_at = None;
         let mut frames: Vec<Value> = Vec::new();
         let mut first_esm = None;
         let mut first_elint = None;
@@ -5647,7 +5662,7 @@ mod tests {
                 o.1 += o.3 * dt * o.2.to_radians().sin();
             }
             // The boat's track, as OpenTrack has it: the one ELINT reports for.
-            let boat_uid = e.reports.get("elint/x1").copied();
+            let boat_uid = boat_of(&e);
             let boat_track = boat_uid
                 .and_then(|u| e.tracks.get(&u))
                 .filter(|t| t.state == TrackState::Confirmed);
@@ -5672,7 +5687,13 @@ mod tests {
                         (tn + ORBIT * ang.sin(), te + ORBIT * ang.cos())
                     }
                 }
+                None if geolocate.is_some_and(|(from, _)| secs - from < 180) => {
+                    mode = "geolocate";
+                    let hdg = geolocate.unwrap().1.to_radians();
+                    (an + 10_000.0 * hdg.cos(), ae + 10_000.0 * hdg.sin())
+                }
                 None => {
+                    mode = "patrol";
                     let (wn, we) = legs[leg];
                     if (wn - an).hypot(we - ae) < 3_000.0 {
                         leg = 1 - leg;
@@ -5728,6 +5749,7 @@ mod tests {
                 o.identifiers = vec![ot_core::schema::Identifier::new("elnot", elnot)];
                 if key == "em1" {
                     first_esm.get_or_insert(secs);
+                    geolocate.get_or_insert((secs, (b + 90.0).rem_euclid(360.0)));
                 }
                 batch.push(o);
             }
@@ -5772,10 +5794,13 @@ mod tests {
                 batch.push(o);
             }
             feed(&mut e, &batch).await;
+            // As the server does on its timer: tracks gone quiet go lost.
+            e.sim_now = Some(t0() + chrono::Duration::seconds(secs));
+            e.reap().await.unwrap();
 
             // Score and record.
             let now = t0() + chrono::Duration::seconds(secs);
-            let boat_uid = e.reports.get("elint/x1").copied();
+            let boat_uid = boat_of(&e);
             let mut lines = Vec::new();
             for o in batch.iter().filter(|o| o.source_id == "esm") {
                 let on = e.tracks.values().find(|t| {
@@ -5792,14 +5817,45 @@ mod tests {
                         boat_lines_on_track += 1;
                     }
                 }
-                if o.source_track_key == "em2" && on.is_some() {
+                if o.source_track_key == "em2" && on.is_some_and(|t| Some(t.uid) == boat_uid) {
                     cargo_lines_on_track += 1;
                 }
                 lines.push(json!({"key": o.source_track_key, "bearing": bearing_deg,
                     "uid": on.map(|t| t.uid.doc_id())}));
             }
+            if esm_only_at.is_none()
+                && boat_uid
+                    .and_then(|u| e.tracks.get(&u))
+                    .is_some_and(|t| t.contributors.iter().all(|c| c.source_id == "fix"))
+            {
+                esm_only_at = Some(secs);
+            }
+            if esm_elint_at.is_none()
+                && boat_uid.and_then(|u| e.tracks.get(&u)).is_some_and(|t| {
+                    ["fix", "elint"]
+                        .iter()
+                        .all(|s| t.contributors.iter().any(|c| c.source_id == *s))
+                })
+            {
+                esm_elint_at = Some(secs);
+            }
+            // The single-sensor location made this step, if any.
+            let located = e
+                .trace
+                .iter()
+                .rev()
+                .take(200)
+                .find(|t| {
+                    t["kind"] == "report"
+                        && t["source"] == "fix"
+                        && t["key"] == "id:elnot:E-NAV1"
+                        && serde_json::from_value::<DateTime<Utc>>(t["t"].clone()).ok() == Some(now)
+                })
+                .map(|t| json!({"lat": t["lat"], "lon": t["lon"], "sigma": t["sigma"]}));
             let fmv_uid = e.reports.get("fmv/v1").copied();
-            if converged_at.is_none() && fmv_uid.is_some() && fmv_uid == boat_uid {
+            // Converged: the video reports for the track ELINT reports for.
+            let elint_uid = e.reports.get("elint/x1").copied();
+            if converged_at.is_none() && fmv_uid.is_some() && fmv_uid == elint_uid {
                 converged_at = Some(secs);
             }
             if let Some(t) = boat_uid.and_then(|u| e.tracks.get(&u)) {
@@ -5839,7 +5895,7 @@ mod tests {
                 "aircraft": {"lat": alat, "lon": alon, "hdg": ahdg},
                 "boat": {"lat": blat, "lon": blon, "course": bc},
                 "others": others.iter().map(|o| pos(o.0, o.1)).collect::<Vec<_>>(),
-                "lines": lines, "area": area, "video": video, "tracks": tracks,
+                "lines": lines, "area": area, "video": video, "tracks": tracks, "located": located,
                 "error": errors.last().filter(|x| x.0 == secs).map(|x| json!({"m": x.1, "sigma": x.2})),
             }));
         }
@@ -5853,7 +5909,7 @@ mod tests {
             std::fs::write(format!("{dir}/esm-patrol.jsonl"), lines.join("\n") + "\n").unwrap();
         }
         let final_error = errors.last().map(|x| x.1).unwrap_or(f64::INFINITY);
-        let boat_uid = e.reports.get("elint/x1").copied();
+        let boat_uid = boat_of(&e);
         let boat = boat_uid.and_then(|u| e.tracks.get(&u));
         let near_boat = e
             .tracks
@@ -5871,7 +5927,7 @@ mod tests {
             })
             .count();
         eprintln!(
-            "esm-patrol: ESM first {first_esm:?} s, ELINT first {first_elint:?} s, FMV first {first_fmv:?} s, \
+            "esm-patrol: ESM first {first_esm:?} s, ESM-only track {esm_only_at:?} s, ESM+ELINT {esm_elint_at:?} s, ELINT first {first_elint:?} s, FMV first {first_fmv:?} s, \
              converged {converged_at:?} s; boat bearings on its track {boat_lines_on_track}/{boat_lines}, \
              cargo bearings on a track {cargo_lines_on_track}; final error {final_error:.0} m; \
              sources {:?}; tracks at the boat {near_boat}",
@@ -5883,6 +5939,17 @@ mod tests {
         );
         let (esm, elint, fmv) = (first_esm.unwrap(), first_elint.unwrap(), first_fmv.unwrap());
         assert!(esm < elint && elint < fmv, "ESM, then ELINT, then video");
+        let esm_only = esm_only_at.expect("a track from the ESM alone");
+        let joined = esm_elint_at.expect("ELINT joins the ESM's track");
+        assert!(
+            joined - elint <= 60,
+            "ELINT joined {} s after its first report",
+            joined - elint
+        );
+        assert!(
+            esm_only < elint,
+            "ESM alone located the boat ({esm_only} s) before ELINT ({elint} s)"
+        );
         let converged = converged_at.expect("the video track joins the boat's track");
         assert!(
             converged - fmv <= 60,
@@ -5897,7 +5964,7 @@ mod tests {
             .collect();
         assert!(
             sources.contains("elint") && sources.contains("fmv"),
-            "{sources:?}"
+            "ELINT and video on one track: {sources:?}"
         );
         assert!(
             boat.bearings.iter().any(|b| b.source_id == "esm"),
@@ -5909,7 +5976,7 @@ mod tests {
         );
         assert_eq!(
             cargo_lines_on_track, 0,
-            "the cargo ship's radar never joins a track"
+            "the cargo ship's radar never joins the boat's track"
         );
         assert!(final_error < 100.0, "final error {final_error:.0} m");
         assert_eq!(near_boat, 1, "one track at the boat");

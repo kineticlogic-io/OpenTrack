@@ -1,6 +1,6 @@
 # Non-point contacts: design
 
-Status: **built** (2026-09-27), all six steps; the benchmark meets its gates (below).
+Status: **built** (2026-09-27), all six steps, plus single-sensor location (2026-09-28); both scenarios meet their gates (below).
 
 ## What this adds
 
@@ -87,7 +87,39 @@ It looks for bearings **from different sensor positions** that agree on a point:
 
    The bearings it came from are marked used, so they don't also make other fixes.
 
-Bearings-only target motion analysis (fixing a moving target from one sensor's bearings over time) isn't in this phase. It's noted for later.
+## Single-sensor location
+
+The primary use is **one sensor**: an aircraft or ship carrying its own ESM, locating what it hears from its own motion. A sensor that moves sees the emitter from a changing place, so its own track is the baseline. OpenTrack keeps each ESM sensor track's recent bearings (one emitter, as the sensor's own tracker keeps it) and fits them by weighted least squares (`crates/ot-server/src/engine/tma.rs`):
+
+1. **Fixed or moving.** It first fits a **fixed** emitter (position only). It switches to a **moving** one (position and constant velocity: bearings-only target motion analysis) when:
+   - the bearings stop fitting a fixed point (chi-square at 99%);
+   - or a moving target fits them clearly better (a likelihood-ratio test at 99%).
+
+   An emitter once seen moving stays on the moving model.
+2. **The window** shrinks with range: 5 minutes far out, 1 minute close in, since a target's manoeuvres matter more the closer it is.
+3. **An honest error.** The covariance comes from the geometry: a straight leg gives a long thin ellipse along the line, and a turn across it tightens the fix. Three things the model can't see are added to it:
+   - a moving target's manoeuvre, up to 0.1 m/s² over the window;
+   - for a fixed fit, how far the emitter may have moved unseen (motion along the line of sight barely turns the bearings), at the fastest speed the bearings allow, up to 30 m/s;
+   - 2% of the range.
+
+   Over 60 noise draws per case (a fixed radar from a straight leg and from a dogleg, and a 20 m/s boat), the truth falls inside the stated 2σ ellipse at least 90% of the time.
+4. **When it publishes.** Only once the platform has moved at least 1 km over the window (a fixed sensor never self-locates) and the error is under a quarter of the range and under 20 km. And only while no better-located track holds the emitter: once the sensor track's bearings go to a track located better (video, AIS), its own location falls quiet, and its bearings keep reporting for that track.
+5. **Into the picture.** A location is a report of the `fix` source, keyed by the emitter's identity when the bearings carry one (`id:elnot:…`), else by the sensor track. So ELINT or another fix of the same ELNOT meets it on identity.
+
+Scenario `esm-patrol` (`esm_patrol_intercept_converges` in `crates/ot-server/src/engine.rs`):
+- A patrol aircraft carries ESM (2°), ELINT (an ellipse every 20 s, once it has held the emitter two minutes) and FMV (a video tracker's track inside 10 km). It flies a racetrack.
+- A 40-knot boat with no AIS runs a weaving course. The distractors are three silent AIS fishing boats and an AIS cargo ship whose own radar the ESM also hears.
+- On first contact the aircraft flies a three-minute leg across the bearing. Once OpenTrack holds a confirmed track, it intercepts and orbits at 3 km, steering on the best-located track it has.
+
+| Measure | Result |
+|---|---|
+| ESM first hears the boat | 225 s |
+| A track from the ESM alone | 285 s |
+| ELINT joins that track | 360 s, on its first report |
+| Video joins it | 780 s, 20 s after the video starts |
+| The boat's bearings on its track | 417 of 423 |
+| The cargo ship's bearings on the boat's track | 0 (its own ESM location pairs with its AIS track) |
+| Tracks at the boat at the end | 1: ESM location, ELINT and video, 22 m from the truth |
 
 ## What is published
 
