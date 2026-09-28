@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.4.0)
+## 0.4.0 (alpha), 2026-09-28
 
 ### Accreditation: DoD RMF / ASD STIG (800-53 Moderate)
 
