@@ -25,6 +25,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012_plugins.sql"),
     include_str!("../migrations/0013_auth.sql"),
     include_str!("../migrations/0014_sync.sql"),
+    include_str!("../migrations/0015_account_policy.sql"),
+    include_str!("../migrations/0016_audit.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +124,7 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let mut db = Self { conn };
         db.migrate()?;
+        crate::audit::start_chain(&mut db)?;
         Ok(db)
     }
 
@@ -516,7 +519,26 @@ pub fn record_decision(tx: &Transaction<'_>, d: &Decision, at_ms: i64) -> Result
             d.after.as_ref().map(Value::to_string),
         ],
     )?;
-    Ok(tx.last_insert_rowid())
+    let id = tx.last_insert_rowid();
+    // Its copy in the audit record, as recorded now (undo later marks the
+    // decision in place; the copy never changes).
+    let detail = serde_json::json!({
+        "reason": d.reason,
+        "evidence": d.evidence,
+        "before": d.before,
+        "after": d.after,
+    });
+    crate::audit::append(
+        tx,
+        at_ms,
+        &d.actor,
+        &d.op,
+        true,
+        None,
+        &detail.to_string(),
+        Some(id),
+    )?;
+    Ok(id)
 }
 
 pub fn now_ms() -> i64 {
@@ -535,9 +557,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 14);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 16);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 14);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 16);
     }
 
     #[test]

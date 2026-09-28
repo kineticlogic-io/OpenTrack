@@ -575,6 +575,12 @@ mod tests {
             updated_at_ms: 0,
             last_login_at_ms: None,
             tokens_valid_from_ms: 0,
+            password_changed_at_ms: None,
+            must_change_password: false,
+            failed_logins: 0,
+            locked_until_ms: None,
+            active_since_ms: None,
+            disabled_reason: None,
         };
         let (t, jti, _) = a.issue(&u, "session", 60).unwrap();
         let c = a.decode(&t).unwrap();

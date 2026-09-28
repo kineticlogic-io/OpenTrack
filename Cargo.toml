@@ -63,6 +63,8 @@ wasmtime = { version = "49", default-features = false, features = ["anyhow", "cr
 wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }
 base64 = "0.22"
 sha2 = "0.10"
+# SHA-256 for the audit record's hash chain (the process's one crypto library).
+aws-lc-rs = "1"
 # Sign-in: password hashes, session tokens, account ids.
 argon2 = { version = "0.5.3", features = ["std"] }
 jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }

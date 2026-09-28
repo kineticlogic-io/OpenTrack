@@ -7,6 +7,7 @@
 //! speed while Redis absorbs thousands of observations per second.
 
 mod app_settings;
+pub mod audit;
 pub mod auth;
 pub mod correlation;
 pub mod graph;
@@ -22,7 +23,8 @@ pub mod sqlite;
 pub mod sync;
 pub mod undo;
 
-pub use auth::{ApiToken, NewUser, User};
+pub use audit::{AuditEvent, AuditFilter, AuditRow, AuditVerify};
+pub use auth::{ApiToken, NewUser, Session, User};
 pub use correlation::{DecisionRow, Suggestion};
 pub use graph::{EdgeKind, NodeKind};
 pub use groups::{Group, GroupSpec};
