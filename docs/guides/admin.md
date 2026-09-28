@@ -423,9 +423,8 @@ In the **Sign-in** panel:
 - **Session length (hours):** how long a sign-in lasts, 0.25 to 720. Empty means 24.
 - **Password sign-in:** off means accounts sign in only with SAML or OpenStare. You can turn it off
   only when one of those is on, and not from a session that signed in with a password, so a working
-  way back is proven first. Note that a SAML sign-in also counts as a password-style session here:
-  turn it off while signed in through OpenStare, or with an admin's API token
-  (`PUT /api/v1/auth/settings`).
+  way back is proven first: turn it off while signed in by SAML (keeping SAML on in the same save),
+  through OpenStare, or with an admin's API token (`PUT /api/v1/auth/settings`).
 
 ### SAML
 

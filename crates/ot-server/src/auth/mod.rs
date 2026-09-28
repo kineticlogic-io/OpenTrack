@@ -105,6 +105,9 @@ pub struct AuthUser {
     /// else (a temporary or expired password).
     #[serde(skip)]
     pub must_change: bool,
+    /// A session begun by single sign-on (SAML), not a password.
+    #[serde(skip)]
+    pub sso: bool,
 }
 
 /// A session or API token's payload.
@@ -118,6 +121,9 @@ struct Claims {
     exp: i64,
     /// `session` or `api`.
     kind: String,
+    /// A session begun by single sign-on (SAML). Absent from older tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    sso: bool,
 }
 
 /// A client certificate's subject, put in the request by the TLS listener.
@@ -207,6 +213,17 @@ impl Auth {
         kind: &str,
         ttl_secs: i64,
     ) -> anyhow::Result<(String, String, i64)> {
+        self.issue_as(user, kind, ttl_secs, false)
+    }
+
+    /// [`Auth::issue`], saying whether a session was begun by single sign-on.
+    pub fn issue_as(
+        &self,
+        user: &ot_store::User,
+        kind: &str,
+        ttl_secs: i64,
+        sso: bool,
+    ) -> anyhow::Result<(String, String, i64)> {
         let now = chrono::Utc::now().timestamp();
         let jti = crate::fips::uuid_v4();
         let claims = Claims {
@@ -216,6 +233,7 @@ impl Auth {
             iat: now,
             exp: now + ttl_secs,
             kind: kind.to_owned(),
+            sso,
         };
         let token = jsonwebtoken::encode(
             &Header::new(Algorithm::HS256),
@@ -478,6 +496,7 @@ async fn from_token(s: &AppState, token: &str, via: Via, idle_ms: i64) -> Option
         email: user.email,
         name: user.name,
         via,
+        sso: session && claims.sso,
         jti: Some((claims.jti, claims.exp * 1000)),
     })
 }
@@ -504,6 +523,7 @@ async fn from_cert(s: &AppState, cert: &PeerCert) -> Option<AuthUser> {
         via: Via::ClientCert,
         jti: None,
         must_change: false,
+        sso: false,
     })
 }
 
@@ -523,6 +543,7 @@ pub async fn identify(
             via: Via::Disabled,
             jti: None,
             must_change: false,
+            sso: false,
         });
     }
     if let Some(cert) = cert
@@ -641,6 +662,9 @@ mod tests {
             (c.sub.as_str(), c.kind.as_str(), c.jti),
             ("u1", "session", jti)
         );
+        assert!(!c.sso, "a password session");
+        let (t, ..) = a.issue_as(&u, "session", 60, true).unwrap();
+        assert!(a.decode(&t).unwrap().sso, "a single sign-on session");
         let other = Auth::new(vec![8; 32], false, false, None, AuthSettings::default());
         assert!(other.decode(&t).is_none(), "another key's token");
         let (expired, _, _) = a.issue(&u, "session", -60).unwrap();

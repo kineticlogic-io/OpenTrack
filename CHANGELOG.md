@@ -9,6 +9,8 @@
   that reads only the status code sees it; `/healthz` stays liveness only (#7).
 - **`OT_CORRELATION` overridden by saved correlation settings** now says so: the engine logs a
   warning at start when it is set and the saved approach differs (#14).
+- **An admin signed in by SAML can turn password sign-in off** (keeping SAML on in the same save);
+  from a password session it is still refused (#10).
 - **SAML's IdP entity ID, sign-in URL and signing certificate are read-only**, read from the pasted
   metadata at every save and read; to change them, paste new metadata (#8, finding F-3).
 
