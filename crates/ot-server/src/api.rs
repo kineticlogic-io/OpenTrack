@@ -687,6 +687,10 @@ mod tests {
                 include_str!("../../../docs/examples/stanag4607.json"),
             ),
             (
+                "sapient",
+                include_str!("../../../docs/examples/sapient.json"),
+            ),
+            (
                 "gps-udp",
                 include_str!("../../../docs/examples/gps-udp.json"),
             ),
