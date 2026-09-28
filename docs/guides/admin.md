@@ -448,9 +448,11 @@ supported.
    - send the user's role in an attribute (in Keycloak, a role list mapper; in Entra ID, app roles,
      sent as `http://schemas.microsoft.com/ws/2008/06/identity/claims/role`).
 3. **Paste the identity provider's metadata XML** into **IdP metadata** and choose **Read
-   metadata**. It fills the IdP entity ID, sign-in URL and signing certificate. The metadata is
-   what OpenTrack uses to check sign-ons: after a certificate rollover, paste the new metadata;
-   editing the three fields alone changes nothing.
+   metadata**. The IdP entity ID, sign-in URL and signing certificate below it then show what the
+   metadata says. They are read-only: the metadata alone is what OpenTrack checks sign-ons against,
+   and the three are read from it again at every save. To change them (after a certificate
+   rollover, say), paste the new metadata. Metadata that cannot be read is refused while SAML is
+   on.
 4. **Role attribute:** the attribute's name (or friendly name), exactly as the provider sends it.
    Default `Role`.
 5. **Role mapping:** rows of attribute value → OpenTrack role. Case does not matter. The rows are

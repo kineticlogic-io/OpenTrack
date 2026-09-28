@@ -387,21 +387,22 @@ struct Metadata {
     xml: String,
 }
 
-/// Read an identity provider's metadata into the settings' fields.
-async fn parse_metadata(Json(b): Json<Metadata>) -> Result<Json<Value>, ApiError> {
-    let ed = EntityDescriptor::from_str(&b.xml)
-        .map_err(|e| ApiError::unprocessable(format!("not SAML metadata: {e}")))?;
+/// What an identity provider's metadata says: its entity id, its
+/// HTTP-Redirect sign-in URL and its signing certificate (the settings show
+/// these; sign-on itself works from the metadata).
+pub(super) fn idp_fields(xml: &str) -> Result<(String, String, String), String> {
+    let ed = EntityDescriptor::from_str(xml).map_err(|e| format!("not SAML metadata: {e}"))?;
     let idps = ed
         .idp_sso_descriptors
         .as_ref()
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| ApiError::unprocessable("no identity provider in the metadata"))?;
+        .ok_or("no identity provider in the metadata")?;
     let sso_url = idps
         .iter()
         .flat_map(|d| d.single_sign_on_services.iter())
         .find(|ep| ep.binding == HTTP_REDIRECT)
         .map(|ep| ep.location.clone())
-        .ok_or_else(|| ApiError::unprocessable("the metadata has no HTTP-Redirect sign-on"))?;
+        .ok_or("the metadata has no HTTP-Redirect sign-on")?;
     let cert = idps
         .iter()
         .flat_map(|d| d.key_descriptors.iter())
@@ -410,10 +411,16 @@ async fn parse_metadata(Json(b): Json<Metadata>) -> Result<Json<Value>, ApiError
         .flat_map(|x| x.certificates.iter())
         .map(|c| c.trim().to_owned())
         .find(|c| !c.is_empty())
-        .ok_or_else(|| ApiError::unprocessable("the metadata has no signing certificate"))?;
+        .ok_or("the metadata has no signing certificate")?;
+    Ok((ed.entity_id.unwrap_or_default(), sso_url, cert))
+}
+
+/// Read an identity provider's metadata, to show what it says before saving.
+async fn parse_metadata(Json(b): Json<Metadata>) -> Result<Json<Value>, ApiError> {
+    let (entity_id, sso_url, cert) = idp_fields(&b.xml).map_err(ApiError::unprocessable)?;
     Ok(Json(json!({
         "idp_metadata_xml": b.xml,
-        "idp_entity_id": ed.entity_id.unwrap_or_default(),
+        "idp_entity_id": entity_id,
         "sso_url": sso_url,
         "signing_cert": cert,
     })))
