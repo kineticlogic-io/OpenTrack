@@ -1819,11 +1819,17 @@ impl Engine {
         actor: &str,
         reason: String,
     ) -> anyhow::Result<()> {
+        if a == b {
+            anyhow::bail!("a track cannot be a different object from itself");
+        }
         let (ka, kb) = (self.keys_of(a), self.keys_of(b));
         if ka.is_empty() || kb.is_empty() {
             anyhow::bail!("both tracks must be live");
         }
-        let decision = Decision::new(actor, "do_not_pair").reason(reason);
+        // The tracks it was made on, for the management log.
+        let decision = Decision::new(actor, "do_not_pair")
+            .reason(reason)
+            .evidence(json!({ "tracks": [a.doc_id(), b.doc_id()] }));
         let c = self.common.clone();
         let (la, lb) = (ka.clone(), kb.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
@@ -4594,6 +4600,29 @@ mod tests {
         assert_eq!(a["ok"], true, "{a}");
         assert!(e.tracks[&t[0]].paired_with.is_empty());
         assert!(e.tracks[&t[2]].paired_with.is_empty());
+
+        // A "do not pair" from the track table, undone.
+        let a = operator(
+            &mut e,
+            json!({"op": "do_not_pair", "a": id(t[0]), "b": id(t[0])}),
+        )
+        .await;
+        assert_eq!(a["ok"], false, "{a}");
+        let a = operator(
+            &mut e,
+            json!({"op": "do_not_pair", "a": id(t[0]), "b": id(t[2])}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(e.do_not_pair.len(), 1);
+        let logged = e
+            .db(|db| db.decisions_by_op(&["do_not_pair"], 1))
+            .await
+            .unwrap();
+        assert_eq!(logged[0].evidence["tracks"], json!([id(t[0]), id(t[2])]));
+        let a = operator(&mut e, undo(logged[0].id)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(e.do_not_pair.is_empty());
         e.redis.purge_namespace().await.unwrap();
     }
 

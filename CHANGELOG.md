@@ -7,6 +7,8 @@
   prefix; example in `docs/examples/sapient.json`.
 - **Accepting a pair suggestion** merges with hold, as a merge from the track table does:
   correlation never splits it (split or undo still can) (#12).
+- **Do not pair** in the track table, for two ticked tracks: correlation never pairs them; undoable
+  from the management log, which now names the tracks (#4).
 
 ## 0.4.0 (alpha), 2026-09-28
 

@@ -122,7 +122,7 @@ export function ManagementLog({ rev, onChanged }: { rev: number; onChanged: () =
       persistKey="ot.panel.trackmanagementlog"
       titleActions={
         <InfoTip label="Track management log">
-          Pairings, merges, splits, deletes and group changes, newest first. Undo reverses one as a new decision. It is refused when someone has changed
+          Pairings, merges, splits, do-not-pair rules, deletes and group changes, newest first. Undo reverses one as a new decision. It is refused when someone has changed
           those tracks since: undo that decision first. The engine&apos;s own decisions are not undone here.
           <br />
           <br />

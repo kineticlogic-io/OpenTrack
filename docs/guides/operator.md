@@ -359,12 +359,16 @@ again.
 ### Do not pair
 
 A **do not pair** rule records that two tracks are different objects, so correlation never pairs
-them. You make one by:
+or merges them, even when they share an identifier. You make one by:
+- ticking exactly two tracks (not groups) in the table and choosing **Do not pair**, before
+  correlation proposes them;
 - **rejecting** a pair suggestion ([Accept or reject](#accept-or-reject));
 - **splitting** a source track off ([Split](#split)).
 
-It shows in the log as **Do not pair**, and can be undone there. (The API also takes it directly:
-`POST /api/v1/tracks/do-not-pair`.)
+The rule is between their source tracks, so it holds for them whatever track they report for
+later. It doesn't stop you pairing or merging them yourself. It shows in the
+[management log](#management-log) as **Do not pair**, and can be [undone](#undo) there. (The API
+also takes it directly: `POST /api/v1/tracks/do-not-pair`.)
 
 ### Delete
 
