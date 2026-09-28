@@ -448,7 +448,11 @@ impl Db {
             .users()?
             .into_iter()
             .filter(|u| u.active && u.last_activity_ms() < cutoff_ms)
-            .filter(|u| !exempt.iter().any(|e| e.trim().eq_ignore_ascii_case(&u.email)))
+            .filter(|u| {
+                !exempt
+                    .iter()
+                    .any(|e| e.trim().eq_ignore_ascii_case(&u.email))
+            })
             .collect();
         let now = now_ms();
         for u in &stale {
@@ -476,7 +480,8 @@ impl Db {
                 now,
                 s.expires_at_ms,
                 s.ip,
-                s.user_agent.map(|a| a.chars().take(512).collect::<String>()),
+                s.user_agent
+                    .map(|a| a.chars().take(512).collect::<String>()),
                 s.prev_login_at_ms,
                 s.failed_before
             ],
@@ -500,7 +505,12 @@ impl Db {
 
     /// Sessions, newest first: one account's or everyone's; live only
     /// (not ended, not expired) unless `ended` too.
-    pub fn sessions(&self, user_id: Option<&str>, ended: bool, limit: usize) -> Result<Vec<Session>> {
+    pub fn sessions(
+        &self,
+        user_id: Option<&str>,
+        ended: bool,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
         let mut st = self.connection().prepare(&format!(
             "SELECT {SESSION_COLUMNS} FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE (?1 IS NULL OR s.user_id = ?1)
@@ -833,7 +843,8 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         db.create_user(&new("u1", "a@x")).unwrap();
         for i in 0..8 {
-            db.set_password("u1", Some(&format!("h{i}")), false, 5).unwrap();
+            db.set_password("u1", Some(&format!("h{i}")), false, 5)
+                .unwrap();
         }
         assert_eq!(
             db.recent_password_hashes("u1", 5).unwrap(),
@@ -876,7 +887,10 @@ mod tests {
         reasons.sort();
         assert_eq!(
             reasons,
-            [("s1".into(), "idle".into()), ("s3".into(), "expired".into())]
+            [
+                ("s1".into(), "idle".into()),
+                ("s3".into(), "expired".into())
+            ]
         );
         assert!(!db.end_session("s1", "sign_out").unwrap(), "ended already");
         db.revoke_user_tokens("u1").unwrap();

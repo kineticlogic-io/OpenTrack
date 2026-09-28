@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 
 mod api;
+mod audit_api;
 mod auth;
 mod bridge;
 mod config;
@@ -306,7 +307,9 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
     plugins::start(&common).await;
     let disabled = args.auth == "off";
     if disabled {
-        tracing::warn!("sign-in is turned off (OT_AUTH=off): every caller is an admin");
+        tracing::warn!(
+            "AUTHENTICATION IS DISABLED (OT_AUTH=off): every caller is an admin (repeated every minute)"
+        );
     } else {
         auth::bootstrap_admin(
             &common,
@@ -335,6 +338,7 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
     tokio::spawn(metrics::run_sampler(state.clone()));
+    tokio::spawn(auth::maintenance::run(state.clone()));
     let app = control::router(state, Some(args.ui_dir));
     if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
         let acceptor = ot_source::tls::ServerTls {

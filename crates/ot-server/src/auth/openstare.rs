@@ -87,5 +87,6 @@ async fn ask(s: &AppState, cookie: Option<&str>, bearer: Option<&str>) -> Option
         role,
         via: Via::Openstare,
         jti: None,
+        must_change: false,
     })
 }

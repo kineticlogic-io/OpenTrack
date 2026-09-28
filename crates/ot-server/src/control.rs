@@ -60,6 +60,7 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .merge(crate::metrics::routes())
         .merge(crate::auth::api::routes())
         .merge(crate::decisions_api::routes())
+        .merge(crate::audit_api::routes())
         .merge(crate::history_api::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -208,6 +209,18 @@ impl ApiError {
     pub(crate) fn conflict(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
+            message: m.into(),
+        }
+    }
+    pub(crate) fn unauthorized(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: m.into(),
+        }
+    }
+    pub(crate) fn forbidden(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: m.into(),
         }
     }

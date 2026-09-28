@@ -13,7 +13,11 @@ use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{AuthSettings, AuthUser, Role, Via, check_password, hash_password, verify_password};
+use ot_store::AuditEvent;
+use ot_store::sqlite::now_ms;
+
+use super::sessions::ended;
+use super::{AuthSettings, AuthUser, Role, Via, hash_password, verify_password};
 use crate::api::actor;
 use crate::control::{ApiError, AppState};
 
@@ -28,12 +32,14 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/users/{id}", put(update_user).delete(delete_user))
         .route("/auth/users/{id}/password", post(reset_password))
         .route("/auth/users/{id}/revoke", post(revoke_sessions))
+        .route("/auth/users/{id}/unlock", post(unlock_user))
         .route("/auth/api-tokens", get(list_tokens).post(create_token))
         .route(
             "/auth/api-tokens/{jti}",
             axum::routing::delete(revoke_token),
         )
-        .route("/auth/settings", get(get_settings).put(put_settings));
+        .route("/auth/settings", get(get_settings).put(put_settings))
+        .merge(super::sessions::routes());
     #[cfg(feature = "saml")]
     let r = r.merge(super::saml::routes());
     r
@@ -64,27 +70,197 @@ struct Login {
     password: String,
 }
 
-/// The account as the UI shows it, with how it signed in.
-fn me_json(u: &AuthUser, has_password: bool) -> Value {
-    json!({
-        "id": u.id, "email": u.email, "name": u.name, "role": u.role, "via": u.via,
-        "can_change_password": u.via == Via::Session && has_password,
-    })
+/// Where a sign-in comes from: the address and browser, for its session
+/// and the audit record.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Client {
+    pub ip: String,
+    pub user_agent: Option<String>,
 }
 
-/// Sign in to a session for `user` (after a password or single sign-on).
+impl Client {
+    pub(super) fn new(peer: Option<&ConnectInfo<SocketAddr>>, headers: &HeaderMap) -> Self {
+        Self {
+            ip: super::client_ip(peer).to_string(),
+            user_agent: headers
+                .get(header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.chars().take(512).collect()),
+        }
+    }
+}
+
+/// How a session begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum How {
+    Password,
+    #[cfg_attr(not(feature = "saml"), allow(dead_code))]
+    Saml,
+    /// A new session for the browser that just changed its password.
+    PasswordChange,
+}
+
+impl How {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Saml => "saml",
+            Self::PasswordChange => "password_change",
+        }
+    }
+}
+
+/// An email as the audit record keeps an attempt's (bounded).
+fn attempted(email: &str) -> String {
+    email.trim().chars().take(254).collect()
+}
+
+/// A refused sign-in, recorded before it is answered (if the record cannot
+/// be written, the answer is an error all the same).
+fn failed_login(email: &str, client: &Client, reason: &str, via: How) -> AuditEvent {
+    AuditEvent::new(attempted(email), "login")
+        .failure()
+        .ip(&client.ip)
+        .detail(json!({ "reason": reason, "via": via.as_str() }))
+}
+
+/// The account as the UI shows it: how it signed in, whether it must
+/// change its password, and (for a session) the previous sign-in and the
+/// failed ones since.
+pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiError> {
+    let session = u.via == Via::Session;
+    let (id, jti) = (u.id.clone(), u.jti.as_ref().map(|j| j.0.clone()));
+    let (user, row) = if session {
+        s.with_db(move |db| {
+            let row = match &jti {
+                Some(j) => db.session(j)?,
+                None => None,
+            };
+            Ok((db.user(&id)?, row))
+        })
+        .await?
+    } else {
+        (None, None)
+    };
+    let has_password = user.as_ref().is_some_and(|u| u.has_password);
+    let mut v = json!({
+        "id": u.id, "email": u.email, "name": u.name, "role": u.role, "via": u.via,
+        "can_change_password": session && has_password,
+        "must_change_password": false,
+    });
+    let settings = s.auth.settings();
+    if let Some(user) = &user {
+        v["must_change_password"] = json!(has_password && user.must_change_password);
+        let max_days = settings.password.max_age_days;
+        if has_password && max_days > 0.0 {
+            v["password_expires_at_ms"] = json!(
+                user.password_changed_at_ms
+                    .map(|t| t + (max_days * 86_400_000.0) as i64)
+            );
+        }
+        v["idle_timeout_ms"] = json!(settings.sessions.idle_ms(u.role));
+        v["password_policy"] = json!(settings.password);
+    }
+    if let Some(row) = row {
+        v["session"] = json!(row.id);
+        v["last_login"] = json!({
+            "previous_at_ms": row.prev_login_at_ms,
+            "failed_attempts": row.failed_before,
+        });
+    }
+    Ok(v)
+}
+
+/// Sign in to a session for `user` (after a password, single sign-on, or
+/// a password change). Refused, and the account turned off, when it has
+/// been inactive too long. The audit record is written first: if it cannot
+/// be, there is no session.
 pub(super) async fn start_session(
     s: &AppState,
     user: ot_store::User,
+    client: &Client,
+    how: How,
 ) -> Result<(HeaderMap, Value), ApiError> {
+    let settings = s.auth.settings();
+    let now = now_ms();
+    let inactive = &settings.inactivity;
+    if how != How::PasswordChange
+        && inactive.disable_after_days > 0.0
+        && !inactive.exempts(&user.email)
+        && user.last_activity_ms() < now - (inactive.disable_after_days * 86_400_000.0) as i64
+    {
+        super::maintenance::disable_inactive(s, inactive).await?;
+        let e = failed_login(&user.email, client, "inactive", how);
+        s.with_db(move |db| db.audit(&e)).await?;
+        return Err(ApiError::unauthorized(GENERIC_FAILURE));
+    }
     let ttl = s.auth.session_secs();
     let (token, jti, exp) = s
         .auth
         .issue(&user, "session", ttl)
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    let id = user.id.clone();
-    s.with_db(move |db| db.note_login(&id)).await?;
-    tracing::info!(email = %user.email, "signed in");
+    let p = &settings.password;
+    let expired = how == How::Password
+        && p.max_age_days > 0.0
+        && !user.must_change_password
+        && user
+            .password_changed_at_ms
+            .is_some_and(|t| now - t > (p.max_age_days * 86_400_000.0) as i64);
+    let max = settings.sessions.max_per_account as usize;
+    let (id, email, c, j) = (
+        user.id.clone(),
+        user.email.clone(),
+        client.clone(),
+        jti.clone(),
+    );
+    let pushed_out = s
+        .with_db(move |db| {
+            let op = if how == How::PasswordChange {
+                "session_start"
+            } else {
+                "login"
+            };
+            db.audit(
+                &AuditEvent::new(&email, op)
+                    .ip(&c.ip)
+                    .detail(json!({ "session": j, "via": how.as_str() })),
+            )?;
+            let (prev, failed) = if how == How::PasswordChange {
+                (None, 0)
+            } else {
+                db.note_login_success(&id)?
+            };
+            if expired {
+                db.set_must_change_password(&id, true)?;
+                db.audit(&AuditEvent::new(&email, "password_expired").ip(&c.ip))?;
+            }
+            db.create_session(&ot_store::auth::NewSession {
+                id: &j,
+                user_id: &id,
+                expires_at_ms: exp,
+                ip: Some(&c.ip),
+                user_agent: c.user_agent.as_deref(),
+                prev_login_at_ms: prev,
+                failed_before: failed,
+            })?;
+            // Past the limit, the oldest sessions end.
+            let mut out = Vec::new();
+            if max > 0 {
+                for old in db.sessions(Some(&id), false, 1000)?.iter().skip(max) {
+                    if db.end_session(&old.id, "limit")? {
+                        db.revoke_token(&old.id, old.expires_at_ms)?;
+                        db.audit(&ended(&email, &old.id, "limit", old.ip.as_deref()))?;
+                        out.push(old.id.clone());
+                    }
+                }
+            }
+            Ok(out)
+        })
+        .await?;
+    for old in pushed_out {
+        s.auth.activity.forget(&old);
+    }
+    tracing::info!(email = %user.email, via = how.as_str(), "signed in");
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, s.auth.session_cookie(&token, ttl));
     let role = Role::parse(&user.role).unwrap_or(Role::Viewer);
@@ -95,29 +271,37 @@ pub(super) async fn start_session(
         role,
         via: Via::Session,
         jti: Some((jti, exp)),
+        must_change: false,
     };
-    Ok((headers, me_json(&au, user.has_password)))
+    Ok((headers, me_value(s, &au).await?))
 }
+
+/// What every refused password sign-in says, whatever the reason.
+const GENERIC_FAILURE: &str = "wrong email or password";
 
 async fn login(
     State(s): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(b): Json<Login>,
 ) -> Result<Response, ApiError> {
     if s.auth.disabled {
         return Err(ApiError::bad_request("sign-in is turned off (OT_AUTH=off)"));
     }
-    if s.auth.settings().disable_password_login {
+    let settings = s.auth.settings();
+    if settings.disable_password_login {
         return Ok((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "password sign-in is off: use single sign-on" })),
         )
             .into_response());
     }
+    let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
     if !s
         .auth
         .allow_attempt(super::client_ip(peer.as_ref().map(|p| &p.0)))
     {
+        tracing::warn!(ip = %client.ip, "sign-in attempts limited");
         return Ok((
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "too many attempts: wait a moment" })),
@@ -125,26 +309,101 @@ async fn login(
             .into_response());
     }
     let email = b.email.trim().to_owned();
-    let found = s.with_db(move |db| db.password_hash(&email)).await?;
-    let (user, hash) = match found {
-        Some((u, Some(h))) if u.active => (Some(u), h),
-        _ => (None, dummy_hash().to_owned()),
+    let lookup = email.clone();
+    let found = s.with_db(move |db| db.password_hash(&lookup)).await?;
+    // Unknown, turned-off and password-less accounts are checked against a
+    // dummy hash, so every refusal takes as long as a wrong password.
+    let (user, hash, refusal) = match found {
+        Some((u, Some(h))) if u.active => (Some(u), h, None),
+        Some((u, _)) if !u.active => (None, dummy_hash().to_owned(), Some("account_disabled")),
+        Some(_) => (None, dummy_hash().to_owned(), Some("no_password")),
+        None => (None, dummy_hash().to_owned(), Some("unknown_account")),
     };
     let ok = blocking(move || verify_password(&b.password, &hash)).await?;
-    let Some(user) = user.filter(|_| ok) else {
-        tracing::info!(email = %b.email.trim(), "sign-in refused");
-        return Ok(unauthorized("wrong email or password"));
+    let now = now_ms();
+    let refuse = |e: AuditEvent| {
+        let s = s.clone();
+        async move {
+            s.with_db(move |db| db.audit(&e)).await?;
+            Ok::<_, ApiError>(unauthorized(GENERIC_FAILURE))
+        }
     };
-    let (headers, body) = start_session(&s, user).await?;
+    let Some(user) = user else {
+        let reason = refusal.unwrap_or("unknown_account");
+        tracing::info!(%email, reason, "sign-in refused");
+        return refuse(failed_login(&email, &client, reason, How::Password)).await;
+    };
+    if user.locked(now) {
+        tracing::info!(%email, "sign-in refused: the account is locked");
+        let id = user.id.clone();
+        s.with_db(move |db| db.note_refused_login(&id)).await?;
+        return refuse(failed_login(&email, &client, "locked", How::Password)).await;
+    }
+    if !ok {
+        tracing::info!(%email, "sign-in refused");
+        let l = settings.lockout.clone();
+        let (id, e1, c1) = (user.id.clone(), email.clone(), client.clone());
+        s.with_db(move |db| {
+            let lock_ms = (l.lock_minutes * 60_000.0) as i64;
+            let f = db.note_login_failure(
+                &id,
+                (l.window_minutes * 60_000.0) as i64,
+                i64::from(l.max_failures),
+                lock_ms,
+            )?;
+            db.audit(
+                &failed_login(&e1, &c1, "bad_password", How::Password)
+                    .detail(json!({ "consecutive": f.count })),
+            )?;
+            if f.locked_now {
+                tracing::warn!(email = %e1, "account locked after failed sign-ins");
+                db.audit(
+                    &AuditEvent::new(&e1, "account_locked")
+                        .ip(&c1.ip)
+                        .detail(json!({
+                            "user": id,
+                            "failures": f.count,
+                            "minutes": if lock_ms > 0 { json!(l.lock_minutes) } else { json!("until unlocked") },
+                        })),
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
+        return Ok(unauthorized(GENERIC_FAILURE));
+    }
+    let (headers, body) = start_session(&s, user, &client, How::Password).await?;
     Ok((headers, Json(body)).into_response())
 }
 
-async fn logout(State(s): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(s): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+) -> Response {
     let user = super::identify(&s, &headers, None).await;
-    if let Some((jti, exp)) = user.and_then(|u| u.jti)
+    if let Some(u) = user
+        && let Some((jti, exp)) = u.jti.clone()
         && headers.get(header::AUTHORIZATION).is_none()
     {
-        let _ = s.with_db(move |db| db.revoke_token(&jti, exp)).await;
+        let ip = Client::new(peer.as_ref().map(|p| &p.0), &headers).ip;
+        s.auth.activity.forget(&jti);
+        let r = s
+            .with_db(move |db| {
+                db.revoke_token(&jti, exp)?;
+                if db.end_session(&jti, "sign_out")? {
+                    db.audit(
+                        &AuditEvent::new(&u.email, "logout")
+                            .ip(ip)
+                            .detail(json!({ "session": jti })),
+                    )?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::error!(error = %e.message, "recording a sign-out failed");
+        }
     }
     let mut h = HeaderMap::new();
     h.insert(header::SET_COOKIE, s.auth.clear_cookie());
@@ -169,15 +428,7 @@ async fn me(
     State(s): State<AppState>,
     Extension(u): Extension<AuthUser>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = u.id.clone();
-    let has_password = if u.via == Via::Session {
-        s.with_db(move |db| db.user(&id))
-            .await?
-            .is_some_and(|u| u.has_password)
-    } else {
-        false
-    };
-    Ok(Json(me_json(&u, has_password)))
+    Ok(Json(me_value(&s, &u).await?))
 }
 
 #[derive(Deserialize)]
@@ -186,10 +437,14 @@ struct ChangePassword {
     new: String,
 }
 
-/// Change your own password; your other sessions end.
+/// Change your own password (the policy's rules, its minimum age unless
+/// the change is required, and not one of the recent ones); every session
+/// and API token of the account ends and this browser gets a new session.
 async fn change_password(
     State(s): State<AppState>,
     Extension(u): Extension<AuthUser>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(b): Json<ChangePassword>,
 ) -> Result<Response, ApiError> {
     if u.via != Via::Session {
@@ -197,23 +452,61 @@ async fn change_password(
             "only an account signed in with a password can change it here",
         ));
     }
-    check_password(&b.new).map_err(ApiError::unprocessable)?;
+    let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
+    let policy = s.auth.settings().password;
+    policy.check(&b.new).map_err(ApiError::unprocessable)?;
     let email = u.email.clone();
     let Some((user, Some(hash))) = s.with_db(move |db| db.password_hash(&email)).await? else {
         return Err(ApiError::bad_request("this account has no password"));
     };
-    let current = b.current;
+    let current = b.current.clone();
     if !blocking(move || verify_password(&current, &hash)).await? {
+        let e = AuditEvent::new(&u.email, "change_password")
+            .failure()
+            .ip(&client.ip)
+            .detail(json!({ "reason": "wrong_current_password" }));
+        s.with_db(move |db| db.audit(&e)).await?;
         return Ok(unauthorized("the current password is wrong"));
+    }
+    policy
+        .check_change(&b.current, &b.new)
+        .map_err(ApiError::unprocessable)?;
+    let forced = user.must_change_password;
+    if !forced
+        && policy.min_age_hours > 0.0
+        && user
+            .password_changed_at_ms
+            .is_some_and(|t| now_ms() - t < (policy.min_age_hours * 3_600_000.0) as i64)
+    {
+        return Err(ApiError::unprocessable(format!(
+            "a password can change once every {} hours: ask an admin to reset it if you must",
+            policy.min_age_hours
+        )));
+    }
+    if policy.history > 0 {
+        let (id, n) = (user.id.clone(), policy.history);
+        let recent = s
+            .with_db(move |db| db.recent_password_hashes(&id, n))
+            .await?;
+        let candidate = b.new.clone();
+        if blocking(move || recent.iter().any(|h| verify_password(&candidate, h))).await? {
+            return Err(ApiError::unprocessable(format!(
+                "choose a password other than your last {}",
+                policy.history
+            )));
+        }
     }
     let new = blocking(move || hash_password(&b.new))
         .await?
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let (id, actor) = (user.id.clone(), u.email.clone());
     s.with_db(move |db| {
-        db.set_password_hash(&id, Some(&new))?;
+        db.set_password(&id, Some(&new), false, 24)?;
         db.revoke_user_tokens(&id)?;
-        db.record(&ot_store::Decision::new(&actor, "change_password"))
+        db.record(&ot_store::Decision {
+            evidence: json!({ "user": id, "forced": forced }),
+            ..ot_store::Decision::new(&actor, "change_password")
+        })
     })
     .await?;
     // A fresh session for this browser: the old ones just ended.
@@ -221,7 +514,7 @@ async fn change_password(
         .with_db(move |db| db.user_by_email(&u.email))
         .await?
         .ok_or_else(|| ApiError::not_found("account"))?;
-    let (headers, body) = start_session(&s, user).await?;
+    let (headers, body) = start_session(&s, user, &client, How::PasswordChange).await?;
     Ok((headers, Json(body)).into_response())
 }
 
@@ -258,9 +551,10 @@ async fn create_user(
     Json(b): Json<NewUser>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     check_email(&b.email)?;
+    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            check_password(&p).map_err(ApiError::unprocessable)?;
+            policy.check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -281,6 +575,11 @@ async fn create_user(
                 password_hash: hash.as_deref(),
                 origin: "local",
             })?;
+            // An admin's password is a temporary one.
+            if hash.is_some() {
+                db.set_must_change_password(&id, true)?;
+            }
+            let u = db.user(&id)?.unwrap_or(u);
             db.record(&ot_store::Decision {
                 after: Some(json!(u)),
                 ..ot_store::Decision::new(&actor, "create_user")
@@ -390,9 +689,10 @@ async fn reset_password(
     headers: HeaderMap,
     Json(b): Json<Reset>,
 ) -> Result<StatusCode, ApiError> {
+    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            check_password(&p).map_err(ApiError::unprocessable)?;
+            policy.check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -403,15 +703,38 @@ async fn reset_password(
     };
     let actor = actor(&headers);
     s.with_db(move |db| {
-        db.set_password_hash(&id, hash.as_deref())?;
+        // A temporary password: changed at the next sign-in.
+        db.set_password(&id, hash.as_deref(), true, 24)?;
         db.revoke_user_tokens(&id)?;
         db.record(&ot_store::Decision {
-            evidence: json!({ "user": id }),
+            evidence: json!({ "user": id, "temporary": hash.is_some() }),
             ..ot_store::Decision::new(&actor, "reset_password")
         })
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Unlock an account locked by failed sign-ins.
+async fn unlock_user(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let actor = actor(&headers);
+    let user = s
+        .with_db(move |db| {
+            let before = db.user(&id)?;
+            let u = db.unlock_user(&id)?;
+            db.record(&ot_store::Decision {
+                evidence: json!({ "user": id, "email": u.email }),
+                before: before.map(|b| json!(b)),
+                ..ot_store::Decision::new(&actor, "unlock_user")
+            })?;
+            Ok(u)
+        })
+        .await?;
+    Ok(Json(json!(user)))
 }
 
 async fn revoke_sessions(
@@ -564,6 +887,11 @@ mod tests {
     /// The router with sign-in on, over an in-memory database holding one
     /// admin; `None` (test skipped) without `OT_TEST_REDIS_URL`.
     async fn app() -> Option<axum::Router> {
+        app_and_state().await.map(|(r, _)| r)
+    }
+
+    /// The router and its state (to reach the database).
+    async fn app_and_state() -> Option<(axum::Router, AppState)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
         let ns = format!("ot-auth-test-{}", chrono::Utc::now().timestamp_micros());
         let common = Common {
@@ -586,8 +914,7 @@ mod tests {
             shared_db: Default::default(),
         };
         let mut db = ot_store::Db::open_in_memory().unwrap();
-        crate::auth::bootstrap_admin(&common, &mut db, Some("root@x.org"), Some("rootpass1"))
-            .unwrap();
+        crate::auth::bootstrap_admin(&common, &mut db, Some("root@x.org"), Some(ROOT)).unwrap();
         let state = AppState {
             db: Arc::new(Mutex::new(db)),
             redis: ot_store::RedisStore::connect(&url, ot_store::Keys::new(ns))
@@ -603,8 +930,12 @@ mod tests {
             )),
             common,
         };
-        Some(crate::control::router(state, None))
+        Some((crate::control::router(state.clone(), None), state))
     }
+
+    const ROOT: &str = "Root-Pass-2026-xyz!";
+    const VIEW: &str = "Viewer-Temp-2026!";
+    const VIEW2: &str = "Seen-Anew-4-Viewing#";
 
     /// A request with optional cookie or bearer token; the status, the
     /// JSON body and any session cookie set.
@@ -615,7 +946,30 @@ mod tests {
         auth: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value, Option<String>) {
-        let mut req = Request::builder().method(method).uri(uri);
+        call_idle(app, method, uri, auth, body, None).await
+    }
+
+    /// As [`call`], with the browser saying its user has been idle.
+    async fn call_idle(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        auth: Option<&str>,
+        body: Option<Value>,
+        idle_ms: Option<i64>,
+    ) -> (StatusCode, Value, Option<String>) {
+        // Each request from its own address, so the per-address limit on
+        // sign-in attempts stays out of the way.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let peer = std::net::SocketAddr::from(([10, 9, (n >> 8) as u8, n as u8], 40000));
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(ConnectInfo(peer));
+        if let Some(ms) = idle_ms {
+            req = req.header(super::super::sessions::IDLE_HEADER, ms.to_string());
+        }
         match auth {
             Some(a) if a.starts_with("Bearer ") => req = req.header("authorization", a),
             Some(c) => req = req.header("cookie", c),
@@ -667,7 +1021,7 @@ mod tests {
             "POST",
             "/api/v1/auth/login",
             None,
-            Some(login("root@x.org", "nope")),
+            Some(login("root@x.org", "Nope-nope-nope-1!")),
         )
         .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -676,7 +1030,7 @@ mod tests {
             "POST",
             "/api/v1/auth/login",
             None,
-            Some(login("who@x.org", "rootpass1")),
+            Some(login("who@x.org", ROOT)),
         )
         .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -685,11 +1039,14 @@ mod tests {
             "POST",
             "/api/v1/auth/login",
             None,
-            Some(login("ROOT@x.org", "rootpass1")),
+            Some(login("ROOT@x.org", ROOT)),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(body["role"], "admin");
+        // The failed attempt since the previous sign-in (none) is reported.
+        assert_eq!(body["last_login"]["failed_attempts"], 1);
+        assert_eq!(body["must_change_password"], false);
         let admin = cookie.expect("a session cookie");
         assert!(admin.starts_with("ot_session="));
         let (st, body, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
@@ -704,21 +1061,68 @@ mod tests {
             "POST",
             "/api/v1/auth/users",
             Some(&admin),
-            Some(json!({ "email": "v@x.org", "role": "viewer", "password": "viewpass1" })),
+            Some(json!({ "email": "v@x.org", "role": "viewer", "password": VIEW })),
         )
         .await;
         assert_eq!(st, StatusCode::CREATED, "{viewer}");
-        let (_, _, vcookie) = call(
+        // A weak password is refused, whoever sets it.
+        let (st, body, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "w@x.org", "role": "viewer", "password": "viewpass1" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (_, body, vcookie) = call(
             &app,
             "POST",
             "/api/v1/auth/login",
             None,
-            Some(login("v@x.org", "viewpass1")),
+            Some(login("v@x.org", VIEW)),
         )
         .await;
         let vcookie = vcookie.unwrap();
+        // An admin's password is temporary: nothing else until it changes.
+        assert_eq!(body["must_change_password"], true, "{body}");
+        let (st, body, _) = call(&app, "GET", "/api/v1/tracks", Some(&vcookie), None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "password_change_required");
+        let change = |cur: &str, new: &str| json!({ "current": cur, "new": new });
+        let (st, body, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            Some(&vcookie),
+            Some(change(VIEW, VIEW)),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "the same one: {body}");
+        let (st, body, vcookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            Some(&vcookie),
+            Some(change(VIEW, VIEW2)),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["must_change_password"], false);
+        let vcookie = vcookie.unwrap();
         let (st, ..) = call(&app, "GET", "/api/v1/tracks", Some(&vcookie), None).await;
         assert_eq!(st, StatusCode::OK);
+        // Not again within a day.
+        let (st, body, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            Some(&vcookie),
+            Some(change(VIEW2, "Another-Fresh-One-77!")),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("24"), "{body}");
         let (st, body, _) = call(
             &app,
             "POST",
@@ -821,5 +1225,250 @@ mod tests {
         );
         let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+
+    async fn sign_in(
+        app: &axum::Router,
+        email: &str,
+        password: &str,
+    ) -> (StatusCode, Option<String>) {
+        let (st, _, c) = call(
+            app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": email, "password": password })),
+        )
+        .await;
+        (st, c)
+    }
+
+    #[tokio::test]
+    async fn lockout_sessions_idle_timeout_and_the_audit_record() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = admin.unwrap();
+        // Sessions ride a strict same-site cookie.
+        let raw = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "email": "root@x.org", "password": ROOT }).to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(raw).await.unwrap();
+        let set = res.headers()["set-cookie"].to_str().unwrap().to_owned();
+        assert!(
+            set.contains("SameSite=Strict") && set.contains("HttpOnly"),
+            "{set}"
+        );
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        assert!(res.headers().contains_key("content-security-policy"));
+
+        // Three wrong passwords lock the account; the right one then fails
+        // too, with the same answer; an admin unlocks it.
+        let (st, v, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "l@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        for _ in 0..3 {
+            let (st, _) = sign_in(&app, "l@x.org", "Wrong-Wrong-Wrong-1").await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED);
+        }
+        let (st, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "l@x.org", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "locked");
+        let (_, users, _) = call(&app, "GET", "/api/v1/auth/users", Some(&admin), None).await;
+        let locked = users["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["email"] == "l@x.org")
+            .unwrap();
+        assert!(locked["locked_until_ms"].as_i64().is_some());
+        let uri = format!("/api/v1/auth/users/{}/unlock", v["id"].as_str().unwrap());
+        let (st, ..) = call(&app, "POST", &uri, Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, lcookie) = sign_in(&app, "l@x.org", VIEW).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, me, _) = call(&app, "GET", "/api/v1/auth/me", lcookie.as_deref(), None).await;
+        assert_eq!(me["last_login"]["failed_attempts"], 4, "{me}");
+        let (st, _, lcookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            lcookie.as_deref(),
+            Some(json!({ "current": VIEW, "new": VIEW2 })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+
+        // At most three sessions: a fourth sign-in ends the oldest.
+        let mut cookies = Vec::new();
+        for _ in 0..3 {
+            cookies.push(sign_in(&app, "root@x.org", ROOT).await.1.unwrap());
+        }
+        let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "pushed out by newer sessions");
+        let admin = cookies.pop().unwrap();
+        let (_, mine, _) = call(&app, "GET", "/api/v1/auth/sessions", Some(&admin), None).await;
+        let live = mine["sessions"].as_array().unwrap();
+        assert_eq!(live.len(), 3, "{mine}");
+        // Ending one of your own sessions.
+        let other = live.iter().find(|x| x["id"] != mine["current"]).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (st, ..) = call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/auth/sessions/{other}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        // A viewer sees only its own, and cannot end an admin's.
+        let (st, ..) = call(
+            &app,
+            "GET",
+            "/api/v1/auth/sessions?all=true",
+            lcookie.as_deref(),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        let (st, ..) = call(
+            &app,
+            "DELETE",
+            &format!(
+                "/api/v1/auth/sessions/{}",
+                mine["current"].as_str().unwrap()
+            ),
+            lcookie.as_deref(),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+
+        // A browser idle past the timeout (an admin's: 10 minutes) is
+        // signed out, even while its page polls.
+        let (st, ..) = call_idle(
+            &app,
+            "GET",
+            "/api/v1/status",
+            Some(&admin),
+            None,
+            Some(11 * 60_000),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "idle, but not for longer than the last use"
+        );
+        let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // The audit record has the story, and its chain holds.
+        let (st, audit, _) = call(
+            &app,
+            "GET",
+            "/api/v1/audit?op=login,account_locked,unlock_user,session_end&limit=500",
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{audit}");
+        let rows = audit["rows"].as_array().unwrap();
+        let count = |op: &str, outcome: &str| {
+            rows.iter()
+                .filter(|r| r["op"] == op && r["outcome"] == outcome)
+                .count()
+        };
+        assert_eq!(count("login", "failure"), 4, "three wrong, one locked");
+        assert_eq!(count("account_locked", "success"), 1);
+        assert_eq!(count("unlock_user", "success"), 1);
+        assert!(count("session_end", "success") >= 2, "pushed out, ended");
+        let (st, v, _) = call(&app, "GET", "/api/v1/audit/verify", Some(&admin), None).await;
+        assert_eq!((st, v["ok"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
+        let (st, ..) = call(&app, "GET", "/api/v1/audit", lcookie.as_deref(), None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "admins only");
+    }
+
+    #[tokio::test]
+    async fn an_idle_session_ends() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let (st, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let session = me["session"].as_str().unwrap().to_owned();
+        assert_eq!(me["idle_timeout_ms"], 10 * 60_000, "an admin's");
+        // Its user walks away: the last use was 11 minutes ago, and the
+        // page's polling since says so.
+        let at = ot_store::sqlite::now_ms() - 11 * 60_000;
+        let id = session.clone();
+        state
+            .with_db(move |db| {
+                db.connection()
+                    .execute(
+                        "UPDATE sessions SET last_seen_ms = ?2 WHERE id = ?1",
+                        (id.as_str(), at),
+                    )
+                    .map_err(ot_store::StoreError::from)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        state.auth.activity.forget(&session);
+        let (st, ..) = call_idle(
+            &app,
+            "GET",
+            "/api/v1/status",
+            Some(&admin),
+            None,
+            Some(11 * 60_000),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        let id = session.clone();
+        let row = state
+            .with_db(move |db| db.session(&id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.end_reason.as_deref(), Some("idle"));
+        let timeouts = state
+            .with_db(|db| {
+                db.audit_rows(&ot_store::AuditFilter {
+                    ops: vec!["session_timeout".into()],
+                    limit: 10,
+                    ..Default::default()
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(timeouts.len(), 1);
+        assert_eq!(timeouts[0].actor, "root@x.org");
     }
 }

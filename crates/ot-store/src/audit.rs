@@ -167,13 +167,15 @@ fn head(tx: &rusqlite::Connection) -> Result<(i64, String)> {
 }
 
 fn anchor(c: &rusqlite::Connection) -> Result<Option<Anchor>> {
-    Ok(c.query_row("SELECT seq, hash FROM audit_anchor WHERE id = 1", [], |r| {
-        Ok(Anchor {
-            seq: r.get(0)?,
-            hash: r.get(1)?,
+    Ok(
+        c.query_row("SELECT seq, hash FROM audit_anchor WHERE id = 1", [], |r| {
+            Ok(Anchor {
+                seq: r.get(0)?,
+                hash: r.get(1)?,
+            })
         })
-    })
-    .optional()?)
+        .optional()?,
+    )
 }
 
 /// Append a row in `tx`; returns its sequence number.
