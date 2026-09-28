@@ -68,7 +68,8 @@ impl XmlSecSignatureContext {
                 let uri = if ref_ctx.uri.is_null() {
                     None
                 } else {
-                    let uri_cstr = std::ffi::CStr::from_ptr(ref_ctx.uri as *const std::os::raw::c_char);
+                    let uri_cstr =
+                        std::ffi::CStr::from_ptr(ref_ctx.uri as *const std::os::raw::c_char);
                     Some(
                         uri_cstr
                             .to_str()
