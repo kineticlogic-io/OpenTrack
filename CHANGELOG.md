@@ -5,6 +5,8 @@
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- SAPIENT codec: enum values inside map fields come out as names; a NaN or infinite float is `null`
+  instead of failing the whole message (#30).
 
 ## 0.4.0 (alpha), 2026-09-28
 
