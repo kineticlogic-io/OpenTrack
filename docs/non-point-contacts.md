@@ -132,6 +132,7 @@ Scenario `esm-patrol` (`esm_patrol_intercept_converges` in `crates/ot-server/src
 | The boat's bearings on its track | 402 of 423 |
 | The cargo ship's bearings on the boat's track | 0 (its own ESM location pairs with its AIS track) |
 | Tracks at the boat at the end | 1: ESM location, ELINT and video, 20 m from the truth, one track number throughout |
+| ELINT areas paired with the boat's track | 101 of 102 (1 alone, none with another object) |
 
 ## What is published
 
@@ -173,6 +174,7 @@ A synthetic scenario, `esm-crossfix`:
 | Ghost fixes (no emitter within 3σ) | 0.44% (3 of 683) |
 | Fixes within 2σ of their own ellipse | 92% |
 | Ships with two tracks at the end | 3 of 20 (gate: 3 or fewer) |
+| Areas paired with the right track | 100% of those paired (38 of 38); 62 stayed alone. None paired with the wrong track |
 
 Since the ELNOT became evidence (2026-09-28), an ELNOT emitter's fixes and its ELINT areas no longer meet on identity. They pair on position plus the ELNOT, which ELINT's kilometre-wide areas make slow. Three ELINT ships now end with a fix track beside their ELINT track (before: one, with 2,769 bearings on tracks).
 
@@ -183,7 +185,7 @@ The hard cases that remain:
 
 The videos render from the same run: `OT_REPLAY_TRACE=<dir>` writes a frame per step, and `scripts/benchmark/replay/esm-video.py` draws them. `OT_ESM_NAIVE=1` turns the ghost rules off, for comparison.
 
-Area pairing is covered by unit tests, not yet scored by the scenario.
+**Areas.** An ELINT area counts as paired right when everything else on its track is the same ship: other sources' tracks, the fixes its lines made, and the bearings on it. In `esm-patrol`, 101 of 102 areas paired with the boat's track and none with another object's. In `esm-crossfix` none paired wrongly, but most stayed alone. A 3 km area's position is too loose to prove which of several nearby tracks it is, so it pairs slowly. For the same reason, an ELINT area on a ship that also reports AIS was tried and stays a track of its own at open-water density. That's a known limit for the next phase: the area and the AIS ship would need to meet on something beyond position.
 
 ## Build order
 

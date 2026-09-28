@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.4 (unreleased)
+## 0.3.4 (alpha), 2026-09-28
 
 ### Non-point contacts
 
@@ -24,7 +24,7 @@ Lines of bearing, areas of uncertainty and emitter identities (ELNOT) are fused 
 - **Map and track card:** a selected track's bearing lines and area; the card lists its bearings.
 - **Benchmark** (`esm-crossfix`): 98.9% of 2,297 bearings to the right track, 10 of 10 emitters
   without AIS tracked, 0.44% ghost fixes, 92% of fixes within 2σ, 3 of 20 ships left with a
-  duplicate track. Videos render from the run (`scripts/benchmark/replay/esm-video.py`).
+  duplicate track; ELINT areas never paired with the wrong track (38 paired, 62 alone). Videos render from the run (`scripts/benchmark/replay/esm-video.py`).
 - **Single-sensor location:** one moving ESM sensor locates what it hears from its own motion. It
   fits a fixed emitter, or a moving one (bearings-only target motion analysis) when the bearings
   say it moves, with an error that counts what the model can't see. The location enters the

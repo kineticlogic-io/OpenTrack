@@ -5206,6 +5206,50 @@ mod tests {
         e.redis.purge_namespace().await.unwrap();
     }
 
+    /// Where an ELINT area report went: `None` when its track has nothing
+    /// else on it; else whether everything else on it (other sources'
+    /// tracks, the fixes they made, the bearings on it) is the same object.
+    /// `object` says which object a source track (source, key) is.
+    fn area_pairing(
+        e: &Engine,
+        area: &str,
+        truth: usize,
+        object: &dyn Fn(&str, &str) -> Option<usize>,
+    ) -> Option<bool> {
+        let t = e.tracks.get(e.reports.get(area)?)?;
+        let mut others: Vec<Option<usize>> = t
+            .contributors
+            .iter()
+            .filter(|c| format!("{}/{}", c.source_id, c.source_track_key) != area)
+            .flat_map(|c| {
+                if c.source_id == "fix" {
+                    // A fix is the objects whose lines went into it.
+                    let members = e.fix_members(&c.source_track_key);
+                    if members.is_empty() {
+                        vec![
+                            c.source_track_key
+                                .rsplit_once('/')
+                                .and_then(|(s, k)| object(s.trim_start_matches("tma:"), k)),
+                        ]
+                    } else {
+                        members.iter().map(|k| object("esm", k)).collect()
+                    }
+                } else {
+                    vec![object(&c.source_id, &c.source_track_key)]
+                }
+            })
+            .collect();
+        others.extend(
+            t.bearings
+                .iter()
+                .map(|b| object(&b.source_id, &b.source_track_key)),
+        );
+        if others.is_empty() {
+            return None;
+        }
+        Some(others.iter().all(|o| *o == Some(truth)))
+    }
+
     /// One step of the esm-crossfix scenario for the video: the truth, every
     /// line and area with where it went, the fixes made and the tracks.
     fn esm_frame(e: &Engine, secs: i64, batch: &[Observation], ships: &[(f64, f64)]) -> Value {
@@ -5357,6 +5401,7 @@ mod tests {
             ships.iter().map(|s| pos(s.n, s.e)).collect()
         }
         let mut per_ship = [0usize; 20];
+        let mut areas = (0usize, 0usize, 0usize); // right, wrong, alone
         for step in 0..120i64 {
             let secs = step * 5;
             for s in &mut ships {
@@ -5429,6 +5474,18 @@ mod tests {
             feed(&mut e, &batch).await;
             if let Some(frames) = frames.as_mut() {
                 frames.push(esm_frame(&e, secs, &batch, &ships_now(&ships, &pos)));
+            }
+            // Where each ELINT area went.
+            let object =
+                |_: &str, key: &str| -> Option<usize> { key.trim_start_matches("em").parse().ok() };
+            for o in batch.iter().filter(|o| o.source_id == "elint") {
+                let i: usize = o.source_track_key.trim_start_matches('x').parse().unwrap();
+                let key = format!("elint/{}", o.source_track_key);
+                match area_pairing(&e, &key, i, &object) {
+                    None => areas.2 += 1,
+                    Some(true) => areas.0 += 1,
+                    Some(false) => areas.1 += 1,
+                }
             }
             // Which emitter each live track is (the nearest within 2 km).
             // By its MMSI or ELNOT when it has one, else by position.
@@ -5538,6 +5595,10 @@ mod tests {
         // Duplicates: ships with more than one confirmed track at the end.
         let duplicates = per_ship.iter().filter(|&&n| n > 1).count();
         eprintln!("tracks per ship at the end: {per_ship:?} ({duplicates} with two)");
+        eprintln!(
+            "esm-crossfix areas: {} paired right, {} wrong, {} alone",
+            areas.0, areas.1, areas.2
+        );
         let precision = assigned.0 as f64 / (assigned.0 + assigned.1).max(1) as f64;
         let non_ais_found = (10..20).filter(|&i| seen_at[i].is_some()).count();
         eprintln!(
@@ -5576,6 +5637,13 @@ mod tests {
         // AIS ship, one with a close neighbour, one known only by a
         // kilometres-wide ELINT area.
         assert!(duplicates <= 3, "{duplicates} ships with two tracks");
+
+        assert!(
+            areas.0 as f64 >= 0.95 * (areas.0 + areas.1) as f64,
+            "areas paired right {}/{}",
+            areas.0,
+            areas.0 + areas.1
+        );
         assert!(
             ghosts as f64 <= 0.02 * fixes as f64,
             "{ghosts} ghost fixes of {fixes}"
@@ -5661,6 +5729,7 @@ mod tests {
         let mut geolocate: Option<(i64, f64)> = None;
         let mut esm_only_at = None;
         let mut esm_elint_at = None;
+        let mut areas = (0usize, 0usize, 0usize); // right, wrong, alone
         let mut frames: Vec<Value> = Vec::new();
         let mut first_esm = None;
         let mut first_elint = None;
@@ -5815,6 +5884,28 @@ mod tests {
             // As the server does on its timer: tracks gone quiet go lost.
             e.sim_now = Some(t0() + chrono::Duration::seconds(secs));
             e.reap().await.unwrap();
+            // Where the ELINT area went: the boat is 0, the cargo ship 1,
+            // fishing boats 2.., the aircraft 9.
+            if batch.iter().any(|o| o.source_id == "elint") {
+                let object = |source: &str, key: &str| -> Option<usize> {
+                    match (source, key) {
+                        ("esm", "em1") | ("fmv", _) => Some(0),
+                        ("esm", "em2") => Some(1),
+                        ("ais", k) => k
+                            .trim_start_matches('f')
+                            .parse::<usize>()
+                            .ok()
+                            .map(|n| 2 + n),
+                        ("ownship", _) => Some(9),
+                        _ => None,
+                    }
+                };
+                match area_pairing(&e, "elint/x1", 0, &object) {
+                    None => areas.2 += 1,
+                    Some(true) => areas.0 += 1,
+                    Some(false) => areas.1 += 1,
+                }
+            }
 
             // Score and record.
             let now = t0() + chrono::Duration::seconds(secs);
@@ -5999,6 +6090,12 @@ mod tests {
             "the cargo ship's radar never joins the boat's track"
         );
         assert!(final_error < 100.0, "final error {final_error:.0} m");
+        eprintln!(
+            "esm-patrol areas: {} paired right, {} wrong, {} alone",
+            areas.0, areas.1, areas.2
+        );
+        assert_eq!(areas.1, 0, "ELINT areas never join another object's track");
+        assert!(areas.0 as f64 >= 0.95 * (areas.0 + areas.1) as f64);
         assert_eq!(near_boat, 1, "one track at the boat");
         e.redis.purge_namespace().await.unwrap();
     }

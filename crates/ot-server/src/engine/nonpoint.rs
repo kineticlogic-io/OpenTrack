@@ -1045,6 +1045,16 @@ impl Engine {
 
 #[cfg(test)]
 impl Engine {
+    /// The sensor track keys whose lines went into a fix key.
+    pub(super) fn fix_members(&self, fix_key: &str) -> Vec<String> {
+        self.bearings
+            .members
+            .iter()
+            .filter(|(_, k)| k.as_str() == fix_key)
+            .map(|((_, key), _)| key.clone())
+            .collect()
+    }
+
     /// The track a sensor track's emitter was found on, if any.
     pub(super) fn bearing_track(&self, source: &str, key: &str) -> Option<Uid> {
         let member = (source.to_owned(), key.to_owned());
