@@ -363,8 +363,10 @@ it in the provider's mapping, not here.
 - **From the command line:** `opentrack user passwd <email>`, reading the new password from
   standard input.
 
-Passwords are hashed with Argon2id. Sign-in attempts are limited per client address: 5 at once,
-then one a second.
+Passwords are hashed with PBKDF2-HMAC-SHA256 in the FIPS module (see
+[Security hardening](#security-hardening)). Hashes made before 0.4.0 (Argon2id) still work, and
+are replaced at the account's next sign-in. Sign-in attempts are limited per client address: 5 at
+once, then one a second.
 
 ### API tokens
 

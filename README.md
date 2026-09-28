@@ -243,15 +243,24 @@ Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
 | `admin` | Also configure OpenTrack: sources, settings, plugins, accounts and sign-in |
 
 - **How a caller signs in:**
-  - **A password:** local accounts, Argon2id, with a signed `ot_session` cookie. Sessions last 24 h by default.
+  - **A password:** local accounts, PBKDF2-HMAC-SHA256 in the FIPS module (docs/security/fips.md), with a signed `ot_session` cookie. Sessions last 24 h by default.
   - **SAML single sign-on**, as OpenStare's: paste the identity provider's metadata in Settings → Security, map its role attribute to roles, and set `OT_PUBLIC_URL`.
   - **OpenStare's own sign-in**, when OpenTrack runs beside OpenStare: a browser signed in to OpenStare on the same host, or an OpenStare API token, is let in with a mapped role.
   - **An API token**, for machines: made in Settings → Users or with `opentrack user token`, sent as `Authorization: Bearer`.
   - **A client certificate** over TLS, mapped to an account in Settings → Security.
 - **The first account** is an admin, from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD`. Without them, it is `admin@opentrack.local`, with a made-up password in `initial-admin.txt` beside the database.
 - **Every change** names the account that made it in the decision log.
+- **Account policy** (Settings → Security; defaults from the DoD application security STIG, 800-53 Moderate):
+  - **Passwords** (local accounts): 15 characters with upper, lower, digit and special; not one of the last 5; 8 characters changed; at most one change a day; 60 days, then changed at the next sign-in. A password an admin sets is temporary: the account must choose its own before anything else. Existing passwords keep working until they change or expire (60 days from the upgrade).
+  - **Lockout:** 3 failed sign-ins within 15 minutes lock the account for 15 minutes (0: until an admin unlocks it, in Settings → Users or `opentrack user unlock`). Every refusal says the same thing.
+  - **Sessions** are kept on the server: 15 minutes idle ends one (10 for admins; the page's own refreshes do not count), as does the session length; at most 3 per account, the oldest ends. Anyone sees and ends their own (account menu → Sessions), admins everyone's. API tokens are not sessions: they only expire. Sessions are per node.
+  - **Inactivity:** accounts not signed in for 35 days are turned off; an admin turns them on again. Break-glass accounts can be exempted.
+  - After signing in, a notice gives the previous sign-in and the failed attempts since.
+- **Audit record:** every decision and every sign-in event (success and failure with reason and address, sign-out, lockout, unlock, session time-out and end, password change and expiry, accounts turned off, settings changes) in an append-only table, each row SHA-256 chained to the one before. Settings → Audit filters it, exports CSV and verifies the chain (`GET /api/v1/audit`, `/api/v1/audit/verify`, admins). A sign-in whose record cannot be written is refused. Retention is off by default (keep forever); a purge is recorded and the chain stays verifiable.
+- **Web hardening:** a content security policy, `nosniff`, no framing, no referrer, HSTS over TLS and `no-store` on the API, on every response. The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` over TLS or behind a TLS proxy (`OT_PUBLIC_TLS=1`).
+- **Security labels:** a fused track or group is marked with the highest classification of its sources (the order is a correlation setting, Settings → Security → Security labels), the union of their restrictions and the intersection of their releasability.
 - **Settings → Banners** can require users to accept a warning after signing in (as OpenStare's warning banner), besides the classification banner.
-- **`OT_AUTH=off`** turns sign-in off for development: every caller is an admin.
+- **`OT_AUTH=off`** turns sign-in off for development: every caller is an admin. The server warns every minute and the UI shows a red banner.
 
 ## Track management: undo and history
 
@@ -366,6 +375,8 @@ Turning it on:
 | `OT_SITE_CODE` | `OTK` | GOLD site code for UIDs (3 characters, A–Z 0–9; fixed for a deployment) |
 | `OT_NATS_URL` | `nats://127.0.0.1:4222` | NATS server(s), comma separated |
 | `OT_NATS_CREDS` / `OT_NATS_TOKEN` / `OT_NATS_USER` + `OT_NATS_PASSWORD` | | NATS auth, if the server requires it |
+| `OT_NATS_CA` | | TLS to NATS: trust this CA (PEM) and require TLS |
+| `OT_NATS_CERT`, `OT_NATS_KEY` | | mutual TLS to NATS: this client certificate and key (PEM) |
 | `OT_NATS_STREAM` | `TRACKS` | JetStream stream (created if missing, never modified) |
 | `OT_NATS_TRACKS_SUBJECT` | `tracks` | subject prefix: tracks go to `<prefix>.tms-<UID>` |
 | `OT_NATS_MAX_AGE_HOURS` | `24` | message age limit for a stream OpenTrack creates |
@@ -377,6 +388,7 @@ Turning it on:
 | `OT_PUBLIC_URL` | | where browsers reach OpenTrack (`https://host:8090`); SAML needs it |
 | `OT_TLS_CERT`, `OT_TLS_KEY` | | serve the API and UI over TLS (cookies become `Secure`) |
 | `OT_TLS_CLIENT_CA` | | with TLS, accept client certificates this CA signed, as the accounts Settings → Security maps them to |
+| `OT_PUBLIC_TLS` | off | `1`: a proxy in front ends TLS, so cookies are `Secure` and HSTS is sent (also implied by an `https://` `OT_PUBLIC_URL`) |
 | `OT_SYNC_PREFIX` | `ot.sync` | subject prefix of the sync boundary with other nodes (`<prefix>.out.*`, `<prefix>.in.*`) |
 | `OT_SYNC_SUMMARY_SECS` | `5` | seconds between the summaries that let nodes find missed decisions |
 | `OT_LOG`, `OT_LOG_FORMAT` | `info`, text | `OT_LOG_FORMAT=json` for JSON logs |

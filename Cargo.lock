@@ -2559,6 +2559,7 @@ dependencies = [
 name = "ot-store"
 version = "0.3.4"
 dependencies = [
+ "aws-lc-rs",
  "chrono",
  "ot-core",
  "ot-sync",

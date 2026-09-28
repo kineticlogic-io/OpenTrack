@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useToast } from 'staresdk'
 import { api, ApiError, type AuthPublic, type Me, type Role } from '../api/client'
+import { trackActivity, withIdle } from './activity'
 import { AuthCtx, ackKey, here, roleAtLeast } from './context'
 
 /** Calls whose 401 is an answer (wrong password, not signed in yet), not a lapsed session. */
@@ -10,8 +11,9 @@ type Wrapped = typeof window.fetch & { __otAuth?: boolean }
 
 /**
  * Who is signed in, loaded from /auth/me at start. Any other /api call answered 401 means the
- * session ended: go to the sign-in page, coming back here after. A 403 (role too low) is shown as
- * a toast with the server's reason.
+ * session ended (signed out, idle too long, ended elsewhere): go to the sign-in page, coming back
+ * here after. A 403 (role too low) is shown as a toast with the server's reason. Every /api call
+ * says how long the user has been idle, so polling alone does not keep a session alive.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast()
@@ -23,25 +25,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     toastRef.current = toast
   }, [toast])
 
+  useEffect(() => trackActivity(), [])
+
   useEffect(() => {
     const original = window.fetch
     if ((original as Wrapped).__otAuth) return
     const wrapped: Wrapped = async (input, init) => {
-      const res = await original(input, init)
       const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url
       const path = url.startsWith('http') ? new URL(url).pathname : url
-      if (!path.startsWith('/api/')) return res
+      if (!path.startsWith('/api/')) return original(input, init)
+      const res = await original(input, withIdle(input, init))
       if (res.status === 401 && !QUIET_401.some((p) => path.startsWith(p)) && window.location.pathname !== '/login') {
-        window.location.assign('/login?from=' + encodeURIComponent(here()))
+        window.location.assign('/login?ended=1&from=' + encodeURIComponent(here()))
       } else if (res.status === 403 && !path.startsWith('/api/v1/auth/login')) {
         res
           .clone()
           .json()
           .then(
-            (b: { error?: string }) => b.error,
-            () => undefined,
+            (b: { error?: string; code?: string }) => b,
+            () => ({}) as { error?: string; code?: string },
           )
-          .then((m) => toastRef.current({ variant: 'error', title: 'Not allowed', message: m ?? 'Your role does not allow this.', dedupeKey: `403:${m}` }))
+          .then((b) => {
+            // A password to change first: the page shows the change screen.
+            if (b.code === 'password_change_required') window.location.reload()
+            else toastRef.current({ variant: 'error', title: 'Not allowed', message: b.error ?? 'Your role does not allow this.', dedupeKey: `403:${b.error}` })
+          })
       }
       return res
     }

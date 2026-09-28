@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { TbCopy, TbKey, TbLogout, TbPlus, TbTrash } from 'react-icons/tb'
+import { TbCopy, TbKey, TbLockOpen, TbLogout, TbPlus, TbRefresh, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
-import { api, ROLES, type Account, type ApiTokenRow, type Role } from '../../api/client'
+import { api, describePolicy, ROLES, type Account, type ApiTokenRow, type Role } from '../../api/client'
 import { useAuth } from '../../auth/context'
+import { SessionsTable } from '../../auth/SessionsTable'
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage, fmtTime } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
@@ -26,8 +27,39 @@ function ModalButtons({ onClose, children }: { onClose: () => void; children: Re
   )
 }
 
+/** The password rules, and that an admin's password is temporary. */
+function usePasswordHint(): string {
+  const { user } = useAuth()
+  return `${describePolicy(user?.password_policy)} It is temporary: the account must choose its own at its next sign-in.`
+}
+
+/** An account's state beyond on/off: locked, turned off for inactivity, a password to change. */
+function AccountState({ a, now }: { a: Account; now: number }) {
+  const locked = a.locked_until_ms != null && a.locked_until_ms > now
+  return (
+    <span className="num-row">
+      {locked && (
+        <Badge size="sm" color="danger" title={a.locked_until_ms! > 8e15 ? 'Locked until an admin unlocks it' : `Locked until ${fmtTime(a.locked_until_ms)}`}>
+          locked
+        </Badge>
+      )}
+      {!a.active && a.disabled_reason === 'inactivity' && (
+        <Badge size="sm" color="warning" title="Turned off: not signed in for too long">
+          inactive
+        </Badge>
+      )}
+      {a.must_change_password && a.has_password && (
+        <Badge size="sm" color="grey" title="A temporary or expired password: to change at the next sign-in">
+          new password due
+        </Badge>
+      )}
+    </span>
+  )
+}
+
 function AddAccount({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
   const { toast } = useToast()
+  const passwordHint = usePasswordHint()
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [role, setRole] = useState<Role>('viewer')
@@ -58,7 +90,7 @@ function AddAccount({ onClose, onAdded }: { onClose: () => void; onAdded: () => 
         <SettingsRow label="Role" hint={ROLES_INFO}>
           <FieldSelect ariaLabel="Role" fields={ROLE_FIELDS} value={role} onChange={(v) => setRole(asRole(v))} style={{ width: 160 }} />
         </SettingsRow>
-        <SettingsRow label="Password" hint="At least 8 characters. Leave it empty for an account that signs in only with single sign-on.">
+        <SettingsRow label="Password" hint={`${passwordHint} Leave it empty for an account that signs in only with single sign-on.`}>
           <Input style={{ ...INPUT, width: 280 }} type="password" autoComplete="new-password" aria-label="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </SettingsRow>
         <ModalButtons onClose={onClose}>
@@ -73,13 +105,18 @@ function AddAccount({ onClose, onAdded }: { onClose: () => void; onAdded: () => 
 
 function ResetPassword({ account, onClose, onDone }: { account: Account; onClose: () => void; onDone: () => void }) {
   const { toast } = useToast()
+  const passwordHint = usePasswordHint()
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const run = async (next: string | null) => {
     setBusy(true)
     try {
       await api.resetPassword(account.id, next)
-      toast({ variant: 'success', title: next ? 'Password set' : 'Password removed', message: `${account.email} was signed out everywhere.` })
+      toast({
+        variant: 'success',
+        title: next ? 'Password set' : 'Password removed',
+        message: `${account.email} was signed out everywhere.${next ? ' It must choose a new password at its next sign-in.' : ''}`,
+      })
       onDone()
     } catch (err) {
       toast({ variant: 'error', title: 'Password not changed', message: errorMessage(err) })
@@ -98,7 +135,7 @@ function ResetPassword({ account, onClose, onDone }: { account: Account; onClose
       >
         <SettingsRow
           label="New password"
-          hint={`At least 8 characters. The account's sessions and API tokens end.${account.has_password ? ' Remove password: the account can then sign in only with single sign-on.' : ''}`}
+          hint={`${passwordHint} The account's sessions and API tokens end.${account.has_password ? ' Remove password: the account can then sign in only with single sign-on.' : ''}`}
         >
           <Input style={{ ...INPUT, width: 240 }} type="password" autoComplete="new-password" aria-label="New password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
         </SettingsRow>
@@ -196,8 +233,15 @@ export function UsersPanel() {
   const [resetting, setResetting] = useState<Account | null>(null)
   const [makingToken, setMakingToken] = useState(false)
   const [now, setNow] = useState(0)
+  const [sessionsKey, setSessionsKey] = useState(0)
   const load = useCallback(() => {
-    api.users().then(setAccounts, (e) => toast({ variant: 'error', title: 'Accounts', message: errorMessage(e) }))
+    api.users().then(
+      (us) => {
+        setAccounts(us)
+        setNow(Date.now())
+      },
+      (e) => toast({ variant: 'error', title: 'Accounts', message: errorMessage(e) }),
+    )
     api.apiTokens().then((ts) => {
       setTokens(ts)
       setNow(Date.now())
@@ -221,6 +265,15 @@ export function UsersPanel() {
       load()
     } catch (e) {
       toast({ variant: 'error', title: 'Not signed out', message: errorMessage(e) })
+    }
+  }
+  const unlock = async (a: Account) => {
+    try {
+      const u = await api.unlockUser(a.id)
+      setAccounts((xs) => (xs ?? []).map((x) => (x.id === u.id ? u : x)))
+      toast({ variant: 'success', title: 'Unlocked', message: a.email })
+    } catch (e) {
+      toast({ variant: 'error', title: 'Not unlocked', message: errorMessage(e) })
     }
   }
   const remove = async (a: Account) => {
@@ -275,14 +328,18 @@ export function UsersPanel() {
       sortValue: (a) => (a.active ? 1 : 0),
       render: (a) => <Toggle size="sm" aria-label={`${a.email} active`} value={a.active} disabled={a.id === me?.id} onChange={(active) => change(a, { active })} />,
     },
+    { key: 'state', header: 'State', width: 190, sortValue: (a) => (a.locked_until_ms ?? 0) + (a.must_change_password ? 1 : 0), render: (a) => <AccountState a={a} now={now} /> },
     { key: 'last', header: 'Last sign-in', width: 170, mono: true, sortValue: (a) => a.last_login_at_ms, render: (a) => fmtTime(a.last_login_at_ms) },
     {
       key: 'actions',
       header: '',
       align: 'right',
-      width: 110,
+      width: 140,
       render: (a) => (
         <span className="num-row" style={{ justifyContent: 'flex-end' }}>
+          {a.locked_until_ms != null && a.locked_until_ms > now && (
+            <Button size="xs" variant="ghost" icon={<TbLockOpen />} title="Unlock" aria-label={`Unlock ${a.email}`} onClick={() => unlock(a)} />
+          )}
           <Button size="xs" variant="ghost" icon={<TbKey />} title="Set or remove password" aria-label={`Password of ${a.email}`} onClick={() => setResetting(a)} />
           <Button size="xs" variant="ghost" icon={<TbLogout />} title="Sign out everywhere" aria-label={`Sign out ${a.email} everywhere`} onClick={() => revoke(a)} />
           <Button
@@ -358,6 +415,21 @@ export function UsersPanel() {
           ) : (
             <DataTable aria-label="Accounts" columns={columns} rows={accounts} rowKey={(a) => a.id} density="compact" empty="No accounts." defaultSort={{ key: 'email', direction: 'asc' }} />
           )}
+        </div>
+      </CollapsiblePanel>
+      <CollapsiblePanel
+        title="Sessions"
+        persistKey="ot.panel.settings.sessions"
+        titleActions={
+          <InfoTip label="Sessions">
+            Every browser signed in to this node now. A session ends at sign-out, after the idle timeout, at the session length, or when its account signs in
+            past the number allowed at once. End one to sign that browser out. Other nodes keep their own sessions.
+          </InfoTip>
+        }
+        actions={<Button size="sm" variant="ghost" icon={<TbRefresh />} aria-label="Reload sessions" onClick={() => setSessionsKey((k) => k + 1)} />}
+      >
+        <div className="panel-body">
+          <SessionsTable all reloadKey={sessionsKey} />
         </div>
       </CollapsiblePanel>
       <CollapsiblePanel

@@ -13,11 +13,13 @@ use std::io::Write;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use axum::extract::{Form, State as AxumState};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Form, State as AxumState};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
@@ -28,6 +30,7 @@ use samael::traits::ToXml;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::api::{Client, How};
 use super::{AuthSettings, Role, settings::SamlSettings};
 use crate::control::{ApiError, AppState};
 
@@ -265,22 +268,22 @@ fn account(
     Ok(Some(u))
 }
 
-async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Response {
+async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Response, String> {
     let cfg = s.auth.settings().saml;
     if !cfg.enabled {
-        return refused("SAML is off");
+        return Err("SAML is off".into());
     }
     if !openssl_fips() {
-        return refused(NOT_FIPS);
+        return Err(NOT_FIPS.into());
     }
     let (Some(response), Some(relay)) = (f.response, f.relay) else {
-        return refused("no SAMLResponse or RelayState");
+        return Err("no SAMLResponse or RelayState".into());
     };
     let Some(rid) = verify_relay(&relay, &s.auth.secret) else {
-        return refused("the relay state is not ours or has expired");
+        return Err("the relay state is not ours or has expired".into());
     };
-    let Ok(base) = base_url(&s) else {
-        return refused("no OT_PUBLIC_URL");
+    let Ok(base) = base_url(s) else {
+        return Err("no OT_PUBLIC_URL".into());
     };
     let c = cfg.clone();
     let parsed = tokio::task::spawn_blocking(move || {
@@ -291,8 +294,8 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
     .await;
     let assertion = match parsed {
         Ok(Ok(a)) => a,
-        Ok(Err(e)) => return refused(&e),
-        Err(e) => return refused(&e.to_string()),
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(e.to_string()),
     };
     let until = assertion
         .conditions
@@ -300,10 +303,10 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
         .and_then(|c| c.not_on_or_after)
         .unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
     if !s.auth.saml.first_use(&assertion.id, until) {
-        return refused("the assertion was used before");
+        return Err("the assertion was used before".into());
     }
     let Some(email) = name_id(&assertion) else {
-        return refused("the assertion names no one");
+        return Err("the assertion names no one".into());
     };
     let values = attribute(&assertion, &cfg.role_attribute);
     let role = AuthSettings::map_role(&cfg.role_mapping, &values, cfg.default_role).map(|r| {
@@ -316,15 +319,39 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
     let e = email.clone();
     let user = match s.with_db(move |db| account(db, &e, role)).await {
         Ok(Some(u)) => u,
-        Ok(None) => return refused("no role for this user, or the account is off"),
-        Err(e) => return refused(&e.message),
+        Ok(None) => return Err("no role for this user, or the account is off".into()),
+        Err(e) => return Err(e.message),
     };
-    match super::api::start_session(&s, user).await {
+    match super::api::start_session(s, user, client, How::Saml).await {
         Ok((mut headers, _)) => {
             headers.insert(header::LOCATION, HeaderValue::from_static("/"));
-            (StatusCode::FOUND, headers).into_response()
+            Ok((StatusCode::FOUND, headers).into_response())
         }
-        Err(e) => refused(&e.message),
+        Err(e) => Err(e.message),
+    }
+}
+
+/// The assertion consumer service: sign in, or back to the sign-in page
+/// with the refusal in the audit record.
+async fn acs(
+    AxumState(s): AxumState<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    Form(f): Form<AcsForm>,
+) -> Response {
+    let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
+    match acs_checked(&s, f, &client).await {
+        Ok(r) => r,
+        Err(why) => {
+            let e = ot_store::AuditEvent::new("saml", "login")
+                .failure()
+                .ip(&client.ip)
+                .detail(json!({ "reason": why, "via": "saml" }));
+            if let Err(e) = s.with_db(move |db| db.audit(&e)).await {
+                tracing::error!(error = %e.message, "recording a refused sign-on failed");
+            }
+            refused(&why)
+        }
     }
 }
 

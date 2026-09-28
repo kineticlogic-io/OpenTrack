@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased (0.4.0)
+
+### Accreditation: DoD RMF / ASD STIG (800-53 Moderate)
+
+Account, session, audit and web hardening, all configurable in Settings → Security with STIG
+defaults.
+
+- **Passwords** (local accounts): 15 characters with upper, lower, digit and special; the last 5 not
+  reused; 8 characters changed; 24 h minimum and 60 days maximum age. An admin's password (new
+  account, reset, `opentrack user passwd`) is temporary and must change at the next sign-in, as must
+  an expired one: the session can do nothing else until then. Existing passwords keep working;
+  their age counts from the upgrade.
+- **Lockout:** 3 failures in 15 minutes lock an account for 15 minutes (or until an admin unlocks
+  it: Settings → Users, `opentrack user unlock`, `POST /api/v1/auth/users/{id}/unlock`).
+- **Server-side sessions:** idle timeout 15 minutes (admins 10), measured from the user's own
+  activity, not the page's polling; at most 3 per account; list and end your own sessions (admins:
+  anyone's) at `/api/v1/auth/sessions`. Sessions from before the upgrade end: sign in again.
+- **Inactive accounts** (35 days) are turned off; break-glass accounts can be exempted.
+- **Last sign-in notice:** the previous sign-in and the failed attempts since, after signing in.
+- **Audit record:** a new append-only, SHA-256 hash-chained `audit` table with every decision
+  (mirrored as recorded; undo still marks decisions in place) and every sign-in event, with reason
+  and address. Sign-in fails closed when it cannot be recorded. `GET /api/v1/audit` (filters, CSV)
+  and `GET /api/v1/audit/verify`; Settings → Audit. Optional retention with a verifiable anchor.
+- **Web:** Content-Security-Policy, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+  Permissions-Policy, HSTS over TLS, `no-store` on the API. Session cookie `SameSite=Strict`;
+  `Secure` also behind a TLS proxy (`OT_PUBLIC_TLS=1`).
+- **Security labels:** a fused track (and a group) takes the highest classification of its sources
+  (correlation setting `labels.classification_order`, default UNCLASSIFIED < CUI < CONFIDENTIAL <
+  SECRET < TOP SECRET; U/C/S/TS accepted; an unknown one ranks highest), the union of their
+  restrictions and the intersection of their releasability lists (`NONE` when empty). Before, it
+  took the highest-priority source's label.
+- **NATS TLS:** `OT_NATS_CA` (TLS required), `OT_NATS_CERT` and `OT_NATS_KEY` (mutual TLS).
+- **`OT_AUTH=off`** now warns every minute and shows a red banner.
+- Nodes sharing their profile must all run this version: older ones refuse correlation settings with
+  `labels`.
+
 ## 0.3.4 (alpha), 2026-09-28
 
 ### Non-point contacts

@@ -186,6 +186,8 @@ export interface CorrelationSettings {
   output: OutputFilter
   /** A scorer plugin whose evidence takes the kinematic comparison's place. */
   scorer?: { plugin: string; options?: Record<string, unknown> } | null
+  /** How a fused track's security label is chosen (the highest classification in this order, lowest first). */
+  labels?: { classification_order: string[] }
 }
 
 export interface CorrelationSettingsResponse {
@@ -461,6 +463,16 @@ export interface Me {
   role: Role
   via: 'session' | 'api_token' | 'client_cert' | 'openstare' | 'disabled'
   can_change_password: boolean
+  /** A temporary or expired password: it must change before anything else. */
+  must_change_password?: boolean
+  password_expires_at_ms?: number | null
+  /** Minutes without use that end this session, in ms. */
+  idle_timeout_ms?: number
+  password_policy?: PasswordPolicy
+  /** This session's id. */
+  session?: string
+  /** The previous good sign-in and the failed ones since, as they stood at this sign-in. */
+  last_login?: { previous_at_ms: number | null; failed_attempts: number }
 }
 
 /** What the sign-in page offers. */
@@ -484,6 +496,63 @@ export interface Account {
   created_at_ms: number
   updated_at_ms: number
   last_login_at_ms: number | null
+  password_changed_at_ms: number | null
+  /** A temporary or expired password, to change at the next sign-in. */
+  must_change_password: boolean
+  failed_logins: number
+  /** Locked until then (9223372036854775807: until an admin unlocks it). */
+  locked_until_ms: number | null
+  active_since_ms: number | null
+  /** Why it was turned off automatically (`inactivity`). */
+  disabled_reason: string | null
+}
+
+/** A browser session (one sign-in). */
+export interface SessionRow {
+  id: string
+  user_id: string
+  user_email: string
+  created_at_ms: number
+  last_seen_ms: number
+  expires_at_ms: number
+  ip: string | null
+  user_agent: string | null
+  ended_at_ms: number | null
+  end_reason: string | null
+}
+
+/** A row of the hash-chained audit record. */
+export interface AuditRow {
+  seq: number
+  at_ms: number
+  actor: string
+  op: string
+  outcome: 'success' | 'failure'
+  ip: string | null
+  detail: Record<string, unknown>
+  decision_id?: number
+  hash: string
+}
+
+export interface AuditQuery {
+  from_ms?: number
+  to_ms?: number
+  actor?: string
+  /** Comma-separated operations. */
+  op?: string
+  outcome?: '' | 'success' | 'failure'
+  before_seq?: number
+  limit?: number
+}
+
+export interface AuditVerify {
+  ok: boolean
+  rows: number
+  first_seq: number | null
+  last_seq: number | null
+  head_hash: string
+  anchor?: { seq: number; hash: string }
+  problems: { seq: number; problem: string }[]
 }
 
 export interface ApiTokenRow {
@@ -519,6 +588,41 @@ export interface AuthSettings {
   }
   openstare: { enabled: boolean; api_url: string; login_url: string; role_mapping: RoleMap[] }
   client_certs: { common_name: string; user: string }[]
+  password: PasswordPolicy
+  lockout: { max_failures: number; window_minutes: number; lock_minutes: number }
+  sessions: { idle_minutes: number; admin_idle_minutes: number | null; max_per_account: number }
+  inactivity: { disable_after_days: number; exempt: string[] }
+  audit: { retention_days: number }
+}
+
+/** Rules for local accounts' passwords (Settings → Security). */
+export interface PasswordPolicy {
+  min_length: number
+  require_upper: boolean
+  require_lower: boolean
+  require_digit: boolean
+  require_special: boolean
+  history: number
+  min_changed_chars: number
+  min_age_hours: number
+  max_age_days: number
+}
+
+/** The password rules in words, for a password field's ⓘ. */
+export function describePolicy(p: PasswordPolicy | undefined): string {
+  if (!p) return 'The password rules in Settings → Security apply.'
+  const classes = [
+    p.require_upper && 'an upper-case letter',
+    p.require_lower && 'a lower-case letter',
+    p.require_digit && 'a digit',
+    p.require_special && 'a special character',
+  ].filter(Boolean)
+  return (
+    `At least ${p.min_length} characters` +
+    (classes.length ? `, with ${classes.join(', ')}` : '') +
+    (p.history > 0 ? `; not one of the last ${p.history}` : '') +
+    '.'
+  )
 }
 
 /** Auth settings as read: with what this build and deployment fix. */
@@ -868,6 +972,14 @@ export interface EntityView {
   tracks: { uid: string; track_id: string; state: string; source_id: string; last_seen: string; notices: AttributeNotice[] }[]
 }
 
+/** An audit query as URL parameters (empty ones left out). */
+function auditParams(q: AuditQuery): string {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v))
+  const s = p.toString()
+  return s ? `?${s}` : ''
+}
+
 export const api = {
   status: () => get<ServerStatus>('/status'),
   syncStatus: () => get<SyncStatus>('/sync/status'),
@@ -972,6 +1084,15 @@ export const api = {
   /** Set a new password, or with `null` remove it (single sign-on only). */
   resetPassword: (id: string, password: string | null) => request<unknown>('POST', `/auth/users/${enc(id)}/password`, { password }),
   revokeSessions: (id: string) => request<unknown>('POST', `/auth/users/${enc(id)}/revoke`),
+  unlockUser: (id: string) => request<Account>('POST', `/auth/users/${enc(id)}/unlock`),
+  sessions: (q: { all?: boolean; user?: string } = {}) =>
+    get<{ sessions: SessionRow[]; current: string | null }>(
+      `/auth/sessions${q.all ? '?all=true' : q.user ? `?user=${enc(q.user)}` : ''}`,
+    ),
+  endSession: (id: string) => request<unknown>('DELETE', `/auth/sessions/${enc(id)}`),
+  audit: (q: AuditQuery) => get<{ rows: AuditRow[]; next_before_seq: number | null }>(`/audit${auditParams(q)}`),
+  auditCsvUrl: (q: AuditQuery) => `/api/v1/audit${auditParams({ ...q, limit: undefined })}${auditParams(q) ? '&' : '?'}format=csv`,
+  verifyAudit: () => get<AuditVerify>('/audit/verify'),
   apiTokens: () => get<{ tokens: ApiTokenRow[] }>('/auth/api-tokens').then((r) => r.tokens),
   createApiToken: (t: { name: string; user_id?: string; days?: number }) =>
     request<{ token: string; jti: string; name: string; user: string; expires_at_ms: number }>('POST', '/auth/api-tokens', t),

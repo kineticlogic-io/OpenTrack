@@ -17,9 +17,12 @@ export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(() =>
-    new URLSearchParams(window.location.search).get('sso') === 'failed' ? 'Single sign-on failed. Try again or ask an admin.' : null,
-  )
+  const [error, setError] = useState<string | null>(() => {
+    const q = new URLSearchParams(window.location.search)
+    if (q.get('sso') === 'failed') return 'Single sign-on failed. Try again or ask an admin.'
+    if (q.get('ended') === '1') return 'Your session ended (signed out, idle too long, or ended elsewhere). Sign in again.'
+    return null
+  })
   // Arriving here means signed out (or never signed in): the warning is asked again.
   useEffect(() => {
     try {
@@ -42,7 +45,7 @@ export function LoginPage() {
       await login(email.trim(), password)
       window.location.assign(returnPath())
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) setError('Invalid email or password.')
+      if (err instanceof ApiError && err.status === 401) setError('Invalid email or password, or the account is locked or turned off.')
       else if (err instanceof ApiError && err.status === 429) setError('Too many attempts. Wait a moment and try again.')
       else if (err instanceof ApiError && err.status < 500) setError(err.message)
       else setError('Service unavailable. Try again.')

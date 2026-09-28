@@ -15,9 +15,9 @@ pub mod wire;
 
 pub use geometry::Geometry;
 pub use schema::{
-    Affiliation, Classification, Covariance, Domain, Ellipse, Identifier, Kinematics, Observation,
-    Platform, Position, Provenance, SecurityLabel, TrackState, TrackType, Uncertainty,
-    ValidationError,
+    Affiliation, Classification, Covariance, DEFAULT_CLASSIFICATION_ORDER, Domain, Ellipse,
+    Identifier, Kinematics, Observation, Platform, Position, Provenance, SecurityLabel, TrackState,
+    TrackType, Uncertainty, ValidationError, classification_rank, normalize_classification,
 };
 pub use sidc::{Sidc, SidcStandard};
 pub use track::{

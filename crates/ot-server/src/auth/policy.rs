@@ -28,11 +28,31 @@ const PUBLIC: &[&str] = &[
 ];
 
 /// Paths any signed-in account may call, whatever its role.
-const SIGNED_IN: &[&str] = &["/auth/me", "/auth/password"];
+const SIGNED_IN: &[&str] = &["/auth/me", "/auth/password", "/auth/sessions"];
 
-/// Reads that are an admin's: they show secrets (source credentials) or
-/// accounts.
-const ADMIN_READS: &[&str] = &["/auth/", "/export/config", "/probe"];
+/// Paths under which any signed-in account may call (its own sessions; the
+/// handler lets only an admin touch another account's).
+const SIGNED_IN_UNDER: &[&str] = &["/auth/sessions/"];
+
+/// Reads that are an admin's: they show secrets (source credentials),
+/// accounts or the audit record.
+const ADMIN_READS: &[&str] = &["/auth/", "/export/config", "/probe", "/audit"];
+
+/// What a session that must change its password may still call.
+const BEFORE_PASSWORD_CHANGE: &[&str] = &[
+    "/auth/me",
+    "/auth/password",
+    "/auth/logout",
+    "/auth/public",
+    "/auth/sessions",
+    "/public/banner",
+    "/public/warning-banner",
+];
+
+/// Whether a session that must change its password may call `path`.
+pub fn allowed_before_password_change(path: &str) -> bool {
+    BEFORE_PASSWORD_CHANGE.contains(&path.trim_end_matches('/'))
+}
 
 /// Changes a track manager may make: the picture and its curation.
 const TRACK_MANAGEMENT: &[&str] = &[
@@ -57,7 +77,7 @@ pub fn need(method: &Method, path: &str) -> Need {
     if PUBLIC.contains(&path) {
         return Need::Public;
     }
-    if SIGNED_IN.contains(&path) {
+    if SIGNED_IN.contains(&path) || under(path, SIGNED_IN_UNDER) {
         return Need::SignedIn;
     }
     if under(path, ADMIN_READS) {
@@ -90,6 +110,13 @@ mod tests {
         assert_eq!(n(Method::GET, "/public/banner"), public);
         assert_eq!(n(Method::GET, "/auth/me"), signed_in);
         assert_eq!(n(Method::POST, "/auth/password"), signed_in);
+        assert_eq!(n(Method::GET, "/auth/sessions"), signed_in);
+        assert_eq!(n(Method::DELETE, "/auth/sessions/abc"), signed_in);
+        assert_eq!(n(Method::GET, "/audit"), admin);
+        assert_eq!(n(Method::GET, "/audit/verify"), admin);
+        assert_eq!(n(Method::POST, "/auth/users/u1/unlock"), admin);
+        assert!(allowed_before_password_change("/auth/password"));
+        assert!(!allowed_before_password_change("/tracks"));
         assert_eq!(n(Method::GET, "/auth/users"), admin);
         assert_eq!(n(Method::GET, "/export/config"), admin);
         assert_eq!(n(Method::GET, "/tracks"), viewer);

@@ -12,6 +12,8 @@ COPY ui/package.json ui/package-lock.json ./
 COPY ui/vendor ./vendor
 RUN npm ci --no-audit --no-fund
 COPY ui/ ./
+# The Help page bundles the guides (ui/src/pages/help imports ../docs/guides).
+COPY docs/guides /docs/guides
 RUN npm run build
 
 # The OpenSSL FIPS provider, built from the release validated under CMVP
