@@ -9,6 +9,8 @@
   instead of failing the whole message (#30).
 - Pipeline designer: the Decode stage shows a protobuf or plugin codec read-only (it is chosen on the
   Transport tab) instead of letting a format replace it (#3).
+- Transport form: HTTP poll method and body, the byte order of length framing, the length field's
+  adjustment and the gRPC server's keepalive (#6).
 
 ## 0.4.0 (alpha), 2026-09-28
 
