@@ -7,6 +7,8 @@
   prefix; example in `docs/examples/sapient.json`.
 - SAPIENT codec: enum values inside map fields come out as names; a NaN or infinite float is `null`
   instead of failing the whole message (#30).
+- Pipeline designer: the Decode stage shows a protobuf or plugin codec read-only (it is chosen on the
+  Transport tab) instead of letting a format replace it (#3).
 
 ## 0.4.0 (alpha), 2026-09-28
 
