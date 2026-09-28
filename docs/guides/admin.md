@@ -245,7 +245,7 @@ pipelines").
 | `OT_ENGINE_CONSUMER` | `engine-1` | The engine's consumer name on the observation streams. |
 | `OT_CONFIRM_AFTER` | `3` | Reports a new system track needs before it is confirmed (at least 1). A source's own **Confirm after** (in its publish stage) overrides it for that source's tracks. |
 | `OT_DROP_AFTER_HOURS` | `6` | Hours without a report before a system track is dropped and deleted downstream. |
-| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones apply and this is ignored. |
+| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones win and this is ignored; the engine logs a warning at start when it is set and the saved approach differs. |
 | `OT_WRITER_CONSUMER` | `writer-1` | The writer's consumer name; unique per writer. |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | At most one publication of a track this often. Significant changes (identity, classification, state) go at once. |
 

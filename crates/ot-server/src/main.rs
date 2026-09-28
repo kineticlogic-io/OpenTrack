@@ -208,14 +208,10 @@ struct EngineArgs {
     /// How tracks with no shared identifier pair until an operator saves
     /// correlation settings: identifiers (never), kinematics, or
     /// kinematics-metadata (kinematics, vetoed by conflicting identifiers or
-    /// domains).
-    #[arg(
-        long,
-        env = "OT_CORRELATION",
-        value_enum,
-        default_value = "kinematics-metadata"
-    )]
-    correlation: correlate::Approach,
+    /// domains; the default). Saved settings win; a start with a different
+    /// one saved logs a warning.
+    #[arg(long, env = "OT_CORRELATION", value_enum)]
+    correlation: Option<correlate::Approach>,
 }
 
 impl EngineArgs {
@@ -225,9 +221,10 @@ impl EngineArgs {
             confirm_after: self.confirm_after.max(1),
             drop_after: Duration::from_secs_f64(self.drop_after_hours.max(0.01) * 3600.0),
             correlation: correlate::CorrelationSettings {
-                approach: self.correlation,
+                approach: self.correlation.unwrap_or_default(),
                 ..Default::default()
             },
+            correlation_asked: self.correlation,
             ..Default::default()
         }
     }

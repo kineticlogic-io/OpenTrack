@@ -7,6 +7,8 @@
   prefix; example in `docs/examples/sapient.json`.
 - **`/api/v1/status` answers 503** (same body) when SQLite, Redis or NATS is down, so a monitor
   that reads only the status code sees it; `/healthz` stays liveness only (#7).
+- **`OT_CORRELATION` overridden by saved correlation settings** now says so: the engine logs a
+  warning at start when it is set and the saved approach differs (#14).
 
 ## 0.4.0 (alpha), 2026-09-28
 
