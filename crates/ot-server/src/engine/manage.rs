@@ -282,14 +282,25 @@ impl Engine {
                 .iter()
                 .filter_map(|m| self.tracks.get(m))
                 .collect();
-            let (view, state) = group_view(&s.spec, &members, Some(&s.track));
+            let (mut view, state) = group_view(&s.spec, &members, Some(&s.track));
+            // A group is marked with the highest classification of its
+            // members (without live members, as it was).
+            view.security = if members.is_empty() {
+                s.track.view.security.clone()
+            } else {
+                self.settings
+                    .correlation
+                    .labels
+                    .combine(members.iter().filter_map(|t| t.view.security.as_ref()))
+            };
             let moved = view.position != s.track.view.position
                 || view.kinematics != s.track.view.kinematics
                 || state != s.track.state;
             let s = self.groups.get_mut(&g).expect("listed above");
             let changed = moved
                 || view.name != s.track.view.name
-                || view.classification != s.track.view.classification;
+                || view.classification != s.track.view.classification
+                || view.security != s.track.view.security;
             s.track.view = view;
             s.track.state = state;
             s.track.last_seen = s.track.view.observed_at;

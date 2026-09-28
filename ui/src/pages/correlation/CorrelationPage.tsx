@@ -5,6 +5,7 @@ import { SUGGESTIONS_CHANGED } from '../../lib/pendingSuggestions'
 import { api, type CorrelationSettings, type DecisionRow, type Suggestion, type SuggestionTrack } from '../../api/client'
 import { errorMessage, fmtTime } from '../../lib/format'
 import { SettingsForm } from './SettingsForm'
+import { InfoTip } from '../../components/InfoTip'
 import { useCan } from '../../auth/context'
 
 const REFRESH_MS = 5000
@@ -200,7 +201,17 @@ export default function CorrelationPage() {
           title="Suggestions"
           badge={status === 'open' && open ? String(open) : undefined}
           persistKey="ot.panel.suggestions"
-          titleActions={<FieldSelect ariaLabel="Suggestion status" fields={STATUSES} value={status} onChange={(v) => setStatus(v ?? 'open')} style={{ width: 120 }} />}
+          titleActions={
+            <div className="title-tools">
+              <FieldSelect ariaLabel="Suggestion status" fields={STATUSES} value={status} onChange={(v) => setStatus(v ?? 'open')} style={{ width: 120 }} />
+              <InfoTip label="Suggestions">
+                What the engine proposes and waits on an operator for. PAIR: in suggest mode, two tracks whose motion agrees; accept pairs them, reject records them as different objects so they are not proposed again. SPLIT: a source
+                track stopped agreeing with its track; accept splits it off, reject keeps it there and silences the proposal for 30 minutes.
+                Evidence is the engine&apos;s reason. The filter shows open, accepted, rejected or expired suggestions; expired ones concerned a
+                track that no longer exists.
+              </InfoTip>
+            </div>
+          }
         >
           <div className="panel-body">
             <DataTable
@@ -222,7 +233,15 @@ export default function CorrelationPage() {
         <CollapsiblePanel
           title="Settings"
           persistKey="ot.panel.correlationSettings"
-          titleActions={version ? <span className="mono muted">{version}</span> : undefined}
+          titleActions={
+            <div className="title-tools">
+              {version && <span className="mono muted">{version}</span>}
+              <InfoTip label="Correlation settings">
+                How the engine pairs, proposes and splits tracks, and what it publishes; the code is the engine version. Saved settings apply
+                within seconds and are recorded as a decision. Defaults fills the form with the built-in values; nothing changes until you save.
+              </InfoTip>
+            </div>
+          }
           actions={
             <>
               <Button
@@ -241,7 +260,18 @@ export default function CorrelationPage() {
           <div className="panel-body correlation-settings">{draft ? <SettingsForm value={draft} onChange={setDraft} /> : <span className="muted">LOADING…</span>}</div>
         </CollapsiblePanel>
       </div>
-      <CollapsiblePanel title="Decisions" persistKey="ot.panel.correlationDecisions">
+      <CollapsiblePanel
+        title="Decisions"
+        persistKey="ot.panel.correlationDecisions"
+        titleActions={
+          <InfoTip label="Decisions">
+            The latest 200 correlation decisions, by the engine or an operator; click one for its evidence. pair: a source track joined a
+            track. merge: two tracks became one. split: a source track left its track. do_not_pair: tracks recorded as different objects.
+            reject_split: a proposed split refused. end_source_track: its source ended it. retire_system_track: every source track of a
+            track ended. correlation_settings: the settings were saved.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
           <DataTable
             aria-label="Correlation decisions"

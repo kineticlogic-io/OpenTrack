@@ -256,7 +256,14 @@ export function PluginsPanel() {
       header: 'Runs as',
       render: (p) =>
         p.runtime === 'wasm' ? (
-          <span title={p.sha256 ?? undefined}>WebAssembly {size(p.size)}</span>
+          <div className="stack" style={{ gap: 0 }}>
+            <span>WebAssembly {size(p.size)}</span>
+            {p.sha256 && (
+              <span className="mono muted small" title={p.sha256}>
+                sha256 {p.sha256.slice(0, 12)}…
+              </span>
+            )}
+          </div>
         ) : p.runtime === 'external' ? (
           <span className="mono">{p.address}</span>
         ) : (
@@ -268,9 +275,16 @@ export function PluginsPanel() {
       key: 'status',
       header: 'Status',
       render: (p) => (
-        <Badge size="sm" color={STATUS[p.status]} title={p.error}>
-          {p.status}
-        </Badge>
+        <div className="stack" style={{ gap: 0 }}>
+          <Badge size="sm" color={STATUS[p.status]}>
+            {p.status}
+          </Badge>
+          {p.error && (
+            <span className="error-text small" style={{ whiteSpace: 'normal' }}>
+              {p.error}
+            </span>
+          )}
+        </div>
       ),
       width: 90,
     },
@@ -305,6 +319,12 @@ export function PluginsPanel() {
           Codecs, trackers and pairing scorers of your own, beside the built-in ones. A WebAssembly plugin runs sandboxed inside OpenTrack with only what
           you grant it; an external one is a program of its own that OpenTrack connects to. Sources pick codec and tracker plugins in their pipeline;
           correlation settings pick a scorer. Write them with the SDKs in sdk/ (Rust, Python).
+          <br />
+          <br />
+          Provides: what it can be used as (codec, tracker, scorer). Runs as: built in, WebAssembly (with its size and the start of its SHA-256
+          fingerprint) or the address of an external plugin. Status: loaded, loading, disabled, or error with the reason. The switch enables
+          it: off unloads it, so a source using it cannot start until it is back on, and a correlation scorer falls back to the kinematic score.
+          ▶ checks it loads and opens; the shield edits its grants.
         </InfoTip>
       }
       actions={

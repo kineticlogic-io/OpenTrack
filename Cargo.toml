@@ -5,10 +5,12 @@ members = ["crates/*"]
 exclude = ["third_party", "sdk"]
 
 [workspace.package]
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 repository = "https://github.com/phornstein/OpenTrack"
 rust-version = "1.90"
+# Private: never published to a registry.
+publish = false
 
 [workspace.dependencies]
 ot-core = { path = "crates/ot-core" }
@@ -19,7 +21,8 @@ ot-codec-stanag4607 = { path = "crates/ot-codec-stanag4607" }
 ot-plugin = { path = "crates/ot-plugin" }
 ot-sync = { path = "crates/ot-sync" }
 anyhow = "1"
-async-nats = "0.50"
+# FIPS: aws-lc (validated module) instead of ring; the default features minus `ring`.
+async-nats = { version = "0.50", default-features = false, features = ["fips", "server_2_10", "server_2_11", "server_2_12", "server_2_14", "service", "jetstream", "nkeys", "crypto", "object-store", "kv", "websockets", "nuid"] }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 quick-xml = "0.42"
@@ -30,14 +33,14 @@ rust_xlsxwriter = "0.99"
 regex = "1"
 rumqttc = "0.25"
 # Named so the process can pick its TLS crypto provider (see ot-server main).
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["fips", "std"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["fips"] }
 # Default trust for feed TLS with a client certificate: the system roots.
 rustls-native-certs = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
@@ -46,7 +49,8 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "streams", "script"] }
+# `rediss://` URLs: TLS through rustls (the process's FIPS provider), system roots.
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "streams", "script", "tokio-rustls-comp", "tls-rustls"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -62,10 +66,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 wasmtime = { version = "49", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std", "parallel-compilation", "cache"] }
 wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }
 base64 = "0.22"
-sha2 = "0.10"
 # Sign-in: password hashes, session tokens, account ids.
+# Only to verify passwords hashed before 0.4.0; they are rehashed with
+# PBKDF2 at the next sign-in.
 argon2 = { version = "0.5.3", features = ["std"] }
-jsonwebtoken = { version = "10.4", features = ["rust_crypto"] }
+# All cryptography: the AWS-LC FIPS 140-3 validated module.
+aws-lc-rs = { version = "1", features = ["fips"] }
+jsonwebtoken = { version = "10.4", features = ["aws_lc_rs"] }
 uuid = { version = "1", features = ["v4"] }
 # SAML single sign-on (ot-server's `saml` feature): OpenStare's fork of
 # samael 0.0.20, which builds against libxmlsec1 1.2.41 and on arm64.
@@ -86,3 +93,9 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
+
+# rumqttc 0.25.1 with rustls-webpki's `ring` default turned off (FIPS: no
+# crypto outside AWS-LC). Only that line differs from the published crate.
+[patch.crates-io]
+rumqttc = { path = "third_party/rumqttc" }
+

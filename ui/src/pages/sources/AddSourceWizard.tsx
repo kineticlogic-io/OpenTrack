@@ -3,6 +3,7 @@ import { TbArrowLeft, TbArrowRight, TbCheck, TbRadar, TbX } from 'react-icons/tb
 import { Badge, Button, CollapsiblePanel, DataTable, Input, Label, Stepper, Toggle, useToast, type DataTableColumn, type StepStatus } from 'staresdk'
 import { CodeEditor } from 'staresdk/code-editor'
 import { api, type FieldStat, type ProbeResult, type SourceSpec } from '../../api/client'
+import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
 import { MappingStudio } from './MappingStudio'
 import { TransportForm } from './TransportForm'
@@ -153,9 +154,15 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
         <div className="stack" style={{ gap: 10 }}>
           <div className="form-grid">
             <div className="field">
-              <Label htmlFor="src-id" size="sm">
-                Id
-              </Label>
+              <div className="row-label">
+                <Label htmlFor="src-id" size="sm">
+                  Id
+                </Label>
+                <InfoTip label="Id">
+                  The source&apos;s permanent key: up to 64 of a-z, 0-9, - and _. Its tracks, history and samples are filed under it, so it
+                  cannot be changed after saving.
+                </InfoTip>
+              </div>
               <Input
                 id="src-id"
                 value={spec.id}
@@ -167,9 +174,12 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
               />
             </div>
             <div className="field">
-              <Label htmlFor="src-name" size="sm">
-                Name
-              </Label>
+              <div className="row-label">
+                <Label htmlFor="src-name" size="sm">
+                  Name
+                </Label>
+                <InfoTip label="Name">What operators see for this source in lists and track details. You can rename it at any time.</InfoTip>
+              </div>
               <Input id="src-name" value={spec.name} onChange={(e) => setSpec({ ...spec, name: e.target.value })} autoComplete="off" />
             </div>
           </div>
@@ -187,15 +197,21 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
         <div className="stack" style={{ gap: 10 }}>
           <div className="row">
             <div className="field" style={{ width: 110 }}>
-              <Label htmlFor="max-frames" size="sm">
-                Max frames
-              </Label>
+              <div className="row-label">
+                <Label htmlFor="max-frames" size="sm">
+                  Max frames
+                </Label>
+                <InfoTip label="Max frames">The probe stops after this many frames (messages) arrive, or at Max seconds, whichever comes first. 1 to 2000.</InfoTip>
+              </div>
               <Input id="max-frames" type="number" value={maxFrames} onChange={(e) => setMaxFrames(Number(e.target.value) || 1)} />
             </div>
             <div className="field" style={{ width: 110 }}>
-              <Label htmlFor="max-secs" size="sm">
-                Max seconds
-              </Label>
+              <div className="row-label">
+                <Label htmlFor="max-secs" size="sm">
+                  Max seconds
+                </Label>
+                <InfoTip label="Max seconds">The longest the probe listens, in seconds, if Max frames has not arrived first. 1 to 120.</InfoTip>
+              </div>
               <Input id="max-secs" type="number" value={maxSecs} onChange={(e) => setMaxSecs(Number(e.target.value) || 1)} />
             </div>
             <Button size="sm" icon={<TbRadar />} onClick={runProbe} disabled={probing} style={{ alignSelf: 'end' }}>
@@ -223,6 +239,11 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
                 <Badge color="grey" size="sm">
                   {probe.seconds}s
                 </Badge>
+                <InfoTip label="Probe results">
+                  Frames: messages received. Records: what the codec decoded from them (one frame can hold many; at most 5000 are analysed).
+                  Decode errors: frames the codec could not read. Then the time the probe listened. Up to 200 captured frames are kept for the
+                  mapping preview.
+                </InfoTip>
                 {probe.suggested_records_path && (
                   <span className="muted">
                     records found under <span className="mono">{probe.suggested_records_path}</span>
@@ -231,6 +252,13 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
               </div>
               {probe.link_error && <div className="error-text">{probe.link_error}</div>}
               {probe.last_decode_error && <div className="error-text">{probe.last_decode_error}</div>}
+              <h3 className="subhead">
+                Inferred fields
+                <InfoTip label="Inferred fields">
+                  Every leaf field seen in the decoded records; [*] means each element of an array. Present: the share of records with a non-null
+                  value. Distinct: different values seen; a + means counting stopped at 1000.
+                </InfoTip>
+              </h3>
               <DataTable
                 aria-label="Inferred fields"
                 columns={FIELD_COLUMNS}

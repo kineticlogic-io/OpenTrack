@@ -9,6 +9,14 @@ services:
     network_mode: host
     restart: unless-stopped
     command: ["all"]
+    # Hardening (docs/security/hardening.md): nothing but /data and scratch
+    # space is writable, no Linux capabilities, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/opentrack
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     env_file: .env
     environment:
       OT_BIND: ${OT_BIND:-0.0.0.0:8090}

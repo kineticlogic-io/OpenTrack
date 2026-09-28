@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { TbDownload, TbPlus, TbTrash } from 'react-icons/tb'
 import { Button, Modal, SaveButton, useToast } from 'staresdk'
 import { api, type SchemaOverview, type SourceSpec } from '../../../api/client'
+import { InfoTip } from '../../../components/InfoTip'
 import { errorMessage } from '../../../lib/format'
 import { pipelineStages, DEFAULT_LINKS } from '../../../lib/pipeline'
 import { usePreview } from '../../../lib/usePreview'
@@ -53,6 +54,21 @@ const OPTIONAL: { id: string; label: string; add: (p: Pipeline) => Pipeline; rem
     remove: (p) => ({ ...p, throttle: undefined }),
   },
 ]
+
+/** What each stage does, for the ⓘ beside its heading. */
+const STAGE_HELP: Record<string, string> = {
+  transport: 'Where frames come from. Set on the source’s Transport tab.',
+  decode: 'Turns each frame into records.',
+  reject: 'Drops raw records before mapping, each rule with a reason counted in the source’s metrics.',
+  map: 'Turns records into observations: the track key, identifiers and OpenTrack fields each rule takes from the record.',
+  join: 'Keeps the identity fields that static rules report per track key, and fills them into later observations with the same key.',
+  registry: 'Finds each track’s entity by its identifiers, grades the match by broadcast name, and at a corroborated grade passes fields between entity and track.',
+  affiliation: 'Sets affiliation from a country code, by the country lists.',
+  filter: 'Keeps or drops observations after mapping and the entity stage; dropped ones are counted as filtered.',
+  tracker: 'Forms tracks from detections (plots) before they leave the source.',
+  throttle: 'Limits how often each source track is passed on, by time and distance moved.',
+  publish: 'What the source’s observations are, which decides how correlation takes them, and the label they carry.',
+}
 
 const present = (p: Pipeline, id: string) =>
   id === 'reject' ? ((p.mapping.reject as unknown[]) ?? []).length > 0 : id === 'registry' ? p.registry !== undefined : p[id] !== undefined
@@ -210,6 +226,13 @@ export function PipelineDesigner({
             <PipelineFlow stages={stages} selected={stage.id} onSelect={setStageId} />
           </Suspense>
           <div className="counts">
+            {OPTIONAL.some((o) => !present(p, o.id)) && (
+              <InfoTip label="Add a stage">
+                Add an optional stage. Reject: drop raw records by condition, with a reason. Entity links: choose how tracks find their entity and which
+                fields flow each way (without it, defaults apply). Affiliation: set affiliation from a country code. Filter: keep or drop observations by
+                condition. Tracker: form tracks from detections. Throttle: pass each track on less often.
+              </InfoTip>
+            )}
             {OPTIONAL.filter((o) => !present(p, o.id)).map((o) => (
               <Button
                 key={o.id}
@@ -228,7 +251,10 @@ export function PipelineDesigner({
         </div>
         <div className="stack" style={{ minWidth: 0 }}>
           <div className="value-row">
-            <h3 className="subhead">{stage.title}</h3>
+            <h3 className="subhead">
+              {stage.title}
+              {STAGE_HELP[stage.id] && <InfoTip label={stage.title}>{STAGE_HELP[stage.id]}</InfoTip>}
+            </h3>
             <span className="spacer" />
             {optional && present(p, optional.id) && (
               <Button
@@ -243,18 +269,35 @@ export function PipelineDesigner({
                 {optional.id === 'registry' ? 'Use defaults' : 'Remove stage'}
               </Button>
             )}
+            {optional && present(p, optional.id) && (
+              <InfoTip label={optional.id === 'registry' ? 'Use defaults' : 'Remove stage'}>
+                {optional.id === 'registry'
+                  ? 'Drop these settings: the entity stage still runs, with the default links (the entity’s OTH-GOLD minimum populates the track) at grades exact, hull, name and generic.'
+                  : 'Take this stage out of the pipeline. Nothing changes on the running source until you save.'}
+              </InfoTip>
+            )}
           </div>
           {error && <div className="error-text">{error}</div>}
           {editor}
         </div>
         <div className="stack designer-preview">
           <div className="value-row">
-            <h3 className="subhead">Live preview</h3>
+            <h3 className="subhead">
+              Live preview
+              <InfoTip label="Live preview">
+                A dry run of the pipeline as edited (not yet saved) over this source&apos;s stored samples, updated as you change it. Nothing is
+                published.
+              </InfoTip>
+            </h3>
             <span className="muted">{running ? 'running…' : `stored samples of ${sourceId}`}</span>
             <span className="spacer" />
             <Button size="sm" variant="secondary" icon={<TbDownload />} disabled={capturing} onClick={capture}>
               {capturing ? 'Capturing…' : 'Capture samples'}
             </Button>
+            <InfoTip label="Capture samples">
+              Connect with the transport as edited and take up to 20 frames or 15 s of the live feed, whichever comes first. They replace the
+              source&apos;s stored samples.
+            </InfoTip>
           </div>
 
           {previewError && <div className="error-text">{previewError}</div>}

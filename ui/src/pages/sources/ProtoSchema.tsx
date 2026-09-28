@@ -125,7 +125,12 @@ export function ProtoSchema({
       {messages.length > 0 && (
         <div className="form-grid">
           <div className="field">
-            <Label size="sm">Message</Label>
+            <div className="row-label">
+              <Label size="sm">Message</Label>
+              <InfoTip label="Message">
+                The message type each frame holds, as declared in the .proto files. With gRPC it must match the methods: what a called method returns, or what producers send to OpenTrack.
+              </InfoTip>
+            </div>
             <FieldSelect
               ariaLabel="Message"
               fields={messages.map((m) => ({ name: m.name }))}
@@ -139,8 +144,13 @@ export function ProtoSchema({
             />
           </div>
           {lists.length > 0 && (
-            <div className="field" title="The repeated field holding one record each; unset: the message is one record.">
-              <Label size="sm">Records</Label>
+            <div className="field">
+              <div className="row-label">
+                <Label size="sm">Records</Label>
+                <InfoTip label="Records">
+                  A repeated field of the message whose elements are one record each. The whole message: each frame is one record.
+                </InfoTip>
+              </div>
               <FieldSelect
                 ariaLabel="Records"
                 fields={[{ name: '(the whole message)' }, ...lists.map((f) => ({ name: f.name }))]}

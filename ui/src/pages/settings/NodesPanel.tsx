@@ -117,7 +117,17 @@ export function NodesPanel({
           <Toggle value={sync.share_profile} onChange={(share_profile) => set({ share_profile })} aria-label="Share the profile" />
         </Row>
         {sync.peers.length > 0 && (
-          <DataTable aria-label="Trusted nodes" rows={rows} columns={columns} rowKey={(r) => r.site} density="compact" />
+          <>
+            <h4 className="subhead">
+              Trusted nodes
+              <InfoTip label="Trusted nodes">
+                Link: heard if a message from the node arrived in the last 30 s, silent if longer ago, never heard if none since this node
+                started. Its decisions held: the highest sequence number of that node&apos;s track-management decisions stored here (AAA:12
+                means 12); gaps below it are asked for again.
+              </InfoTip>
+            </h4>
+            <DataTable aria-label="Trusted nodes" rows={rows} columns={columns} rowKey={(r) => r.site} density="compact" />
+          </>
         )}
         <div className="num-row muted">
           <span>This node reports {e?.reporting ?? 0} tracks to the others and holds {e?.from_other_nodes ?? 0} only they see.</span>

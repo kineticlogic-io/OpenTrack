@@ -4,6 +4,7 @@ description = "OpenTrack server: control plane API, NATS writer and operational 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "opentrack"
@@ -20,6 +21,7 @@ anyhow.workspace = true
 argon2.workspace = true
 jsonwebtoken.workspace = true
 uuid.workspace = true
+aws-lc-rs.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
 hyper.workspace = true
@@ -29,7 +31,7 @@ tokio-rustls.workspace = true
 samael = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
+base64.workspace = true
 bytes.workspace = true
 calamine.workspace = true
 csv.workspace = true
@@ -49,7 +51,7 @@ tracing-subscriber.workspace = true
 # SAML single sign-on; needs libxmlsec1. Leave it out for a lean node
 # (`--no-default-features`): accounts, API tokens and OpenStare sign-in stay.
 default = ["saml"]
-saml = ["dep:samael", "dep:flate2", "dep:url", "dep:base64"]
+saml = ["dep:samael", "dep:flate2", "dep:url"]
 
 [dev-dependencies]
 http-body-util = "0.1"

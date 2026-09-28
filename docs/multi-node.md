@@ -139,6 +139,8 @@ When decisions conflict, rules settle them without coordination:
 
 A decision still names who made it. The Management log shows each one with its site. Undo keeps working as it does now: the log says what it reverses, and a later decision by a person on the same tracks blocks it. That check now looks at decisions from every node.
 
+Accounts, sessions and the audit record stay per node. A user signs in to each node on its own: its session (idle timeout, limit per account, lockout counts) is known only where it began, and ends there. Each node keeps its own hash-chained audit record of what it recorded, replicated decisions included, and verifies only its own chain.
+
 Any node's track managers decide for every node. Roles don't need to match across nodes: a node applies a replicated decision if the deciding node's role for that person allowed it. An admin can mark a node **receive-only**: it applies other nodes' decisions but doesn't accept track management locally. That suits a drone with no operator.
 
 ## Transport: OpenTrack owns the data, not the network

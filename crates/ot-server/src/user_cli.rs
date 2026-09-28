@@ -33,8 +33,12 @@ pub enum UserCommand {
         role: Role,
     },
     /// Set an account's password from the first line of standard input;
-    /// its sessions end.
+    /// its sessions end. It is a temporary one, changed at the next sign-in.
     Passwd {
+        email: String,
+    },
+    /// Unlock an account locked by failed sign-ins.
+    Unlock {
         email: String,
     },
     /// Turn an account off (its sessions and tokens stop working) or on.
@@ -63,11 +67,13 @@ fn parse_role(s: &str) -> Result<Role, String> {
     Role::parse(s).ok_or_else(|| format!("{s}: viewer, track_manager or admin"))
 }
 
-fn stdin_password() -> anyhow::Result<String> {
+/// A password from standard input, checked against the saved policy.
+fn stdin_password(db: &ot_store::Db) -> anyhow::Result<String> {
+    let settings: auth::AuthSettings = serde_json::from_value(db.auth_settings()?)?;
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
     let p = line.trim_end_matches(['\r', '\n']).to_owned();
-    auth::check_password(&p).map_err(anyhow::Error::msg)?;
+    settings.password.check(&p).map_err(anyhow::Error::msg)?;
     Ok(p)
 }
 
@@ -81,13 +87,19 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
     };
     match cmd {
         UserCommand::List => {
+            let now = ot_store::sqlite::now_ms();
             for u in db.users()? {
                 println!(
-                    "{:<32} {:<14} {:<6} {}{}",
+                    "{:<32} {:<14} {:<6} {}{}{}{}",
                     u.email,
                     u.role,
                     u.origin,
                     if u.active { "active" } else { "off" },
+                    match u.disabled_reason.as_deref() {
+                        Some(r) if !u.active => format!(" ({r})"),
+                        _ => String::new(),
+                    },
+                    if u.locked(now) { ", locked" } else { "" },
                     if u.has_password { "" } else { ", no password" },
                 );
             }
@@ -99,11 +111,11 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
             password_stdin,
         } => {
             let hash = if password_stdin {
-                Some(auth::hash_password(&stdin_password()?)?)
+                Some(auth::hash_password(&stdin_password(&db)?)?)
             } else {
                 None
             };
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = crate::fips::uuid_v4();
             let u = db.create_user(&ot_store::NewUser {
                 id: &id,
                 email: &email,
@@ -112,6 +124,9 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
                 password_hash: hash.as_deref(),
                 origin: "local",
             })?;
+            if hash.is_some() {
+                db.set_must_change_password(&id, true)?;
+            }
             db.record(&ot_store::Decision {
                 after: Some(json!(u)),
                 ..ot_store::Decision::new(ACTOR, "create_user")
@@ -130,14 +145,27 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
         }
         UserCommand::Passwd { email } => {
             let u = find(&db, &email)?;
-            let hash = auth::hash_password(&stdin_password()?)?;
-            db.set_password_hash(&u.id, Some(&hash))?;
+            let hash = auth::hash_password(&stdin_password(&db)?)?;
+            db.set_password(&u.id, Some(&hash), true, 24)?;
             db.revoke_user_tokens(&u.id)?;
             db.record(&ot_store::Decision {
-                evidence: json!({ "user": u.id }),
+                evidence: json!({ "user": u.id, "temporary": true }),
                 ..ot_store::Decision::new(ACTOR, "reset_password")
             })?;
-            println!("password set for {email}; its sessions ended");
+            println!(
+                "password set for {email} (to be changed at its next sign-in); its sessions ended"
+            );
+        }
+        UserCommand::Unlock { email } => {
+            let u = find(&db, &email)?;
+            let after = db.unlock_user(&u.id)?;
+            db.record(&ot_store::Decision {
+                evidence: json!({ "user": u.id, "email": u.email }),
+                before: Some(json!(u)),
+                after: Some(json!(after)),
+                ..ot_store::Decision::new(ACTOR, "unlock_user")
+            })?;
+            println!("{email} is unlocked");
         }
         UserCommand::Disable { email } => {
             let u = find(&db, &email)?;

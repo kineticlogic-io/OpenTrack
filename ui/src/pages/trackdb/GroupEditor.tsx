@@ -224,6 +224,7 @@ export function GroupEditor({
           {row(
             'Domain',
             <FieldSelect ariaLabel="Group domain" allowNone fields={DOMAINS.map((name) => ({ name }))} value={spec.domain ?? null} onChange={(v) => set({ domain: v })} style={{ width: '100%' }} />,
+            "The group track's domain, for its force code and symbol. Starts as the members' most common known domain; left empty, the server uses that.",
           )}
           {row(
             'Affiliation',
@@ -234,6 +235,7 @@ export function GroupEditor({
               onChange={(v) => set({ affiliation: v ?? 'unknown' })}
               style={{ width: '100%' }}
             />,
+            "The group track's affiliation, for its force code and symbol colour. Starts as the members' most common known affiliation; it does not change the members'.",
           )}
         </div>
 

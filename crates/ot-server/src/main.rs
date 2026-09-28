@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 
 mod api;
+mod audit_api;
 mod auth;
 mod bridge;
 mod config;
@@ -17,6 +18,7 @@ mod correlate;
 mod correlation_api;
 mod decisions_api;
 mod engine;
+mod fips;
 mod history_api;
 mod https;
 mod link;
@@ -94,6 +96,14 @@ enum Command {
     /// Manage accounts (for a node without the UI).
     #[command(subcommand)]
     User(user_cli::UserCommand),
+    /// Exit 0 when this node's control plane answers (the image's
+    /// HEALTHCHECK): `/healthz` over plain HTTP, a TCP connection under TLS.
+    Health {
+        #[arg(long, env = "OT_BIND", default_value = "0.0.0.0:8090")]
+        bind: SocketAddr,
+        #[arg(long, env = "OT_TLS_CERT")]
+        tls_cert: Option<PathBuf>,
+    },
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
     Retire {
@@ -156,6 +166,22 @@ struct ServeArgs {
     /// accounts Settings → Security maps them to.
     #[arg(long, env = "OT_TLS_CLIENT_CA", requires = "tls_cert")]
     tls_client_ca: Option<String>,
+    /// With a client CA: certificate revocation lists (PEM or DER files, or
+    /// directories of them; comma separated). A revoked client certificate,
+    /// one no list covers, or one whose list has expired is refused. The
+    /// lists are reloaded when they change.
+    #[arg(
+        long,
+        env = "OT_TLS_CLIENT_CRL",
+        requires = "tls_client_ca",
+        value_delimiter = ','
+    )]
+    tls_client_crl: Vec<String>,
+    /// Browsers reach this server over TLS that a proxy in front of it ends
+    /// (`1`): session cookies are `Secure` and HSTS is sent, as when this
+    /// server serves TLS itself.
+    #[arg(long, env = "OT_PUBLIC_TLS", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
+    public_tls: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -210,8 +236,12 @@ impl EngineArgs {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::mark_start();
-    install_crypto();
     init_tracing();
+    // FIPS 140-3: the validated module, or nothing runs.
+    fips::init()?;
+    tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
+    #[cfg(feature = "saml")]
+    auth::openssl_fips();
     let cli = Cli::parse();
     let common = cli.common;
     match cli.command {
@@ -267,6 +297,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Command::Health { bind, tls_cert } => health(bind, tls_cert.is_some()),
         Command::Retire { uid, reason } => {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(
@@ -306,7 +337,9 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
     plugins::start(&common).await;
     let disabled = args.auth == "off";
     if disabled {
-        tracing::warn!("sign-in is turned off (OT_AUTH=off): every caller is an admin");
+        tracing::warn!(
+            "AUTHENTICATION IS DISABLED (OT_AUTH=off): every caller is an admin (repeated every minute)"
+        );
     } else {
         auth::bootstrap_admin(
             &common,
@@ -325,7 +358,12 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         auth: Arc::new(auth::Auth::new(
             secret,
             disabled,
-            args.tls_cert.is_some(),
+            args.tls_cert.is_some()
+                || args.public_tls
+                || args
+                    .public_url
+                    .as_deref()
+                    .is_some_and(|u| u.starts_with("https://")),
             args.public_url.clone(),
             auth_settings,
         )),
@@ -335,15 +373,24 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
     tokio::spawn(metrics::run_sampler(state.clone()));
+    tokio::spawn(auth::maintenance::run(state.clone()));
     let app = control::router(state, Some(args.ui_dir));
     if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
-        let acceptor = ot_source::tls::ServerTls {
+        let tls = ot_source::tls::ServerTls {
             cert_file: cert,
             key_file: key,
             client_ca_file: args.tls_client_ca,
             client_cert_optional: true,
+            client_crl_files: args
+                .tls_client_crl
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect(),
+        };
+        let acceptor = https::Acceptor::new(tls.acceptor()?);
+        if !tls.client_crl_files.is_empty() {
+            tokio::spawn(https::reload_on_crl_change(tls, acceptor.clone()));
         }
-        .acceptor()?;
         tracing::info!(addr = %args.bind, "control plane listening (TLS)");
         return https::serve(listener, app, acceptor, shutdown_signal()).await;
     }
@@ -403,12 +450,27 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
-/// Pick the TLS crypto provider for the whole process. Several dependencies
-/// (WebSocket, HTTP, MQTT) use rustls and together enable more than one
-/// provider, so rustls cannot choose one itself and would panic on the first
-/// TLS connection.
-fn install_crypto() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+fn health(bind: SocketAddr, tls: bool) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    let mut addr = bind;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(if addr.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    let t = std::time::Duration::from_secs(3);
+    let mut c = std::net::TcpStream::connect_timeout(&addr, t)?;
+    if tls {
+        return Ok(());
+    }
+    c.set_read_timeout(Some(t))?;
+    c.write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")?;
+    let mut head = [0u8; 12];
+    c.read_exact(&mut head)?;
+    anyhow::ensure!(head.ends_with(b" 200"), "/healthz did not answer 200");
+    Ok(())
 }
 
 fn init_tracing() {
@@ -426,7 +488,7 @@ fn init_tracing() {
 mod tests {
     #[test]
     fn tls_clients_can_be_built_after_install() {
-        super::install_crypto();
+        crate::fips::init().unwrap();
         // What wss://, https:// and mqtts:// connections do first.
         let _ = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())

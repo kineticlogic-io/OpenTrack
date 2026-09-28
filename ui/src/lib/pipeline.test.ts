@@ -77,7 +77,7 @@ describe('destinations', () => {
     } as unknown as SourceSpec
     const rows = fieldMap(spec, schema)
     expect(rows.map((r) => r.target)).toEqual(['track key', 'identifier icao', 'callsign', 'platform.type_code', 'platform.name'])
-    expect(rows.find((r) => r.target === 'platform.name')!.stage).toBe('registry')
+    expect(rows.find((r) => r.target === 'platform.name')!.stage).toBe('entity')
   })
 })
 

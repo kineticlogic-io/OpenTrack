@@ -41,7 +41,10 @@ export function DecodeForm({ value, onChange }: Props) {
   const type = String(value.type ?? 'json')
   return (
     <div className="stack">
-      <Row label="Format" hint={type === 'cot_xml' ? 'One record per Cursor-on-Target event.' : undefined}>
+      <Row
+        label="Format"
+        hint="How each frame becomes records. json: a JSON object or array. cot_xml: one record per Cursor-on-Target <event>. xml: one record per element with the name set below. Protobuf and codec plugins are chosen on the source's Transport tab (Codec)."
+      >
         <FieldSelect
           ariaLabel="Codec"
           fields={CODECS.map((name) => ({ name }))}
@@ -92,6 +95,13 @@ export function RejectForm({ rules, onChange }: { rules: Obj[]; onChange: (r: Ob
         <div key={i} className="map-field">
           <div className="value-row">
             <Label size="sm">Reason</Label>
+            {i === 0 && (
+              <InfoTip label="Reason">
+                Checked against each raw record before mapping; the first rule whose condition holds drops the record. The reason names it in the
+                source&apos;s metrics as <span className="mono">rejected:&lt;reason&gt;</span> (and in the total <span className="mono">rejected</span>), so
+                use a short word such as <span className="mono">no_position</span>.
+              </InfoTip>
+            )}
             <Input style={{ ...INPUT, width: 200 }} aria-label={`Reject rule ${i + 1} reason`} value={String(r.reason ?? '')} onChange={(e) => onChange(rules.map((x, j) => (j === i ? { ...x, reason: e.target.value } : x)))} />
             <span className="spacer" />
             <Button size="xs" variant="ghost" icon={<TbTrash />} aria-label={`Remove reject rule ${i + 1}`} title="Remove" onClick={() => onChange(rules.filter((_, j) => j !== i))} />
@@ -158,7 +168,10 @@ export function RegistryForm({ value, onChange }: Props) {
       <Row label="Name to grade" hint="The track field compared with the entity's name and each identifier's broadcast name, to grade the match.">
         <Input style={INPUT} aria-label="Broadcast name field" value={String(value.broadcast_name ?? 'name')} onChange={(e) => onChange({ ...value, broadcast_name: e.target.value })} spellCheck={false} />
       </Row>
-      <Row label="Use at grades" hint={`Grades that count as corroborated, where the links below are used: ${GRADES.join(', ')}.`}>
+      <Row
+        label="Use at grades"
+        hint={`How well the broadcast name matches the entity found by identifier; the links below are used only at the grades listed here (default: ${DEFAULT_GRADES.join(', ')}). exact: the name equals the identifier's expected broadcast name. hull: it contains a number from the entity's hull code. name: its distinctive words (4 letters or more in all) all appear in the entity's name. generic: only generic words, one of them marking a warship, and the entity is military. stale: none of these, or no name at all. Choose from ${GRADES.join(', ')}.`}
+      >
         <Input
           style={INPUT}
           aria-label="Apply grades"
@@ -173,11 +186,12 @@ export function RegistryForm({ value, onChange }: Props) {
           <InfoTip label="Links">
             Entity → track: the entity is the authority, and its value replaces what the feed reports (the difference is shown on the track).
             Track → entity: the feed updates the entity, e.g. an AIS destination. A mapping can also send a value straight to the entity with an{' '}
-            <span className="mono">entity.&lt;key&gt;</span> destination.
+            <span className="mono">entity.&lt;key&gt;</span> destination. Default links replaces the list with the defaults: the entity&apos;s OTH-GOLD
+            minimum (name, class name, domain, affiliation, track type, CoT type, SIDC) populates the track.
           </InfoTip>
         </h4>
         <div className="num-row">
-          <Button size="sm" variant="ghost" onClick={() => setLinks(DEFAULT_LINKS)} title="Replace the links with the defaults: the entity's OTH-GOLD minimum populates the track">
+          <Button size="sm" variant="ghost" onClick={() => setLinks(DEFAULT_LINKS)}>
             Default links
           </Button>
           <Button size="sm" variant="ghost" icon={<TbPlus />} onClick={() => setLinks([...links, { entity: '', track: '', direction: 'to_track' }])}>
@@ -239,26 +253,26 @@ export function RegistryForm({ value, onChange }: Props) {
 const AFFILIATIONS = ['friend', 'hostile', 'neutral', 'unknown', 'suspect', 'assumed_friend', 'pending']
 
 export function AffiliationForm({ value, onChange }: Props) {
-  const listInput = (key: string, label: string) => (
-    <Row label={label}>
+  const listInput = (key: string, label: string, hint: string) => (
+    <Row label={label} hint={hint}>
       <Input style={INPUT} aria-label={`${label} countries`} placeholder="ISO codes: US GB FR" value={((value[key] as string[]) ?? []).join(' ')} onChange={(e) => onChange({ ...value, [key]: words(e.target.value.toUpperCase()) })} spellCheck={false} />
     </Row>
   )
-  const pick = (key: string, label: string) => (
-    <Row label={label}>
+  const pick = (key: string, label: string, hint: string) => (
+    <Row label={label} hint={hint}>
       <FieldSelect ariaLabel={label} allowNone fields={AFFILIATIONS.map((name) => ({ name }))} value={(value[key] as string) ?? null} onChange={(v) => onChange({ ...value, [key]: v ?? undefined })} style={{ width: 160 }} />
     </Row>
   )
   return (
     <div className="stack">
-      <Row label="Country from" hint={`Currently: ${describeValue(value.country as ValueSpec)}`}>
+      <Row label="Country from" hint={`The value holding the track's ISO country code (compared in capitals, spaces trimmed), e.g. the registry flag. Currently: ${describeValue(value.country as ValueSpec)}`}>
         <ValueEditor label="Country" value={value.country as ValueSpec} onChange={(v) => onChange({ ...value, country: v })} />
       </Row>
-      {listInput('friendly', 'Friend')}
-      {listInput('hostile', 'Hostile')}
-      {listInput('neutral', 'Neutral')}
-      {pick('otherwise', 'Other countries')}
-      {pick('unknown_country', 'No country')}
+      {listInput('friendly', 'Friend', 'Country codes, separated by spaces or commas, whose tracks get affiliation friend. It replaces any affiliation the mapping or entity set.')}
+      {listInput('hostile', 'Hostile', 'Country codes whose tracks get affiliation hostile.')}
+      {listInput('neutral', 'Neutral', 'Country codes whose tracks get affiliation neutral.')}
+      {pick('otherwise', 'Other countries', 'Affiliation for a track whose country is known but in none of the lists. Empty: left as it is.')}
+      {pick('unknown_country', 'No country', 'Affiliation for a track with no country code. Empty: left as it is.')}
     </div>
   )
 }
@@ -266,10 +280,10 @@ export function AffiliationForm({ value, onChange }: Props) {
 export function FilterForm({ value, onChange }: Props) {
   return (
     <div className="stack">
-      <Row label="Keep only if" hint="Conditions over the observation (after mapping), e.g. {&quot;path&quot;: &quot;classification.domain&quot;, &quot;eq&quot;: &quot;surface&quot;}.">
+      <Row label="Keep only if" hint="Conditions over the observation (after mapping, and ext.registry.* after the entity stage), e.g. {&quot;path&quot;: &quot;classification.domain&quot;, &quot;eq&quot;: &quot;surface&quot;}. Observations that fail it are dropped and counted as filtered. Empty: keep all.">
         <JsonField label="Keep condition" optional value={value.keep_if} onChange={(v) => onChange({ ...value, keep_if: v })} describe={(v) => `keep when ${describeCondition(v)}`} />
       </Row>
-      <Row label="Drop if">
+      <Row label="Drop if" hint="Observations matching this are dropped (counted as filtered), even when they pass Keep only if. Tests: eq, ne, in, not_in, exists, gt, gte, lt, lte, matches, starts_with, contains, bits_any; combine with all, any, not.">
         <JsonField label="Drop condition" optional value={value.drop_if} onChange={(v) => onChange({ ...value, drop_if: v })} describe={(v) => `drop when ${describeCondition(v)}`} />
       </Row>
     </div>
@@ -282,8 +296,8 @@ const DOMAINS = ['surface', 'ground', 'air', 'subsurface']
 /** Turn detections into tracks. Tracks leave with no identity and unknown affiliation. */
 export function TrackerForm({ value, onChange }: Props) {
   const mht = (value.mht as Obj | undefined) ?? {}
-  const field = (key: string, label: string, fallback: number, obj: Obj = value, set = (v: Obj) => onChange(v)) => (
-    <Row label={label}>
+  const field = (key: string, label: string, fallback: number, hint: string, obj: Obj = value, set = (v: Obj) => onChange(v)) => (
+    <Row label={label} hint={`${hint} Default ${fallback}.`}>
       <Input style={{ ...INPUT, width: 120 }} type="number" aria-label={label} value={String(obj[key] ?? fallback)} onChange={(e) => set({ ...obj, [key]: num(e.target.value) })} />
     </Row>
   )
@@ -358,9 +372,9 @@ export function TrackerForm({ value, onChange }: Props) {
       <Row label="Domain" hint="Everything this sensor sees. Empty: what most of a track's plots report, if any.">
         <FieldSelect ariaLabel="Tracker domain" allowNone fields={DOMAINS.map((name) => ({ name }))} value={(value.domain as string) ?? null} onChange={(d) => onChange({ ...value, domain: d ?? undefined })} style={{ width: 160 }} />
       </Row>
-      {field('measurement_sigma_m', 'Plot error σ (m)', 10)}
-      {field('process_noise_mps2', 'Manoeuvre (m/s²)', 0.5)}
-      {field('cluster_m', 'Merge plots within (m)', 0)}
+      {field('measurement_sigma_m', 'Plot error σ (m)', 10, 'Position error of a plot, one standard deviation per axis, for detections that report no error ellipse or circular error of their own.')}
+      {field('process_noise_mps2', 'Manoeuvre (m/s²)', 0.5, 'How hard targets accelerate or turn (the filter\'s process noise). Higher follows manoeuvres better but gives noisier tracks.')}
+      {field('cluster_m', 'Merge plots within (m)', 0, 'Plots of one scan closer than this are merged into one at their centroid, for sensors that return several points off one large object (lidar on a ship). 0: off.')}
       <h4 className="subhead">
         Existence
         <InfoTip label="Existence">
@@ -368,14 +382,14 @@ export function TrackerForm({ value, onChange }: Props) {
           it. It is published as the track&apos;s confidence.
         </InfoTip>
       </h4>
-      {field('detection_probability', 'Detection probability', 0.9)}
-      {field('clutter_density', 'False plots per m²', 1e-6)}
-      {field('birth_density', 'New targets per m²', 1e-7)}
-      {field('confirm_probability', 'Confirm at probability', 0.95)}
-      {field('drop_probability', 'Drop at probability', 0.02)}
-      {field('target_lifetime_secs', 'Target lifetime (s)', 600)}
-      {field('confirm_hits', 'Confirm after at least (plots)', 3)}
-      <Row label="Auto timing" hint="Size the drop windows to the sensor's revisit rate, as the codec measures it (STANAG 4607), and count a miss once per revisit instead of once per scan.">
+      {field('detection_probability', 'Detection probability', 0.9, 'Chance the sensor detects a target it looks at, between 0 and 1. A look without a plot lowers existence more when this is high.')}
+      {field('clutter_density', 'False plots per m²', 1e-6, 'Expected false plots per square metre per look. Higher makes a plot count for less, so tracks confirm more slowly.')}
+      {field('birth_density', 'New targets per m²', 1e-7, 'Expected new targets per square metre per look. A new track starts at existence birth / (birth + clutter).')}
+      {field('confirm_probability', 'Confirm at probability', 0.95, 'A track is confirmed, and reported, once its existence reaches this and it has enough plots. Must be above the drop probability and below 1.')}
+      {field('drop_probability', 'Drop at probability', 0.02, 'A track is dropped once its existence falls to this. Must be above 0.')}
+      {field('target_lifetime_secs', 'Target lifetime (s)', 600, 'How long a target lasts on average: existence decays at this rate between looks, so misses can end even a long-lived track.')}
+      {field('confirm_hits', 'Confirm after at least (plots)', 3, 'Fewest plots a track needs before it can be confirmed, whatever its existence. At least 1.')}
+      <Row label="Auto timing" hint="Size the drop windows to the sensor's revisit rate, as the codec measures it (STANAG 4607), and count a miss once per revisit instead of once per scan. Each window is the revisits below times the period, but never shorter than its floor. Until the period is known, the fixed drop times apply.">
         <Toggle
           size="sm"
           aria-label="Auto timing"
@@ -385,15 +399,15 @@ export function TrackerForm({ value, onChange }: Props) {
       </Row>
       {value.auto_timing != null ? (
         <>
-          {field('drop_tentative_revisits', 'Drop unconfirmed after (revisits)', 1.3, auto, setAuto)}
-          {field('drop_confirmed_revisits', 'Drop after (revisits)', 2.5, auto, setAuto)}
-          {field('min_drop_tentative_secs', '…drop unconfirmed after at least (s)', 8, auto, setAuto)}
-          {field('min_drop_confirmed_secs', '…drop after at least (s)', 30, auto, setAuto)}
+          {field('drop_tentative_revisits', 'Drop unconfirmed after (revisits)', 1.3, 'An unconfirmed track is dropped this many revisit periods after its last plot. Above 1, or none survives to the next revisit.', auto, setAuto)}
+          {field('drop_confirmed_revisits', 'Drop after (revisits)', 2.5, 'A confirmed track is dropped this many revisit periods after its last plot. Above 1.', auto, setAuto)}
+          {field('min_drop_tentative_secs', '…drop unconfirmed after at least (s)', 8, 'Floor on the unconfirmed drop window, for sensors that revisit every few seconds but still lose a target for longer (terrain, a stop).', auto, setAuto)}
+          {field('min_drop_confirmed_secs', '…drop after at least (s)', 30, 'Floor on the confirmed drop window.', auto, setAuto)}
         </>
       ) : (
         <>
-          {field('drop_tentative_secs', 'Drop unconfirmed after (s) without a plot', 3)}
-          {field('drop_confirmed_secs', 'Drop after (s) without a plot', 8)}
+          {field('drop_tentative_secs', 'Drop unconfirmed after (s) without a plot', 3, 'An unconfirmed track with no plot for this long is dropped.')}
+          {field('drop_confirmed_secs', 'Drop after (s) without a plot', 8, 'A confirmed track with no plot for this long is dropped (reported once as dropped).')}
         </>
       )}
       <Row label="Scans" hint="A scan is one frame, or the plots with the same time.">
@@ -405,14 +419,19 @@ export function TrackerForm({ value, onChange }: Props) {
           style={{ width: 160 }}
         />
       </Row>
-      <Row label="Track keys">
+      <Row label="Track keys" hint="Prefix of the keys the tracker gives its tracks: prefix, a tag for the tracker's run, and a number (T3f2a-12). The run tag keeps a restarted tracker from continuing an earlier run's tracks. Default T.">
         <Input style={{ ...INPUT, width: 120 }} aria-label="Track key prefix" value={String(value.key_prefix ?? 'T')} onChange={(e) => onChange({ ...value, key_prefix: e.target.value || undefined })} spellCheck={false} />
       </Row>
       {value.algorithm === 'mht' && (
         <>
-          <h4 className="subhead">Hypotheses</h4>
-          {field('n_scan', 'Final after scans', 3, mht, setMht)}
-          {field('max_branches', 'Hypotheses per target', 20, mht, setMht)}
+          <h4 className="subhead">
+            Hypotheses
+            <InfoTip label="Hypotheses">
+              MHT keeps competing plot-to-track assignments for a few scans and settles on the most likely, instead of committing each scan as GNN does.
+            </InfoTip>
+          </h4>
+          {field('n_scan', 'Final after scans', 3, 'Scans an association stays open to revision before it is final. More resolves crossing targets better, at more work and later output.', mht, setMht)}
+          {field('max_branches', 'Hypotheses per target', 20, 'Competing hypotheses kept per possible target; the least likely beyond this are pruned.', mht, setMht)}
         </>
       )}
     </div>
@@ -576,7 +595,7 @@ export function SecurityForm({ value, onChange }: { value?: SecurityLabel; onCha
           several labelled sources report for takes the label of the highest-priority one.
         </InfoTip>
       </h4>
-      <Row label="Label this source">
+      <Row label="Label this source" hint="On: every track this source reports carries the label below. Off: no label from this source.">
         <Toggle size="sm" aria-label="Label this source" value={on} onChange={(yes) => onChange(yes ? { classification: '' } : undefined)} />
       </Row>
       {on && (

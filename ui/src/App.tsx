@@ -15,6 +15,7 @@ const TrackDbPage = lazy(() => import('./pages/trackdb/TrackDbPage'))
 const CorrelationPage = lazy(() => import('./pages/correlation/CorrelationPage'))
 const RegistryPage = lazy(() => import('./pages/registry/RegistryPage'))
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage'))
+const HelpPage = lazy(() => import('./pages/help/HelpPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview' },
@@ -24,6 +25,8 @@ const VIEWS = [
   { id: 'registry', label: 'Registry' },
   { id: 'schema', label: 'Schema' },
   { id: 'settings', label: 'Settings' },
+  // Every role: the guides, bundled with the UI (docs/guides/).
+  { id: 'help', label: 'Help' },
 ]
 
 export default function App() {
@@ -109,6 +112,7 @@ export default function App() {
             {active === 'registry' && <RegistryPage />}
             {active === 'schema' && <SchemaPage />}
             {active === 'settings' && <SettingsPage onSaved={() => setSettingsRev((n) => n + 1)} />}
+            {active === 'help' && <HelpPage sub={sub} />}
           </Suspense>
         </main>
       </div>

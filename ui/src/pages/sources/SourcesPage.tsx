@@ -3,10 +3,11 @@ import { TbPlus } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, type DataTableColumn } from 'staresdk'
 import { api, type SourceRow } from '../../api/client'
 import { ago, errorMessage, fmtCount } from '../../lib/format'
-import { sourceState } from '../../lib/sourceState'
+import { SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
 import { AddSourceWizard } from './AddSourceWizard'
 import { SourceDetail } from './SourceDetail'
 import { useCan } from '../../auth/context'
+import { InfoTip } from '../../components/InfoTip'
 
 // React Flow loads only with the Sources page's topology.
 const Topology = lazy(() => import('./Topology'))
@@ -104,14 +105,34 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   const open = !!selected && !!shown
   return (
     <div className="panels">
-      <CollapsiblePanel title="Topology" persistKey="ot.panel.topology">
+      <CollapsiblePanel
+        title="Topology"
+        persistKey="ot.panel.topology"
+        titleActions={
+          <InfoTip label="Topology">
+            Each source&apos;s pipeline, left to right: decode, map, the stages it has, into correlation, the track writer and NATS
+            (plus any raw feed). Rates are per minute, averaged over the last 10 minutes; moving dashes mark links that carried data,
+            grey dashed links belong to disabled sources. Click a source to open it.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
           <Suspense fallback={<span className="muted">LOADING…</span>}>
             {sources ? <Topology sources={sources} onSelect={select} /> : <span className="muted">LOADING…</span>}
           </Suspense>
         </div>
       </CollapsiblePanel>
-      <CollapsiblePanel title="Sources" badge={sources ? String(sources.length) : undefined} persistKey="ot.panel.sources">
+      <CollapsiblePanel
+        title="Sources"
+        badge={sources ? String(sources.length) : undefined}
+        persistKey="ot.panel.sources"
+        titleActions={
+          <InfoTip label="Sources columns">
+            State: {SOURCE_STATES_INFO} Emitted: track updates the source has sent on since its worker last started (a restart or a saved
+            change resets it). Last frame: how long ago a message last arrived.
+          </InfoTip>
+        }
+      >
         <div className="panel-body">
           <div className="toolbar">
             <span className="muted">Feeds OpenTrack ingests. Select one to see its status, transport, pipeline and history.</span>

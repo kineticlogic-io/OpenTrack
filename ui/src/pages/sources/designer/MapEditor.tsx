@@ -4,6 +4,7 @@ import { Button, DataTable, FieldSelect, Input, Label, type DataTableColumn } fr
 import type { SchemaOverview } from '../../../api/client'
 import { describeValue, type ValueSpec } from '../../../lib/pipeline'
 import { INPUT, toForm } from '../../../lib/valueSpec'
+import { InfoTip } from '../../../components/InfoTip'
 import { JsonField } from './JsonField'
 import { ValueEditor } from './ValueEditor'
 
@@ -168,7 +169,7 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
       align: 'right',
       render: (r) => (
         <span className="value-row" style={{ flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
-          {hasExtras(r.spec) && <TbAdjustments aria-label="Has more settings" title="Has more settings" className="muted" />}
+          {hasExtras(r.spec) && <TbAdjustments aria-label="Has more settings" className="muted" />}
           {r.kind !== 'key' && (
             <Button
               size="xs"
@@ -201,6 +202,10 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
           }}
           style={{ width: 200 }}
         />
+        <InfoTip label="Mapping rules">
+          Every record goes through every rule whose condition holds, and each such rule with a non-empty track key makes one output: a record can
+          feed several rules. A record no rule takes is counted as unmatched.
+        </InfoTip>
         <Button
           size="sm"
           variant="secondary"
@@ -240,8 +245,15 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
         <div key={`settings:${i}:${epoch}`} className="map-field">
           <div className="value-row">
             <Label size="sm">Name</Label>
+            <InfoTip label="Rule name">Unique within the mapping; validation errors name the rule by it.</InfoTip>
             <Input style={{ ...INPUT, width: 180 }} aria-label="Rule name" value={String(rule.name ?? '')} onChange={(e) => setRule({ name: e.target.value })} />
             <Label size="sm">Kind</Label>
+            <InfoTip label="Rule kind">
+              observation: a report of an object; on a source with a Tracker stage, a detection for the tracker. static: identity fields (name, flag…)
+              kept per track key and joined onto later observations with the same key, for as long as the identity join stage keeps them. track: a report of an
+              object that carries its own identity (e.g. the sensor&apos;s own platform), which bypasses the Tracker stage. observation and track
+              rules must map a position (latitude and longitude, or a polygon).
+            </InfoTip>
             <FieldSelect
               ariaLabel="Rule kind"
               fields={KINDS.map((name) => ({ name }))}
@@ -250,9 +262,21 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
               style={{ width: 130 }}
             />
           </div>
-          <Label size="sm">Applies when</Label>
+          <div className="value-row">
+            <Label size="sm">Applies when</Label>
+            <InfoTip label="Applies when">
+              A condition over the raw record, e.g. <span className="mono">{'{"path": "type", "eq": "position"}'}</span>. Empty: every record.
+            </InfoTip>
+          </div>
           <JsonField label="Rule condition" optional value={rule.when} placeholder="every record" onChange={(v) => (v === undefined ? replaceRule(drop(rule, 'when')) : setRule({ when: v }))} />
-          <Label size="sm">Bindings</Label>
+          <div className="value-row">
+            <Label size="sm">Bindings</Label>
+            <InfoTip label="Bindings">
+              Named values computed first and added to the record, for the rule&apos;s other values to read, e.g.{' '}
+              <span className="mono">{'{"_body": {"path": "Message", "key": "MessageType"}}'}</span>. Start names with _ so they do not clash with the
+              feed&apos;s own fields.
+            </InfoTip>
+          </div>
           <JsonField label="Rule bindings" optional value={rule.let} placeholder="none" onChange={(v) => (v === undefined ? replaceRule(drop(rule, 'let')) : setRule({ let: v }))} />
         </div>
       )}
@@ -296,6 +320,14 @@ export function MapEditor({ mapping, onChange, schema }: { mapping: Obj; onChang
               >
                 Identifier
               </Button>
+              <InfoTip label="Mapping table">
+                Source: the feed field a value comes from (a path such as <span className="mono">Message.PositionReport.Sog</span>); anything more is
+                shown as a summary, edited by clicking the row. Destination: an OpenTrack field, an <span className="mono">ext.</span> field of the
+                mapping&apos;s schema version, or <span className="mono">entity.&lt;key&gt;</span>, which updates the track&apos;s entity at a corroborated
+                match. The track key is the feed&apos;s own id for the object; records without one are skipped. An identifier row adds an identifier
+                under the scheme you name (mmsi, icao24, an ELNOT…), which the entity stage resolves. <TbAdjustments aria-hidden /> marks a value with
+                transforms, a default or a lookup table.
+              </InfoTip>
             </div>
           </div>
           {row && (

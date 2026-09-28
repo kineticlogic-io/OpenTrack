@@ -125,6 +125,10 @@ export default function RegistryPage() {
                 spellCheck={false}
               />
             </div>
+            <InfoTip label="Registry">
+              One row per real-world entity; click a row to edit it. Search matches part of a name or identifier value, or an exact entity id.
+              Status: active entities are what tracks resolve to; retired ones are kept on record but no track resolves to them.
+            </InfoTip>
           </div>
         }
         actions={

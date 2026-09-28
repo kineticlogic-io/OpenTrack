@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::HeaderValue;
 use axum::http::StatusCode;
-use axum::http::header::CACHE_CONTROL;
+use axum::http::header::{self, CACHE_CONTROL};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -60,12 +61,14 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .merge(crate::metrics::routes())
         .merge(crate::auth::api::routes())
         .merge(crate::decisions_api::routes())
+        .merge(crate::audit_api::routes())
         .merge(crate::history_api::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::layer,
         ));
 
+    let hsts = state.auth.secure_cookies;
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api/v1", api)
@@ -77,7 +80,56 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
             .fallback_service(page(&dir));
     }
     app.layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn_with_state(hsts, security_headers))
         .layer(TraceLayer::new_for_http())
+}
+
+/// The page's content security policy: everything from this server (the
+/// map's worker is a bundled file; its land outlines are served here),
+/// inline styles (React's `style` attributes, the map's and editors'), and
+/// images and fonts as data or blob URLs (symbols, the map's sprites). No
+/// inline or evaluated script, no plugins, never framed.
+pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
+    worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; \
+    form-action 'self'; frame-ancestors 'none'";
+
+/// Security headers on every response, the API's and the UI's: the
+/// content security policy, no MIME sniffing, no framing, no referrer, no
+/// powerful browser features, HSTS when served over TLS (here or at a
+/// proxy: `OT_PUBLIC_TLS`), and nothing from the API kept in a cache.
+async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) -> Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    let set = |h: &mut axum::http::HeaderMap, k: &'static str, v: &'static str| {
+        h.insert(
+            axum::http::HeaderName::from_static(k),
+            HeaderValue::from_static(v),
+        );
+    };
+    set(h, "content-security-policy", CSP);
+    set(h, "x-content-type-options", "nosniff");
+    set(h, "x-frame-options", "DENY");
+    set(h, "referrer-policy", "no-referrer");
+    set(
+        h,
+        "permissions-policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()",
+    );
+    set(h, "cross-origin-opener-policy", "same-origin");
+    if hsts {
+        set(
+            h,
+            "strict-transport-security",
+            "max-age=31536000; includeSubDomains",
+        );
+    }
+    if api {
+        h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    }
+    res
 }
 
 /// The UI's content-hashed build files. A missing one is a 404, never the
@@ -211,6 +263,18 @@ impl ApiError {
             message: m.into(),
         }
     }
+    pub(crate) fn unauthorized(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: m.into(),
+        }
+    }
+    pub(crate) fn forbidden(m: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: m.into(),
+        }
+    }
     pub(crate) fn bad_request(m: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -241,6 +305,45 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn every_response_carries_the_security_headers() {
+        use tower::ServiceExt;
+        let app = |hsts| {
+            Router::new()
+                .route("/api/v1/x", get(|| async { "{}" }))
+                .route("/page", get(|| async { "<html>" }))
+                .layer(axum::middleware::from_fn_with_state(hsts, security_headers))
+        };
+        let get = |uri: &str| {
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let res = app(false).oneshot(get("/api/v1/x")).await.unwrap();
+        let h = res.headers();
+        assert!(
+            h["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert_eq!(h["x-frame-options"], "DENY");
+        assert_eq!(h["referrer-policy"], "no-referrer");
+        assert_eq!(h["cache-control"], "no-store");
+        assert!(h.get("strict-transport-security").is_none());
+        let res = app(true).oneshot(get("/page")).await.unwrap();
+        let h = res.headers();
+        assert!(h.get("cache-control").is_none(), "the UI sets its own");
+        assert!(
+            h["strict-transport-security"]
+                .to_str()
+                .unwrap()
+                .starts_with("max-age=")
+        );
+    }
 
     #[test]
     fn uid_path_accepts_doc_id_or_bare_uid() {

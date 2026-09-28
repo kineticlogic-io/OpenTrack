@@ -526,6 +526,63 @@ pub struct CorrelationSettings {
     /// its thresholds and every decision stay the engine's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scorer: Option<ScorerRef>,
+    /// How a fused track's security label is chosen.
+    pub labels: LabelSettings,
+}
+
+/// A fused track's security label: the highest classification of its
+/// sources' in this order, every restriction, and only the releasability
+/// they share (see `ot_core::SecurityLabel::combine`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LabelSettings {
+    /// Lowest first; case does not matter and U, C, S and TS stand for
+    /// their names. One not listed ranks above them all.
+    pub classification_order: Vec<String>,
+}
+
+impl Default for LabelSettings {
+    fn default() -> Self {
+        Self {
+            classification_order: ot_core::DEFAULT_CLASSIFICATION_ORDER
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+}
+
+impl LabelSettings {
+    /// The label of a track from its sources' labels (highest priority
+    /// first); a classification not in the order is logged once.
+    pub fn combine<'a>(
+        &self,
+        labels: impl IntoIterator<Item = &'a ot_core::SecurityLabel>,
+    ) -> Option<ot_core::SecurityLabel> {
+        let labels: Vec<&ot_core::SecurityLabel> = labels.into_iter().collect();
+        for l in &labels {
+            if ot_core::classification_rank(&l.classification, &self.classification_order).is_none()
+            {
+                warn_unknown(&l.classification);
+            }
+        }
+        ot_core::SecurityLabel::combine(labels, &self.classification_order)
+    }
+}
+
+/// Log a classification the order does not know, once per value.
+fn warn_unknown(c: &str) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if let Ok(mut s) = seen.lock()
+        && s.len() < 1000
+        && s.insert(c.to_owned())
+    {
+        tracing::warn!(
+            classification = c,
+            "a security label's classification is not in the classification order: it ranks above every known one"
+        );
+    }
 }
 
 /// A scorer plugin, by name, with its options.
@@ -548,6 +605,7 @@ impl Default for CorrelationSettings {
             split: SplitSettings::default(),
             output: OutputFilter::default(),
             scorer: None,
+            labels: LabelSettings::default(),
         }
     }
 }
@@ -598,6 +656,19 @@ impl CorrelationSettings {
             return Err("split.split_probability must be below kinematic.pair_probability".into());
         }
         self.output.validate()?;
+        let order = &self.labels.classification_order;
+        if order.is_empty() || order.len() > 32 {
+            return Err("labels.classification_order: 1 to 32 classifications".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for c in order {
+            let n = ot_core::normalize_classification(c);
+            if n.is_empty() || !seen.insert(n) {
+                return Err(format!(
+                    "labels.classification_order: {c:?} is empty or listed twice"
+                ));
+            }
+        }
         if !(k.min_interval_secs.is_finite() && k.min_interval_secs >= 0.0) {
             return Err("kinematic.min_interval_secs must not be negative".into());
         }
@@ -1175,9 +1246,13 @@ fn cot_specificity(cot: Option<&str>) -> usize {
 ///   specific CoT type, then priority.
 /// - extension fields: each from the highest-priority report that has it.
 /// - identifiers: every contributor's.
+/// - security label: the highest classification of any contributor's, with
+///   every restriction and the releasability they share
+///   ([`LabelSettings::combine`]).
 pub fn best_view(
     contribs: &[Contribution<'_>],
     window_secs: f64,
+    labels: &LabelSettings,
 ) -> (Observation, BTreeMap<String, String>) {
     assert!(
         !contribs.is_empty(),
@@ -1290,8 +1365,8 @@ pub fn best_view(
         }
     }
     view.identifiers = identifiers;
-    // The security label of the highest-priority source that has one.
-    view.security = by_priority.iter().find_map(|c| c.obs.security.clone());
+    // Never marked below what went into it.
+    view.security = labels.combine(by_priority.iter().filter_map(|c| c.obs.security.as_ref()));
     (view, provenance)
 }
 
@@ -1412,6 +1487,7 @@ mod tests {
                 },
             ],
             60.0,
+            &LabelSettings::default(),
         );
         // Both within the window: AIS has the smaller uncertainty.
         assert_eq!(p["position"], "ais/366");
@@ -1440,6 +1516,7 @@ mod tests {
                 },
             ],
             60.0,
+            &LabelSettings::default(),
         );
         assert_eq!(p["position"], "radar/t7");
 
@@ -1461,6 +1538,7 @@ mod tests {
                 },
             ],
             60.0,
+            &LabelSettings::default(),
         );
         assert_eq!(p["identity"], "ais/366");
         assert_eq!(p["classification"], "ais/366");
@@ -1590,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_carries_its_best_labelled_sources_security_label() {
+    fn a_track_carries_the_highest_classification_of_its_sources() {
         let label = |c: &str| ot_core::SecurityLabel {
             classification: c.into(),
             restrictions: vec!["NOFORN".into()],
@@ -1601,11 +1679,13 @@ mod tests {
         let mut low = obs("gps", "TM01", 0, 32.0, -117.0);
         low.security = Some(label("UNCLASSIFIED"));
         let plain = obs("ais", "366", 0, 32.0, -117.0);
+        // The unclassified source has the higher priority, but the track
+        // is marked with the highest classification that went into it.
         let (view, _) = best_view(
             &[
                 Contribution {
                     obs: &low,
-                    priority: 50,
+                    priority: 150,
                 },
                 Contribution {
                     obs: &plain,
@@ -1617,6 +1697,7 @@ mod tests {
                 },
             ],
             60.0,
+            &LabelSettings::default(),
         );
         assert_eq!(
             view.security.as_ref().map(|l| l.classification.as_str()),

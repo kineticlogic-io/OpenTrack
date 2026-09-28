@@ -260,17 +260,26 @@ export function TrackCard({
         </div>
         <span className="spacer" />
         {t.filtered ? (
-          <span title={`Held back by the output filter: ${t.filtered}`}>
+          <span className="num-row">
             <Badge color="warning" size="sm" uppercase>
               filtered
             </Badge>
+            <InfoTip label="Filtered">
+              Held back from publishing ({t.filtered}): by the output filter in the correlation settings, or because its entity is set
+              never to publish. If it was published before, it has been withdrawn downstream.
+            </InfoTip>
           </span>
         ) : (
           t.published === false && (
-            <span title="Kept inside OpenTrack: only sensors that may not stand alone report for it, or it is not confirmed yet.">
+            <span className="num-row">
               <Badge color="grey" size="sm" uppercase>
                 not published
               </Badge>
+              <InfoTip label="Not published">
+                Kept inside OpenTrack: it is not confirmed yet, or every source reporting for it has Publish its lone tracks set to no (a
+                sensor needs a track feed to agree). An entity set to always publish overrides both. Once published, a track stays
+                published.
+              </InfoTip>
             </span>
           )
         )}
@@ -288,17 +297,41 @@ export function TrackCard({
         {tab === 'card' ? (
           <div className="stack">
             <dl className="facts">
-              <dt>Class-name</dt>
+              <dt>
+                Class-name
+                <InfoTip label="Class-name">
+                  OTH-GOLD class and name, in capitals: the platform class (UNEQUATED when unknown) and the track&apos;s name or platform name
+                  (UNKNOWN when unknown).
+                </InfoTip>
+              </dt>
               <dd>
                 {m.class}-{m.name}
               </dd>
-              <dt>Force code</dt>
+              <dt>
+                Force code
+                <InfoTip label="Force code">
+                  The OTH-GOLD force code (Table 5-1, 0-39) for the track&apos;s domain and affiliation, e.g. 09 friendly surface, 07 hostile
+                  surface, 32 unknown.
+                </InfoTip>
+              </dt>
               <dd className="mono">
                 {String(m.force_code).padStart(2, '0')} · {m.domain} {m.affiliation}
               </dd>
-              <dt>Track type</dt>
+              <dt>
+                Track type
+                <InfoTip label="Track type">
+                  OTH-GOLD track type. tactical: a real-world track (the default). live_training: a real friendly track used for training.
+                  simulated_training: made up for a training scenario. demand_entry: a real unit receivers must not filter out.
+                </InfoTip>
+              </dt>
               <dd className="mono">{m.track_type}</dd>
-              <dt>SIDC</dt>
+              <dt>
+                SIDC
+                <InfoTip label="SIDC">
+                  The symbol code drawn for the track, with its standard (MIL-STD-2525C, 2525D or a CoT type). A feed&apos;s own code is kept,
+                  with its affiliation set to the track&apos;s; otherwise a CoT type is built from the domain and affiliation.
+                </InfoTip>
+              </dt>
               <dd className="mono">
                 {m.sidc.code} <span className="muted">({standardName(m.sidc.standard)})</span>
               </dd>
@@ -312,11 +345,20 @@ export function TrackCard({
               <dd className="mono">
                 {fmtNum(t.view.kinematics.course_deg, 0, '°')} / {fmtNum(t.view.kinematics.speed_mps, 1, ' m/s')}
               </dd>
-              <dt>Subject</dt>
+              <dt>
+                Subject
+                <InfoTip label="Subject">The NATS subject this track is published on; consumers can subscribe to it alone.</InfoTip>
+              </dt>
               <dd className="mono">{data.subject}</dd>
               {(t.bearings ?? []).length > 0 && (
                 <>
-                  <dt>Bearings</dt>
+                  <dt>
+                    Bearings
+                    <InfoTip label="Bearings">
+                      Lines of bearing that point at this track, the latest from each sensor: the source, the bearing it measured ± its
+                      1σ error, and how far that line misses the track&apos;s position, in degrees. Hover a line for its time.
+                    </InfoTip>
+                  </dt>
                   <dd className="stack" style={{ gap: 2 }}>
                     {(t.bearings ?? []).map((b) => (
                       <span key={`${b.source_id}/${b.source_track_key}`} className="mono" title={`at ${fmtTime(b.observed_at)}`}>
@@ -339,7 +381,13 @@ export function TrackCard({
                   </dd>
                 </>
               )}
-              <dt>Entity</dt>
+              <dt>
+                Entity
+                <InfoTip label="Entity">
+                  The registry entity this track resolves to, once a source&apos;s identifiers match it well enough. For the fields a source&apos;s
+                  pipeline links to the entity, the entity&apos;s values are published in place of what the feed reports.
+                </InfoTip>
+              </dt>
               <dd className="mono">{entityId ?? <span className="muted">none</span>}</dd>
               {(t.members ?? []).length > 0 && (
                 <>
@@ -392,9 +440,15 @@ export function TrackCard({
                 ))}
               </div>
             )}
-            <h3 className="subhead">Attributes</h3>
+            <h3 className="subhead">
+              Attributes
+              <InfoTip label="Attributes">
+                The published output schema&apos;s fields and this track&apos;s values. Beside a value: OpenTrack means a built-in value it
+                computes; entity means the entity replaced what a feed reports; nothing means it came from the feeds.
+              </InfoTip>
+            </h3>
             {fields.length === 0 ? (
-              <span className="muted">The output schema has no attributes. Add fields in the Schema workspace.</span>
+              <span className="muted">The output schema has no attributes. Add fields on the Schema page.</span>
             ) : (
               <dl className="facts">
                 {fields.map((f) => (
@@ -432,11 +486,18 @@ export function TrackCard({
             <h3 className="subhead">
               Source tracks
               {data.confidence != null && (
-                <span className="muted" title="Probability that the track is a real object, from its sources' existence and pairing confidences">
+                <span className="muted">
                   {' '}
                   · confidence {pct(data.confidence)}
                 </span>
               )}
+              <InfoTip label="Source tracks">
+                Each source track reporting for this track, as source/key. Paired by: how it joined (a shared identifier, agreeing
+                kinematics, or it started the track). Confidence: the chance it is the same object as the rest; the second figure, when a
+                source gives one, is the chance it is a real object at all. The header&apos;s confidence is the chance the track is real: at
+                least one source track is a real report of it. Split sends a source track off to a track of its own and keeps the two
+                apart.
+              </InfoTip>
             </h3>
             <DataTable
               aria-label="Source tracks"
@@ -445,7 +506,10 @@ export function TrackCard({
               rowKey={(c) => `${c.source_id}/${c.source_track_key}`}
               empty="No source track reports for this track."
             />
-            <h3 className="subhead">Lineage</h3>
+            <h3 className="subhead">
+              Lineage
+              <InfoTip label="Lineage">The graph of source tracks, merges, groups, identifiers and entities behind this track, over time.</InfoTip>
+            </h3>
             {edges === null ? (
               <span className="muted">LOADING…</span>
             ) : edges.length === 0 ? (
@@ -455,7 +519,16 @@ export function TrackCard({
                 <Suspense fallback={<span className="muted">LOADING…</span>}>
                   <LineageGraph uid={t.uid} edges={edges} entityId={t.entity_id} />
                 </Suspense>
-                <h3 className="subhead">Correlation decisions</h3>
+                <h3 className="subhead">
+                  Correlation decisions
+                  <InfoTip label="Correlation decisions">
+                    Every link in the lineage, blue while it holds, grey once ended. REPORTS_FOR: a source track reports for a track.
+                    MERGED_INTO: a track merged into another. CANDIDATE_OF: a source track scored as a match. DO_NOT_PAIR: two source tracks
+                    kept apart after a split or a rejected suggestion. CARRIES: a source track carries an identifier. RESOLVES_TO: an
+                    identifier names an entity. MEMBER_OF: a track in a group. PAIRED_WITH: two tracks paired by an operator. Each names the
+                    decision behind it; an operator&apos;s can be undone.
+                  </InfoTip>
+                </h3>
                 <ul className="history">
                   {edges.map((e) => (
                     <li key={e.id} className={e.valid_to_ms === null ? '' : 'ended'}>
@@ -497,7 +570,10 @@ export function TrackCard({
               <dd className="mono">{fmtTime(t.first_seen)}</dd>
               <dt>Last seen</dt>
               <dd className="mono">{fmtTime(t.last_seen)}</dd>
-              <dt>Observations</dt>
+              <dt>
+                Observations
+                <InfoTip label="Observations">Reports applied to this track since it started, from all its sources.</InfoTip>
+              </dt>
               <dd className="mono">{t.observation_count.toLocaleString()}</dd>
             </dl>
           </div>

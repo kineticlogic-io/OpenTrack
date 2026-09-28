@@ -13,11 +13,13 @@ use std::io::Write;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use axum::extract::{Form, State as AxumState};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Form, State as AxumState};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
@@ -28,6 +30,7 @@ use samael::traits::ToXml;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::api::{Client, How};
 use super::{AuthSettings, Role, settings::SamlSettings};
 use crate::control::{ApiError, AppState};
 
@@ -124,9 +127,12 @@ fn redirect_url(s: &AppState, cfg: &SamlSettings) -> Result<String, String> {
     let sso = sp
         .sso_binding_location(HTTP_REDIRECT)
         .ok_or("the identity provider has no HTTP-Redirect sign-on")?;
-    let authn = sp
+    let mut authn = sp
         .make_authentication_request(&sso)
         .map_err(|e| format!("the sign-on request: {e}"))?;
+    // samael's id is 32 random bits from a non-FIPS generator; the response
+    // must answer this id, so make it 128 bits from the FIPS module.
+    authn.id = format!("id-{}", crate::fips::random_hex::<16>());
     let xml = authn.to_string().map_err(|e| e.to_string())?;
     let relay = mint_relay(&authn.id, &s.auth.secret)?;
     let request = deflate_base64(xml.as_bytes()).map_err(|e| e.to_string())?;
@@ -138,10 +144,31 @@ fn redirect_url(s: &AppState, cfg: &SamlSettings) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
+/// FIPS: xmlsec checks signatures with OpenSSL, which must be using only
+/// its FIPS provider (the image configures it; see docs/security/fips.md).
+pub fn openssl_fips() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = samael::openssl_fips_enabled();
+        if on {
+            tracing::info!("OpenSSL (SAML signatures) is in FIPS mode");
+        } else {
+            tracing::warn!("{NOT_FIPS}: load its FIPS provider (docs/security/fips.md)");
+        }
+        on
+    })
+}
+
+const NOT_FIPS: &str = "OpenSSL is not in FIPS mode, so SAML sign-in is off";
+
 async fn login(AxumState(s): AxumState<AppState>) -> Response {
     let cfg = s.auth.settings().saml;
     if !cfg.enabled {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if !openssl_fips() {
+        tracing::error!("{NOT_FIPS}");
+        return (StatusCode::SERVICE_UNAVAILABLE, NOT_FIPS).into_response();
     }
     match redirect_url(&s, &cfg).and_then(|u| HeaderValue::from_str(&u).map_err(|e| e.to_string()))
     {
@@ -198,34 +225,41 @@ fn attribute(a: &Assertion, name: &str) -> Vec<String> {
 /// The account a verified assertion signs in: an existing one by email
 /// (a SAML-made account takes the role the provider gives it now), or a
 /// new one with the mapped role.
+/// The account a sign-on is for, made on first use; `Err` gives why it is
+/// refused. Only `saml` accounts sign on this way: an account made another
+/// way (a local one, with a role an admin gave it) is never taken over by
+/// an identity provider that asserts its email.
 fn account(
     db: &mut ot_store::Db,
     email: &str,
     role: Option<Role>,
-) -> Result<Option<ot_store::User>, ot_store::StoreError> {
+) -> Result<Result<ot_store::User, &'static str>, ot_store::StoreError> {
     if let Some(u) = db.user_by_email(email)? {
-        if !u.active {
-            return Ok(None);
+        if u.origin != "saml" {
+            return Ok(Err("a local account has this email"));
         }
-        return match (u.origin.as_str(), role) {
-            ("saml", Some(r)) if r.as_str() != u.role => {
-                let after = db.update_user(&u.id, None, Some(r.as_str()), None)?;
-                db.record(&ot_store::Decision {
-                    before: Some(json!(u)),
-                    after: Some(json!(after)),
-                    ..ot_store::Decision::new("saml", "update_user")
-                        .reason("the identity provider gave another role")
-                })?;
-                Ok(Some(after))
-            }
-            ("saml", None) => Ok(None),
-            _ => Ok(Some(u)),
+        if !u.active {
+            return Ok(Err("the account is turned off"));
+        }
+        let Some(r) = role else {
+            return Ok(Err("no role for this user"));
         };
+        if r.as_str() == u.role {
+            return Ok(Ok(u));
+        }
+        let after = db.update_user(&u.id, None, Some(r.as_str()), None)?;
+        db.record(&ot_store::Decision {
+            before: Some(json!(u)),
+            after: Some(json!(after)),
+            ..ot_store::Decision::new("saml", "update_user")
+                .reason("the identity provider gave another role")
+        })?;
+        return Ok(Ok(after));
     }
     let Some(role) = role else {
-        return Ok(None);
+        return Ok(Err("no role for this user"));
     };
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = crate::fips::uuid_v4();
     let u = db.create_user(&ot_store::NewUser {
         id: &id,
         email,
@@ -238,22 +272,25 @@ fn account(
         after: Some(json!(u)),
         ..ot_store::Decision::new("saml", "create_user").reason("first single sign-on")
     })?;
-    Ok(Some(u))
+    Ok(Ok(u))
 }
 
-async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Response {
+async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Response, String> {
     let cfg = s.auth.settings().saml;
     if !cfg.enabled {
-        return refused("SAML is off");
+        return Err("SAML is off".into());
+    }
+    if !openssl_fips() {
+        return Err(NOT_FIPS.into());
     }
     let (Some(response), Some(relay)) = (f.response, f.relay) else {
-        return refused("no SAMLResponse or RelayState");
+        return Err("no SAMLResponse or RelayState".into());
     };
     let Some(rid) = verify_relay(&relay, &s.auth.secret) else {
-        return refused("the relay state is not ours or has expired");
+        return Err("the relay state is not ours or has expired".into());
     };
-    let Ok(base) = base_url(&s) else {
-        return refused("no OT_PUBLIC_URL");
+    let Ok(base) = base_url(s) else {
+        return Err("no OT_PUBLIC_URL".into());
     };
     let c = cfg.clone();
     let parsed = tokio::task::spawn_blocking(move || {
@@ -264,8 +301,8 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
     .await;
     let assertion = match parsed {
         Ok(Ok(a)) => a,
-        Ok(Err(e)) => return refused(&e),
-        Err(e) => return refused(&e.to_string()),
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(e.to_string()),
     };
     let until = assertion
         .conditions
@@ -273,10 +310,10 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
         .and_then(|c| c.not_on_or_after)
         .unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
     if !s.auth.saml.first_use(&assertion.id, until) {
-        return refused("the assertion was used before");
+        return Err("the assertion was used before".into());
     }
     let Some(email) = name_id(&assertion) else {
-        return refused("the assertion names no one");
+        return Err("the assertion names no one".into());
     };
     let values = attribute(&assertion, &cfg.role_attribute);
     let role = AuthSettings::map_role(&cfg.role_mapping, &values, cfg.default_role).map(|r| {
@@ -288,16 +325,40 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
     });
     let e = email.clone();
     let user = match s.with_db(move |db| account(db, &e, role)).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return refused("no role for this user, or the account is off"),
-        Err(e) => return refused(&e.message),
+        Ok(Ok(u)) => u,
+        Ok(Err(why)) => return Err(why.into()),
+        Err(e) => return Err(e.message),
     };
-    match super::api::start_session(&s, user).await {
+    match super::api::start_session(s, user, client, How::Saml).await {
         Ok((mut headers, _)) => {
             headers.insert(header::LOCATION, HeaderValue::from_static("/"));
-            (StatusCode::FOUND, headers).into_response()
+            Ok((StatusCode::FOUND, headers).into_response())
         }
-        Err(e) => refused(&e.message),
+        Err(e) => Err(e.message),
+    }
+}
+
+/// The assertion consumer service: sign in, or back to the sign-in page
+/// with the refusal in the audit record.
+async fn acs(
+    AxumState(s): AxumState<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    Form(f): Form<AcsForm>,
+) -> Response {
+    let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
+    match acs_checked(&s, f, &client).await {
+        Ok(r) => r,
+        Err(why) => {
+            let e = ot_store::AuditEvent::new("saml", "login")
+                .failure()
+                .ip(&client.ip)
+                .detail(json!({ "reason": why, "via": "saml" }));
+            if let Err(e) = s.with_db(move |db| db.audit(&e)).await {
+                tracing::error!(error = %e.message, "recording a refused sign-on failed");
+            }
+            refused(&why)
+        }
     }
 }
 
@@ -382,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn single_sign_on_finds_or_makes_the_account() {
+    fn single_sign_on_finds_or_makes_the_account_and_never_takes_a_local_one() {
         let mut db = ot_store::Db::open_in_memory().unwrap();
         // No role: refused, nothing made.
-        assert!(account(&mut db, "n@x.org", None).unwrap().is_none());
+        assert!(account(&mut db, "n@x.org", None).unwrap().is_err());
         assert_eq!(db.user_count().unwrap(), 0);
         let u = account(&mut db, "n@x.org", Some(Role::Viewer))
             .unwrap()
@@ -397,7 +458,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(u.role, "track_manager");
-        // A local account keeps the role an admin gave it.
+        // No role now: refused, the account is kept.
+        assert!(account(&mut db, "n@x.org", None).unwrap().is_err());
+        // A local account is never signed on by the identity provider, even
+        // with a role it maps (so SAML can't reach a local admin).
         db.create_user(&ot_store::NewUser {
             id: "l1",
             email: "l@x.org",
@@ -407,9 +471,94 @@ mod tests {
             origin: "local",
         })
         .unwrap();
-        let u = account(&mut db, "l@x.org", Some(Role::Viewer))
-            .unwrap()
+        assert_eq!(
+            account(&mut db, "l@x.org", Some(Role::Viewer)).unwrap(),
+            Err("a local account has this email")
+        );
+        assert_eq!(db.user_by_email("l@x.org").unwrap().unwrap().role, "admin");
+        // Nor is a turned-off SAML account.
+        let n = db.user_by_email("n@x.org").unwrap().unwrap();
+        db.update_user(&n.id, None, None, Some(false)).unwrap();
+        assert!(
+            account(&mut db, "n@x.org", Some(Role::Viewer))
+                .unwrap()
+                .is_err()
+        );
+    }
+    /// A response signed by an identity provider verifies through the same
+    /// path the ACS uses, and a tampered one does not. The image runs this
+    /// path with OpenSSL's FIPS provider only (docs/security/fips.md).
+    #[test]
+    fn a_signed_response_verifies_and_a_tampered_one_does_not() {
+        use samael::idp::{CertificateParams, IdentityProvider, KeyType, Rsa};
+        let idp = IdentityProvider::generate_new(KeyType::Rsa(Rsa::Rsa2048)).unwrap();
+        let cert = idp
+            .create_certificate(&CertificateParams {
+                common_name: "https://idp.example.org",
+                issuer_name: "https://idp.example.org",
+                days_until_expiration: 30,
+            })
             .unwrap();
-        assert_eq!(u.role, "admin");
+        let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert.der_data());
+        let metadata = format!(
+            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.org">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{cert_b64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.org/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>"#
+        );
+        let cfg = SamlSettings {
+            enabled: true,
+            idp_metadata_xml: metadata,
+            ..SamlSettings::default()
+        };
+        let base = "https://ot.example.org";
+        let sp = service_provider(&cfg, base).unwrap();
+        let rid = format!("id-{}", crate::fips::random_hex::<16>());
+        // samael's template leaves out the confirmation's expiry, which the
+        // service provider requires; add it, then sign as an IdP would.
+        let mut response = samael::idp::response_builder::build_response_template(
+            &cert,
+            "ann@example.org",
+            &format!("{base}/api/v1/auth/saml/metadata"),
+            "https://idp.example.org",
+            &format!("{base}/api/v1/auth/saml/acs"),
+            &rid,
+            &[],
+        );
+        for c in response
+            .assertion
+            .as_mut()
+            .and_then(|a| a.subject.as_mut())
+            .and_then(|s| s.subject_confirmations.as_mut())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(d) = c.subject_confirmation_data.as_mut() {
+                d.not_on_or_after = Some(Utc::now() + chrono::Duration::minutes(5));
+            }
+        }
+        use samael::crypto::CryptoProvider;
+        let signed = samael::crypto::Crypto::sign_xml(
+            response.to_string().unwrap(),
+            idp.export_private_key_der().unwrap().as_slice(),
+        )
+        .unwrap();
+        let b64 = |x: &str| base64::engine::general_purpose::STANDARD.encode(x);
+        let a = sp
+            .parse_base64_response(&b64(&signed), Some(&[rid.as_str()]))
+            .expect("a signed response verifies");
+        assert_eq!(name_id(&a).as_deref(), Some("ann@example.org"));
+        let forged = signed.replace("ann@example.org", "eve@example.org");
+        assert!(
+            sp.parse_base64_response(&b64(&forged), Some(&[rid.as_str()]))
+                .is_err()
+        );
+        // Answering another request is refused too.
+        assert!(
+            sp.parse_base64_response(&b64(&signed), Some(&["id-other"]))
+                .is_err()
+        );
     }
 }

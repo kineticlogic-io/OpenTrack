@@ -6,9 +6,10 @@ import { api, type MetricsResponse, type SourceRow, type SourceSpec } from '../.
 import { ago, errorMessage, fmtCount, fmtNum, fmtTime } from '../../lib/format'
 import { DetailDrawer } from '../../lib/DetailDrawer'
 import { PipelineView } from './PipelineView'
-import { sourceState } from '../../lib/sourceState'
+import { PIPELINE_COUNTS_INFO, SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
 import { TransportForm } from './TransportForm'
 import { useCan } from '../../auth/context'
+import { InfoTip } from '../../components/InfoTip'
 
 type Revision = Awaited<ReturnType<typeof api.revisions>>[number]
 
@@ -68,7 +69,12 @@ function StatusTab({ source }: { source: SourceRow }) {
       {(link?.last_error || source.status?.last_error) && (
         <div className="error-text">{source.status?.last_error ?? link?.last_error}</div>
       )}
-      <h3 className="subhead">Last 60 minutes</h3>
+      <h3 className="subhead">
+        Last 60 minutes
+        <InfoTip label="Activity">
+          Counts over the last hour. {PIPELINE_COUNTS_INFO}
+        </InfoTip>
+      </h3>
       <div className="counts">
         {totals.length === 0 && <span className="muted">No activity recorded.</span>}
         {totals.map(([k, v]) => (
@@ -90,6 +96,12 @@ function HistoryTab({ id, revision }: { id: string; revision: number }) {
   const shown = revisions.find((r) => r.revision === selected)
   return (
     <div className="stack" style={{ gap: 8 }}>
+      <span className="muted">
+        Every save of this source&apos;s settings, newest last. Click one to see it.
+        <InfoTip label="Revisions">
+          Decision: the number of the decision-log entry that recorded the save, with who made it and the settings before and after.
+        </InfoTip>
+      </span>
       <DataTable
         aria-label="Revisions"
         columns={REVISION_COLUMNS}
@@ -174,14 +186,21 @@ export function SourceDetail({
       width={760}
       title={source.name}
       status={
-        <Badge color={state.color} size="sm" uppercase>
-          {state.label}
-        </Badge>
+        <>
+          <Badge color={state.color} size="sm" uppercase>
+            {state.label}
+          </Badge>
+          <InfoTip label="Source state">{SOURCE_STATES_INFO}</InfoTip>
+        </>
       }
       actions={
         <>
           <label className="row" style={{ gap: 6 }}>
             <span className="muted">Enabled</span>
+            <InfoTip label="Enabled">
+              On: the source connects, reads and publishes its tracks. Off: it stops at once; its settings are kept and its tracks age out
+              as they go unreported. Saving new settings restarts it.
+            </InfoTip>
             <Toggle size="sm" value={source.enabled} disabled={!canAdmin} onChange={toggle} aria-label="Enabled" />
           </label>
           {canAdmin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}

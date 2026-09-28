@@ -1,5 +1,5 @@
 //! Sign-in and roles, modelled on OpenStare's: local accounts with
-//! Argon2id passwords, SAML single sign-on, a signed session cookie, and
+//! PBKDF2 passwords (FIPS), SAML single sign-on, a signed session cookie, and
 //! API tokens for machines. Beside OpenStare it can also accept
 //! OpenStare's own sign-in, so users sign in once.
 //!
@@ -10,10 +10,15 @@
 //! now, so a role change or a deactivation takes effect at once.
 
 pub mod api;
+pub mod maintenance;
 mod openstare;
+pub mod password;
 pub mod policy;
 #[cfg(feature = "saml")]
 mod saml;
+#[cfg(feature = "saml")]
+pub use saml::openssl_fips;
+pub mod sessions;
 pub mod settings;
 
 use std::collections::HashMap;
@@ -96,6 +101,10 @@ pub struct AuthUser {
     /// The session token's id, to sign it out.
     #[serde(skip)]
     pub jti: Option<(String, i64)>,
+    /// A password session that must change its password before anything
+    /// else (a temporary or expired password).
+    #[serde(skip)]
+    pub must_change: bool,
 }
 
 /// A session or API token's payload.
@@ -130,6 +139,8 @@ pub struct Auth {
     http: reqwest::Client,
     openstare_cache: Mutex<HashMap<String, (Instant, Option<AuthUser>)>>,
     attempts: Mutex<HashMap<IpAddr, (f64, Instant)>>,
+    /// When each session was last used, saved in batches.
+    pub activity: sessions::Activity,
     #[cfg(feature = "saml")]
     saml: saml::State,
 }
@@ -159,6 +170,7 @@ impl Auth {
                 .unwrap_or_default(),
             openstare_cache: Mutex::new(HashMap::new()),
             attempts: Mutex::new(HashMap::new()),
+            activity: sessions::Activity::default(),
             #[cfg(feature = "saml")]
             saml: saml::State::default(),
         }
@@ -196,7 +208,7 @@ impl Auth {
         ttl_secs: i64,
     ) -> anyhow::Result<(String, String, i64)> {
         let now = chrono::Utc::now().timestamp();
-        let jti = uuid::Uuid::new_v4().to_string();
+        let jti = crate::fips::uuid_v4();
         let claims = Claims {
             sub: user.id.clone(),
             email: user.email.clone(),
@@ -242,17 +254,26 @@ impl Auth {
         }
     }
 
-    /// The `Set-Cookie` value for a new session.
+    /// The `Set-Cookie` value for a new session. `SameSite=Strict`: the
+    /// SAML POST binding still works, as the cookie is set on the
+    /// cross-site POST's response and only the page load it redirects to
+    /// goes without it; the page's own API calls are same-site.
     pub fn session_cookie(&self, token: &str, max_age_secs: i64) -> HeaderValue {
         let secure = if self.secure_cookies { "; Secure" } else { "" };
         HeaderValue::from_str(&format!(
-            "{COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}{secure}"
+            "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age_secs}{secure}"
         ))
         .unwrap_or_else(|_| HeaderValue::from_static(""))
     }
 
     pub fn clear_cookie(&self) -> HeaderValue {
-        HeaderValue::from_static("ot_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+        if self.secure_cookies {
+            HeaderValue::from_static(
+                "ot_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure",
+            )
+        } else {
+            HeaderValue::from_static("ot_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+        }
     }
 }
 
@@ -280,11 +301,7 @@ pub fn load_secret(common: &Common, env: Option<&str>) -> anyhow::Result<Vec<u8>
         }
     }
     std::fs::create_dir_all(dir)?;
-    let key = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
+    let key = crate::fips::random_hex::<32>();
     write_private(&path, &key).with_context(|| format!("writing {}", path.display()))?;
     tracing::info!(path = %path.display(), "made the session signing key");
     Ok(key.into_bytes())
@@ -303,18 +320,19 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     opts.open(path)?.write_all(text.as_bytes())
 }
 
-/// Argon2id with the crate's defaults (as OpenStare): slow on purpose, so
-/// run it off the async runtime.
+/// PBKDF2-HMAC-SHA256 in the FIPS module (see [`crate::fips`]): slow on
+/// purpose, so run it off the async runtime.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
-    let salt = SaltString::generate(&mut OsRng);
-    argon2::Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| anyhow::anyhow!("hashing the password: {e}"))
+    Ok(crate::fips::hash_password(password))
 }
 
+/// Checks a password against its stored hash. Hashes from before 0.4.0 are
+/// Argon2id; they still verify (and are rehashed with PBKDF2 at that
+/// sign-in, see [`needs_rehash`]), so no one is locked out by the change.
 pub fn verify_password(password: &str, hash: &str) -> bool {
+    if let Some(ok) = crate::fips::verify_password(password, hash) {
+        return ok;
+    }
     use argon2::password_hash::{PasswordHash, PasswordVerifier};
     PasswordHash::new(hash).is_ok_and(|h| {
         argon2::Argon2::default()
@@ -322,6 +340,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
             .is_ok()
     })
 }
+
+pub use crate::fips::needs_rehash;
 
 pub const MIN_PASSWORD: usize = 8;
 
@@ -348,11 +368,13 @@ pub fn bootstrap_admin(
     }
     let (email, password, file) = match (email, password) {
         (Some(e), Some(p)) if !e.trim().is_empty() => {
-            check_password(p).map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
+            settings::PasswordPolicy::default()
+                .check(p)
+                .map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
             (e.trim().to_owned(), p.to_owned(), None)
         }
         _ => {
-            let p = uuid::Uuid::new_v4().simple().to_string()[..20].to_owned();
+            let p = password::generate();
             let dir = common
                 .sqlite
                 .parent()
@@ -363,14 +385,14 @@ pub fn bootstrap_admin(
             write_private(
                 &path,
                 &format!(
-                    "OpenTrack's first account. Sign in, then change the password (and delete this file).\n\nemail:    admin@opentrack.local\npassword: {p}\n"
+                    "OpenTrack's first account. Sign in and choose a new password (you will be asked), then delete this file.\n\nemail:    admin@opentrack.local\npassword: {p}\n"
                 ),
             )?;
             ("admin@opentrack.local".to_owned(), p, Some(path))
         }
     };
     let hash = hash_password(&password)?;
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = crate::fips::uuid_v4();
     db.create_user(&ot_store::NewUser {
         id: &id,
         email: &email,
@@ -379,6 +401,10 @@ pub fn bootstrap_admin(
         password_hash: Some(&hash),
         origin: "local",
     })?;
+    if file.is_some() {
+        // A made-up password is a temporary one.
+        db.set_must_change_password(&id, true)?;
+    }
     db.record(&ot_store::Decision {
         after: Some(json!({ "email": email, "role": "admin" })),
         ..ot_store::Decision::new("system", "create_user").reason("the first account")
@@ -416,23 +442,38 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// The account a token of ours names, if the token still stands.
-async fn from_token(s: &AppState, token: &str, via: Via) -> Option<AuthUser> {
+/// The account a token of ours names, if the token still stands (and, for
+/// a session, its session is live: not ended, not idle too long).
+/// `idle_ms`: how long the browser says its user has been idle.
+async fn from_token(s: &AppState, token: &str, via: Via, idle_ms: i64) -> Option<AuthUser> {
     let claims = s.auth.decode(token)?;
     if (via == Via::ApiToken) != (claims.kind == "api") {
         return None;
     }
     let (sub, jti) = (claims.sub.clone(), claims.jti.clone());
-    let (user, revoked) = s
-        .with_db(move |db| Ok((db.user(&sub)?, db.token_revoked(&jti)?)))
+    let session = via == Via::Session;
+    let (user, revoked, row) = s
+        .with_db(move |db| {
+            let row = if session { db.session(&jti)? } else { None };
+            Ok((db.user(&sub)?, db.token_revoked(&jti)?, row))
+        })
         .await
         .ok()?;
     let user = user?;
-    if !user.active || revoked || claims.iat * 1000 < user.tokens_valid_from_ms {
+    // A session's own row says when it began (to the millisecond), so a
+    // session started just after "sign out everywhere" stands; an API
+    // token's row is revoked with it, so its issue time only needs to be
+    // before that second.
+    if !user.active || revoked || (!session && claims.iat < user.tokens_valid_from_ms / 1000) {
+        return None;
+    }
+    let role = Role::parse(&user.role)?;
+    if session && !sessions::alive(s, &user, role, row.as_ref(), idle_ms).await {
         return None;
     }
     Some(AuthUser {
-        role: Role::parse(&user.role)?,
+        role,
+        must_change: session && user.must_change_password,
         id: user.id,
         email: user.email,
         name: user.name,
@@ -462,6 +503,7 @@ async fn from_cert(s: &AppState, cert: &PeerCert) -> Option<AuthUser> {
         name: user.name,
         via: Via::ClientCert,
         jti: None,
+        must_change: false,
     })
 }
 
@@ -480,6 +522,7 @@ pub async fn identify(
             role: Role::Admin,
             via: Via::Disabled,
             jti: None,
+            must_change: false,
         });
     }
     if let Some(cert) = cert
@@ -489,12 +532,12 @@ pub async fn identify(
     }
     let bearer = bearer(headers);
     if let Some(t) = &bearer
-        && let Some(u) = from_token(s, t, Via::ApiToken).await
+        && let Some(u) = from_token(s, t, Via::ApiToken, 0).await
     {
         return Some(u);
     }
     if let Some(t) = cookie(headers, COOKIE)
-        && let Some(u) = from_token(s, &t, Via::Session).await
+        && let Some(u) = from_token(s, &t, Via::Session, sessions::client_idle_ms(headers)).await
     {
         return Some(u);
     }
@@ -524,6 +567,16 @@ pub async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> R
     let Some(user) = identify(&s, req.headers(), cert.as_ref()).await else {
         return deny(StatusCode::UNAUTHORIZED, "sign in first");
     };
+    if user.must_change && !policy::allowed_before_password_change(req.uri().path()) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "change your password first",
+                "code": "password_change_required",
+            })),
+        )
+            .into_response();
+    }
     if let policy::Need::Role(role) = need
         && user.role < role
     {
@@ -553,7 +606,7 @@ mod tests {
     #[test]
     fn passwords_hash_and_verify() {
         let h = hash_password("correct horse").unwrap();
-        assert!(h.starts_with("$argon2id$"));
+        assert!(h.starts_with("$pbkdf2-sha256$"));
         assert!(verify_password("correct horse", &h));
         assert!(!verify_password("wrong horse", &h));
         assert!(!verify_password("x", "not a hash"));
@@ -575,6 +628,12 @@ mod tests {
             updated_at_ms: 0,
             last_login_at_ms: None,
             tokens_valid_from_ms: 0,
+            password_changed_at_ms: None,
+            must_change_password: false,
+            failed_logins: 0,
+            locked_until_ms: None,
+            active_since_ms: None,
+            disabled_reason: None,
         };
         let (t, jti, _) = a.issue(&u, "session", 60).unwrap();
         let c = a.decode(&t).unwrap();

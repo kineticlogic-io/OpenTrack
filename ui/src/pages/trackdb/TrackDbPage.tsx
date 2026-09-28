@@ -89,7 +89,7 @@ const COLUMNS: DataTableColumn<TrackRow>[] = [
     width: 100,
     render: (t) =>
       t.notices > 0 ? (
-        <Badge color="warning" size="sm" title="The entity replaced values a feed reports">
+        <Badge color="warning" size="sm">
           replaced {t.notices}
         </Badge>
       ) : t.entity_id ? (
@@ -397,6 +397,16 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
         badge={rows ? (filtered ? `${shown.length.toLocaleString()} of ${all.length.toLocaleString()}` : all.length.toLocaleString()) : undefined}
         persistKey="ot.panel.tracktable"
         titleActions={
+          <>
+          <InfoTip label="Track columns">
+            Group / pair: a group track and its member count, or a track that is in a group or paired with others (hover the badge for
+            which). Force: the OTH-GOLD force code (0-39) for its domain and affiliation, e.g. 09 friendly surface, 07 hostile surface, 32
+            unknown. State: tentative until it has 3 reports (the server default); confirmed; lost when unreported for a while (60 s for air,
+            15 min surface and land, 30 min subsurface) until a report brings it back; dropped after 6 h without one (default), when it
+            leaves the table and is deleted downstream. Entity: resolves to a registry
+            entity; replaced N: the entity overrode N values its feeds report. Sources: each contributing source as source/its track
+            key.
+          </InfoTip>
           <div className="search">
             <TbSearch aria-hidden />
             <Input
@@ -409,6 +419,11 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               spellCheck={false}
             />
           </div>
+          <InfoTip label="Search">
+            Matches any part of the track number, name, callsign, GOLD name, class, SIDC, a source/key, or an identifier as scheme:value
+            (e.g. mmsi:235009870). Case does not matter.
+          </InfoTip>
+          </>
         }
         actions={
           <>
@@ -432,6 +447,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               <Button size="sm" variant="ghost" disabled={shown.length === 0} onClick={() => setChecked(shown.slice(0, 200).map((t) => t.track_id))}>
                 Select shown
               </Button>
+              <InfoTip label="Select shown">Ticks the tracks the table shows after search and filters, up to 200 of them.</InfoTip>
             </>
           ) : (
             <>
@@ -441,7 +457,6 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 variant="ghost"
                 icon={<TbLink />}
                 disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
-                title="The same object: keep the tracks separate, each listing the others"
                 onClick={pair}
               >
                 Pair
@@ -451,7 +466,6 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 variant="ghost"
                 icon={<TbArrowMerge />}
                 disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
-                title="One track survives with the others' history and sources"
                 onClick={() => setMerging(ticked[0])}
               >
                 Merge
@@ -461,7 +475,6 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 variant="ghost"
                 icon={<TbUsersGroup />}
                 disabled={!canManage || busy || tickedGroups.length > 1}
-                title={tickedGroups.length === 1 ? (tickedTracks.length ? 'Add the ticked tracks to the ticked group' : 'Edit the group') : 'Form a group of the ticked tracks'}
                 onClick={group}
               >
                 {tickedGroups.length === 1 ? (tickedTracks.length ? 'Add to group' : 'Edit group') : 'Group'}

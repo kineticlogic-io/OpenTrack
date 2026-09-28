@@ -1,0 +1,65 @@
+/* The Help page: a section list beside the guide, stacked when narrow. stareSDK tokens only. */
+.help-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: start;
+}
+
+.help-nav {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+}
+
+.help-tree {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+
+.help-doc {
+  min-width: 0;
+}
+
+.help-doc .wiki-md {
+  max-width: 980px;
+}
+
+.help-heading {
+  scroll-margin-top: var(--space-md);
+}
+
+.help-anchor {
+  margin-left: var(--space-sm);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  opacity: 0;
+}
+
+.help-heading:hover .help-anchor,
+.help-anchor:focus {
+  opacity: 1;
+}
+
+.help-table {
+  overflow-x: auto;
+}
+
+.help-repo-link {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 900px) {
+  .help-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .help-nav {
+    position: static;
+  }
+
+  .help-tree {
+    max-height: 320px;
+  }
+}

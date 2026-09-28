@@ -1573,7 +1573,11 @@ impl Engine {
         if contribs.is_empty() {
             return Ok(());
         }
-        let (view, _) = correlate::best_view(&contribs, self.settings.correlation.freshness_secs);
+        let (view, _) = correlate::best_view(
+            &contribs,
+            self.settings.correlation.freshness_secs,
+            &self.settings.correlation.labels,
+        );
         let k = correlate::kinematic(obs, &view, &kin);
         let far = k.d2 > correlate::chi2_quantile(split.gate_probability, k.dof);
         if self.recording {
@@ -2481,8 +2485,13 @@ impl Engine {
                     })
             })
             .collect();
-        (!contribs.is_empty())
-            .then(|| correlate::best_view(&contribs, self.settings.correlation.freshness_secs))
+        (!contribs.is_empty()).then(|| {
+            correlate::best_view(
+                &contribs,
+                self.settings.correlation.freshness_secs,
+                &self.settings.correlation.labels,
+            )
+        })
     }
 
     /// Sources still reporting for a track (within the kinematic max age of
@@ -3087,6 +3096,9 @@ mod tests {
         let common = Common {
             sqlite: dir.path().join("ot.db"),
             redis: url,
+            redis_ca: None,
+            redis_cert: None,
+            redis_key: None,
             redis_namespace: format!(
                 "ot-engine-test-{site}-{}-{}",
                 std::process::id(),
@@ -3099,6 +3111,9 @@ mod tests {
                 token: None,
                 user: None,
                 password: None,
+                ca: None,
+                cert: None,
+                key: None,
                 stream: "TRACKS".into(),
                 tracks_subject: "tracks".into(),
                 max_age_hours: 24.0,

@@ -94,7 +94,10 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <Num width={70} label="Prior probability" value={k.prior_probability} onChange={(prior_probability) => setK({ prior_probability })} />
         </div>
       </Row>
-      <Row label="Comparisons">
+      <Row
+        label="Comparisons"
+        hint="How much evidence a pairing needs: at least so many of the last so many comparisons, all within the window (s), each at least the given seconds after the previous one, since consecutive reports are not independent. Defaults: 3 of 5 within 30 s, 3 s apart."
+      >
         <div className="num-row">
           <Num width={58} label="Fewest comparisons" value={k.m} step={1} onChange={(m) => setK({ m })} />
           <span className="muted">of the last</span>
@@ -193,19 +196,39 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           )}
         />
       )}
-      <h4 className="subhead">Identifier pairing</h4>
-      <Row label="Sanity gate (m)" hint="Plus the domain's top speed × time apart; a farther identifier match is refused.">
+      <h4 className="subhead">
+        Identifier pairing
+        <InfoTip label="Identifier pairing">
+          Tracks that share an identifier (the same mmsi, icao, callsign…) or resolve to the same registry entity with corroboration pair
+          whatever the approach and mode, if they pass this sanity gate. Evidence-only schemes (elnot) never pair tracks on their own; a
+          shared value only strengthens a kinematic comparison.
+        </InfoTip>
+      </h4>
+      <Row label="Sanity gate (m)" hint="Allowed distance at zero time apart (default 10 000 m), plus the domain's top speed × time apart (surface 40 m/s, ground 70, air or unknown 400, space 8000). A farther identifier match is refused: it stops a reused or spoofed identifier pulling distant objects together.">
         <Num label="Sanity gate" value={value.gate.base_m} onChange={(base_m) => onChange({ ...value, gate: { ...value.gate, base_m } })} />
       </Row>
-      <h4 className="subhead">Best source</h4>
-      <Row label="Freshness (s)" hint="Reports this close to the newest compete on accuracy for the position.">
+      <h4 className="subhead">
+        Best source
+        <InfoTip label="Best source">
+          How a paired track picks what to publish from its source tracks. Position: the report with the smallest uncertainty among those
+          recent enough, then source priority, then the newest. Name and classification: a registry-corroborated report first, then
+          priority.
+        </InfoTip>
+      </h4>
+      <Row label="Freshness (s)" hint="Reports this many seconds or less older than the newest compete on accuracy for the position; older ones are ignored. Default 60 s.">
         <Num label="Freshness" value={value.freshness_secs} onChange={(freshness_secs) => onChange({ ...value, freshness_secs })} />
       </Row>
-      <h4 className="subhead">Splits</h4>
-      <Row label="Propose splits" hint="When a source track stops agreeing with the rest of its track.">
+      <h4 className="subhead">
+        Splits
+        <InfoTip label="Splits">
+          A source track that stops agreeing with the rest of its track (a sensor track that followed the wrong vessel through a crossing, a
+          wrongly shared identifier) is split onto a new track, and the two are recorded as different objects so they do not pair again.
+        </InfoTip>
+      </h4>
+      <Row label="Propose splits" hint="Yes: a split waits in Suggestions for an operator to accept or reject (unless Split without asking is on). No and not automatic: no splits at all. Default yes.">
         <FieldSelect ariaLabel="Propose splits" fields={YES_NO} value={sp.propose ? 'yes' : 'no'} onChange={(v) => setS({ propose: v === 'yes' })} style={{ width: 90 }} />
       </Row>
-      <Row label="Split without asking">
+      <Row label="Split without asking" hint="Yes: the engine splits at once and records the decision, whatever Propose splits says. No: splits are only proposed. Default yes.">
         <FieldSelect ariaLabel="Split automatically" fields={YES_NO} value={sp.automatic ? 'yes' : 'no'} onChange={(v) => setS({ automatic: v === 'yes' })} style={{ width: 90 }} />
       </Row>
       <Row
