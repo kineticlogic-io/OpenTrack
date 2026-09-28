@@ -560,6 +560,14 @@ async fn put_settings(
     Ok(get_settings(State(s)).await)
 }
 
+/// SAML is built in and OpenSSL (which checks its signatures) is in FIPS mode.
+fn saml_ready() -> bool {
+    #[cfg(feature = "saml")]
+    return super::saml::openssl_fips();
+    #[cfg(not(feature = "saml"))]
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -835,12 +843,3 @@ mod tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
     }
 }
-
-/// SAML is built in and OpenSSL (which checks its signatures) is in FIPS mode.
-fn saml_ready() -> bool {
-    #[cfg(feature = "saml")]
-    return super::saml::openssl_fips();
-    #[cfg(not(feature = "saml"))]
-    false
-}
-

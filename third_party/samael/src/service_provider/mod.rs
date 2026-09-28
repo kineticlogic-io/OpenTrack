@@ -707,7 +707,8 @@ fn root_element_local_name(xml: &str) -> Option<String> {
     loop {
         match reader.read_event() {
             Ok(XmlEvent::Start(start)) | Ok(XmlEvent::Empty(start)) => {
-                return Some(String::from_utf8_lossy(start.local_name().as_ref()).into_owned());
+                // OpenTrack: quick-xml 0.42 (RUSTSEC-2026-0194/0195) gives the name as text.
+                return Some(start.local_name().as_ref().to_owned());
             }
             Ok(XmlEvent::Eof) => return None,
             Ok(_) => {}

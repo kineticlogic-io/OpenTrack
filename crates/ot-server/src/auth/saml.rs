@@ -439,4 +439,80 @@ mod tests {
             .unwrap();
         assert_eq!(u.role, "admin");
     }
+    /// A response signed by an identity provider verifies through the same
+    /// path the ACS uses, and a tampered one does not. The image runs this
+    /// path with OpenSSL's FIPS provider only (docs/security/fips.md).
+    #[test]
+    fn a_signed_response_verifies_and_a_tampered_one_does_not() {
+        use samael::idp::{CertificateParams, IdentityProvider, KeyType, Rsa};
+        let idp = IdentityProvider::generate_new(KeyType::Rsa(Rsa::Rsa2048)).unwrap();
+        let cert = idp
+            .create_certificate(&CertificateParams {
+                common_name: "https://idp.example.org",
+                issuer_name: "https://idp.example.org",
+                days_until_expiration: 30,
+            })
+            .unwrap();
+        let cert_b64 = base64::engine::general_purpose::STANDARD.encode(cert.der_data());
+        let metadata = format!(
+            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.org">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{cert_b64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.org/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>"#
+        );
+        let cfg = SamlSettings {
+            enabled: true,
+            idp_metadata_xml: metadata,
+            ..SamlSettings::default()
+        };
+        let base = "https://ot.example.org";
+        let sp = service_provider(&cfg, base).unwrap();
+        let rid = format!("id-{}", crate::fips::random_hex::<16>());
+        // samael's template leaves out the confirmation's expiry, which the
+        // service provider requires; add it, then sign as an IdP would.
+        let mut response = samael::idp::response_builder::build_response_template(
+            &cert,
+            "ann@example.org",
+            &format!("{base}/api/v1/auth/saml/metadata"),
+            "https://idp.example.org",
+            &format!("{base}/api/v1/auth/saml/acs"),
+            &rid,
+            &[],
+        );
+        for c in response
+            .assertion
+            .as_mut()
+            .and_then(|a| a.subject.as_mut())
+            .and_then(|s| s.subject_confirmations.as_mut())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(d) = c.subject_confirmation_data.as_mut() {
+                d.not_on_or_after = Some(Utc::now() + chrono::Duration::minutes(5));
+            }
+        }
+        use samael::crypto::CryptoProvider;
+        let signed = samael::crypto::Crypto::sign_xml(
+            response.to_string().unwrap(),
+            idp.export_private_key_der().unwrap().as_slice(),
+        )
+        .unwrap();
+        let b64 = |x: &str| base64::engine::general_purpose::STANDARD.encode(x);
+        let a = sp
+            .parse_base64_response(&b64(&signed), Some(&[rid.as_str()]))
+            .expect("a signed response verifies");
+        assert_eq!(name_id(&a).as_deref(), Some("ann@example.org"));
+        let forged = signed.replace("ann@example.org", "eve@example.org");
+        assert!(
+            sp.parse_base64_response(&b64(&forged), Some(&[rid.as_str()]))
+                .is_err()
+        );
+        // Answering another request is refused too.
+        assert!(
+            sp.parse_base64_response(&b64(&signed), Some(&["id-other"]))
+                .is_err()
+        );
+    }
 }

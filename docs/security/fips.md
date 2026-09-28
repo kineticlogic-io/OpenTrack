@@ -46,6 +46,13 @@ apply.
 | NATS `.creds` | Ed25519 (FIPS 186-5) over the server nonce |
 | Plugin identity | SHA-256 |
 
+### SAML signatures
+
+The OpenSSL FIPS provider verifies RSA and ECDSA signatures with SHA-2
+digests. Set the identity provider to sign with RSA-SHA256 or stronger. Under
+SP 800-131A, SHA-1 signatures are acceptable only for verifying legacy data,
+so treat a provider still signing with SHA-1 as a finding.
+
 ### Passwords from earlier versions
 
 Before 0.4.0, passwords were hashed with Argon2id, which is not an approved
@@ -68,9 +75,10 @@ uses them for security:
 | `rand` 0.9 (via `samael`) | samael's default SAML request id | Replaced: OpenTrack overwrites the id with 128 bits from AWS-LC |
 | `argon2`, `blake2` | Checking pre-0.4.0 password hashes | Verification only, until each account signs in once |
 
-`ring` is not in the build. rumqttc 0.25.1 pulled it in through an old
-webpki, only for an error type. `third_party/rumqttc` is that release with
-webpki's `ring` feature turned off.
+`ring` is not in the build. rumqttc 0.25.1 pulled it in through webpki
+0.102, only for that crate's error type. `third_party/rumqttc` is that
+release moved to webpki 0.103 without the `ring` feature. cargo-deny bans
+`ring`, so CI fails if it comes back.
 
 ## Building
 

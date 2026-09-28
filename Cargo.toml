@@ -9,6 +9,8 @@ version = "0.3.4"
 edition = "2024"
 repository = "https://github.com/phornstein/OpenTrack"
 rust-version = "1.90"
+# Private: never published to a registry.
+publish = false
 
 [workspace.dependencies]
 ot-core = { path = "crates/ot-core" }
