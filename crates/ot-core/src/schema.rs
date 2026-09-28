@@ -65,6 +65,106 @@ impl SecurityLabel {
         }
         Ok(())
     }
+    /// The label of a track fused from several sources' reports (given
+    /// highest priority first), so it is never marked below what went into
+    /// it:
+    ///
+    /// - `classification`: the highest of theirs in `order` (lowest
+    ///   first; see [`classification_rank`]). One not in the order ranks
+    ///   above every known one (fail safe); among equals, the first.
+    /// - `restrictions`: every one of theirs (case-insensitive, first
+    ///   spelling kept).
+    /// - `sharing`: a releasability list (comma-separated, e.g.
+    ///   `USA, GBR, CAN`): only what every labelled source releases to, the
+    ///   intersection; `NONE` when that is empty. A source without one
+    ///   restricts nothing.
+    ///
+    /// `None` when no source has a label.
+    pub fn combine<'a>(
+        labels: impl IntoIterator<Item = &'a SecurityLabel>,
+        order: &[String],
+    ) -> Option<SecurityLabel> {
+        let labels: Vec<&SecurityLabel> = labels.into_iter().collect();
+        let rank =
+            |l: &SecurityLabel| classification_rank(&l.classification, order).unwrap_or(usize::MAX);
+        let mut top = *labels.first()?;
+        for l in &labels[1..] {
+            if rank(l) > rank(top) {
+                top = l;
+            }
+        }
+        let mut restrictions: Vec<String> = Vec::new();
+        for r in labels.iter().flat_map(|l| &l.restrictions) {
+            let r = r.trim();
+            if !restrictions.iter().any(|x| x.eq_ignore_ascii_case(r)) {
+                restrictions.push(r.to_owned());
+            }
+        }
+        let mut sharing: Option<Vec<String>> = None;
+        for list in labels.iter().filter_map(|l| l.sharing.as_deref()) {
+            let items: Vec<String> = list
+                .split(',')
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .map(str::to_owned)
+                .collect();
+            sharing = Some(match sharing {
+                None => items,
+                Some(have) => have
+                    .into_iter()
+                    .filter(|x| items.iter().any(|y| y.eq_ignore_ascii_case(x)))
+                    .collect(),
+            });
+        }
+        Some(SecurityLabel {
+            classification: top.classification.clone(),
+            restrictions,
+            sharing: sharing.map(|v| {
+                if v.is_empty() {
+                    "NONE".to_owned()
+                } else {
+                    v.join(", ")
+                }
+            }),
+        })
+    }
+}
+
+/// The classification order a fused track's label is chosen by, lowest
+/// first (settings can replace it).
+pub const DEFAULT_CLASSIFICATION_ORDER: [&str; 5] = [
+    "UNCLASSIFIED",
+    "CUI",
+    "CONFIDENTIAL",
+    "SECRET",
+    "TOP SECRET",
+];
+
+/// A classification as compared: the part before any `//` caveats, upper
+/// case, `_` and `-` as spaces, spaces collapsed, and the usual
+/// abbreviations (U, C, S, TS) spelt out.
+pub fn normalize_classification(c: &str) -> String {
+    let head = c.split("//").next().unwrap_or("");
+    let words: Vec<String> = head
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(str::to_uppercase)
+        .collect();
+    let joined = words.join(" ");
+    match joined.as_str() {
+        "U" => "UNCLASSIFIED".into(),
+        "C" => "CONFIDENTIAL".into(),
+        "S" => "SECRET".into(),
+        "TS" => "TOP SECRET".into(),
+        _ => joined,
+    }
+}
+
+/// Where a classification stands in `order` (lowest first); `None` when
+/// it is not there.
+pub fn classification_rank(c: &str, order: &[String]) -> Option<usize> {
+    let c = normalize_classification(c);
+    order.iter().position(|o| normalize_classification(o) == c)
 }
 
 /// A GOLD XPOS-style uncertainty ellipse: semi-axes are one standard deviation.
@@ -780,5 +880,57 @@ pub(crate) mod tests {
             cross: None,
         };
         assert!(!bad.check());
+    }
+
+    fn order() -> Vec<String> {
+        DEFAULT_CLASSIFICATION_ORDER.map(String::from).to_vec()
+    }
+
+    fn label(c: &str, r: &[&str], sharing: Option<&str>) -> SecurityLabel {
+        SecurityLabel {
+            classification: c.into(),
+            restrictions: r.iter().map(|x| x.to_string()).collect(),
+            sharing: sharing.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn classifications_rank_by_the_order_with_abbreviations() {
+        let o = order();
+        let r = |c: &str| classification_rank(c, &o);
+        assert_eq!(r("unclassified"), Some(0));
+        assert_eq!(r("U"), Some(0));
+        assert_eq!(r("cui"), Some(1));
+        assert_eq!(r("C"), Some(2));
+        assert_eq!(r("s"), Some(3));
+        assert_eq!(r("Secret//NOFORN"), Some(3));
+        assert_eq!(r("TS"), Some(4));
+        assert_eq!(r("top_secret"), Some(4));
+        assert_eq!(r("COSMIC TOP SECRET"), None);
+    }
+
+    #[test]
+    fn a_fused_label_is_the_highest_with_every_restriction() {
+        let o = order();
+        let low = label("UNCLASSIFIED", &["FOUO"], Some("USA, GBR, CAN, AUS"));
+        let high = label("S", &["NOFORN", "fouo"], Some("usa, gbr"));
+        let mid = label("CONFIDENTIAL", &[], None);
+        // Highest priority first: the low one leads, the high one wins.
+        let l = SecurityLabel::combine([&low, &mid, &high], &o).unwrap();
+        assert_eq!(l.classification, "S");
+        assert_eq!(l.restrictions, ["FOUO", "NOFORN"]);
+        assert_eq!(l.sharing.as_deref(), Some("USA, GBR"));
+        // Nothing in common: releasable to none.
+        let other = label("SECRET", &[], Some("FRA"));
+        let l = SecurityLabel::combine([&high, &other], &o).unwrap();
+        assert_eq!(l.sharing.as_deref(), Some("NONE"));
+        assert_eq!(l.classification, "S", "equals: the first");
+        // An unknown classification outranks every known one.
+        let odd = label("SPECIAL HANDLING", &[], None);
+        let top = label("TOP SECRET", &[], None);
+        let l = SecurityLabel::combine([&top, &odd], &o).unwrap();
+        assert_eq!(l.classification, "SPECIAL HANDLING");
+        assert!(SecurityLabel::combine([], &o).is_none());
+        assert!(l.validate().is_ok());
     }
 }
