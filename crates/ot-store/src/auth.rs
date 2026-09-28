@@ -268,6 +268,7 @@ impl Db {
         }
         if active == Some(false) {
             self.end_user_sessions(id, "disabled", None)?;
+            self.revoke_api_tokens(id, now)?;
         }
         self.user(id)?
             .ok_or_else(|| StoreError::NotFound(format!("user {id}")))
@@ -475,6 +476,7 @@ impl Db {
                 params![u.id, now],
             )?;
             self.end_user_sessions(&u.id, "disabled", None)?;
+            self.revoke_api_tokens(&u.id, now)?;
         }
         Ok(stale)
     }
@@ -635,6 +637,16 @@ impl Db {
         Ok(())
     }
 
+    /// Revoke every API token an account holds, for good: turning the
+    /// account on again does not bring them back.
+    fn revoke_api_tokens(&mut self, id: &str, now: i64) -> Result<()> {
+        self.connection().execute(
+            "UPDATE api_tokens SET revoked_at_ms = ?2 WHERE user_id = ?1 AND revoked_at_ms IS NULL",
+            params![id, now],
+        )?;
+        Ok(())
+    }
+
     /// End every session and API token of an account issued before now.
     pub fn revoke_user_tokens(&mut self, id: &str) -> Result<()> {
         let now = now_ms();
@@ -642,10 +654,7 @@ impl Db {
             "UPDATE users SET tokens_valid_from_ms = ?2 WHERE id = ?1",
             params![id, now],
         )?;
-        self.connection().execute(
-            "UPDATE api_tokens SET revoked_at_ms = ?2 WHERE user_id = ?1 AND revoked_at_ms IS NULL",
-            params![id, now],
-        )?;
+        self.revoke_api_tokens(id, now)?;
         self.end_user_sessions(id, "revoked", None)?;
         Ok(())
     }
@@ -803,6 +812,14 @@ mod tests {
         db.revoke_api_token("t1").unwrap();
         assert!(db.token_revoked("t1").unwrap());
         assert_eq!(db.api_tokens().unwrap()[0].user_email, "Ann@Example.org");
+        // Turning an account off revokes its API tokens for good: turning it
+        // on again does not bring them back.
+        db.update_user("u1", None, None, Some(true)).unwrap();
+        db.add_api_token("t2", "another", "u1", "admin@x", now_ms() + 60_000)
+            .unwrap();
+        db.update_user("u1", None, None, Some(false)).unwrap();
+        db.update_user("u1", None, None, Some(true)).unwrap();
+        assert!(db.token_revoked("t2").unwrap());
 
         assert_eq!(db.auth_settings().unwrap(), serde_json::json!({}));
         db.put_auth_settings(&serde_json::json!({"saml": {"enabled": false}}))

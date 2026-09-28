@@ -7,28 +7,31 @@ themselves are described in the administrator guide, under
 
 ## Before first start
 
-1. **Use the image.** Only the image has OpenSSL's FIPS provider, so only it has SAML under FIPS.
+1. **Use a signed image.** Verify a release image before running it:
+   `cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/phornstein/opentrack@<digest>`
+   ([supply-chain.md](supply-chain.md)).
+2. **Use the image.** Only the image has OpenSSL's FIPS provider, so only it has SAML under FIPS.
    Its base images are pinned by digest. Scan the built image with your scanner (for example
    `grype` or `trivy`) and keep the report ([supply-chain.md](supply-chain.md)).
-2. **Run it hardened.** `docker-compose.yml` already sets:
+3. **Run it hardened.** `docker-compose.yml` already sets:
    - `read_only: true`, with `tmpfs` for `/tmp` and `/home/opentrack`;
    - `cap_drop: [ALL]`;
    - `security_opt: no-new-privileges`.
 
    Keep them. The only writable volume is `/data`.
-3. **Set the first admin** with `OT_ADMIN_EMAIL` and a policy-compliant `OT_ADMIN_PASSWORD`, or use
+4. **Set the first admin** with `OT_ADMIN_EMAIL` and a policy-compliant `OT_ADMIN_PASSWORD`, or use
    the temporary password in `initial-admin.txt`. The first sign-in forces a change either way.
    Then delete `initial-admin.txt`.
-4. **Set `OT_SESSION_SECRET`** (32 characters or more) from your secret store, or protect
+5. **Set `OT_SESSION_SECRET`** (32 characters or more) from your secret store, or protect
    `session.key` in the data directory. Anyone with it can mint sessions.
-5. **Never set `OT_AUTH=off`** outside a laboratory. It makes every caller an admin; the server
+6. **Never set `OT_AUTH=off`** outside a laboratory. It makes every caller an admin; the server
    warns every minute and the UI shows a red banner.
 
 ## Encrypt every link
 
 | Link | Settings |
 |---|---|
-| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
+| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |
 | Feeds | each source's transport TLS settings; don't use `insecure_skip_verify` |
@@ -39,9 +42,8 @@ TLS runs only FIPS-approved suites (docs/security/fips.md).
 
 - **SAML:** the identity provider signs with RSA-SHA256 or stronger. Keep **Allow admin** off
   unless the identity provider should make admins.
-- **Local accounts:** don't create a local account for anyone who should come through SAML. A
-  SAML sign-in whose email matches a local account signs in *as* that account, with its role
-  (open finding F-1 in [stig-mapping.md](stig-mapping.md)).
+- **Local accounts:** SAML never signs in to a local account (a matching email is refused), so
+  keep local accounts to break-glass and service use.
 - **Password sign-in:** with single sign-on in place, consider **Disable password sign-in**. Keep
   one break-glass local admin, exempt from inactivity (**Never turn off**).
 - **Notice and consent:** turn on the DoD notice and consent banner (Settings → Banners) with
@@ -69,7 +71,7 @@ Loosening any of them needs a documented risk acceptance.
   directory: it holds password hashes and the session key. See the administrator guide.
 - **Least privilege:** viewers for monitoring and read-only services; few admins; one API token
   per service, with an expiry.
-- **Keep secrets out of source specs** (`${env:NAME}`). Every signed-in user can read source specs
-  (open finding F-2).
+- **Keep secrets out of source specs** (`${env:NAME}`). Only admins see secret fields, but inline
+  secrets still sit in the database and its backups.
 - **Patch:** CI runs `cargo deny` (RustSec) and `npm audit`. Rebuild the image when either reports
   something, and when Debian bookworm ships security updates.

@@ -1594,6 +1594,13 @@ mod tests {
             let leaf =
                 |name: &str, sans: Vec<String>, usage, issuer: &CertifiedIssuer<'_, KeyPair>| {
                     let mut params = CertificateParams::new(sans).unwrap();
+                    // Known serials, for the revocation lists below.
+                    let serial: u64 = match name {
+                        "client-a" => 0xa1,
+                        "client-r" => 0xbad,
+                        _ => 0x51,
+                    };
+                    params.serial_number = Some(serial.into());
                     params.distinguished_name.push(DnType::CommonName, name);
                     params
                         .distinguished_name
@@ -1613,7 +1620,31 @@ mod tests {
                 &ours,
             );
             leaf("client-a", vec![], client.clone(), &ours);
+            leaf("client-r", vec![], client.clone(), &ours);
             leaf("client-x", vec![], client, &stranger);
+            // Revocation lists from our CA: a current one revoking client-r,
+            // and one past its next update.
+            let crl = |name: &str, next_year: i32| {
+                use rcgen::{CertificateRevocationListParams, KeyIdMethod, RevokedCertParams};
+                let list = CertificateRevocationListParams {
+                    this_update: rcgen::date_time_ymd(2020, 1, 1),
+                    next_update: rcgen::date_time_ymd(next_year, 1, 1),
+                    crl_number: 1u64.into(),
+                    issuing_distribution_point: None,
+                    revoked_certs: vec![RevokedCertParams {
+                        serial_number: 0xbadu64.into(),
+                        revocation_time: rcgen::date_time_ymd(2020, 1, 1),
+                        reason_code: None,
+                        invalidity_date: None,
+                    }],
+                    key_identifier_method: KeyIdMethod::Sha256,
+                }
+                .signed_by(&ours)
+                .unwrap();
+                write(name, list.pem().unwrap());
+            };
+            crl("crl.pem", 2099);
+            crl("crl-expired.pem", 2021);
             Pki { dir }
         }
 
@@ -1637,6 +1668,7 @@ mod tests {
                 key_file: self.path("server.key"),
                 client_ca_file: mutual.then(|| self.path("ca.pem")),
                 client_cert_optional: false,
+                client_crl_files: Vec::new(),
             }
         }
     }
@@ -1731,6 +1763,58 @@ mod tests {
             );
         }
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_revoked_client_certificate_is_refused() {
+        let pki = Pki::new();
+        let with_crl = |file: &str| ServerTls {
+            client_crl_files: vec![pki.path(file)],
+            ..pki.server(true)
+        };
+        let wait = Duration::from_millis(500);
+        let (addr, mut rx, _status, task) = tls_server(with_crl("crl.pem")).await;
+        // Not on the list: in.
+        let client = tokio::spawn(tls_client(
+            addr,
+            "localhost",
+            pki.client(Some("client-a")),
+            Duration::from_secs(5),
+        ));
+        let frame = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no frame from the good client")
+            .unwrap();
+        assert_eq!(&frame.bytes[..], b"hello");
+        client.abort();
+        // Revoked: refused.
+        let _ = tls_client(addr, "localhost", pki.client(Some("client-r")), wait).await;
+        assert!(
+            tokio::time::timeout(wait, rx.recv()).await.is_err(),
+            "a revoked client got in"
+        );
+        task.abort();
+
+        // A list past its next update fails closed, even for a good client.
+        let (addr, mut rx, _status, task) = tls_server(with_crl("crl-expired.pem")).await;
+        let _ = tls_client(addr, "localhost", pki.client(Some("client-a")), wait).await;
+        assert!(
+            tokio::time::timeout(wait, rx.recv()).await.is_err(),
+            "an expired list let one in"
+        );
+        task.abort();
+
+        // A directory stands for the lists in it.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(pki.path("crl.pem"), dir.path().join("ours.crl")).unwrap();
+        let tls = ServerTls {
+            client_crl_files: vec![dir.path().display().to_string()],
+            ..pki.server(true)
+        };
+        let before = tls.crl_stamp();
+        assert!(tls.acceptor().is_ok());
+        std::fs::write(dir.path().join("more.crl"), b"").unwrap();
+        assert_ne!(tls.crl_stamp(), before, "a new file changes the stamp");
     }
 
     #[tokio::test]

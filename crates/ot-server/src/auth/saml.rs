@@ -225,32 +225,39 @@ fn attribute(a: &Assertion, name: &str) -> Vec<String> {
 /// The account a verified assertion signs in: an existing one by email
 /// (a SAML-made account takes the role the provider gives it now), or a
 /// new one with the mapped role.
+/// The account a sign-on is for, made on first use; `Err` gives why it is
+/// refused. Only `saml` accounts sign on this way: an account made another
+/// way (a local one, with a role an admin gave it) is never taken over by
+/// an identity provider that asserts its email.
 fn account(
     db: &mut ot_store::Db,
     email: &str,
     role: Option<Role>,
-) -> Result<Option<ot_store::User>, ot_store::StoreError> {
+) -> Result<Result<ot_store::User, &'static str>, ot_store::StoreError> {
     if let Some(u) = db.user_by_email(email)? {
-        if !u.active {
-            return Ok(None);
+        if u.origin != "saml" {
+            return Ok(Err("a local account has this email"));
         }
-        return match (u.origin.as_str(), role) {
-            ("saml", Some(r)) if r.as_str() != u.role => {
-                let after = db.update_user(&u.id, None, Some(r.as_str()), None)?;
-                db.record(&ot_store::Decision {
-                    before: Some(json!(u)),
-                    after: Some(json!(after)),
-                    ..ot_store::Decision::new("saml", "update_user")
-                        .reason("the identity provider gave another role")
-                })?;
-                Ok(Some(after))
-            }
-            ("saml", None) => Ok(None),
-            _ => Ok(Some(u)),
+        if !u.active {
+            return Ok(Err("the account is turned off"));
+        }
+        let Some(r) = role else {
+            return Ok(Err("no role for this user"));
         };
+        if r.as_str() == u.role {
+            return Ok(Ok(u));
+        }
+        let after = db.update_user(&u.id, None, Some(r.as_str()), None)?;
+        db.record(&ot_store::Decision {
+            before: Some(json!(u)),
+            after: Some(json!(after)),
+            ..ot_store::Decision::new("saml", "update_user")
+                .reason("the identity provider gave another role")
+        })?;
+        return Ok(Ok(after));
     }
     let Some(role) = role else {
-        return Ok(None);
+        return Ok(Err("no role for this user"));
     };
     let id = crate::fips::uuid_v4();
     let u = db.create_user(&ot_store::NewUser {
@@ -265,7 +272,7 @@ fn account(
         after: Some(json!(u)),
         ..ot_store::Decision::new("saml", "create_user").reason("first single sign-on")
     })?;
-    Ok(Some(u))
+    Ok(Ok(u))
 }
 
 async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Response, String> {
@@ -318,8 +325,8 @@ async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Respon
     });
     let e = email.clone();
     let user = match s.with_db(move |db| account(db, &e, role)).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return Err("no role for this user, or the account is off".into()),
+        Ok(Ok(u)) => u,
+        Ok(Err(why)) => return Err(why.into()),
         Err(e) => return Err(e.message),
     };
     match super::api::start_session(s, user, client, How::Saml).await {
@@ -436,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn single_sign_on_finds_or_makes_the_account() {
+    fn single_sign_on_finds_or_makes_the_account_and_never_takes_a_local_one() {
         let mut db = ot_store::Db::open_in_memory().unwrap();
         // No role: refused, nothing made.
-        assert!(account(&mut db, "n@x.org", None).unwrap().is_none());
+        assert!(account(&mut db, "n@x.org", None).unwrap().is_err());
         assert_eq!(db.user_count().unwrap(), 0);
         let u = account(&mut db, "n@x.org", Some(Role::Viewer))
             .unwrap()
@@ -451,7 +458,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(u.role, "track_manager");
-        // A local account keeps the role an admin gave it.
+        // No role now: refused, the account is kept.
+        assert!(account(&mut db, "n@x.org", None).unwrap().is_err());
+        // A local account is never signed on by the identity provider, even
+        // with a role it maps (so SAML can't reach a local admin).
         db.create_user(&ot_store::NewUser {
             id: "l1",
             email: "l@x.org",
@@ -461,10 +471,19 @@ mod tests {
             origin: "local",
         })
         .unwrap();
-        let u = account(&mut db, "l@x.org", Some(Role::Viewer))
-            .unwrap()
-            .unwrap();
-        assert_eq!(u.role, "admin");
+        assert_eq!(
+            account(&mut db, "l@x.org", Some(Role::Viewer)).unwrap(),
+            Err("a local account has this email")
+        );
+        assert_eq!(db.user_by_email("l@x.org").unwrap().unwrap().role, "admin");
+        // Nor is a turned-off SAML account.
+        let n = db.user_by_email("n@x.org").unwrap().unwrap();
+        db.update_user(&n.id, None, None, Some(false)).unwrap();
+        assert!(
+            account(&mut db, "n@x.org", Some(Role::Viewer))
+                .unwrap()
+                .is_err()
+        );
     }
     /// A response signed by an identity provider verifies through the same
     /// path the ACS uses, and a tampered one does not. The image runs this

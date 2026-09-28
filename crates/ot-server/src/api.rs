@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use ot_source::frame::Frame;
 use ot_source::pipeline::Pipeline;
 use ot_source::schema::{ExtensionField, ExtensionSchema};
@@ -18,6 +18,7 @@ use ot_store::{Entity, SourceRow, SourceWrite};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::auth::{AuthUser, Role};
 use crate::control::{ApiError, AppState};
 
 pub fn routes() -> Router<AppState> {
@@ -128,24 +129,46 @@ async fn with_status(s: &AppState, row: SourceRow) -> Value {
     v
 }
 
-async fn list_sources(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+/// Whether the caller may see a source's secrets: only admins, who can
+/// change sources (see `ot_source::secrets`). No account: no.
+pub fn sees_secrets(u: Option<&Extension<AuthUser>>) -> bool {
+    u.is_some_and(|u| u.role >= Role::Admin)
+}
+
+/// Hide a source row's secrets from a caller who may not see them.
+fn for_caller(mut v: Value, secrets: bool) -> Value {
+    if !secrets && let Some(spec) = v.get_mut("spec") {
+        ot_source::secrets::redact_spec(spec);
+    }
+    v
+}
+
+async fn list_sources(
+    State(s): State<AppState>,
+    u: Option<Extension<AuthUser>>,
+) -> Result<Json<Value>, ApiError> {
+    let secrets = sees_secrets(u.as_ref());
     let rows = s.with_db(|db| db.list_sources()).await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        out.push(with_status(&s, r).await);
+        out.push(for_caller(with_status(&s, r).await, secrets));
     }
     Ok(Json(json!({ "sources": out })))
 }
 
 async fn get_source(
     State(s): State<AppState>,
+    u: Option<Extension<AuthUser>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let row = s
         .with_db(move |db| db.get_source(&id))
         .await?
         .ok_or_else(|| ApiError::not_found("source"))?;
-    Ok(Json(with_status(&s, row).await))
+    Ok(Json(for_caller(
+        with_status(&s, row).await,
+        sees_secrets(u.as_ref()),
+    )))
 }
 
 async fn save(
@@ -309,9 +332,15 @@ async fn clear_raw_output(
 
 async fn source_revisions(
     State(s): State<AppState>,
+    u: Option<Extension<AuthUser>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let secrets = sees_secrets(u.as_ref());
     let revs = s.with_db(move |db| db.source_revisions(&id)).await?;
+    let revs: Vec<Value> = revs
+        .into_iter()
+        .map(|r| for_caller(serde_json::to_value(r).unwrap_or_default(), secrets))
+        .collect();
     Ok(Json(json!({ "revisions": revs })))
 }
 

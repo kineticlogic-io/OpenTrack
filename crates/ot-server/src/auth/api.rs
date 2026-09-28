@@ -1253,6 +1253,91 @@ mod tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn only_admins_see_a_sources_secrets() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let spec = json!({
+            "id": "feed", "name": "Feed",
+            "transport": {
+                "kind": "mqtt", "url": "mqtts://broker.example.org:8883",
+                "topics": ["t"], "username": "ot", "password": "hunter2-secret"
+            },
+        });
+        state
+            .db
+            .lock()
+            .unwrap()
+            .put_source(
+                &ot_store::SourceWrite {
+                    id: "feed",
+                    name: "Feed",
+                    transport: "mqtt",
+                    codec: "json",
+                    priority: 0,
+                    spec: &spec,
+                },
+                "root@x.org",
+            )
+            .unwrap();
+        let (st, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = admin.unwrap();
+        let (st, viewer, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "v@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{viewer}");
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "monitor", "user_id": viewer["id"] })),
+        )
+        .await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        let secret = |v: &Value| v.to_string().contains("hunter2-secret");
+        for uri in [
+            "/api/v1/sources",
+            "/api/v1/sources/feed",
+            "/api/v1/sources/feed/revisions",
+        ] {
+            let (st, body, _) = call(&app, "GET", uri, Some(&bearer), None).await;
+            assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+            assert!(
+                !secret(&body),
+                "a viewer sees the password at {uri}: {body}"
+            );
+            assert!(
+                body.to_string().contains(ot_source::secrets::HIDDEN),
+                "{uri}"
+            );
+            let (_, body, _) = call(&app, "GET", uri, Some(&admin), None).await;
+            assert!(secret(&body), "an admin sees it at {uri}");
+        }
+        // The decision log doesn't carry specifications at all.
+        let (_, body, _) = call(
+            &app,
+            "GET",
+            "/api/v1/decisions?op=create_source",
+            Some(&bearer),
+            None,
+        )
+        .await;
+        assert!(
+            body["decisions"].as_array().is_some_and(|d| !d.is_empty()),
+            "{body}"
+        );
+        assert!(!secret(&body));
+    }
+
     async fn sign_in(
         app: &axum::Router,
         email: &str,

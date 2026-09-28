@@ -166,6 +166,17 @@ struct ServeArgs {
     /// accounts Settings → Security maps them to.
     #[arg(long, env = "OT_TLS_CLIENT_CA", requires = "tls_cert")]
     tls_client_ca: Option<String>,
+    /// With a client CA: certificate revocation lists (PEM or DER files, or
+    /// directories of them; comma separated). A revoked client certificate,
+    /// one no list covers, or one whose list has expired is refused. The
+    /// lists are reloaded when they change.
+    #[arg(
+        long,
+        env = "OT_TLS_CLIENT_CRL",
+        requires = "tls_client_ca",
+        value_delimiter = ','
+    )]
+    tls_client_crl: Vec<String>,
     /// Browsers reach this server over TLS that a proxy in front of it ends
     /// (`1`): session cookies are `Secure` and HSTS is sent, as when this
     /// server serves TLS itself.
@@ -365,13 +376,21 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
     tokio::spawn(auth::maintenance::run(state.clone()));
     let app = control::router(state, Some(args.ui_dir));
     if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
-        let acceptor = ot_source::tls::ServerTls {
+        let tls = ot_source::tls::ServerTls {
             cert_file: cert,
             key_file: key,
             client_ca_file: args.tls_client_ca,
             client_cert_optional: true,
+            client_crl_files: args
+                .tls_client_crl
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect(),
+        };
+        let acceptor = https::Acceptor::new(tls.acceptor()?);
+        if !tls.client_crl_files.is_empty() {
+            tokio::spawn(https::reload_on_crl_change(tls, acceptor.clone()));
         }
-        .acceptor()?;
         tracing::info!(addr = %args.bind, "control plane listening (TLS)");
         return https::serve(listener, app, acceptor, shutdown_signal()).await;
     }

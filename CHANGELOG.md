@@ -77,6 +77,24 @@ See [docs/security/supply-chain.md](docs/security/supply-chain.md).
   - a control mapping with the open findings
     ([docs/security/stig-mapping.md](docs/security/stig-mapping.md)).
 
+### Findings closed
+
+- **SAML never signs in to a local account:** a sign-on whose email matches an account SAML didn't
+  make is refused (before, it signed in as that account, with its role, even admin).
+- **Only admins see a source's secrets:** viewers and track managers get passwords, tokens, header
+  and metadata values, credentials in URLs and API keys in transport messages as `••••••`;
+  `${env:…}` references stay visible.
+- **Client certificate revocation:** `OT_TLS_CLIENT_CRL` (files or directories of CRLs; also
+  `tls.client_crl_files` on TLS server sources). Revoked, uncovered and stale-listed certificates
+  are refused; the lists reload within a minute of a change.
+- **Turning an account off revokes its API tokens** for good.
+- **Signed releases:** publishing a release builds the image with SLSA provenance and an SBOM,
+  pushes it to GHCR, signs it with the project's cosign key (no public log; verify with
+  `cosign.pub`), and attaches the SBOMs and digest to the release.
+- **Pinned Rust toolchain** (1.98.1).
+- `scripts/github/protect-main.sh`: branch protection for `main` (pull requests with one approval,
+  CI passing), to apply once the account can.
+
 ### Guides and in-app help
 
 - **Guides:** an administrator guide and an operator guide, in `docs/guides/`.

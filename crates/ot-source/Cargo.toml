@@ -26,6 +26,7 @@ miette.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+url.workspace = true
 rumqttc.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true

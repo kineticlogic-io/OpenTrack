@@ -233,6 +233,7 @@ marked `Secure`.
 | `OT_TLS_CERT` | The server certificate (PEM, with its chain). Needs `OT_TLS_KEY`. |
 | `OT_TLS_KEY` | Its private key (PEM). |
 | `OT_TLS_CLIENT_CA` | Accept client certificates this CA (PEM) signed, as the accounts [Client certificates](#client-certificates) maps them to. A client certificate is optional: browsers without one still sign in with a password or single sign-on. |
+| `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. A revoked certificate, one no list covers, or one whose issuer's list is past its next update is refused. Reloaded within a minute of a change. |
 
 TLS for feeds is set per source, in the source's transport (see the README, "Sources and
 pipelines").
@@ -466,8 +467,9 @@ What happens at a sign-on:
 - The first time, OpenTrack makes an account (origin `saml`, no password) with the mapped role.
 - Next time, a `saml` account takes the role the provider gives it now. If its values map to no
   role and there is no default, it is refused.
-- If an account with that email already exists and is `local`, the user signs in as it and keeps
-  the role an admin gave it, whatever the mapping says (and whatever **Allow admin** says).
+- If the account with that email was made another way (a local account), the sign-on is refused:
+  an identity provider never takes over a local account or its role. Use a different email for
+  the local account, or delete it so SAML makes a new one.
 - A turned-off account is refused.
 - Each assertion can be used once, and must answer a request OpenTrack made in the last 5 minutes.
 
@@ -506,7 +508,9 @@ With mutual TLS, a machine can sign in with its certificate alone.
    account's email. Save.
 
 A certificate the CA signed whose CN is listed signs in as that account, while the account is
-active. Other callers can still use passwords and tokens.
+active. With `OT_TLS_CLIENT_CRL`, revoked certificates are refused; keep the lists current (a list
+past its next update refuses every certificate its CA issued), for example with a daily job that
+downloads your CA's CRLs into the directory. Refusals are logged as `client certificate refused`. Other callers can still use passwords and tokens.
 
 ### Sign-in turned off
 
@@ -583,8 +587,9 @@ result on the Sources and Correlation tabs.
 **Sources → Add source** runs a wizard: transport, framing, codec, then the pipeline designer,
 with a live preview of each stage on sample data. Enable a source to start it. Each save is a
 revision: the source's **History** tab lists them, with who saved each and the spec it saved. Write secrets as
-`${env:NAME}`, resolved when the source starts, never inline: every signed-in user, viewers too,
-can read source specs. See the README, "Sources and pipelines", and `docs/examples/`.
+`${env:NAME}`, resolved when the source starts. Only admins see a source's secrets: for viewers and
+track managers, passwords, tokens, header and metadata values, credentials in URLs and API keys in
+messages show as `••••••` (`${env:…}` references stay visible). See the README, "Sources and pipelines", and `docs/examples/`.
 
 ### Output schema
 
@@ -853,12 +858,12 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 - **Protect the data directory.** `session.key` and `initial-admin.txt` are written readable by
   their owner only; the database holds password hashes and plugin files. Keep backups as
   protected.
-- **Keep secrets out of source specs.** Use `${env:NAME}`: every signed-in user can read source
-  specs.
+- **Keep secrets out of source specs.** Use `${env:NAME}`. Non-admins see secret fields hidden,
+  but admins, the database and its backups hold whatever is written inline.
 - **Give the least role.** Viewers for monitoring and service accounts that only read; admins
   few. Leave **Allow admin** off for SAML unless the identity provider should make admins.
-- **Local accounts and SAML:** a user whose SAML email matches a local account signs in as that
-  account, with its role. Don't make local accounts for people who should come through SAML.
+- **Local accounts and SAML:** SAML never signs in to a local account: a sign-on whose email matches
+  one is refused. Keep local accounts for break-glass and service use.
 - **Rotate API tokens**: give them an expiry, one per service, and revoke the ones not used.
 - **Everything is recorded.** The decision log names the account behind every change: accounts,
   sign-in settings, sources, schema, settings and track management.
@@ -964,7 +969,7 @@ including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_UR
 
 | Link | How |
 |---|---|
-| Browsers and API clients | `OT_TLS_CERT`/`OT_TLS_KEY`, optional client certificates (`OT_TLS_CLIENT_CA`), or a TLS proxy |
+| Browsers and API clients | `OT_TLS_CERT`/`OT_TLS_KEY`, optional client certificates (`OT_TLS_CLIENT_CA`, revocation lists `OT_TLS_CLIENT_CRL`), or a TLS proxy |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY` |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, and mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY` |
 | Feeds | per source, in its transport's TLS settings |
@@ -977,12 +982,25 @@ images are pinned by digest. The compose file runs it with:
 - every Linux capability dropped;
 - `no-new-privileges`.
 
+### Signed images
+
+Release images (`ghcr.io/phornstein/opentrack:<version>`) are signed with the project's cosign
+key and carry SLSA provenance and an SBOM. Check one before you run it:
+
+```sh
+cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/phornstein/opentrack@<digest>
+```
+
+`cosign.pub` is in the repository; the release notes list each image's digest.
+`--insecure-ignore-tlog` is expected: the signatures go to no public transparency log.
+
 ### Upgrading to 0.4.0
 
 - **Everyone signs in again:** sessions from before the upgrade have no server-side record.
 - **Password age** counts from the upgrade, so existing passwords expire 60 days later. They also
   must meet the policy at their next change.
 - **Password hashes** move from Argon2id to PBKDF2 at each account's next sign-in.
-- **SAML** works only in the image, where OpenSSL has its FIPS provider.
+- **SAML** works only in the image, where OpenSSL has its FIPS provider, and no longer signs in to
+  local accounts: a user with both needs a different email for the local one.
 - **Nodes that share their profile** must all run 0.4.0. Older nodes refuse correlation settings
   that carry the classification order.

@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pinned so every build of a commit uses the same compiler
+# (docs/security/supply-chain.md). Move it deliberately, with the tests.
+channel = "1.98.1"
 components = ["clippy", "rustfmt"]

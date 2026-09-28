@@ -26,8 +26,10 @@ jobs:
       # Service containers cannot take arguments, and JetStream needs `-js`.
       - run: docker run -d --name nats -p 4222:4222 nats:2 -js
       - run: docker run -d --name mqtt -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+      # The version rust-toolchain.toml pins.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: 1.98.1
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The AWS-LC FIPS module builds with Go and CMake (both on the runner).
@@ -52,6 +54,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
         working-directory: ui
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo install --locked cargo-cyclonedx
       - run: scripts/security/sbom.py target/sbom

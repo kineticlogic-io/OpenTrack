@@ -13,7 +13,9 @@ use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::pki_types::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName, UnixTime,
+};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use serde::{Deserialize, Serialize};
@@ -58,6 +60,12 @@ pub struct ServerTls {
     /// connect (a certificate, when given, must still verify).
     #[serde(default, skip_serializing_if = "is_false")]
     pub client_cert_optional: bool,
+    /// Certificate revocation lists for client certificates: files (PEM or
+    /// DER) or directories of them. Given, a client certificate is refused
+    /// when revoked, when no list covers its issuer, or when its issuer's
+    /// list has expired (so keep them fresh; see [`ServerTls::crl_stamp`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_crl_files: Vec<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -182,6 +190,17 @@ impl ServerTls {
                 } else {
                     verifier
                 };
+                let crls = crls(&self.client_crl_files)?;
+                let verifier = if crls.is_empty() {
+                    verifier
+                } else {
+                    // The end certificate's status must be known and its
+                    // issuer's list current: fail closed.
+                    verifier
+                        .with_crls(crls)
+                        .only_check_end_entity_revocation()
+                        .enforce_revocation_expiration()
+                };
                 builder.with_client_cert_verifier(verifier.build()?)
             }
             None => builder.with_no_client_auth(),
@@ -215,6 +234,64 @@ fn read(field: &str, path: &str) -> anyhow::Result<(String, Vec<u8>)> {
     let path = resolve_env(path).context(field.to_owned())?;
     let bytes = std::fs::read(&path).with_context(|| format!("{field} {path}"))?;
     Ok((path, bytes))
+}
+
+/// The CRL files named, a directory standing for the files in it.
+fn crl_paths(paths: &[String]) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    for p in paths.iter().filter(|p| !p.trim().is_empty()) {
+        let p = std::path::PathBuf::from(resolve_env(p).context("tls.client_crl_files")?);
+        if p.is_dir() {
+            let mut files: Vec<_> = std::fs::read_dir(&p)
+                .with_context(|| format!("tls.client_crl_files {}", p.display()))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|f| f.is_file())
+                .collect();
+            files.sort();
+            out.extend(files);
+        } else {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+/// Every CRL in the files (PEM, with any number of lists, or one DER list).
+fn crls(paths: &[String]) -> anyhow::Result<Vec<CertificateRevocationListDer<'static>>> {
+    let mut out = Vec::new();
+    for path in crl_paths(paths)? {
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("tls.client_crl_files {}", path.display()))?;
+        let pem = CertificateRevocationListDer::pem_slice_iter(&bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_default();
+        if pem.is_empty() {
+            out.push(CertificateRevocationListDer::from(bytes));
+        } else {
+            out.extend(pem);
+        }
+    }
+    Ok(out)
+}
+
+impl ServerTls {
+    /// What the CRL files look like now (their names, sizes and times): a
+    /// change means the acceptor should be rebuilt to pick them up.
+    pub fn crl_stamp(&self) -> String {
+        crl_paths(&self.client_crl_files)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).ok();
+                format!(
+                    "{}:{}:{:?};",
+                    p.display(),
+                    m.as_ref().map_or(0, std::fs::Metadata::len),
+                    m.and_then(|m| m.modified().ok())
+                )
+            })
+            .collect()
+    }
 }
 
 fn certs(field: &str, path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {

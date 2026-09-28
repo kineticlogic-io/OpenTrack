@@ -182,7 +182,7 @@ function TlsSettings({ transport, onTransport }: { transport: Transport; onTrans
   const tls = (transport.tls as Record<string, unknown> | undefined) ?? {}
   const setTls = (k: string, v: unknown) => {
     const nextTls = { ...tls, [k]: v }
-    if (v === undefined || v === '' || v === false) delete nextTls[k]
+    if (v === undefined || v === '' || v === false || (Array.isArray(v) && v.length === 0)) delete nextTls[k]
     const next: Transport = { ...transport, tls: nextTls }
     // MQTT's older top-level ca_file moves into tls on edit.
     if (k === 'ca_file') delete next.ca_file
@@ -220,6 +220,13 @@ function TlsSettings({ transport, onTransport }: { transport: Transport; onTrans
                 <Text label="Certificate" value={tls.cert_file} onChange={(v) => setTls('cert_file', v)} placeholder="server.pem" />
                 <Text label="Key" value={tls.key_file} onChange={(v) => setTls('key_file', v)} placeholder="server.key" />
                 <Text label="Client CA" value={tls.client_ca_file} onChange={(v) => setTls('client_ca_file', v)} placeholder="optional: mutual TLS" />
+                <ListSetting
+                  label="Client CRLs"
+                  value={tls.client_crl_files}
+                  onChange={(v) => setTls('client_crl_files', v)}
+                  placeholder="optional: /etc/crl/ or files, comma separated"
+                  help="Certificate revocation lists (PEM or DER files, or directories of them) for client certificates. Given, a client certificate is refused when revoked, when no list covers its issuer, or when its issuer's list is past its next update, so keep the lists fresh. Needs a client CA."
+                />
               </>
             ) : (
               <>

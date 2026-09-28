@@ -16,6 +16,7 @@ pub mod probe;
 pub mod proto;
 pub mod registry;
 pub mod schema;
+pub mod secrets;
 pub mod source;
 pub mod tls;
 pub mod tracker;
