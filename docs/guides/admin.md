@@ -795,8 +795,9 @@ the engine.
   answers. Use it for a container or load-balancer liveness check.
 - **`GET /api/v1/status`** (any role; use a `viewer` API token) reports each dependency with an
   `ok` flag: `sqlite` (with its schema version), `redis`, and `nats` (connected, and the stream
-  usable), plus the version, algorithm versions, site code and node id. It answers 200 even when a
-  dependency is down: check the flags.
+  usable), plus the version, algorithm versions, site code and node id. It answers 200 when all
+  three are up and 503, with the same body, when any is down, so a readiness check or monitor
+  that reads only the status code sees it; the flags say which.
 - **`GET /api/v1/sync/status`**: the link to other nodes.
 
 ### Metrics

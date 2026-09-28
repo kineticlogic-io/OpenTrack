@@ -1491,8 +1491,8 @@ mod tests {
         .await;
         assert_eq!(
             st,
-            StatusCode::OK,
-            "idle, but not for longer than the last use"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "idle, but not for longer than the last use (and no NATS here)"
         );
         let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
         assert_eq!(st, StatusCode::OK);

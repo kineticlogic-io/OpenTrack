@@ -5,6 +5,8 @@
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- **`/api/v1/status` answers 503** (same body) when SQLite, Redis or NATS is down, so a monitor
+  that reads only the status code sees it; `/healthz` stays liveness only (#7).
 
 ## 0.4.0 (alpha), 2026-09-28
 
