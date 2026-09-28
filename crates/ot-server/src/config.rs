@@ -117,6 +117,18 @@ pub struct NatsArgs {
     )]
     pub password: Option<String>,
 
+    /// TLS to NATS: the CA (PEM) that signed the server's certificate.
+    /// Given, the connection must be TLS.
+    #[arg(long = "nats-ca", env = "OT_NATS_CA")]
+    pub ca: Option<PathBuf>,
+
+    /// Mutual TLS: this client certificate (PEM) and `--nats-key`.
+    #[arg(long = "nats-cert", env = "OT_NATS_CERT", requires = "key")]
+    pub cert: Option<PathBuf>,
+
+    #[arg(long = "nats-key", env = "OT_NATS_KEY", requires = "cert")]
+    pub key: Option<PathBuf>,
+
     /// JetStream stream that holds system tracks (created if missing).
     #[arg(long = "nats-stream", env = "OT_NATS_STREAM", default_value = "TRACKS")]
     pub stream: String,
@@ -158,6 +170,9 @@ impl Common {
             token: n.token.clone(),
             user: n.user.clone(),
             password: n.password.clone(),
+            tls_ca: n.ca.clone().filter(|p| !p.as_os_str().is_empty()),
+            tls_cert: n.cert.clone().filter(|p| !p.as_os_str().is_empty()),
+            tls_key: n.key.clone().filter(|p| !p.as_os_str().is_empty()),
             stream: n.stream.clone(),
             tracks_subject: n.tracks_subject.clone(),
             max_age: std::time::Duration::from_secs_f64(n.max_age_hours.max(0.1) * 3600.0),

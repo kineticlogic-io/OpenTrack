@@ -36,6 +36,11 @@ pub struct NatsSettings {
     pub token: Option<String>,
     pub user: Option<String>,
     pub password: Option<String>,
+    /// TLS to the server: trust this CA (PEM) and require TLS.
+    pub tls_ca: Option<PathBuf>,
+    /// A client certificate and key (PEM) for mutual TLS.
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
     /// JetStream stream holding system tracks.
     pub stream: String,
     /// Subject prefix for system tracks; the stream captures `<prefix>.>`.
@@ -150,6 +155,22 @@ impl Nats {
         }
         if let (Some(user), Some(pass)) = (&settings.user, &settings.password) {
             opts = opts.user_and_password(user.clone(), pass.clone());
+        }
+        if let Some(ca) = &settings.tls_ca {
+            opts = opts.add_root_certificates(ca.clone()).require_tls(true);
+        }
+        match (&settings.tls_cert, &settings.tls_key) {
+            (Some(cert), Some(key)) => {
+                opts = opts
+                    .add_client_certificate(cert.clone(), key.clone())
+                    .require_tls(true);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(NatsError::Connect(
+                    "a client certificate needs its key, and the other way round".into(),
+                ));
+            }
         }
         let client = opts
             .connect(settings.url.as_str())
@@ -359,6 +380,9 @@ mod tests {
                 token: None,
                 user: None,
                 password: None,
+                tls_ca: None,
+                tls_cert: None,
+                tls_key: None,
                 stream: format!("OT_TEST_{run}"),
                 tracks_subject: format!("ottest{run}"),
                 max_age: Duration::from_secs(300),
@@ -366,6 +390,26 @@ mod tests {
             .await
             .unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn a_client_certificate_needs_its_key() {
+        let r = Nats::connect(NatsSettings {
+            url: "nats://127.0.0.1:9".into(),
+            name: "opentrack-test".into(),
+            creds_file: None,
+            token: None,
+            user: None,
+            password: None,
+            tls_ca: None,
+            tls_cert: Some("client.pem".into()),
+            tls_key: None,
+            stream: "T".into(),
+            tracks_subject: "t".into(),
+            max_age: Duration::from_secs(300),
+        })
+        .await;
+        assert!(matches!(r, Err(NatsError::Connect(m)) if m.contains("key")));
     }
 
     fn msg(n: &Nats, id: &str, msg_id: &str, body: &str) -> Outgoing {
