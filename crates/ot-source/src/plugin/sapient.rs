@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::{Kind, Manifest, Plugin, PluginDecoder};
-use crate::frame::{DEFAULT_MAX_FRAME, Endian, Framing, PrefixWidth};
+use crate::frame::{Endian, Framing, PrefixWidth, DEFAULT_MAX_FRAME};
 
 pub struct Sapient {
     manifest: Manifest,
@@ -26,8 +26,7 @@ impl Sapient {
         let manifest = Manifest {
             name: "sapient".into(),
             version: ot_sapient::VERSION.into(),
-            description: "SAPIENT (BSI Flex 335 v2.0): protobuf messages decoded via prost-reflect"
-                .into(),
+            description: "SAPIENT (BSI Flex 335 v2.0): protobuf messages decoded via prost-reflect".into(),
             kinds: vec![Kind::Codec],
             options: vec![],
             framing,
@@ -51,7 +50,8 @@ impl Plugin for Sapient {
         if !options.is_null() {
             return Err(format!("sapient takes no options, got {}", options));
         }
-        let inner = ot_sapient::Decoder::new().map_err(|e| format!("sapient init: {e}"))?;
+        let inner = ot_sapient::Decoder::new()
+            .map_err(|e| format!("sapient init: {e}"))?;
         Ok(Box::new(Decoder { inner }))
     }
 }

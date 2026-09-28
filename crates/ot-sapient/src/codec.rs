@@ -28,7 +28,10 @@ impl Decoder {
                 SapientError::Descriptor("SapientMessage (v2_0) descriptor not found".into())
             })?;
 
-        Ok(Self { pool, message_desc })
+        Ok(Self {
+            pool,
+            message_desc,
+        })
     }
 
     /// Decode one SAPIENT protobuf message (a complete `SapientMessage`) into
@@ -136,10 +139,13 @@ mod tests {
     use super::*;
     use prost::Message;
     use prost_types::Timestamp;
-    use sapient_rs::bsi_flex_335_v2_0::{DetectionReport, sapient_message::Content};
     use sapient_rs::bsi_flex_335_v2_0::{
-        EnuVelocity, Location, SapientMessage,
         detection_report::{LocationOneof, VelocityOneof},
+        EnuVelocity, Location, SapientMessage,
+    };
+    use sapient_rs::bsi_flex_335_v2_0::{
+        DetectionReport,
+        sapient_message::Content,
     };
 
     fn build_test_message() -> SapientMessage {
@@ -204,14 +210,9 @@ mod tests {
             obj.get("node_id"),
             Some(&JsonValue::String("sensor-001".into()))
         );
-        assert!(
-            obj.get("destination_id").is_none(),
-            "unset proto3 field omitted"
-        );
+        assert!(obj.get("destination_id").is_none(), "unset proto3 field omitted");
 
-        let dr = obj
-            .get("detection_report")
-            .expect("detection_report present");
+        let dr = obj.get("detection_report").expect("detection_report present");
         let dr_obj = dr.as_object().unwrap();
 
         assert_eq!(
@@ -235,14 +236,8 @@ mod tests {
 
         let vel = dr_obj.get("enu_velocity").expect("enu_velocity oneof set");
         let vel_obj = vel.as_object().unwrap();
-        let er = vel_obj
-            .get("east_rate")
-            .and_then(JsonValue::as_f64)
-            .unwrap();
-        let nr = vel_obj
-            .get("north_rate")
-            .and_then(JsonValue::as_f64)
-            .unwrap();
+        let er = vel_obj.get("east_rate").and_then(JsonValue::as_f64).unwrap();
+        let nr = vel_obj.get("north_rate").and_then(JsonValue::as_f64).unwrap();
         let ur = vel_obj.get("up_rate").and_then(JsonValue::as_f64).unwrap();
         assert!((er - 1.0).abs() < 1e-6, "east_rate: {er}");
         assert!((nr - 2.0).abs() < 1e-6, "north_rate: {nr}");

@@ -24,8 +24,8 @@ use serde_json::{Map, Value};
 
 use crate::frame::Framing;
 
-pub mod sapient;
 pub mod stanag4607;
+pub mod sapient;
 
 /// What a plugin provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
