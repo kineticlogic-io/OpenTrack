@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use ot_source::plugin::Plugin;
-use sha2::{Digest, Sha256};
 
 pub mod external;
 mod grants;
@@ -43,7 +42,8 @@ pub fn load(source: &Source, grants: &Grants) -> anyhow::Result<Arc<dyn Plugin>>
 /// The SHA-256 of a plugin file, in hex: how the API and the decision log
 /// name exactly which build ran.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
+    aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes)
+        .as_ref()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

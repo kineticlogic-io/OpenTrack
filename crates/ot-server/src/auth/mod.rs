@@ -1,5 +1,5 @@
 //! Sign-in and roles, modelled on OpenStare's: local accounts with
-//! Argon2id passwords, SAML single sign-on, a signed session cookie, and
+//! PBKDF2 passwords (FIPS), SAML single sign-on, a signed session cookie, and
 //! API tokens for machines. Beside OpenStare it can also accept
 //! OpenStare's own sign-in, so users sign in once.
 //!
@@ -14,6 +14,8 @@ mod openstare;
 pub mod policy;
 #[cfg(feature = "saml")]
 mod saml;
+#[cfg(feature = "saml")]
+pub use saml::openssl_fips;
 pub mod settings;
 
 use std::collections::HashMap;
@@ -196,7 +198,7 @@ impl Auth {
         ttl_secs: i64,
     ) -> anyhow::Result<(String, String, i64)> {
         let now = chrono::Utc::now().timestamp();
-        let jti = uuid::Uuid::new_v4().to_string();
+        let jti = crate::fips::uuid_v4();
         let claims = Claims {
             sub: user.id.clone(),
             email: user.email.clone(),
@@ -280,11 +282,7 @@ pub fn load_secret(common: &Common, env: Option<&str>) -> anyhow::Result<Vec<u8>
         }
     }
     std::fs::create_dir_all(dir)?;
-    let key = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
+    let key = crate::fips::random_hex::<32>();
     write_private(&path, &key).with_context(|| format!("writing {}", path.display()))?;
     tracing::info!(path = %path.display(), "made the session signing key");
     Ok(key.into_bytes())
@@ -303,18 +301,19 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     opts.open(path)?.write_all(text.as_bytes())
 }
 
-/// Argon2id with the crate's defaults (as OpenStare): slow on purpose, so
-/// run it off the async runtime.
+/// PBKDF2-HMAC-SHA256 in the FIPS module (see [`crate::fips`]): slow on
+/// purpose, so run it off the async runtime.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
-    let salt = SaltString::generate(&mut OsRng);
-    argon2::Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| anyhow::anyhow!("hashing the password: {e}"))
+    Ok(crate::fips::hash_password(password))
 }
 
+/// Checks a password against its stored hash. Hashes from before 0.4.0 are
+/// Argon2id; they still verify (and are rehashed with PBKDF2 at that
+/// sign-in, see [`needs_rehash`]), so no one is locked out by the change.
 pub fn verify_password(password: &str, hash: &str) -> bool {
+    if let Some(ok) = crate::fips::verify_password(password, hash) {
+        return ok;
+    }
     use argon2::password_hash::{PasswordHash, PasswordVerifier};
     PasswordHash::new(hash).is_ok_and(|h| {
         argon2::Argon2::default()
@@ -322,6 +321,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
             .is_ok()
     })
 }
+
+pub use crate::fips::needs_rehash;
 
 pub const MIN_PASSWORD: usize = 8;
 
@@ -352,7 +353,14 @@ pub fn bootstrap_admin(
             (e.trim().to_owned(), p.to_owned(), None)
         }
         _ => {
-            let p = uuid::Uuid::new_v4().simple().to_string()[..20].to_owned();
+            // Every character class, so it passes any password policy.
+            let p = format!(
+                "Ot-{}9a",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    crate::fips::random_bytes::<15>()
+                )
+            );
             let dir = common
                 .sqlite
                 .parent()
@@ -370,7 +378,7 @@ pub fn bootstrap_admin(
         }
     };
     let hash = hash_password(&password)?;
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = crate::fips::uuid_v4();
     db.create_user(&ot_store::NewUser {
         id: &id,
         email: &email,
@@ -553,7 +561,7 @@ mod tests {
     #[test]
     fn passwords_hash_and_verify() {
         let h = hash_password("correct horse").unwrap();
-        assert!(h.starts_with("$argon2id$"));
+        assert!(h.starts_with("$pbkdf2-sha256$"));
         assert!(verify_password("correct horse", &h));
         assert!(!verify_password("wrong horse", &h));
         assert!(!verify_password("x", "not a hash"));

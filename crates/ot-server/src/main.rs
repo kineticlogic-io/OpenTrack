@@ -17,6 +17,7 @@ mod correlate;
 mod correlation_api;
 mod decisions_api;
 mod engine;
+mod fips;
 mod history_api;
 mod https;
 mod link;
@@ -210,8 +211,12 @@ impl EngineArgs {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::mark_start();
-    install_crypto();
     init_tracing();
+    // FIPS 140-3: the validated module, or nothing runs.
+    fips::init()?;
+    tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
+    #[cfg(feature = "saml")]
+    auth::openssl_fips();
     let cli = Cli::parse();
     let common = cli.common;
     match cli.command {
@@ -403,14 +408,6 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
-/// Pick the TLS crypto provider for the whole process. Several dependencies
-/// (WebSocket, HTTP, MQTT) use rustls and together enable more than one
-/// provider, so rustls cannot choose one itself and would panic on the first
-/// TLS connection.
-fn install_crypto() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-}
-
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_env("OT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
@@ -426,7 +423,7 @@ fn init_tracing() {
 mod tests {
     #[test]
     fn tls_clients_can_be_built_after_install() {
-        super::install_crypto();
+        crate::fips::init().unwrap();
         // What wss://, https:// and mqtts:// connections do first.
         let _ = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())

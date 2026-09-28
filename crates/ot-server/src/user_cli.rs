@@ -103,7 +103,7 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
             } else {
                 None
             };
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = crate::fips::uuid_v4();
             let u = db.create_user(&ot_store::NewUser {
                 id: &id,
                 email: &email,

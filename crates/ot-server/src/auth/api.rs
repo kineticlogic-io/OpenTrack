@@ -130,11 +130,23 @@ async fn login(
         Some((u, Some(h))) if u.active => (Some(u), h),
         _ => (None, dummy_hash().to_owned()),
     };
-    let ok = blocking(move || verify_password(&b.password, &hash)).await?;
+    let rehash = super::needs_rehash(&hash);
+    let password = b.password.clone();
+    let ok = blocking(move || verify_password(&password, &hash)).await?;
     let Some(user) = user.filter(|_| ok) else {
         tracing::info!(email = %b.email.trim(), "sign-in refused");
         return Ok(unauthorized("wrong email or password"));
     };
+    // Hashes from before 0.4.0 (Argon2id) move to PBKDF2 in the FIPS module.
+    if rehash {
+        let new = blocking(move || hash_password(&b.password))
+            .await?
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let id = user.id.clone();
+        s.with_db(move |db| db.set_password_hash(&id, Some(&new)))
+            .await?;
+        tracing::info!(user = %user.email, "password hash upgraded to PBKDF2");
+    }
     let (headers, body) = start_session(&s, user).await?;
     Ok((headers, Json(body)).into_response())
 }
@@ -157,7 +169,7 @@ async fn public(State(s): State<AppState>) -> Json<Value> {
     Json(json!({
         "auth": !s.auth.disabled,
         "password_login": !st.disable_password_login,
-        "saml": { "enabled": st.saml.enabled && cfg!(feature = "saml"), "label": st.saml.button_label },
+        "saml": { "enabled": st.saml.enabled && saml_ready(), "label": st.saml.button_label },
         "openstare": {
             "enabled": st.openstare.enabled,
             "login_url": st.openstare.login_url,
@@ -272,7 +284,7 @@ async fn create_user(
     let actor = actor(&headers);
     let user = s
         .with_db(move |db| {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = crate::fips::uuid_v4();
             let u = db.create_user(&ot_store::NewUser {
                 id: &id,
                 email: &b.email,
@@ -823,3 +835,12 @@ mod tests {
         assert_eq!(st, StatusCode::UNAUTHORIZED);
     }
 }
+
+/// SAML is built in and OpenSSL (which checks its signatures) is in FIPS mode.
+fn saml_ready() -> bool {
+    #[cfg(feature = "saml")]
+    return super::saml::openssl_fips();
+    #[cfg(not(feature = "saml"))]
+    false
+}
+

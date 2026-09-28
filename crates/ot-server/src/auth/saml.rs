@@ -124,9 +124,12 @@ fn redirect_url(s: &AppState, cfg: &SamlSettings) -> Result<String, String> {
     let sso = sp
         .sso_binding_location(HTTP_REDIRECT)
         .ok_or("the identity provider has no HTTP-Redirect sign-on")?;
-    let authn = sp
+    let mut authn = sp
         .make_authentication_request(&sso)
         .map_err(|e| format!("the sign-on request: {e}"))?;
+    // samael's id is 32 random bits from a non-FIPS generator; the response
+    // must answer this id, so make it 128 bits from the FIPS module.
+    authn.id = format!("id-{}", crate::fips::random_hex::<16>());
     let xml = authn.to_string().map_err(|e| e.to_string())?;
     let relay = mint_relay(&authn.id, &s.auth.secret)?;
     let request = deflate_base64(xml.as_bytes()).map_err(|e| e.to_string())?;
@@ -138,10 +141,31 @@ fn redirect_url(s: &AppState, cfg: &SamlSettings) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
+/// FIPS: xmlsec checks signatures with OpenSSL, which must be using only
+/// its FIPS provider (the image configures it; see docs/security/fips.md).
+pub fn openssl_fips() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = samael::openssl_fips_enabled();
+        if on {
+            tracing::info!("OpenSSL (SAML signatures) is in FIPS mode");
+        } else {
+            tracing::warn!("{NOT_FIPS}: load its FIPS provider (docs/security/fips.md)");
+        }
+        on
+    })
+}
+
+const NOT_FIPS: &str = "OpenSSL is not in FIPS mode, so SAML sign-in is off";
+
 async fn login(AxumState(s): AxumState<AppState>) -> Response {
     let cfg = s.auth.settings().saml;
     if !cfg.enabled {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if !openssl_fips() {
+        tracing::error!("{NOT_FIPS}");
+        return (StatusCode::SERVICE_UNAVAILABLE, NOT_FIPS).into_response();
     }
     match redirect_url(&s, &cfg).and_then(|u| HeaderValue::from_str(&u).map_err(|e| e.to_string()))
     {
@@ -225,7 +249,7 @@ fn account(
     let Some(role) = role else {
         return Ok(None);
     };
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = crate::fips::uuid_v4();
     let u = db.create_user(&ot_store::NewUser {
         id: &id,
         email,
@@ -245,6 +269,9 @@ async fn acs(AxumState(s): AxumState<AppState>, Form(f): Form<AcsForm>) -> Respo
     let cfg = s.auth.settings().saml;
     if !cfg.enabled {
         return refused("SAML is off");
+    }
+    if !openssl_fips() {
+        return refused(NOT_FIPS);
     }
     let (Some(response), Some(relay)) = (f.response, f.relay) else {
         return refused("no SAMLResponse or RelayState");
