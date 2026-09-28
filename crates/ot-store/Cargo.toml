@@ -4,6 +4,7 @@ description = "OpenTrack storage: SQLite (decisions, configuration, track graph)
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 ot-core.workspace = true

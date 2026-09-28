@@ -196,11 +196,12 @@ impl ServerTls {
     }
 }
 
-/// The process's crypto provider (installed by the server), else aws-lc-rs.
+/// The process's crypto provider (installed by the server), else AWS-LC in
+/// its FIPS configuration.
 fn provider() -> Arc<CryptoProvider> {
     CryptoProvider::get_default()
         .cloned()
-        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .unwrap_or_else(|| Arc::new(rustls::crypto::default_fips_provider()))
 }
 
 pub(crate) fn server_name(name: &str) -> anyhow::Result<ServerName<'static>> {

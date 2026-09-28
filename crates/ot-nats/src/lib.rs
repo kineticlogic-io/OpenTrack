@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use async_nats::jetstream::{self, stream};
 use async_nats::{ConnectOptions, HeaderMap};
+
+mod creds;
 use bytes::Bytes;
 use serde::Serialize;
 
@@ -134,17 +136,32 @@ impl Nats {
     /// Connect without waiting for the server: the client keeps retrying in
     /// the background, and publishes fail (transiently) until it is up.
     pub async fn connect(settings: NatsSettings) -> Result<Self, NatsError> {
-        let mut opts = ConnectOptions::new()
+        // `.creds` sign-in signs the server's nonce in the FIPS module.
+        let base = match &settings.creds_file {
+            Some(path) => {
+                let bad =
+                    |e: String| NatsError::Connect(format!("credentials {}: {e}", path.display()));
+                let text = tokio::fs::read_to_string(path)
+                    .await
+                    .map_err(|e| bad(e.to_string()))?;
+                let creds = std::sync::Arc::new(creds::Creds::parse(&text).map_err(bad)?);
+                ConnectOptions::with_auth_callback(move |nonce| {
+                    let creds = creds.clone();
+                    async move {
+                        let mut auth = async_nats::Auth::new();
+                        auth.jwt = Some(creds.jwt.clone());
+                        auth.signature = Some(creds.sign(&nonce));
+                        Ok(auth)
+                    }
+                })
+            }
+            None => ConnectOptions::new(),
+        };
+        let mut opts = base
             .name(&settings.name)
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(5))
             .max_reconnects(None);
-        if let Some(path) = &settings.creds_file {
-            opts = opts
-                .credentials_file(path)
-                .await
-                .map_err(|e| NatsError::Connect(format!("credentials {}: {e}", path.display())))?;
-        }
         if let Some(token) = &settings.token {
             opts = opts.token(token.clone());
         }

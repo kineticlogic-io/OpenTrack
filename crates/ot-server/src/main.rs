@@ -17,6 +17,7 @@ mod correlate;
 mod correlation_api;
 mod decisions_api;
 mod engine;
+mod fips;
 mod history_api;
 mod https;
 mod link;
@@ -94,6 +95,14 @@ enum Command {
     /// Manage accounts (for a node without the UI).
     #[command(subcommand)]
     User(user_cli::UserCommand),
+    /// Exit 0 when this node's control plane answers (the image's
+    /// HEALTHCHECK): `/healthz` over plain HTTP, a TCP connection under TLS.
+    Health {
+        #[arg(long, env = "OT_BIND", default_value = "0.0.0.0:8090")]
+        bind: SocketAddr,
+        #[arg(long, env = "OT_TLS_CERT")]
+        tls_cert: Option<PathBuf>,
+    },
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
     Retire {
@@ -210,8 +219,12 @@ impl EngineArgs {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::mark_start();
-    install_crypto();
     init_tracing();
+    // FIPS 140-3: the validated module, or nothing runs.
+    fips::init()?;
+    tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
+    #[cfg(feature = "saml")]
+    auth::openssl_fips();
     let cli = Cli::parse();
     let common = cli.common;
     match cli.command {
@@ -267,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Command::Health { bind, tls_cert } => health(bind, tls_cert.is_some()),
         Command::Retire { uid, reason } => {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(
@@ -403,12 +417,27 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
-/// Pick the TLS crypto provider for the whole process. Several dependencies
-/// (WebSocket, HTTP, MQTT) use rustls and together enable more than one
-/// provider, so rustls cannot choose one itself and would panic on the first
-/// TLS connection.
-fn install_crypto() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+fn health(bind: SocketAddr, tls: bool) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    let mut addr = bind;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(if addr.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    let t = std::time::Duration::from_secs(3);
+    let mut c = std::net::TcpStream::connect_timeout(&addr, t)?;
+    if tls {
+        return Ok(());
+    }
+    c.set_read_timeout(Some(t))?;
+    c.write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")?;
+    let mut head = [0u8; 12];
+    c.read_exact(&mut head)?;
+    anyhow::ensure!(head.ends_with(b" 200"), "/healthz did not answer 200");
+    Ok(())
 }
 
 fn init_tracing() {
@@ -426,7 +455,7 @@ fn init_tracing() {
 mod tests {
     #[test]
     fn tls_clients_can_be_built_after_install() {
-        super::install_crypto();
+        crate::fips::init().unwrap();
         // What wss://, https:// and mqtts:// connections do first.
         let _ = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())

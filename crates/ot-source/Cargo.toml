@@ -4,6 +4,7 @@ description = "OpenTrack source framework: transports, framing, codecs, mapping,
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 ot-core.workspace = true
