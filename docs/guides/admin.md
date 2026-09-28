@@ -402,8 +402,9 @@ user passwd` also ends them (turning an account off and on again does not: its t
 ### Users panel
 
 **Settings → Users** (admins only) has two tables:
-- **Users**: email, name, role (change it in place), origin (`local` or `saml`; **SSO** means no
-  password), active, last sign-in, and the password, sign-out and delete buttons.
+- **Users**: email, name, role (change it in place; a `saml` account's comes from the identity
+  provider, see [SAML](#saml)), origin (`local` or `saml`; **SSO** means no password), active,
+  last sign-in, and the password, sign-out and delete buttons.
 - **API tokens**: name, the account it acts as, who made it, when, when it expires, and its state
   (active, expired, revoked).
 
@@ -467,7 +468,10 @@ supported.
 What happens at a sign-on:
 - The first time, OpenTrack makes an account (origin `saml`, no password) with the mapped role.
 - Next time, a `saml` account takes the role the provider gives it now. If its values map to no
-  role and there is no default, it is refused.
+  role and there is no default, it is refused. The identity provider is authoritative for the
+  role: Settings → Users shows a `saml` account's role read-only, and the API refuses to change
+  it (409). To change it, change the mapping here or the user's role at the provider.
+  (`opentrack user role` on the server still can, as a break-glass, until the next sign-on.)
 - If the account with that email was made another way (a local account), the sign-on is refused:
   an identity provider never takes over a local account or its role. Use a different email for
   the local account, or delete it so SAML makes a new one.

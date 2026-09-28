@@ -11,6 +11,8 @@
   warning at start when it is set and the saved approach differs (#14).
 - **An admin signed in by SAML can turn password sign-in off** (keeping SAML on in the same save);
   from a password session it is still refused (#10).
+- **A `saml` account's role is the identity provider's:** Settings → Users shows it read-only, and
+  `PUT /api/v1/auth/users/{id}` refuses to change it (409) (#11).
 - **SAML's IdP entity ID, sign-in URL and signing certificate are read-only**, read from the pasted
   metadata at every save and read; to change them, paste new metadata (#8, finding F-3).
 

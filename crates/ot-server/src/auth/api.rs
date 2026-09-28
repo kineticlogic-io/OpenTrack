@@ -651,6 +651,18 @@ async fn update_user(
                 ));
             }
             let before = db.user(&id)?;
+            // The identity provider is authoritative for a `saml` account's
+            // role: it is set again at every sign-on.
+            if let (Some(u), Some(r)) = (&before, b.role)
+                && u.origin == "saml"
+                && u.role != r.as_str()
+            {
+                return Err(ot_store::StoreError::Conflict(
+                    "a saml account's role comes from the identity provider's role mapping \
+                     (Settings -> Security -> SAML); change it there"
+                        .into(),
+                ));
+            }
             let u = db.update_user(&id, b.name.as_deref(), b.role.map(Role::as_str), b.active)?;
             db.record(&ot_store::Decision {
                 before: before.map(|b| json!(b)),
@@ -1699,6 +1711,49 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::CONFLICT, "{body}");
         assert!(body["error"].as_str().unwrap().contains("keep SAML on"));
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn the_identity_provider_owns_a_saml_accounts_role() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (id, _) = saml_session(&state, "sso-viewer@x.org", "viewer").await;
+        let uri = format!("/api/v1/auth/users/{id}");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("identity provider"),
+            "{body}"
+        );
+        // Its name, its state, and its role unchanged are fine.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "name": "Vee", "role": "viewer", "active": true })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            (body["name"].as_str(), body["role"].as_str()),
+            (Some("Vee"), Some("viewer"))
+        );
     }
 
     #[cfg(feature = "saml")]

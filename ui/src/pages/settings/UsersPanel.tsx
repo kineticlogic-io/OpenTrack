@@ -303,7 +303,19 @@ export function UsersPanel() {
       header: 'Role',
       width: 150,
       sortValue: (a) => ROLES.indexOf(a.role),
-      render: (a) => <FieldSelect ariaLabel={`Role of ${a.email}`} fields={ROLE_FIELDS} value={a.role} onChange={(v) => v !== a.role && change(a, { role: asRole(v) })} style={{ width: 130 }} />,
+      // The identity provider sets a SAML account's role at each sign-on: shown, not changed here.
+      render: (a) =>
+        a.origin === 'saml' ? (
+          <span className="num-row">
+            {a.role}
+            <InfoTip label={`Role of ${a.email}`}>
+              From the identity provider: its role mapping (Settings → Security → SAML) sets a SAML account's role at every sign-on. To change it, change the
+              mapping or the user's role at the provider.
+            </InfoTip>
+          </span>
+        ) : (
+          <FieldSelect ariaLabel={`Role of ${a.email}`} fields={ROLE_FIELDS} value={a.role} onChange={(v) => v !== a.role && change(a, { role: asRole(v) })} style={{ width: 130 }} />
+        ),
     },
     {
       key: 'origin',
