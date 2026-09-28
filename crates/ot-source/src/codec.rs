@@ -26,7 +26,7 @@ pub enum CodecConfig {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         context: Vec<Path>,
     },
-    /// MITRE Cursor-on-Taut XML: one record per `<event>`.
+    /// MITRE Cursor-on-Target XML: one record per `<event>`.
     CotXml,
     /// Generic XML: one record per `record_element`.
     Xml { record_element: String },

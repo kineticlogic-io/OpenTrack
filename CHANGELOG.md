@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
+  decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
+  prefix; example in `docs/examples/sapient.json`.
+
 ## 0.4.0 (alpha), 2026-09-28
 
 ### Accreditation: DoD RMF / ASD STIG (800-53 Moderate)
