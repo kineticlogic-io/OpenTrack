@@ -30,7 +30,7 @@ An `Observation` gains one optional field, `geometry`:
 - **Bearing.** `position` is the sensor's position, where the line starts, so an old consumer never mistakes it for the object's. **Every bearing must carry its platform's position at the bearing's time, in the same message.** OpenTrack doesn't take a platform's position from another feed (a navigation or ownship feed) or from a track, and doesn't interpolate. A bearing without a position is refused like any observation. A sensor whose bearings and navigation come separately needs them merged before OpenTrack, and for a moving platform that merge must be to the bearing's time: at 110 m/s, 5 s of staleness is 550 m. The mapping fills the rest from the feed's own fields:
   - `bearing_deg` is the direction, in degrees true;
   - `sigma_deg` is one standard deviation;
-  - `max_range_m` is how far the sensor could plausibly detect, if known;
+  - `max_range_m` is how far the sensor could plausibly detect, if known (unset: 250 km);
   - `elevation_deg` is optional, for air.
 - **Area.** `position` is the area's centre and `uncertainty` its covering ellipse, so everything that handles points still works. A polygon adds the exact shape, for display and for containment tests. An area given only as an ellipse needs no `geometry`: a point with a large ellipse *is* an area. What changes is how correlation treats one, below.
 - **Emitter parameters** are identifiers and attributes that already exist: the `elnot` identifier scheme, and admin-defined output schema fields for RF, PRI and so on. Nothing new in the model. What changes is that the engine uses them to decide which bearings belong together.
@@ -145,7 +145,7 @@ Scenario `esm-patrol` (`esm_patrol_intercept_converges` in `crates/ot-server/src
 ## Display
 
 - **The map:**
-  - a bearing is a line from its sensor out to its range;
+  - a bearing is a line from its sensor out to its range (`max_range_m`, or 250 km when unset, the same default the engine uses), along the great circle, with the outline of its ±`sigma_deg` wedge;
   - an area is its polygon or ellipse;
   - the lines through a fix meet at its track.
 - **The track card** lists the bearings and areas that report for the track, with each residual and the emitter identity.
