@@ -9,6 +9,8 @@
   correlation never splits it (split or undo still can) (#12).
 - **Do not pair** in the track table, for two ticked tracks: correlation never pairs them; undoable
   from the management log, which now names the tracks (#4).
+- **Correlation settings:** the split window and the local density radius can be set in the UI;
+  the server refuses a split window that isn't positive or a negative radius (#5).
 
 ## 0.4.0 (alpha), 2026-09-28
 
