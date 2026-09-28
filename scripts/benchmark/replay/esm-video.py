@@ -10,6 +10,7 @@ Usage:
     esm-video.py overview <esm-crossfix.jsonl> <out.mp4>
     esm-video.py ghosts <esm-crossfix-naive.jsonl> <esm-crossfix.jsonl> <out.mp4>
     esm-video.py follow <esm-crossfix.jsonl> <emitter> <out.mp4>
+    esm-video.py patrol <esm-patrol.jsonl> <out.mp4>   (from esm_patrol_intercept_converges)
 Needs matplotlib, numpy and imageio-ffmpeg.
 """
 
@@ -348,12 +349,211 @@ def follow(path, emitter, out):
     v.close()
 
 
+# ---------------------------------------------------------------- esm-patrol
+
+ESMC, ELINTC, FMVC, TRACKC, AIRC = "#f5a524", "#3fb8f0", "#f06bd6", "#6fd08c", "#e6e8eb"
+
+
+def patrol(path, out):
+    """One patrol aircraft's ESM, ELINT and video converging on a fast boat."""
+    from matplotlib.patches import Ellipse, Polygon
+
+    rows = [json.loads(line) for line in open(path) if line.strip()]
+    header, frames = rows[0], rows[1:]
+    lat0, lon0 = header["origin"]
+
+    def pxy(lat, lon):
+        return (math.radians(lon - lon0) * R * math.cos(math.radians(lat0)), math.radians(lat - lat0) * R)
+
+    def boat_track(f):
+        return next((t for t in f["tracks"] if t["boat"]), None)
+
+    # Events, from the frames.
+    events = []
+
+    def first(pred, text):
+        for f in frames:
+            if pred(f):
+                events.append((f["t"], text))
+                return
+
+    first(lambda f: any(ln["key"] == "em1" for ln in f["lines"]), "ESM hears the boat's radar")
+    first(lambda f: f["mode"] == "geolocate", "aircraft turns across the bearing")
+    first(lambda f: (b := boat_track(f)) and set(b["sources"]) == {"fix"}, "ESM alone locates it: a track")
+    first(lambda f: (b := boat_track(f)) and "elint" in b["sources"], "ELINT joins the track")
+    first(lambda f: f["mode"] == "intercept", "aircraft turns to intercept")
+    first(lambda f: f["video"] is not None, "video acquires the boat")
+    first(lambda f: (b := boat_track(f)) and {"elint", "fmv"} <= set(b["sources"]), "video joins: one track, three sensors")
+    first(lambda f: f["mode"] == "orbit", "aircraft orbits at 3 km")
+    events.sort()
+
+    v = Video(out)
+    ax = v.fig.add_axes([0.0, 0.0, 860 / 1280, 1.0])
+    side = v.fig.add_axes([860 / 1280, 0.0, 420 / 1280, 1.0])
+    chart = v.fig.add_axes([(860 + 50) / 1280, 0.07, 340 / 1280, 0.22])
+    legs = [pxy(*p) for p in header["legs"]]
+    cx = cy = half = None
+    trail, wake = [], []
+    errs = []
+    for k, f in enumerate(frames):
+        ax_, ay_ = pxy(f["aircraft"]["lat"], f["aircraft"]["lon"])
+        bx, by = pxy(f["boat"]["lat"], f["boat"]["lon"])
+        trail.append((ax_, ay_))
+        wake.append((bx, by))
+        if f.get("error"):
+            errs.append((f["t"], f["error"]["m"], f["error"]["sigma"]))
+        # Camera: aircraft and boat in view, eased.
+        want_cx, want_cy = (ax_ + bx) / 2, (ay_ + by) / 2
+        want_half = max(abs(ax_ - bx) * 720 / 860, abs(ay_ - by)) / 2 * 1.35 + 2500
+        cx = want_cx if cx is None else cx + 0.12 * (want_cx - cx)
+        cy = want_cy if cy is None else cy + 0.12 * (want_cy - cy)
+        half = want_half if half is None else half + 0.08 * (want_half - half)
+        bt = boat_track(f)
+        for sub in range(PER_STEP):
+            fade = 1.0 if sub == 0 else 0.6
+            hx = half * 860 / 720
+            grid = 1000 if half < 6000 else (5000 if half < 30000 else 10000)
+            style(ax, (cx - hx, cx + hx), (cy - half, cy + half), grid=grid)
+            s = max(half / 8000, 1.0)  # marker scale with zoom-out
+            # Patrol racetrack.
+            ax.plot([legs[0][0], legs[1][0]], [legs[0][1], legs[1][1]], color=MUTED, lw=1, ls=(0, (6, 4)), alpha=0.6, zorder=1)
+            # Distractors (truth) and their tracks.
+            for (olat, olon) in f["others"]:
+                ox, oy = pxy(olat, olon)
+                ax.add_patch(Circle((ox, oy), 250 * s, fill=False, ec=FG, alpha=0.25, lw=1, zorder=1))
+            # Boat truth and wake.
+            ax.plot([p[0] for p in wake[-60:]], [p[1] for p in wake[-60:]], color=FG, lw=1, alpha=0.35, ls=":", zorder=2)
+            ax.add_patch(Circle((bx, by), 300 * s, fill=False, ec=FG, alpha=0.6, lw=1.2, zorder=2))
+            ax.text(bx + 400 * s, by - 900 * s, "boat (truth)", color=MUTED, fontsize=8, zorder=2)
+            # ESM bearings from the aircraft.
+            for ln in f["lines"]:
+                b = math.radians(ln["bearing"])
+                reach = header["esm_range"]
+                x1, y1 = ax_ + reach * math.sin(b), ay_ + reach * math.cos(b)
+                boat_line = ln["key"] == "em1"
+                on_boat = bt is not None and ln["uid"] == bt["uid"]
+                if boat_line:
+                    ax.plot([ax_, x1], [ay_, y1], color=ESMC, lw=1.4 if on_boat else 1.0, alpha=(0.85 if on_boat else 0.55) * fade,
+                            ls="-" if ln["uid"] else (0, (5, 3)), zorder=3)
+                else:
+                    ax.plot([ax_, x1], [ay_, y1], color=MUTED, lw=0.8, alpha=0.4 * fade, ls=(0, (5, 3)), zorder=3)
+            # ELINT ellipse (2-sigma), held faded until the next.
+            area = f["area"] or next((g["area"] for g in reversed(frames[max(0, k - 3):k]) if g["area"]), None)
+            if area:
+                ex, ey = pxy(area["lat"], area["lon"])
+                fresh = f["area"] is not None
+                ax.add_patch(Ellipse((ex, ey), 4 * area["major"], 4 * area["minor"], angle=90 - area["orientation"],
+                                     fill=True, fc=ELINTC, alpha=(0.12 if fresh else 0.05), ec="none", zorder=3))
+                ax.add_patch(Ellipse((ex, ey), 4 * area["major"], 4 * area["minor"], angle=90 - area["orientation"],
+                                     fill=False, ec=ELINTC, alpha=(0.9 if fresh else 0.4), lw=1.3, ls="--", zorder=3))
+            # ESM's own location (single-sensor), 2-sigma circle.
+            if f.get("located"):
+                lx, ly = pxy(f["located"]["lat"], f["located"]["lon"])
+                ax.add_patch(Circle((lx, ly), 2 * f["located"]["sigma"], fill=False, ec=ESMC, lw=1.2, ls=":", alpha=0.9 * fade, zorder=4))
+                ax.scatter([lx], [ly], marker="+", s=70, color=ESMC, zorder=4)
+            # Video: line of sight and the video track's report.
+            if f["video"]:
+                vx, vy = pxy(f["video"]["lat"], f["video"]["lon"])
+                ax.plot([ax_, vx], [ay_, vy], color=FMVC, lw=1.0, alpha=0.6, zorder=4)
+                ax.scatter([vx], [vy], marker="s", s=30, facecolors="none", edgecolors=FMVC, lw=1.4, zorder=5)
+            # System tracks: AIS dimmed, the boat's with its 2-sigma ellipse.
+            for t in f["tracks"]:
+                tx, ty = pxy(t["lat"], t["lon"])
+                if "ownship" in t["sources"]:
+                    continue
+                if t["boat"]:
+                    if t["cov"]:
+                        nn, ne, ee = t["cov"]
+                        c = np.array([[ee, ne], [ne, nn]])
+                        w, vec = np.linalg.eigh(c)
+                        w = np.maximum(w, 1.0)
+                        ang = math.degrees(math.atan2(vec[1, 1], vec[0, 1]))
+                        ax.add_patch(Ellipse((tx, ty), 4 * math.sqrt(w[1]), 4 * math.sqrt(w[0]), angle=ang,
+                                             fill=False, ec=TRACKC, lw=1.8, zorder=6))
+                    ax.scatter([tx], [ty], marker="D", s=70, color=TRACKC, edgecolors=BG, lw=0.8, zorder=7)
+                    names = {"fix": "ESM", "elint": "ELINT", "fmv": "FMV"}
+                    label = " + ".join(names[s_] for s_ in ["fix", "elint", "fmv"] if s_ in t["sources"])
+                    if t["bearings"] and "fix" not in t["sources"]:
+                        label = "ESM bearings + " + label
+                    ax.text(tx + 500 * s, ty + 500 * s, f"track: {label}", color=TRACKC, fontsize=9, weight="bold", zorder=7,
+                            bbox={"facecolor": BG, "edgecolor": "none", "alpha": 0.7, "pad": 1.5})
+                elif "ais" in t["sources"]:
+                    ax.scatter([tx], [ty], marker="s", s=28, color=MUTED, zorder=5)
+                    ax.text(tx + 400 * s, ty - 900 * s, "AIS", color=MUTED, fontsize=7, zorder=5)
+                elif set(t["sources"]) == {"fix"}:
+                    # Another emitter's ESM location (the cargo ship's radar).
+                    ax.scatter([tx], [ty], marker="o", s=24, facecolors="none", edgecolors=MUTED, zorder=5)
+            # Aircraft and its trail.
+            ax.plot([p[0] for p in trail[-120:]], [p[1] for p in trail[-120:]], color=AIRC, lw=1, alpha=0.4, zorder=6)
+            hdg = f["aircraft"]["hdg"]
+            ax.scatter([ax_], [ay_], marker=(3, 0, -hdg), s=160, color=AIRC, zorder=8)
+            ax.text(ax_ + 600 * s, ay_ + 600 * s, "patrol aircraft", color=AIRC, fontsize=8, zorder=8)
+            scale = grid
+            ax.text(0.99, 0.015, f"grid {scale // 1000} km", transform=ax.transAxes, color=MUTED, fontsize=8, ha="right")
+
+            # Side panel.
+            side.cla()
+            side.set_facecolor(BG)
+            side.axis("off")
+            side.set_xlim(0, 1)
+            side.set_ylim(0, 1)
+            side.text(0.05, 0.965, "esm-patrol", color=FG, fontsize=15, weight="bold", va="top")
+            side.text(0.05, 0.925, f"t = {f['t'] // 60:2d}:{f['t'] % 60:02d}   ×25 speed", color=MUTED, fontsize=10, family="monospace", va="top")
+            side.text(0.05, 0.89, {"patrol": "PATROL", "geolocate": "GEOLOCATION LEG", "intercept": "INTERCEPT", "orbit": "ORBIT, VIDEO ON"}[f["mode"]],
+                      color=FG, fontsize=11, weight="bold", va="top")
+            # Source lights.
+            srcs = set(bt["sources"]) if bt else set()
+            lit = {
+                "ESM": bool(bt) and ("fix" in srcs or bt["bearings"] > 0),
+                "ELINT": "elint" in srcs,
+                "FMV": "fmv" in srcs,
+            }
+            for i, (name, c) in enumerate([("ESM", ESMC), ("ELINT", ELINTC), ("FMV", FMVC)]):
+                x = 0.05 + i * 0.3
+                on = lit[name]
+                side.add_patch(matplotlib.patches.FancyBboxPatch((x, 0.795), 0.26, 0.05, boxstyle="round,pad=0.005",
+                               transform=side.transAxes, fc=c if on else BG, ec=c, lw=1.2, alpha=0.9 if on else 0.6))
+                side.text(x + 0.13, 0.82, name, color=BG if on else c, fontsize=10, weight="bold", ha="center", va="center")
+            side.text(0.05, 0.77, "lit = on the boat's track", color=MUTED, fontsize=8, va="top")
+            # Events.
+            y = 0.72
+            for et, text in events:
+                if et <= f["t"]:
+                    side.text(0.05, y, f"{et // 60:2d}:{et % 60:02d}", color=MUTED, fontsize=9, family="monospace", va="top")
+                    side.text(0.2, y, text, color=FG, fontsize=9, va="top")
+                    y -= 0.045
+            # Error chart.
+            chart.cla()
+            chart.set_facecolor(BG)
+            for sp in chart.spines.values():
+                sp.set_color(GRID)
+            chart.tick_params(colors=MUTED, labelsize=7)
+            chart.set_yscale("log")
+            chart.set_ylim(5, 60000)
+            chart.set_xlim(0, frames[-1]["t"])
+            if errs:
+                chart.plot([e[0] for e in errs], [max(e[1], 5) for e in errs], color=TRACKC, lw=1.2, label="error")
+                chart.plot([e[0] for e in errs], [max(e[2], 5) for e in errs], color=FG, lw=1, ls="--", alpha=0.7, label="stated σ")
+            chart.set_xticks([0, 600, 1200, 1800, 2400])
+            chart.set_xticklabels(["0", "10", "20", "30", "40 min"])
+            chart.set_yticks([10, 100, 1000, 10000])
+            chart.set_yticklabels(["10 m", "100 m", "1 km", "10 km"])
+            chart.grid(True, color=GRID, lw=0.5)
+            chart.set_title("boat's track: error and stated σ", color=FG, fontsize=9, loc="left")
+            if errs:
+                chart.legend(loc="upper right", fontsize=7, facecolor=BG, edgecolor=GRID, labelcolor=FG)
+            v.send()
+    v.close()
+
+
 if __name__ == "__main__":
     cmd, *rest = sys.argv[1:]
     if cmd == "overview":
         overview(*rest)
     elif cmd == "ghosts":
         ghosts(*rest)
+    elif cmd == "patrol":
+        patrol(*rest)
     elif cmd == "follow":
         follow(rest[0], int(rest[1]), rest[2])
     else:
