@@ -133,9 +133,37 @@ pub struct RedisStore {
     pub outbox_maxlen: usize,
 }
 
+/// TLS to Redis beyond a `rediss://` URL's defaults (system roots).
+#[derive(Debug, Clone, Default)]
+pub struct RedisTls {
+    /// PEM of the CA that signed the server's certificate.
+    pub ca: Option<Vec<u8>>,
+    /// PEM client certificate and key, for mutual TLS.
+    pub client: Option<(Vec<u8>, Vec<u8>)>,
+}
+
 impl RedisStore {
     pub async fn connect(url: &str, keys: Keys) -> Result<Self> {
-        let client = redis::Client::open(url)?;
+        Self::connect_tls(url, keys, None).await
+    }
+
+    /// As [`connect`](Self::connect); with `tls`, the URL must be `rediss://`.
+    pub async fn connect_tls(url: &str, keys: Keys, tls: Option<RedisTls>) -> Result<Self> {
+        let client = match tls {
+            Some(t) => redis::Client::build_with_tls(
+                url,
+                redis::TlsCertificates {
+                    client_tls: t
+                        .client
+                        .map(|(client_cert, client_key)| redis::ClientTlsConfig {
+                            client_cert,
+                            client_key,
+                        }),
+                    root_cert: t.ca,
+                },
+            )?,
+            None => redis::Client::open(url)?,
+        };
         // The default response timeout is shorter than the writer's blocking
         // XREADGROUP, which would then fail every idle poll.
         let config = redis::aio::ConnectionManagerConfig::new()

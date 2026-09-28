@@ -3096,6 +3096,9 @@ mod tests {
         let common = Common {
             sqlite: dir.path().join("ot.db"),
             redis: url,
+            redis_ca: None,
+            redis_cert: None,
+            redis_key: None,
             redis_namespace: format!(
                 "ot-engine-test-{site}-{}-{}",
                 std::process::id(),

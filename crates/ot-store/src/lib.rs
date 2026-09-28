@@ -30,7 +30,9 @@ pub use graph::{EdgeKind, NodeKind};
 pub use groups::{Group, GroupSpec};
 pub use keys::Keys;
 pub use plugins::{PluginRow, PluginWrite};
-pub use redis_store::{GroupBacklog, HistoryPoint, OutboxEntry, OutboxOp, RedisStore, TrackWrite};
+pub use redis_store::{
+    GroupBacklog, HistoryPoint, OutboxEntry, OutboxOp, RedisStore, RedisTls, TrackWrite,
+};
 pub use registry::{
     AttrType, Attribute, Entity, EntityRevision, Publish, RegistryIdentifier, RegistryRow,
     new_entity_id,

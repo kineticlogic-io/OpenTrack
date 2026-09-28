@@ -917,6 +917,9 @@ mod tests {
         let common = Common {
             sqlite: ":memory:".into(),
             redis: url.clone(),
+            redis_ca: None,
+            redis_cert: None,
+            redis_key: None,
             redis_namespace: ns.clone(),
             site: ot_core::SiteCode::new("TST").unwrap(),
             nats: crate::config::NatsArgs {

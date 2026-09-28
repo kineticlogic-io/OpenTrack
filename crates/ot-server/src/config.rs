@@ -17,6 +17,19 @@ pub struct Common {
     #[arg(long, env = "OT_REDIS_URL", default_value = "redis://127.0.0.1:6379")]
     pub redis: String,
 
+    /// TLS to Redis (with a `rediss://` URL): the CA (PEM) that signed the
+    /// server's certificate, instead of the system roots.
+    #[arg(long = "redis-ca", env = "OT_REDIS_CA")]
+    pub redis_ca: Option<PathBuf>,
+
+    /// Mutual TLS to Redis: this client certificate (PEM) and `--redis-key`.
+    #[arg(long = "redis-cert", env = "OT_REDIS_CERT", requires = "redis_key")]
+    pub redis_cert: Option<PathBuf>,
+
+    /// The client certificate's private key (PEM).
+    #[arg(long = "redis-key", env = "OT_REDIS_KEY", requires = "redis_cert")]
+    pub redis_key: Option<PathBuf>,
+
     /// Prefix for every Redis key OpenTrack owns.
     #[arg(long, env = "OT_REDIS_NAMESPACE", default_value = "tms")]
     pub redis_namespace: String,
@@ -219,7 +232,25 @@ impl Common {
     }
 
     pub async fn open_redis(&self) -> anyhow::Result<ot_store::RedisStore> {
-        let mut r = ot_store::RedisStore::connect(&self.redis, self.keys()).await?;
+        let read = |p: &PathBuf| {
+            anyhow::Context::with_context(std::fs::read(p), || format!("reading {}", p.display()))
+        };
+        let tls = if self.redis_ca.is_some() || self.redis_cert.is_some() {
+            anyhow::ensure!(
+                self.redis.starts_with("rediss://"),
+                "OT_REDIS_CA/OT_REDIS_CERT need a rediss:// OT_REDIS_URL"
+            );
+            Some(ot_store::RedisTls {
+                ca: self.redis_ca.as_ref().map(read).transpose()?,
+                client: match (&self.redis_cert, &self.redis_key) {
+                    (Some(c), Some(k)) => Some((read(c)?, read(k)?)),
+                    _ => None,
+                },
+            })
+        } else {
+            None
+        };
+        let mut r = ot_store::RedisStore::connect_tls(&self.redis, self.keys(), tls).await?;
         r.obs_window = std::time::Duration::from_secs(self.obs_window_secs.max(10));
         Ok(r)
     }
