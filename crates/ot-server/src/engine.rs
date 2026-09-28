@@ -2508,28 +2508,40 @@ impl Engine {
         {
             return Ok(());
         }
-        let mut s = self.settings.correlation.kinematic;
+        let s = self.settings.correlation.kinematic;
         let near = self
             .grid
             .near(obs.position.latitude, obs.position.longitude);
-        if s.local_density_radius_m > 0.0 {
-            let r = s.local_density_radius_m;
-            let count = near
-                .iter()
+        // Tracks within the local-density radius. When comparing with one
+        // of them, it is left out of its own crowding: the candidate being
+        // close is the evidence, not a sign of a crowd.
+        let crowd: HashSet<Uid> = if s.local_density_radius_m > 0.0 {
+            near.iter()
                 .filter(|o| **o != uid)
-                .filter_map(|o| self.tracks.get(o))
-                .filter(|t| {
-                    correlate::distance_m(
-                        obs.position.latitude,
-                        obs.position.longitude,
-                        t.view.position.latitude,
-                        t.view.position.longitude,
-                    ) <= r
+                .filter(|o| {
+                    self.tracks.get(o).is_some_and(|t| {
+                        correlate::distance_m(
+                            obs.position.latitude,
+                            obs.position.longitude,
+                            t.view.position.latitude,
+                            t.view.position.longitude,
+                        ) <= s.local_density_radius_m
+                    })
                 })
-                .count();
-            let local = count as f64 / (std::f64::consts::PI * (r / 1000.0).powi(2));
-            s.object_density_per_km2 = s.object_density_per_km2.max(local);
-        }
+                .copied()
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        let density_for = |other: Uid| {
+            let mut s = s;
+            if s.local_density_radius_m > 0.0 {
+                let count = crowd.iter().filter(|o| **o != other).count();
+                let area = std::f64::consts::PI * (s.local_density_radius_m / 1000.0).powi(2);
+                s.object_density_per_km2 = s.object_density_per_km2.max(count as f64 / area);
+            }
+            s
+        };
         let mine: HashSet<String> = self
             .track_sources(uid, obs.observed_at)
             .into_iter()
@@ -2575,7 +2587,10 @@ impl Engine {
                 }
                 continue;
             }
-            compared.push((other, correlate::kinematic(obs, &t.view, &s)));
+            compared.push((
+                other,
+                correlate::kinematic(obs, &t.view, &density_for(other)),
+            ));
         }
         // An area of uncertainty pairs with the one track it holds, never
         // with several (a harbour's worth of ships sits inside an ELINT
@@ -5558,6 +5573,346 @@ mod tests {
             within as f64 >= 0.9 * fixes as f64,
             "{within}/{fixes} fixes within 2 sigma"
         );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// The `esm-patrol` scenario: one maritime patrol aircraft carrying an
+    /// ESM receiver (lines of bearing), an ELINT receiver (emitter-location
+    /// ellipses) and an FMV camera (a video tracker's track). It flies a
+    /// racetrack, detects a fast small boat with no AIS by its navigation
+    /// radar, turns to intercept on OpenTrack's own track of it, and gets
+    /// video. All three sources must converge on one track. Distractors:
+    /// three silent AIS fishing boats and an AIS cargo ship whose own radar
+    /// the ESM also hears.
+    #[tokio::test]
+    async fn esm_patrol_intercept_converges() {
+        let sources = ["ownship", "ais", "esm", "elint", "fmv"];
+        let Some((mut e, _d)) = engine_at("TST", &sources).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // Open water.
+        e.settings.correlation.kinematic.object_density_per_km2 = 0.01;
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut unit = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let normal = |u: &mut dyn FnMut() -> f64| {
+            (-2.0 * u().max(1e-12).ln()).sqrt() * (2.0 * std::f64::consts::PI * u()).cos()
+        };
+        // South of Puerto Rico; local north/east metres.
+        let (lat0, lon0) = (17.60, -66.50);
+        let pos = |n: f64, e: f64| ot_core::geometry::offset(lat0, lon0, n, e);
+        let wrap = |d: f64| (d + 540.0).rem_euclid(360.0) - 180.0;
+        const STEP: i64 = 5;
+        const ESM_RANGE: f64 = 70_000.0;
+        const ELINT_RANGE: f64 = 65_000.0;
+        const FMV_RANGE: f64 = 10_000.0;
+        const ORBIT: f64 = 3_000.0;
+
+        // The aircraft: 110 m/s, 3 degrees a second at most.
+        let (mut an, mut ae, mut ahdg) = (20_000.0_f64, -10_000.0_f64, 180.0_f64);
+        let legs = [(25_000.0, -10_000.0), (-35_000.0, -10_000.0)];
+        let mut leg = 1usize;
+        let mut mode = "patrol";
+        // The boat: 20 m/s north-west, weaving.
+        let (mut bn, mut be) = (-60_000.0_f64, 40_000.0_f64);
+        let bv = 20.0;
+        // Fishing boats (silent) and a cargo ship with its own radar.
+        let mut others: Vec<(f64, f64, f64, f64)> = vec![
+            (-20_000.0, 10_000.0, 90.0, 3.0),
+            (-30_000.0, 25_000.0, 200.0, 2.5),
+            (-45_000.0, 30_000.0, 30.0, 4.0),
+            (-60_000.0, -5_000.0, 80.0, 8.0),
+        ];
+        let mut frames: Vec<Value> = Vec::new();
+        let mut first_esm = None;
+        let mut first_elint = None;
+        let mut first_fmv = None;
+        let mut converged_at = None;
+        let (mut boat_lines, mut boat_lines_on_track, mut cargo_lines_on_track) = (0, 0, 0);
+        let mut errors: Vec<(i64, f64, f64)> = Vec::new(); // (t, error, sigma)
+        for step in 0..480i64 {
+            let secs = step * STEP;
+            let dt = STEP as f64;
+            // Boat: weave +-25 degrees every 2 minutes.
+            let bc = 320.0 + 25.0 * ((secs as f64) / 120.0 * std::f64::consts::PI).sin();
+            bn += bv * dt * bc.to_radians().cos();
+            be += bv * dt * bc.to_radians().sin();
+            for o in &mut others {
+                o.0 += o.3 * dt * o.2.to_radians().cos();
+                o.1 += o.3 * dt * o.2.to_radians().sin();
+            }
+            // The boat's track, as OpenTrack has it: the one ELINT reports for.
+            let boat_uid = e.reports.get("elint/x1").copied();
+            let boat_track = boat_uid
+                .and_then(|u| e.tracks.get(&u))
+                .filter(|t| t.state == TrackState::Confirmed);
+            // Aircraft: patrol the racetrack until OpenTrack holds a confirmed
+            // track of the boat, then fly at it and orbit it.
+            let goal = match boat_track {
+                Some(t) => {
+                    let (tn, te) = ot_core::geometry::local(
+                        lat0,
+                        lon0,
+                        t.view.position.latitude,
+                        t.view.position.longitude,
+                    );
+                    let d = (tn - an).hypot(te - ae);
+                    if d > ORBIT * 1.3 {
+                        mode = "intercept";
+                        (tn, te)
+                    } else {
+                        // Orbit: aim at a point ahead on the circle.
+                        mode = "orbit";
+                        let ang = (an - tn).atan2(ae - te) + 0.6;
+                        (tn + ORBIT * ang.sin(), te + ORBIT * ang.cos())
+                    }
+                }
+                None => {
+                    let (wn, we) = legs[leg];
+                    if (wn - an).hypot(we - ae) < 3_000.0 {
+                        leg = 1 - leg;
+                    }
+                    legs[leg]
+                }
+            };
+            let want = (goal.1 - ae).atan2(goal.0 - an).to_degrees();
+            let turn = wrap(want - ahdg).clamp(-3.0 * dt, 3.0 * dt);
+            ahdg = (ahdg + turn).rem_euclid(360.0);
+            an += 110.0 * dt * ahdg.to_radians().cos();
+            ae += 110.0 * dt * ahdg.to_radians().sin();
+
+            let (alat, alon) = pos(an, ae);
+            let (blat, blon) = pos(bn, be);
+            let mut batch = Vec::new();
+            let mut own = report("ownship", "P1", secs, alat, alon, None);
+            own.classification.domain = Some(ot_core::schema::Domain::Air);
+            own.kinematics.course_deg = Some(ahdg);
+            own.kinematics.speed_mps = Some(110.0);
+            own.uncertainty = serde_json::from_value(json!({"circular_error_m": 10.0})).unwrap();
+            batch.push(own);
+            for (i, o) in others.iter().enumerate() {
+                let (lat, lon) = pos(o.0, o.1);
+                let mut r = report(
+                    "ais",
+                    &format!("f{i}"),
+                    secs,
+                    lat,
+                    lon,
+                    Some(&format!("3580000{i}")),
+                );
+                r.kinematics.course_deg = Some(o.2);
+                r.kinematics.speed_mps = Some(o.3);
+                r.uncertainty = serde_json::from_value(json!({"circular_error_m": 10.0})).unwrap();
+                batch.push(r);
+            }
+            // ESM: a bearing to each radar in range, 2 degrees of noise.
+            let (cn, ce) = (others[3].0, others[3].1);
+            for (key, n, eh, elnot) in [("em1", bn, be, "E-NAV1"), ("em2", cn, ce, "E-NAV2")] {
+                let (tlat, tlon) = pos(n, eh);
+                let (b, d) = ot_core::geometry::bearing_to(alat, alon, tlat, tlon);
+                if d > ESM_RANGE {
+                    continue;
+                }
+                let mut o = report("esm", key, secs, alat, alon, None);
+                o.geometry = Some(ot_core::Geometry::Bearing {
+                    bearing_deg: (b + 2.0 * normal(&mut unit)).rem_euclid(360.0),
+                    sigma_deg: 2.0,
+                    max_range_m: Some(ESM_RANGE),
+                    elevation_deg: None,
+                });
+                o.identifiers = vec![ot_core::schema::Identifier::new("elnot", elnot)];
+                if key == "em1" {
+                    first_esm.get_or_insert(secs);
+                }
+                batch.push(o);
+            }
+            // ELINT: every 20 s within range, an ellipse long along the line
+            // of sight (range is what a single aircraft measures worst).
+            let (los, range) = ot_core::geometry::bearing_to(alat, alon, blat, blon);
+            let mut area = None;
+            // A location takes collection: the first comes after the ESM has
+            // held the emitter for two minutes.
+            let held = first_esm.is_some_and(|f| secs - f >= 120);
+            if held && range <= ELINT_RANGE && secs % 20 == 0 {
+                let major = (0.03 * range).max(300.0);
+                let minor = (0.012 * range).max(150.0);
+                let (along, across) = (major * normal(&mut unit), minor * normal(&mut unit));
+                let (dn, de) = (
+                    along * los.to_radians().cos() - across * los.to_radians().sin(),
+                    along * los.to_radians().sin() + across * los.to_radians().cos(),
+                );
+                let (xlat, xlon) = pos(bn + dn, be + de);
+                let mut o = report("elint", "x1", secs, xlat, xlon, None);
+                o.uncertainty = serde_json::from_value(json!({"ellipse": {
+                    "semi_major_m": major, "semi_minor_m": minor, "orientation_deg": los}}))
+                .unwrap();
+                o.identifiers = vec![ot_core::schema::Identifier::new("elnot", "E-NAV1")];
+                first_elint.get_or_insert(secs);
+                area = Some(
+                    json!({"lat": xlat, "lon": xlon, "major": major, "minor": minor, "orientation": los}),
+                );
+                batch.push(o);
+            }
+            // FMV: a video tracker's track of the boat inside 10 km.
+            let mut video = None;
+            if range <= FMV_RANGE {
+                let (vlat, vlon) =
+                    pos(bn + 20.0 * normal(&mut unit), be + 20.0 * normal(&mut unit));
+                let mut o = report("fmv", "v1", secs, vlat, vlon, None);
+                o.kinematics.course_deg = Some(bc + 3.0 * normal(&mut unit));
+                o.kinematics.speed_mps = Some(bv + 0.5 * normal(&mut unit));
+                o.uncertainty = serde_json::from_value(json!({"circular_error_m": 25.0})).unwrap();
+                first_fmv.get_or_insert(secs);
+                video = Some(json!({"lat": vlat, "lon": vlon}));
+                batch.push(o);
+            }
+            feed(&mut e, &batch).await;
+
+            // Score and record.
+            let now = t0() + chrono::Duration::seconds(secs);
+            let boat_uid = e.reports.get("elint/x1").copied();
+            let mut lines = Vec::new();
+            for o in batch.iter().filter(|o| o.source_id == "esm") {
+                let on = e.tracks.values().find(|t| {
+                    t.bearings
+                        .iter()
+                        .any(|b| b.source_track_key == o.source_track_key && b.observed_at == now)
+                });
+                let Some(ot_core::Geometry::Bearing { bearing_deg, .. }) = o.geometry else {
+                    continue;
+                };
+                if o.source_track_key == "em1" && boat_uid.is_some() {
+                    boat_lines += 1;
+                    if on.is_some_and(|t| Some(t.uid) == boat_uid) {
+                        boat_lines_on_track += 1;
+                    }
+                }
+                if o.source_track_key == "em2" && on.is_some() {
+                    cargo_lines_on_track += 1;
+                }
+                lines.push(json!({"key": o.source_track_key, "bearing": bearing_deg,
+                    "uid": on.map(|t| t.uid.doc_id())}));
+            }
+            let fmv_uid = e.reports.get("fmv/v1").copied();
+            if converged_at.is_none() && fmv_uid.is_some() && fmv_uid == boat_uid {
+                converged_at = Some(secs);
+            }
+            if let Some(t) = boat_uid.and_then(|u| e.tracks.get(&u)) {
+                let (tn, te) = ot_core::geometry::local(
+                    lat0,
+                    lon0,
+                    t.view.position.latitude,
+                    t.view.position.longitude,
+                );
+                let sigma = t
+                    .view
+                    .uncertainty
+                    .as_ref()
+                    .and_then(|u| u.position_covariance())
+                    .map(|[nn, _, ee]| (nn + ee).sqrt())
+                    .unwrap_or(0.0);
+                errors.push((secs, (tn - bn).hypot(te - be), sigma));
+            }
+            let tracks: Vec<Value> = e
+                .tracks
+                .values()
+                .filter(|t| t.kind.is_track() && t.state != TrackState::Lost)
+                .map(|t| {
+                    json!({
+                        "uid": t.uid.doc_id(), "lat": t.view.position.latitude, "lon": t.view.position.longitude,
+                        "cov": t.view.uncertainty.as_ref().and_then(|u| u.position_covariance()),
+                        "confirmed": t.state == TrackState::Confirmed,
+                        "sources": t.contributors.iter().map(|c| c.source_id.as_str()).collect::<Vec<_>>(),
+                        "ids": t.view.identifiers.iter().map(|i| format!("{}:{}", i.scheme, i.value)).collect::<Vec<_>>(),
+                        "bearings": t.bearings.iter().filter(|b| (now - b.observed_at).num_seconds() < 30).count(),
+                        "boat": Some(t.uid) == boat_uid,
+                    })
+                })
+                .collect();
+            frames.push(json!({
+                "kind": "step", "t": secs, "mode": mode,
+                "aircraft": {"lat": alat, "lon": alon, "hdg": ahdg},
+                "boat": {"lat": blat, "lon": blon, "course": bc},
+                "others": others.iter().map(|o| pos(o.0, o.1)).collect::<Vec<_>>(),
+                "lines": lines, "area": area, "video": video, "tracks": tracks,
+                "error": errors.last().filter(|x| x.0 == secs).map(|x| json!({"m": x.1, "sigma": x.2})),
+            }));
+        }
+        if let Ok(dir) = std::env::var("OT_REPLAY_TRACE") {
+            let header = json!({"kind": "header", "origin": [lat0, lon0], "legs": legs.iter().map(|l| pos(l.0, l.1)).collect::<Vec<_>>(),
+                "esm_range": ESM_RANGE, "elint_range": ELINT_RANGE, "fmv_range": FMV_RANGE});
+            let lines: Vec<String> = std::iter::once(header)
+                .chain(frames)
+                .map(|v| v.to_string())
+                .collect();
+            std::fs::write(format!("{dir}/esm-patrol.jsonl"), lines.join("\n") + "\n").unwrap();
+        }
+        let final_error = errors.last().map(|x| x.1).unwrap_or(f64::INFINITY);
+        let boat_uid = e.reports.get("elint/x1").copied();
+        let boat = boat_uid.and_then(|u| e.tracks.get(&u));
+        let near_boat = e
+            .tracks
+            .values()
+            .filter(|t| t.kind.is_track() && t.state == TrackState::Confirmed)
+            .filter(|t| {
+                let (tn, te) = ot_core::geometry::local(
+                    lat0,
+                    lon0,
+                    t.view.position.latitude,
+                    t.view.position.longitude,
+                );
+                (tn - bn).hypot(te - be) < 3_000.0
+                    && t.contributors.iter().all(|c| c.source_id != "ownship")
+            })
+            .count();
+        eprintln!(
+            "esm-patrol: ESM first {first_esm:?} s, ELINT first {first_elint:?} s, FMV first {first_fmv:?} s, \
+             converged {converged_at:?} s; boat bearings on its track {boat_lines_on_track}/{boat_lines}, \
+             cargo bearings on a track {cargo_lines_on_track}; final error {final_error:.0} m; \
+             sources {:?}; tracks at the boat {near_boat}",
+            boat.map(|t| t
+                .contributors
+                .iter()
+                .map(|c| c.source_id.clone())
+                .collect::<Vec<_>>())
+        );
+        let (esm, elint, fmv) = (first_esm.unwrap(), first_elint.unwrap(), first_fmv.unwrap());
+        assert!(esm < elint && elint < fmv, "ESM, then ELINT, then video");
+        let converged = converged_at.expect("the video track joins the boat's track");
+        assert!(
+            converged - fmv <= 60,
+            "video joined {} s after it started",
+            converged - fmv
+        );
+        let boat = boat.unwrap();
+        let sources: std::collections::BTreeSet<&str> = boat
+            .contributors
+            .iter()
+            .map(|c| c.source_id.as_str())
+            .collect();
+        assert!(
+            sources.contains("elint") && sources.contains("fmv"),
+            "{sources:?}"
+        );
+        assert!(
+            boat.bearings.iter().any(|b| b.source_id == "esm"),
+            "ESM bearings on the track"
+        );
+        assert!(
+            boat_lines_on_track as f64 >= 0.9 * boat_lines as f64,
+            "{boat_lines_on_track}/{boat_lines} boat bearings on its track"
+        );
+        assert_eq!(
+            cargo_lines_on_track, 0,
+            "the cargo ship's radar never joins a track"
+        );
+        assert!(final_error < 100.0, "final error {final_error:.0} m");
+        assert_eq!(near_boat, 1, "one track at the boat");
         e.redis.purge_namespace().await.unwrap();
     }
 
