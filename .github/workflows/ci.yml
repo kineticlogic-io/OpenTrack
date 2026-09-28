@@ -18,6 +18,8 @@ jobs:
       OT_TEST_MQTT_URL: mqtt://127.0.0.1:1883
     steps:
       - uses: actions/checkout@v4
+      # samael (SAML SSO) binds to libxmlsec1 at build time.
+      - run: sudo apt-get update && sudo apt-get install -y libxmlsec1-dev pkg-config
       # Service containers cannot take arguments, and JetStream needs `-js`.
       - run: docker run -d --name nats -p 4222:4222 nats:2 -js
       - run: docker run -d --name mqtt -p 1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
