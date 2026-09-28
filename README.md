@@ -127,6 +127,7 @@ crates/
   ot-source   source framework: transports, framing, codecs, the plugin registry, mapping, entity stage, filter, tracker (GNN/MHT), throttle
   ot-plugin   plugin hosts: WebAssembly components (wasmtime, grants) and external plugins over a socket
   ot-codec-stanag4607  STANAG 4607 (Edition 3) GMTI decoder: every segment type, typed and as JSON records
+  ot-sapient  SAPIENT (BSI Flex 335 v2.0) decoder: SapientMessage protobuf to JSON records
   ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | bench | plugin | retire
 docs/
   nats-output.md   the published track contract, for consumers
@@ -198,7 +199,10 @@ out. See [docs/non-point-contacts.md](docs/non-point-contacts.md).
 below). **STANAG 4607** GMTI streams over TCP; [docs/examples/stanag4607.json](docs/examples/stanag4607.json)
 turns every dwell target into a detection with a ground error ellipse from the radar geometry, forms
 ground tracks with the GNN tracker timed by the measured revisit rate, and publishes the sensor
-platform itself as a friendly track.
+platform itself as a friendly track. **SAPIENT** (BSI Flex 335 v2.0) is the built-in `sapient` codec
+plugin: each `SapientMessage` (over TCP with a 4-byte little-endian length prefix, or one per MQTT
+message) becomes a JSON record for the mapping; [docs/examples/sapient.json](docs/examples/sapient.json)
+maps detection reports.
 
 Per source, the publish stage sets:
 

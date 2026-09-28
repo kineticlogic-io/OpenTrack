@@ -3,3 +3,5 @@
 # (docs/security/supply-chain.md). Move it deliberately, with the tests.
 channel = "1.98.1"
 components = ["clippy", "rustfmt"]
+# The WebAssembly plugin tests build the example plugins for this target.
+targets = ["wasm32-wasip2"]

@@ -4,6 +4,7 @@ description = "SAPIENT (BSI Flex 335) codec for OpenTrack"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 prost-reflect.workspace = true
