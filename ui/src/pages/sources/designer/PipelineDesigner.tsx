@@ -7,7 +7,7 @@ import { pipelineStages, DEFAULT_LINKS } from '../../../lib/pipeline'
 import { usePreview } from '../../../lib/usePreview'
 import { PreviewResults } from '../PreviewResults'
 import { MapEditor } from './MapEditor'
-import { AffiliationForm, DecodeForm, FilterForm, JoinForm, PublishForm, RegistryForm, RejectForm, ThrottleForm, TrackerForm, SecurityForm } from './StageForms'
+import { AffiliationForm, DecodeForm, FilterForm, JoinForm, PublishForm, RegistryForm, RejectForm, ThrottleForm, TrackerForm, SecurityForm, EmitterMotionForm } from './StageForms'
 
 const PipelineFlow = lazy(() => import('../PipelineFlow'))
 
@@ -191,6 +191,7 @@ export function PipelineDesigner({
         <div className="stack">
           {editor}
           <SecurityForm value={spec.security} onChange={(security) => setSpec({ ...spec, security })} />
+          <EmitterMotionForm value={spec.emitter_motion} onChange={(emitter_motion) => setSpec({ ...spec, emitter_motion })} />
         </div>
       )
       break

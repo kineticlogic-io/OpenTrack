@@ -29,6 +29,7 @@ pub fn identity_keys(obs: &Observation) -> Vec<String> {
         .identifiers
         .iter()
         .filter(|i| !i.value.trim().is_empty())
+        .filter(|i| !is_evidence_scheme(&i.scheme))
         .map(|i| {
             format!(
                 "{}:{}",
@@ -43,6 +44,37 @@ pub fn identity_keys(obs: &Observation) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Identifier schemes that name a kind of thing, not one thing: many
+/// emitters share an ELNOT (every boat with the same radar model), and one
+/// platform can carry several. They never make identity, never veto a
+/// pairing, and a shared value is evidence for one (see
+/// [`EVIDENCE_LN_LR`]).
+pub const EVIDENCE_SCHEMES: &[&str] = &["elnot"];
+
+/// Whether a scheme is evidence only ([`EVIDENCE_SCHEMES`]).
+pub fn is_evidence_scheme(scheme: &str) -> bool {
+    let s = scheme.trim();
+    EVIDENCE_SCHEMES.iter().any(|e| e.eq_ignore_ascii_case(s))
+}
+
+/// What a shared evidence identifier (an ELNOT) adds to a comparison's ln
+/// likelihood ratio: 10 to 1 for the same object. A different one adds
+/// nothing either way.
+pub const EVIDENCE_LN_LR: f64 = std::f64::consts::LN_10;
+
+/// Whether two observations share an evidence identifier's value.
+pub fn share_evidence(a: &Observation, b: &Observation) -> bool {
+    a.identifiers
+        .iter()
+        .filter(|i| is_evidence_scheme(&i.scheme))
+        .any(|x| {
+            b.identifiers.iter().any(|y| {
+                y.scheme.trim().eq_ignore_ascii_case(x.scheme.trim())
+                    && y.value.trim().eq_ignore_ascii_case(x.value.trim())
+            })
+        })
 }
 
 /// The registry entity an observation resolved to, when the match is
@@ -755,10 +787,15 @@ pub fn kinematic(obs: &Observation, view: &Observation, s: &KinematicSettings) -
         Some(s.stopped_drift_mps),
     );
     let dt = (obs.observed_at - view.observed_at).num_milliseconds() as f64 / 1000.0;
-    Kinematic {
+    let mut k = Kinematic {
         dt_s: (dt.abs() * 10.0).round() / 10.0,
         ..compare(&a, &b, s)
+    };
+    // A shared ELNOT: the same kind of emitter, evidence for the same one.
+    if share_evidence(obs, view) {
+        k.ln_lr += EVIDENCE_LN_LR;
     }
+    k
 }
 
 /// Compare two estimates at the same time (`dt_s` is left 0).
@@ -917,7 +954,11 @@ pub fn posterior(prior: f64, ln_lr: f64) -> f64 {
 /// Why two tracks cannot be the same object whatever their kinematics:
 /// different values for the same identifier scheme, or different domains.
 pub fn veto(a: &Observation, b: &Observation) -> Option<String> {
-    for x in &a.identifiers {
+    for x in a
+        .identifiers
+        .iter()
+        .filter(|i| !is_evidence_scheme(&i.scheme))
+    {
         let scheme = x.scheme.trim().to_lowercase();
         for y in &b.identifiers {
             if y.scheme.trim().to_lowercase() == scheme

@@ -45,9 +45,6 @@ const CHI2_95: [f64; 4] = [3.84, 5.99, 7.81, 9.49];
 const TMA_WINDOW_S: i64 = 300;
 const TMA_MAX_LINES: usize = 120;
 const TMA_MIN_BASELINE_M: f64 = 1000.0;
-/// How hard a moving target may manoeuvre unseen by the model (m/s²): a
-/// small boat's weave or a ship's turn.
-const TMA_MANOEUVRE_MPS2: f64 = 0.1;
 /// Fastest an emitter moves between an anonymous set's two fixes.
 const MAX_SPEED_MPS: f64 = 40.0;
 
@@ -341,7 +338,10 @@ impl Bearings {
                 break;
             };
             let mut again = true;
-            if self.waiting[members[0]].identity().is_none() && !self.naive() {
+            // Every set fixes only the second time, emitter identity or not:
+            // an ELNOT is shared by every emitter of its kind, so two lines
+            // of it may still be two boats with the same radar.
+            if !self.naive() {
                 let set: Vec<&Lob> = members.iter().map(|&m| &self.waiting[m]).collect();
                 let at = set
                     .iter()
@@ -506,11 +506,6 @@ impl Engine {
                 self.bearings.moving.insert(member.clone());
             }
             let key = self.single_key(&lob);
-            let ours = |t: &ot_core::SystemTrack| {
-                t.contributors
-                    .iter()
-                    .any(|c| c.source_id == FIX && c.source_track_key == key)
-            };
             // The track this sensor track's lines have lately gone to (this
             // one, or one within the window: a line that misses its gate
             // now and then must not restart a rival location).
@@ -520,15 +515,22 @@ impl Engine {
                     .get(&member)
                     .and_then(|&(u, at)| ((now - at).num_seconds() <= TMA_WINDOW_S).then_some(u))
             });
-            let better = recent.and_then(|u| self.tracks.get(&u)).is_some_and(|t| {
-                t.state != ot_core::TrackState::Lost
-                    && !ours(t)
-                    && t.view
-                        .uncertainty
-                        .as_ref()
-                        .and_then(|u| u.position_covariance())
-                        .is_some_and(|[nn, _, ee]| (nn + ee).sqrt() <= sol.1.sigma_m())
-            });
+            // Quiet only once our own location has joined that track: while
+            // the lines go to another track (ELINT's, say, sharing the
+            // ELNOT), keep reporting so the two can pair, and the track keeps
+            // its number from first contact.
+            let joined = recent
+                .is_some_and(|u| self.reports.get(&format!("{FIX}/{key}")).copied() == Some(u));
+            let better = joined
+                && recent.and_then(|u| self.tracks.get(&u)).is_some_and(|t| {
+                    t.state != ot_core::TrackState::Lost
+                        && t.contributors.iter().any(|c| c.source_id != FIX)
+                        && t.view
+                            .uncertainty
+                            .as_ref()
+                            .and_then(|u| u.position_covariance())
+                            .is_some_and(|[nn, _, ee]| (nn + ee).sqrt() <= sol.1.sigma_m())
+                });
             if !better {
                 let report = self.single_report(&lob, &key, &sol.0, &sol.1);
                 self.ingest(report, counts).await?;
@@ -625,15 +627,21 @@ impl Engine {
                 }
             })
             .collect();
-        let mut sol = tma::locate(&lines, self.bearings.moving.contains(member))?;
+        let motion = self.motion.get(&member.0).copied().unwrap_or_default();
+        let mut sol = tma::locate(
+            &lines,
+            self.bearings.moving.contains(member),
+            motion.max_speed_mps,
+        )?;
         let range = sol.n.hypot(sol.e);
         // What the model cannot see sets a floor on the error: a moving
-        // target that manoeuvres (a weave, a turn) at up to
-        // TMA_MANOEUVRE_MPS2 strays up to half a T-squared from constant
-        // velocity over the window; and 2% of the range for everything else.
+        // target that manoeuvres (a weave, a turn) at up to the source's
+        // emitter_motion.manoeuvre_mps2 strays up to half a T-squared from
+        // constant velocity over the window; and 2% of the range for
+        // everything else.
         let span = lines.iter().map(|l| -l.t).fold(0.0, f64::max);
         let manoeuvre = if sol.model == tma::Model::Moving {
-            0.5 * TMA_MANOEUVRE_MPS2 * span * span
+            0.5 * motion.manoeuvre_mps2 * span * span
         } else {
             0.0
         };
@@ -644,13 +652,10 @@ impl Engine {
     }
 
     /// The `fix` source track a sensor track's own location reports under:
-    /// its emitter identity when it has one (so other fixes and ELINT of the
-    /// same emitter meet it), else the sensor track.
+    /// the sensor track. Its ELNOT rides along as evidence, never as a key:
+    /// two boats with the same radar model share one.
     fn single_key(&self, lob: &Lob) -> String {
-        match lob.identity() {
-            Some(id) => format!("id:{id}"),
-            None => format!("tma:{}/{}", lob.obs.source_id, lob.obs.source_track_key),
-        }
+        format!("tma:{}/{}", lob.obs.source_id, lob.obs.source_track_key)
     }
 
     /// A single-sensor location as a report of the `fix` source.
@@ -792,12 +797,10 @@ impl Engine {
                         .map(|i| format!("{}:{}", i.scheme, i.value)),
                 )
                 .collect();
-            let scheme = id.split(':').next().unwrap_or_default();
-            if theirs.contains(&id) {
-                same = true;
-            } else if theirs.iter().any(|x| x.split(':').next() == Some(scheme)) {
-                return None;
-            }
+            // Evidence, not identity: a match counts for the track, a
+            // different one counts for nothing (a platform can carry
+            // several emitters).
+            same = theirs.contains(&id);
         }
         Some(Fit {
             d2,
@@ -818,7 +821,12 @@ impl Engine {
             let Some(f) = self.fit(lob, t) else {
                 continue;
             };
-            let score = (-0.5 * f.d2).exp() / f.sigma * if f.same { 1e6 } else { 1.0 };
+            let score = (-0.5 * f.d2).exp() / f.sigma
+                * if f.same {
+                    crate::correlate::EVIDENCE_LN_LR.exp()
+                } else {
+                    1.0
+                };
             fits.push((t.uid, score, f.residual, f.same));
             through.push((f.lat, f.lon));
         }
@@ -901,11 +909,6 @@ impl Engine {
                 let m = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
                 self.bearings.members.get(&m).cloned()
             })
-            .chain(
-                used.iter()
-                    .find_map(|l| l.identity())
-                    .map(|id| format!("id:{id}")),
-            )
             .collect();
         let mine = |t: &ot_core::SystemTrack| {
             t.contributors
@@ -976,30 +979,26 @@ impl Engine {
             .map(|l| l.obs.observed_at)
             .max()
             .unwrap_or_else(Utc::now);
-        let id = used.iter().find_map(|l| l.identity());
-        let key = match &id {
-            Some(id) => format!("id:{id}"),
-            // The key its members' earlier fixes had (most of them), else a
-            // new one named after the set.
-            None => {
-                let mut count: HashMap<&String, usize> = HashMap::new();
-                for l in used {
-                    let m = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
-                    if let Some(k) = self.bearings.members.get(&m) {
-                        *count.entry(k).or_default() += 1;
-                    }
+        // The key its members' earlier fixes had (most of them), else a new
+        // one named after the set. Never the ELNOT: many emitters share one.
+        let key = {
+            let mut count: HashMap<&String, usize> = HashMap::new();
+            for l in used {
+                let m = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
+                if let Some(k) = self.bearings.members.get(&m) {
+                    *count.entry(k).or_default() += 1;
                 }
-                count
-                    .into_iter()
-                    .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
-                    .map(|(k, _)| k.clone())
-                    .unwrap_or_else(|| {
-                        use std::hash::{Hash, Hasher};
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        set_of(&used.iter().collect::<Vec<_>>()).hash(&mut h);
-                        format!("set-{:08x}", h.finish() as u32)
-                    })
             }
+            count
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+                .map(|(k, _)| k.clone())
+                .unwrap_or_else(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    set_of(&used.iter().collect::<Vec<_>>()).hash(&mut h);
+                    format!("set-{:08x}", h.finish() as u32)
+                })
         };
         if self.recording {
             self.trace.push(json!({
@@ -1101,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn two_sensors_fix_only_with_the_same_emitter_identity() {
+    fn two_sensors_fix_with_the_same_elnot_only_twice() {
         let mut w = Bearings::default();
         w.waiting.push(lob("esm-a", 50.60, -1.60, SHIP, 1.0, None));
         w.waiting.push(lob("esm-b", 50.85, -1.45, SHIP, 1.0, None));
@@ -1138,8 +1137,16 @@ mod tests {
         );
         w.waiting
             .push(lob("esm-c", 50.55, -1.10, SHIP, 1.0, Some("A123")));
+        // An ELNOT is shared by every emitter of its kind: two lines of it
+        // may be two boats with the same radar, so they too must fix twice.
+        assert!(w.sweep().is_empty(), "the same ELNOT once may be chance");
+        for (s, lat, lon) in [("esm-a", 50.60, -1.60), ("esm-c", 50.55, -1.10)] {
+            let mut l = lob(s, lat, lon, SHIP, 1.0, Some("A123"));
+            l.obs.observed_at += chrono::Duration::seconds(5);
+            w.waiting.push(l);
+        }
         let (used, _) = w.sweep().pop().unwrap();
-        assert_eq!(used.len(), 2, "the same emitter from two sensors");
+        assert_eq!(used.len(), 2, "the same ELNOT from two sensors, twice");
         assert!(
             used.iter()
                 .all(|l| l.identity().as_deref() == Some("elnot:A123"))

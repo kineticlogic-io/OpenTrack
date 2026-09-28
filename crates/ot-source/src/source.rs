@@ -37,6 +37,53 @@ pub struct SourceSpec {
     /// the tracks they make carry it (OpenStare's `stare-security` shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<ot_core::SecurityLabel>,
+    /// For a source reporting lines of bearing: how the emitters it hears
+    /// may move, which bounds the error of locating them from one moving
+    /// sensor. Unset: [`EmitterMotion::default`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emitter_motion: Option<EmitterMotion>,
+}
+
+/// How the emitters a bearing source hears may move (see
+/// `docs/non-point-contacts.md`, single-sensor location).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmitterMotion {
+    /// The hardest an emitter may manoeuvre (turn, weave, speed up) unseen
+    /// by a constant-velocity fit, m/s². A ship's turn is about 0.1; a small
+    /// boat's weave more; an aircraft's turn several.
+    pub manoeuvre_mps2: f64,
+    /// The fastest an emitter may move, m/s: how far one the bearings cannot
+    /// see moving (it runs along the line of sight) may have gone.
+    pub max_speed_mps: f64,
+}
+
+impl Default for EmitterMotion {
+    /// Surface traffic: a ship's turn, 30 m/s (about 60 knots).
+    fn default() -> Self {
+        Self {
+            manoeuvre_mps2: 0.1,
+            max_speed_mps: 30.0,
+        }
+    }
+}
+
+impl EmitterMotion {
+    fn check(&self) -> Result<(), String> {
+        if !(self.manoeuvre_mps2.is_finite() && (0.0..=100.0).contains(&self.manoeuvre_mps2)) {
+            return Err(format!(
+                "emitter_motion.manoeuvre_mps2 must be 0-100 m/s², got {}",
+                self.manoeuvre_mps2
+            ));
+        }
+        if !(self.max_speed_mps.is_finite() && (0.0..=1500.0).contains(&self.max_speed_mps)) {
+            return Err(format!(
+                "emitter_motion.max_speed_mps must be 0-1500 m/s, got {}",
+                self.max_speed_mps
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl SourceSpec {
@@ -104,6 +151,9 @@ impl SourceSpec {
     pub fn validate(&self) -> Result<(), SourceError> {
         if let Some(label) = &self.security {
             label.validate().map_err(SourceError::Tracker)?;
+        }
+        if let Some(m) = &self.emitter_motion {
+            m.check().map_err(SourceError::Tracker)?;
         }
         let id_ok = !self.id.is_empty()
             && self.id.len() <= 64
@@ -191,6 +241,36 @@ impl SourceSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emitter_motion_is_checked() {
+        assert!(EmitterMotion::default().check().is_ok());
+        let fast = EmitterMotion {
+            manoeuvre_mps2: 5.0,
+            max_speed_mps: 300.0,
+        };
+        assert!(fast.check().is_ok(), "an aircraft");
+        for bad in [
+            EmitterMotion {
+                manoeuvre_mps2: -0.1,
+                max_speed_mps: 30.0,
+            },
+            EmitterMotion {
+                manoeuvre_mps2: f64::NAN,
+                max_speed_mps: 30.0,
+            },
+            EmitterMotion {
+                manoeuvre_mps2: 0.1,
+                max_speed_mps: 5000.0,
+            },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
+        let m: EmitterMotion =
+            serde_json::from_str(r#"{"manoeuvre_mps2": 0.25, "max_speed_mps": 25}"#).unwrap();
+        assert_eq!(m.max_speed_mps, 25.0);
+        assert!(serde_json::from_str::<EmitterMotion>(r#"{"manoeuvre_mps2": 0.25}"#).is_err());
+    }
     use serde_json::json;
 
     fn spec(id: &str) -> serde_json::Value {

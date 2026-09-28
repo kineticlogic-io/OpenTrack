@@ -451,6 +451,9 @@ pub struct Engine {
     /// Source id → reports a new track needs from it to be confirmed (unset:
     /// the engine's default).
     confirm: HashMap<String, u64>,
+    /// Per bearing source: how the emitters it hears may move (unset: the
+    /// default), for single-sensor location.
+    pub(crate) motion: HashMap<String, ot_source::source::EmitterMotion>,
     /// Source id → its pipeline's entity stage, to re-apply entity links.
     stages: HashMap<String, ot_source::registry::RegistryStage>,
     /// Correlation settings from the command line, used until saved ones exist.
@@ -592,6 +595,7 @@ impl Engine {
             detection_sources: HashSet::new(),
             alone: HashMap::new(),
             confirm: HashMap::new(),
+            motion: HashMap::new(),
             stages: HashMap::new(),
             default_correlation,
             correlation_version: String::new(),
@@ -716,6 +720,7 @@ impl Engine {
             bool,
             Option<u64>,
             ot_source::registry::RegistryStage,
+            Option<ot_source::source::EmitterMotion>,
         );
         let rows: Vec<Row> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             Ok(c.open_db()?
@@ -734,10 +739,11 @@ impl Engine {
                             .ok();
                     let alone = spec.as_ref().is_none_or(|spec| spec.publishes_alone());
                     let confirm = spec.as_ref().and_then(|spec| spec.confirms_after());
+                    let motion = spec.as_ref().and_then(|spec| spec.emitter_motion);
                     let stage = spec
                         .and_then(|spec| spec.pipeline.registry)
                         .unwrap_or_default();
-                    (s.id, s.priority, detections, alone, confirm, stage)
+                    (s.id, s.priority, detections, alone, confirm, stage, motion)
                 })
                 .collect())
         })
@@ -748,6 +754,10 @@ impl Engine {
             .filter_map(|r| r.4.map(|n| (r.0.clone(), n)))
             .collect();
         self.stages = rows.iter().map(|r| (r.0.clone(), r.5.clone())).collect();
+        self.motion = rows
+            .iter()
+            .filter_map(|r| r.6.map(|m| (r.0.clone(), m)))
+            .collect();
         self.alone = rows.iter().map(|r| (r.0.clone(), r.3)).collect();
         self.detection_sources = rows.iter().filter(|r| r.2).map(|r| r.0.clone()).collect();
         let mut ids: Vec<String> = rows.into_iter().map(|r| r.0).collect();
@@ -5594,6 +5604,14 @@ mod tests {
         };
         // Open water.
         e.settings.correlation.kinematic.object_density_per_km2 = 0.01;
+        // The ESM watches for small fast boats: a hard weave, up to 25 m/s.
+        e.motion.insert(
+            "esm".into(),
+            ot_source::source::EmitterMotion {
+                manoeuvre_mps2: 0.25,
+                max_speed_mps: 25.0,
+            },
+        );
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut unit = move || {
             seed ^= seed << 13;
@@ -5632,7 +5650,7 @@ mod tests {
         // The boat's track, as a crew would pick it: the best-located one
         // that reports for it (video, then ELINT, then ESM's location).
         let boat_of = |e: &Engine| {
-            ["fmv/v1", "elint/x1", "fix/id:elnot:E-NAV1"]
+            ["fmv/v1", "elint/x1", "fix/tma:esm/em1"]
                 .iter()
                 .filter_map(|k| e.reports.get(*k))
                 .find(|u| e.tracks.get(u).is_some_and(|t| t.state != TrackState::Lost))
@@ -5848,7 +5866,7 @@ mod tests {
                 .find(|t| {
                     t["kind"] == "report"
                         && t["source"] == "fix"
-                        && t["key"] == "id:elnot:E-NAV1"
+                        && t["key"] == "tma:esm/em1"
                         && serde_json::from_value::<DateTime<Utc>>(t["t"].clone()).ok() == Some(now)
                 })
                 .map(|t| json!({"lat": t["lat"], "lon": t["lon"], "sigma": t["sigma"]}));
@@ -5941,8 +5959,10 @@ mod tests {
         assert!(esm < elint && elint < fmv, "ESM, then ELINT, then video");
         let esm_only = esm_only_at.expect("a track from the ESM alone");
         let joined = esm_elint_at.expect("ELINT joins the ESM's track");
+        // ELNOT is evidence, not identity: ELINT pairs with the ESM's track
+        // on position and the shared ELNOT, over a few of its reports.
         assert!(
-            joined - elint <= 60,
+            joined - elint <= 120,
             "ELINT joined {} s after its first report",
             joined - elint
         );

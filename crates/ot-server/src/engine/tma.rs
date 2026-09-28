@@ -232,17 +232,16 @@ fn best(lines: &[Line], model: Model, seeds: &[[f64; 4]]) -> Option<Solution> {
 /// The fewest bearings, and the shortest span, worth fitting.
 pub const MIN_LINES: usize = 4;
 pub const MIN_SPAN_S: f64 = 30.0;
-/// The fastest an emitter called fixed may be moving unseen (m/s).
-pub const MAX_UNSEEN_MPS: f64 = 30.0;
 /// A moving fit needs more bearings than a fixed one.
 pub const MIN_LINES_MOVING: usize = 8;
 
 /// Locate the emitter: fixed if the bearings fit a fixed point (chi-square
 /// at 99%) and a moving target fits no better, else moving if they fit
 /// constant velocity. `moving` says the emitter has been seen moving
-/// before: then only the moving model is tried. `None` until the bearings
+/// before: then only the moving model is tried. `max_unseen_mps` is the
+/// fastest a fixed-looking emitter may really be moving. `None` until the bearings
 /// say something: too few, too short a span, or no fit.
-pub fn locate(lines: &[Line], moving: bool) -> Option<Solution> {
+pub fn locate(lines: &[Line], moving: bool, max_unseen_mps: f64) -> Option<Solution> {
     let newest = lines.iter().max_by(|a, b| a.t.total_cmp(&b.t))?;
     let span = lines.iter().map(|l| -l.t).fold(0.0, f64::max);
     if lines.len() < MIN_LINES || span < MIN_SPAN_S {
@@ -285,7 +284,7 @@ pub fn locate(lines: &[Line], moving: bool) -> Option<Solution> {
         // line of sight barely turns them. The emitter may have moved as far
         // as the fastest speed they allow (capped) over half the window.
         (Some(mut f), Some(m)) => {
-            let v = (m.vn.hypot(m.ve) + 2.0 * m.sigma_mps()).min(MAX_UNSEEN_MPS);
+            let v = (m.vn.hypot(m.ve) + 2.0 * m.sigma_mps()).min(max_unseen_mps);
             let d2 = (v * span / 2.0).powi(2) / 2.0;
             f.cov[0][0] += d2;
             f.cov[1][1] += d2;
@@ -373,7 +372,7 @@ mod tests {
     fn a_fixed_emitter_is_located_from_a_straight_leg() {
         // A radar 50 km east; the aircraft flies north for 5 minutes.
         let (lines, truth) = collect(&[(0.0, 300.0)], [0.0, 50_000.0, 0.0, 0.0], 2.0, 1);
-        let s = locate(&lines, false).unwrap();
+        let s = locate(&lines, false, 30.0).unwrap();
         assert_eq!(s.model, Model::Fixed);
         let err = (s.n - truth.0).hypot(s.e - truth.1);
         assert!(
@@ -388,7 +387,7 @@ mod tests {
     #[test]
     fn a_short_collection_says_nothing_yet() {
         let (lines, _) = collect(&[(0.0, 20.0)], [0.0, 50_000.0, 0.0, 0.0], 2.0, 1);
-        assert!(locate(&lines, false).is_none());
+        assert!(locate(&lines, false, 30.0).is_none());
     }
 
     #[test]
@@ -397,7 +396,7 @@ mod tests {
         // east, then turns north, then west: the classic TMA manoeuvre.
         let boat = [30_000.0, 30_000.0, 14.1, -14.1];
         let (lines, truth) = collect(&[(90.0, 150.0), (0.0, 150.0), (270.0, 150.0)], boat, 1.5, 1);
-        let s = locate(&lines, false).unwrap();
+        let s = locate(&lines, false, 30.0).unwrap();
         assert_eq!(s.model, Model::Moving, "a fixed point cannot explain it");
         let err = (s.n - truth.0).hypot(s.e - truth.1);
         assert!(
@@ -436,7 +435,7 @@ mod tests {
             let within = (0..runs)
                 .filter(|&seed| {
                     let (lines, truth) = collect(legs, target, sigma, seed);
-                    locate(&lines, false).is_some_and(|s| m2(&s, truth) <= 6.18)
+                    locate(&lines, false, 30.0).is_some_and(|s| m2(&s, truth) <= 6.18)
                 })
                 .count();
             assert!(

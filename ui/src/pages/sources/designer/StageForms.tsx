@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { TbPlus, TbTrash, TbX } from 'react-icons/tb'
 import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
-import { api, type PluginInfo, type SecurityLabel } from '../../../api/client'
+import { api, type EmitterMotion, type PluginInfo, type SecurityLabel } from '../../../api/client'
 import { DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
@@ -486,6 +486,60 @@ export function PublishForm({
             onChange={(e) => onConfirmAfter(e.target.value.trim() === '' ? undefined : Math.max(1, Math.round(Number(e.target.value))))}
           />
           <span className="muted">reports</span>
+        </div>
+      </Row>
+    </div>
+  )
+}
+
+/** Defaults the engine uses when a source sets no emitter motion: surface traffic. */
+const MOTION_DEFAULT: EmitterMotion = { manoeuvre_mps2: 0.1, max_speed_mps: 30 }
+
+/** For a source reporting lines of bearing: how the emitters it hears may move. */
+export function EmitterMotionForm({ value, onChange }: { value?: EmitterMotion; onChange: (v: EmitterMotion | undefined) => void }) {
+  const set = (key: keyof EmitterMotion, raw: string) => {
+    const next = { ...(value ?? MOTION_DEFAULT) }
+    const n = Number(raw)
+    next[key] = raw.trim() === '' || !Number.isFinite(n) ? MOTION_DEFAULT[key] : Math.max(0, n)
+    const isDefault = next.manoeuvre_mps2 === MOTION_DEFAULT.manoeuvre_mps2 && next.max_speed_mps === MOTION_DEFAULT.max_speed_mps
+    onChange(isDefault ? undefined : next)
+  }
+  return (
+    <div className="stack">
+      <Row
+        label="Emitters' manoeuvre"
+        hint="For a source reporting lines of bearing, located from one moving sensor: the hardest the emitters it hears may turn or weave, which a steady-course fit cannot see. It widens the stated error. A ship's turn is about 0.1 m/s²; a small fast boat's weave 0.2-0.3; an aircraft's turn several. Empty: 0.1."
+      >
+        <div className="num-row">
+          <Input
+            style={{ ...INPUT, width: 90 }}
+            type="number"
+            min={0}
+            step={0.05}
+            aria-label="Emitters' manoeuvre, metres per second squared"
+            value={value ? String(value.manoeuvre_mps2) : ''}
+            placeholder={String(MOTION_DEFAULT.manoeuvre_mps2)}
+            onChange={(e) => set('manoeuvre_mps2', e.target.value)}
+          />
+          <span className="muted">m/s²</span>
+        </div>
+      </Row>
+      <Row
+        label="Emitters' top speed"
+        hint="The fastest the emitters it hears may move. An emitter heading straight along the line of sight barely turns its bearings, so it can look stationary; the stated error then allows for it having moved at up to this speed. Empty: 30 m/s (about 60 knots)."
+      >
+        <div className="num-row">
+          <Input
+            style={{ ...INPUT, width: 90 }}
+            type="number"
+            min={0}
+            step={1}
+            aria-label="Emitters' top speed, metres per second"
+            value={value ? String(value.max_speed_mps) : ''}
+            placeholder={String(MOTION_DEFAULT.max_speed_mps)}
+            onChange={(e) => set('max_speed_mps', e.target.value)}
+          />
+          <span className="muted">m/s</span>
         </div>
       </Row>
     </div>

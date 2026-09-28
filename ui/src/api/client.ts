@@ -634,6 +634,16 @@ export interface SourceSpec {
   confirm_after?: number
   /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
   security?: SecurityLabel
+  /** For a source reporting lines of bearing: how the emitters it hears may move (unset: 0.1 m/s², 30 m/s). */
+  emitter_motion?: EmitterMotion
+}
+
+/** How the emitters a bearing source hears may move; bounds the error of locating them from one moving sensor. */
+export interface EmitterMotion {
+  /** The hardest an emitter may manoeuvre unseen by a constant-velocity fit (m/s²). */
+  manoeuvre_mps2: number
+  /** The fastest an emitter may move (m/s). */
+  max_speed_mps: number
 }
 
 export interface LinkStatus {
