@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use crate::frame::Framing;
 
+pub mod sapient;
 pub mod stanag4607;
 
 /// What a plugin provides.
@@ -249,8 +250,12 @@ pub trait PluginScorer: Send {
     ) -> Result<Vec<Score>, String>;
 }
 
-static BUILTIN: LazyLock<Vec<Arc<dyn Plugin>>> =
-    LazyLock::new(|| vec![Arc::new(stanag4607::Stanag4607::new()) as Arc<dyn Plugin>]);
+static BUILTIN: LazyLock<Vec<Arc<dyn Plugin>>> = LazyLock::new(|| {
+    vec![
+        Arc::new(stanag4607::Stanag4607::new()) as Arc<dyn Plugin>,
+        Arc::new(sapient::Sapient::new()) as Arc<dyn Plugin>,
+    ]
+});
 
 static LOADED: LazyLock<RwLock<BTreeMap<String, Arc<dyn Plugin>>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));

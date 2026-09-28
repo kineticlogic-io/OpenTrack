@@ -20,6 +20,7 @@ ot-source = { path = "crates/ot-source" }
 ot-codec-stanag4607 = { path = "crates/ot-codec-stanag4607" }
 ot-plugin = { path = "crates/ot-plugin" }
 ot-sync = { path = "crates/ot-sync" }
+ot-sapient = { path = "crates/ot-sapient" }
 anyhow = "1"
 # FIPS: aws-lc (validated module) instead of ring; the default features minus `ring`.
 async-nats = { version = "0.50", default-features = false, features = ["fips", "server_2_10", "server_2_11", "server_2_12", "server_2_14", "service", "jetstream", "nkeys", "crypto", "object-store", "kv", "websockets", "nuid"] }

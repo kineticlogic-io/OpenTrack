@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 ot-core.workspace = true
 ot-codec-stanag4607.workspace = true
+ot-sapient.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 chrono.workspace = true
