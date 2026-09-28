@@ -221,7 +221,9 @@ export default function SchemaPage() {
         titleActions={
           <InfoTip label="Output schema versions">
             The output schema defines the attributes every published track carries. A published version never changes;
-            edit a draft, then publish it.
+            edit a draft, then publish it. Tracks publish the fields of the newest published version. Status: draft (at most one, being
+            edited) or published. &ldquo;Mappings validated against it&rdquo;: the sources whose mapping was checked against that version; a
+            source whose version is not published does not start.
           </InfoTip>
         }
       >
@@ -250,6 +252,22 @@ export default function SchemaPage() {
         title={fieldsTitle}
         badge={current?.notes && !editing ? current.notes : undefined}
         persistKey="ot.panel.schemaFields"
+        titleActions={
+          <InfoTip label="Fields">
+            {editing ? (
+              <>
+                Save keeps the draft; nothing reaches consumers until you Publish. Publishing freezes the version for good, makes it the one
+                every track publishes, and republishes each live track whose attributes change.
+              </>
+            ) : (
+              <>
+                Each field is published as <span className="mono">attributes.&lt;field&gt;</span>. Filled by: a feed mapping or entity link
+                (<span className="mono">ext.&lt;field&gt;</span>; an entity&apos;s value wins over the feed&apos;s), or an OpenTrack built-in
+                value. Fed by: the sources whose mapping sets it. A feed value that does not fit the type is dropped.
+              </>
+            )}
+          </InfoTip>
+        }
         actions={
           editing && (
             <>

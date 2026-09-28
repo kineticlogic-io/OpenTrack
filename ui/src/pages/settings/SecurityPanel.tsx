@@ -133,7 +133,10 @@ export function SecurityPanel() {
             </SettingsRow>
           ) : (
             <>
-              <SettingsRow label="Enabled">
+              <SettingsRow
+                label="Enabled"
+                hint="On: the sign-in page offers single sign-on through the identity provider below. It needs the IdP entity ID, sign-in URL and signing certificate, and OT_PUBLIC_URL. Off: SAML sign-ins are refused; accounts made by SAML stay."
+              >
                 <Toggle size="sm" aria-label="SAML enabled" value={saml.enabled} onChange={(enabled) => setSaml({ enabled })} />
               </SettingsRow>
               <SettingsRow label="Service provider" hint="Give these to the identity provider. They come from OT_PUBLIC_URL, the address browsers use for OpenTrack.">
@@ -167,7 +170,7 @@ export function SecurityPanel() {
                   </div>
                 </div>
               </SettingsRow>
-              <SettingsRow label="IdP entity ID">
+              <SettingsRow label="IdP entity ID" hint="The identity provider's own name for itself (the entityID in its metadata), usually a URL. Read metadata fills it; sign-on itself works from the pasted metadata, so to change the provider, paste and read its metadata again.">
                 <Input style={{ ...INPUT, width: 420 }} aria-label="IdP entity ID" value={saml.idp_entity_id} onChange={(e) => setSaml({ idp_entity_id: e.target.value })} spellCheck={false} />
               </SettingsRow>
               <SettingsRow label="IdP sign-in URL" hint="Where users are sent to sign in (HTTP-Redirect binding).">
@@ -208,7 +211,10 @@ export function SecurityPanel() {
         actions={saveButton}
       >
         <div className="panel-body stack">
-          <SettingsRow label="Enabled">
+          <SettingsRow
+            label="Enabled"
+            hint="On: an OpenStare session or API token signs in here, checked with OpenStare at the API URL below. Off: only OpenTrack's own sign-ins count."
+          >
             <Toggle size="sm" aria-label="OpenStare sign-in enabled" value={os.enabled} onChange={(enabled) => setOs({ enabled })} />
           </SettingsRow>
           <SettingsRow label="API URL" hint="OpenStare's API as this server reaches it.">

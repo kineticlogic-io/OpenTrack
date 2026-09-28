@@ -6,6 +6,8 @@ import { MapView } from 'staresdk/map-view'
 import type { PreviewObservation, PreviewResult } from '../../api/client'
 import { fmtNum } from '../../lib/format'
 import { affiliationColor } from '../../lib/palette'
+import { PIPELINE_COUNTS_INFO } from '../../lib/sourceState'
+import { InfoTip } from '../../components/InfoTip'
 
 const OUTLINES = '/world-110m.geo.json'
 
@@ -80,6 +82,10 @@ export function PreviewResults({ result, showMap = true }: { result: PreviewResu
         <span className="muted" style={{ marginLeft: 4 }}>
           {latest.length} track{latest.length === 1 ? '' : 's'}
         </span>
+        <InfoTip label="Preview counts">
+          What the pipeline did with the samples. {PIPELINE_COUNTS_INFO} The table and map show each track&apos;s latest observation.
+          Key: the source&apos;s own track key. Type: the CoT type the mapping gave it (e.g. a-f-S is a friendly surface track).
+        </InfoTip>
       </div>
       {(result.errors ?? []).slice(0, 3).map((e, i) => (
         <div key={i} className="error-text">

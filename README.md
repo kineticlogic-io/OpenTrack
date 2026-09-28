@@ -13,6 +13,14 @@ interface (`opentrack:plugin@0.1.0`) and the database schema may still change. B
 
 Design and roadmap: [Track Management Server — Design & Roadmap](https://claude.ai/code/artifact/3876ba1a-0e0f-49fd-9f70-47e1c2bb8e7d).
 
+## Guides
+
+- [Administrator guide](docs/guides/admin.md): installing, configuring, accounts and sign-in, backup,
+  upgrades, monitoring and troubleshooting.
+- [Operator guide](docs/guides/operator.md): the picture day to day, for track managers and viewers.
+
+Both are also in the UI, under **Help**, and work offline.
+
 ## What it does
 
 **Tracker.** A source that reports anonymous plots (radar, lidar, GMTI) can run a tracker stage in
@@ -148,6 +156,7 @@ The UI's tabs:
 * **Schema**: the output schema's versions (drafted, then published).
 * **Settings**: site name, classification banner, plugins (add, enable, grant, check, delete), data
   export, purge.
+* **Help**: the administrator and operator guides.
 
 ## Sources and pipelines
 

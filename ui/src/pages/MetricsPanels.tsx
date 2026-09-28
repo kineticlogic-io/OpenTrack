@@ -4,6 +4,7 @@ import { CollapsiblePanel, useToast } from 'staresdk'
 import { TimeSeriesChart, type ChartSeries } from 'staresdk/chart'
 import { api, type SystemMetrics } from '../api/client'
 import { errorMessage } from '../lib/format'
+import { InfoTip } from '../components/InfoTip'
 
 const REFRESH_MS = 15_000
 const MINUTES = 60
@@ -26,19 +27,25 @@ const count = (pts: Point[], pick: (p: Point) => number | undefined) => pts.map(
 const gauge = (pts: Point[], pick: (p: Point) => number | undefined | null) => pts.map((p) => pick(p) ?? null)
 const sum = (m: Record<string, number>, keys: string[]) => keys.reduce((n, k) => n + (m[k] ?? 0), 0)
 
-function Stat({ label, value }: { label: string; value: string | number }) {
+function Stat({ label, value, hint }: { label: string; value: string | number; hint?: React.ReactNode }) {
   return (
     <div className="stat">
       <span className="stat-value">{typeof value === 'number' ? value.toLocaleString() : value}</span>
-      <span className="stat-label">{label}</span>
+      <span className="stat-label">
+        {label}
+        {hint && <InfoTip label={label}>{hint}</InfoTip>}
+      </span>
     </div>
   )
 }
 
-function Chart({ title, series, times, unit }: { title: string; series: ChartSeries[]; times: number[]; unit?: string }) {
+function Chart({ title, series, times, unit, hint }: { title: string; series: ChartSeries[]; times: number[]; unit?: string; hint?: React.ReactNode }) {
   return (
     <div className="chart">
-      <h3 className="subhead">{title}</h3>
+      <h3 className="subhead">
+        {title}
+        {hint && <InfoTip label={title}>{hint}</InfoTip>}
+      </h3>
       <TimeSeriesChart aria-label={title} times={times} series={series} unit={unit} height={130} />
     </div>
   )
@@ -96,6 +103,7 @@ export default function MetricsPanels() {
           <div className="charts">
             <Chart
               title="Ingest"
+              hint="Frames: messages received from feeds. Observations: reports the pipelines passed to the engine. Dropped: records rejected by a rule, matching no mapping rule, filtered out or throttled, all on purpose. Errors: frames that did not decode and records that failed validation."
               times={times}
               series={[
                 { label: 'frames', values: count(pts, (p) => p.ingest.frames) },
@@ -115,6 +123,7 @@ export default function MetricsPanels() {
             />
             <Chart
               title="Correlation"
+              hint="Applied: observations the engine processed. New tracks: tracks it started. Paired: a source track joined a track, or two tracks merged. Proposed or split: pairings and splits put to an operator, plus splits made automatically. Ended: tracks retired when their last source track ended, or dropped after going unreported."
               times={times}
               series={[
                 { label: 'applied', values: count(pts, (p) => p.engine.observations) },
@@ -126,6 +135,7 @@ export default function MetricsPanels() {
             />
             <Chart
               title="Output"
+              hint="Tracks written: track messages published to NATS (at most one per track every few seconds, sooner when its identity changes). Deletes: withdrawals (dropped tracks, and tracks that stopped passing the output filter). Raw feed: frames sources with a raw output passed on unchanged. Errors: failed writes."
               times={times}
               series={[
                 { label: 'tracks written', values: count(pts, (p) => p.writer.written) },
@@ -145,8 +155,12 @@ export default function MetricsPanels() {
             <Stat label="Confirmed" value={state('confirmed')} />
             <Stat label="Tentative" value={state('tentative')} />
             <Stat label="Lost" value={state('lost')} />
-            <Stat label="With an entity" value={l.with_entity} />
-            <Stat label="Entity differs" value={l.notices} />
+            <Stat label="With an entity" value={l.with_entity} hint="Live tracks resolved to a registry entity." />
+            <Stat
+              label="Entity differs"
+              value={l.notices}
+              hint="Fields, over all live tracks, where an entity's value was published in place of a different one the feed reported. Open a track to see them."
+            />
             {Object.entries(l.by_domain)
               .sort((a, b) => b[1] - a[1])
               .map(([d, n]) => (
@@ -171,19 +185,32 @@ export default function MetricsPanels() {
       <CollapsiblePanel title="Backlog and resources" persistKey="ot.panel.resources">
         <div className="panel-body">
           <div className="stats">
-            <Stat label="CPU" value={l.cpu_milli === null ? '—' : `${(l.cpu_milli / 10).toFixed(1)}%`} />
+            <Stat
+              label="CPU"
+              value={l.cpu_milli === null ? '—' : `${(l.cpu_milli / 10).toFixed(1)}%`}
+              hint="OpenTrack's CPU use over the last sample, as a share of one core: 100% is one core busy, and a multi-core host can go above it."
+            />
             <Stat label="Memory" value={fmtMb(l.rss_bytes)} />
             <Stat label="Threads" value={l.threads} />
             <Stat label="Redis" value={fmtMb(l.redis_bytes)} />
             <Stat label="SQLite" value={fmtMb(l.sqlite_bytes)} />
             <Stat label="NATS stream" value={fmtMb(l.nats_bytes)} />
-            <Stat label="Engine backlog" value={l.observations.lag + l.observations.pending} />
-            <Stat label="Writer backlog" value={l.outbox.lag + l.outbox.pending} />
+            <Stat
+              label="Engine backlog"
+              value={l.observations.lag + l.observations.pending}
+              hint="Observations from enabled sources the engine has not finished: waiting (not yet read) plus in hand (read, not yet done). A number that keeps growing means the engine is not keeping up."
+            />
+            <Stat
+              label="Writer backlog"
+              value={l.outbox.lag + l.outbox.pending}
+              hint="Track messages not yet published to NATS: waiting plus in hand. A number that keeps growing means NATS is slow or unreachable."
+            />
             <Stat label="Uptime" value={fmtUptime(l.uptime_secs)} />
           </div>
           <div className="charts">
             <Chart
               title="Backlog"
+              hint="Waiting: queued, not yet read. In hand: read but not yet acknowledged as done. Engine: observations from sources; writer: track messages to publish."
               times={times}
               series={[
                 { label: 'engine waiting', values: gauge(pts, (p) => p.system.obs_lag) },
@@ -194,6 +221,7 @@ export default function MetricsPanels() {
             />
             <Chart
               title="CPU"
+              hint="OpenTrack's CPU use as a percentage of one core; above 100% it is using more than one."
               unit="%"
               times={times}
               series={[

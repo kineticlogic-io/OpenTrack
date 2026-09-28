@@ -53,7 +53,7 @@ export function ManagementLog({ rev, onChanged }: { rev: number; onChanged: () =
           <span className="num-row" title={d.actor}>
             <span>{d.actor}</span>
             {from && site && from !== site && (
-              <Badge color="grey" size="sm" title={`Decided on node ${from} (${String(d.evidence?.sync)})`}>
+              <Badge color="grey" size="sm">
                 {from}
               </Badge>
             )}
@@ -124,6 +124,11 @@ export function ManagementLog({ rev, onChanged }: { rev: number; onChanged: () =
         <InfoTip label="Track management log">
           Pairings, merges, splits, deletes and group changes, newest first. Undo reverses one as a new decision. It is refused when someone has changed
           those tracks since: undo that decision first. The engine&apos;s own decisions are not undone here.
+          <br />
+          <br />
+          By: who decided; a node badge means it was decided on that other OpenTrack node and shared here. Decision: red for deletes and
+          dissolved groups, amber for undos. Status: undone by #N names the decision that reversed this one; undoes #N, the one this
+          reversed.
         </InfoTip>
       }
       actions={<Button size="xs" variant="ghost" icon={<TbRefresh />} aria-label="Refresh the log" title="Refresh" onClick={load} />}

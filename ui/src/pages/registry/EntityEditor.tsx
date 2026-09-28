@@ -40,11 +40,26 @@ interface Draft {
 
 /** The OTH-GOLD minimum an entity carries, in form order. */
 const MINIMUM = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', info: 'The platform name. Linked tracks publish it (in capitals) in place of the name their feed reports; blank leaves the feed\'s name.' },
   { key: 'class_name', label: 'Class name', info: 'OTH-GOLD class name, e.g. the ship or aircraft class. Published as the track class.' },
-  { key: 'domain', label: 'Domain', options: DOMAINS },
-  { key: 'affiliation', label: 'Affiliation', options: AFFILIATIONS },
-  { key: 'track_type', label: 'Track type', options: TRACK_TYPES },
+  {
+    key: 'domain',
+    label: 'Domain',
+    options: DOMAINS,
+    info: 'Where the platform operates: air, surface, subsurface, ground or space. Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC, else published as unknown.',
+  },
+  {
+    key: 'affiliation',
+    label: 'Affiliation',
+    options: AFFILIATIONS,
+    info: 'The standard identity (friend, hostile, neutral, suspect, joker, faker…). Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC. With the domain it sets the OTH-GOLD force code.',
+  },
+  {
+    key: 'track_type',
+    label: 'Track type',
+    options: TRACK_TYPES,
+    info: 'Tactical: a real-world track (the default). Live training: a real unit designated for training. Simulated training: made up for an exercise. Demand entry: a real unit receivers should not filter out.',
+  },
   { key: 'cot_type', label: 'CoT type', info: 'Cursor-on-Target type, e.g. a-f-S-C-L. Sets the symbol when no SIDC is given.' },
   { key: 'sidc', label: 'SIDC', info: 'MIL-STD-2525 symbol code. Leave blank to derive it from the CoT type.' },
 ] as const
@@ -285,7 +300,7 @@ export function EntityEditor({
       }
       actions={
         <>
-          <span className="publish-pick" title="Whether tracks resolving to this entity are published">
+          <span className="publish-pick">
             <InfoTip label="Publish">
               Automatic: the usual rules (confirmed, and reported by a source that may stand alone). Always: published at once, confirmed or
               not, whatever reports for them and whatever the output filter says. Never: kept inside OpenTrack, and withdrawn downstream if
@@ -344,7 +359,13 @@ export function EntityEditor({
             </div>
           ))}
           <div className="entity-form-row">
-            <label className="entity-form-label">Status</label>
+            <label className="entity-form-label">
+              Status
+              <InfoTip label="Status">
+                Active: tracks resolve to it by its identifiers. Retired: kept on record with its history, but no track resolves to it any
+                more; its identifiers stay reserved to it, so delete them or the entity to reuse them.
+              </InfoTip>
+            </label>
             <FieldSelect
               ariaLabel="Status"
               fields={[{ name: 'active' }, { name: 'retired' }]}
@@ -397,7 +418,13 @@ export function EntityEditor({
         </div>
         <div className="kv-table kv-attributes">
           <span className="kv-head">Key</span>
-          <span className="kv-head">Type</span>
+          <span className="kv-head">
+            Type
+            <InfoTip label="Attribute type">
+              How the value is read and published: text, number, boolean (true/false), datetime (RFC 3339, e.g. 2026-09-26T12:00:00Z) or
+              json (any JSON value). A value that does not parse as its type is refused on save.
+            </InfoTip>
+          </span>
           <span className="kv-head">Value</span>
           <span />
           {draft.attributes.map((a, n) => (
@@ -437,7 +464,7 @@ export function EntityEditor({
               Live tracks
               <InfoTip label="Live tracks">
                 Tracks resolving to this entity now. &ldquo;Replaced&rdquo; counts fields where the entity&apos;s value was published in place of
-                a different one the feed reported.
+                a different one the feed reported; hover a count to see the fields and both values.
               </InfoTip>
             </h4>
             <DataTable
@@ -448,7 +475,13 @@ export function EntityEditor({
               maxHeight={200}
               empty="No live track resolves to this entity right now."
             />
-            <h4 className="subhead">History</h4>
+            <h4 className="subhead">
+              History
+              <InfoTip label="History">
+                Every saved revision of this entity, newest first: when, by whom, and which fields, identifiers (+ added, − removed) and
+                attributes changed.
+              </InfoTip>
+            </h4>
             <DataTable aria-label="Entity history" columns={REVISION_COLUMNS} rows={revisions} rowKey={(r) => String(r.id)} maxHeight={200} empty="No changes recorded since the registry moved to entities." />
           </>
         )}

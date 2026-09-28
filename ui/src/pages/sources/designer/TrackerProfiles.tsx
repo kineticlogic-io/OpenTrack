@@ -73,13 +73,13 @@ function SaveProfile({ initial, onClose, onSaved }: { initial: TrackerProfile; o
       <div className="panel-body stack">
         {row('Name', 'The file name: lowercase letters, digits, - and _.',
           <Input style={{ ...INPUT, width: 240 }} aria-label="Profile name" value={p.name} onChange={(e) => set({ name: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-') })} spellCheck={false} />)}
-        {row('Label', undefined, <Input style={{ ...INPUT, width: 360 }} aria-label="Profile label" value={p.label} onChange={(e) => set({ label: e.target.value })} />)}
+        {row('Label', 'A readable name, shown when the profile is loaded and in the Profile ⓘ. Required.', <Input style={{ ...INPUT, width: 360 }} aria-label="Profile label" value={p.label} onChange={(e) => set({ label: e.target.value })} />)}
         {row('Sensor', 'What kind of sensor it is for, so it is easy to find.',
           <span className="num-row">
             <FieldSelect ariaLabel="Sensor kind" fields={KINDS.map((name) => ({ name }))} value={String(p.sensor.kind ?? 'other')} onChange={(k) => set({ sensor: { ...p.sensor, kind: k ?? 'other' } })} style={{ width: 150 }} />
             <Input style={{ ...INPUT, width: 200 }} aria-label="Platform" placeholder="platform (optional)" value={String(p.sensor.platform ?? '')} onChange={(e) => set({ sensor: { ...p.sensor, platform: e.target.value || undefined } })} />
           </span>)}
-        {row('Description', undefined, <textarea className="plain-textarea" aria-label="Description" rows={2} value={p.description} onChange={(e) => set({ description: e.target.value })} />)}
+        {row('Description', 'What the profile is for (sensor, targets, conditions); shown in the Profile ⓘ when it is picked.', <textarea className="plain-textarea" aria-label="Description" rows={2} value={p.description} onChange={(e) => set({ description: e.target.value })} />)}
         {row('Basis', 'Where the numbers come from: a benchmark run, a sensor manual, experience.',
           <textarea className="plain-textarea" aria-label="Basis" rows={2} value={p.basis} onChange={(e) => set({ basis: e.target.value })} />)}
         {row('Replace', 'Overwrite an imported profile of the same name (the shipped ones are never overwritten).', <Toggle size="sm" aria-label="Replace" value={replace} onChange={setReplace} />)}

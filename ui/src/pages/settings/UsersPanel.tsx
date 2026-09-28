@@ -96,12 +96,15 @@ function ResetPassword({ account, onClose, onDone }: { account: Account; onClose
           run(password)
         }}
       >
-        <SettingsRow label="New password" hint="At least 8 characters. The account's sessions and API tokens end.">
+        <SettingsRow
+          label="New password"
+          hint={`At least 8 characters. The account's sessions and API tokens end.${account.has_password ? ' Remove password: the account can then sign in only with single sign-on.' : ''}`}
+        >
           <Input style={{ ...INPUT, width: 240 }} type="password" autoComplete="new-password" aria-label="New password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
         </SettingsRow>
         <ModalButtons onClose={onClose}>
           {account.has_password && (
-            <Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => run(null)} title="The account can then sign in only with single sign-on">
+            <Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => run(null)}>
               Remove password
             </Button>
           )}
@@ -170,7 +173,7 @@ function NewToken({ accounts, onClose, onMade }: { accounts: Account[]; onClose:
         <SettingsRow label="Acts as" hint="The account whose role it has.">
           <FieldSelect ariaLabel="Account" fields={accounts.filter((a) => a.active).map((a) => ({ name: a.email }))} value={email} onChange={(v) => setEmail(v ?? '')} style={{ width: 260 }} />
         </SettingsRow>
-        <SettingsRow label="Expires in (days)">
+        <SettingsRow label="Expires in (days)" hint="How long the token works: 1 to 3650 days (default 365). Revoke it to stop it sooner.">
           <Input style={{ ...INPUT, width: 100 }} type="number" min={1} max={3650} aria-label="Days" value={days} onChange={(e) => setDays(e.target.value)} />
         </SettingsRow>
         <ModalButtons onClose={onClose}>
@@ -258,7 +261,7 @@ export function UsersPanel() {
         <span className="num-row">
           {a.origin}
           {!a.has_password && (
-            <Badge size="sm" color="grey" title="No password: single sign-on only">
+            <Badge size="sm" color="grey">
               SSO
             </Badge>
           )}
@@ -336,7 +339,13 @@ export function UsersPanel() {
       <CollapsiblePanel
         title="Users"
         persistKey="ot.panel.settings.users"
-        titleActions={<InfoTip label="Users">{ROLES_INFO}</InfoTip>}
+        titleActions={
+          <InfoTip label="Users">
+            {ROLES_INFO} Origin: local (made here or by the command line) or saml (made at the first single sign-on); SSO marks an account
+            with no password, which can sign in only through single sign-on. Active off: the account cannot sign in and its sessions and
+            API tokens stop working until it is switched back on. At least one active admin must remain.
+          </InfoTip>
+        }
         actions={
           <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
             Add account
@@ -354,7 +363,12 @@ export function UsersPanel() {
       <CollapsiblePanel
         title="API tokens"
         persistKey="ot.panel.settings.tokens"
-        titleActions={<InfoTip label="API tokens">For scripts and services: each acts as an account, with its role, until it expires or is revoked.</InfoTip>}
+        titleActions={
+          <InfoTip label="API tokens">
+            For scripts and services: each acts as an account, with its role, until it expires or is revoked. State: active, expired (past
+            its expiry date) or revoked. A token is shown once, when made.
+          </InfoTip>
+        }
         actions={
           <Button size="sm" icon={<TbPlus />} disabled={!accounts} onClick={() => setMakingToken(true)}>
             New token

@@ -109,7 +109,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
     <div className="stack">
       <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
         <div className="panel-body">
-          <Row label="Site name">
+          <Row label="Site name" hint="A name for this instance, up to 64 characters, shown in the header and browser tab as OpenTrack · name. Display only: track numbers use the site code.">
             <div className="num-row">
               <Input style={{ ...INPUT, width: 260 }} aria-label="Site name" value={draft.site_name} maxLength={64} onChange={(e) => setDraft({ ...draft, site_name: e.target.value })} />
               <span className="muted">site code</span>
@@ -167,11 +167,17 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
             <Toggle value={b.enabled} onChange={(enabled) => setB({ enabled })} aria-label="Classification Banner" />
           </div>
           <div>
-            <div className="field-caps">Classification text</div>
+            <div className="field-caps">
+              Classification text
+              <InfoTip label="Classification text">The marking shown in the banner, 1 to 128 characters (required while the banner is on).</InfoTip>
+            </div>
             <Input style={{ width: '100%' }} value={b.text} maxLength={128} onChange={(e) => setB({ text: e.target.value })} placeholder="e.g. UNCLASSIFIED // FOR OFFICIAL USE ONLY" />
           </div>
           <div>
-            <div className="field-caps">Color preset</div>
+            <div className="field-caps">
+              Color preset
+              <InfoTip label="Color preset">Sets the background and text colours to the usual ones for that marking. Adjust them below if needed.</InfoTip>
+            </div>
             <div className="banner-presets">
               {PRESETS.map((p) => (
                 <button
@@ -194,7 +200,10 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               ] as const
             ).map(([key, label, placeholder]) => (
               <div key={key}>
-                <div className="field-caps">{label}</div>
+                <div className="field-caps">
+                  {label}
+                  <InfoTip label={label}>Pick a colour or type it as #rrggbb.</InfoTip>
+                </div>
                 <div className="banner-colour">
                   <input type="color" aria-label={label} value={b[key]} onChange={(e) => setB({ [key]: e.target.value })} />
                   <Input style={{ flex: 1 }} aria-label={`${label} hex`} value={b[key]} onChange={(e) => setB({ [key]: e.target.value })} placeholder={placeholder} />
@@ -218,7 +227,10 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
             <Toggle value={w.enabled} onChange={(enabled) => setW({ enabled })} aria-label="Warning Banner" />
           </div>
           <div>
-            <div className="field-caps">Warning text</div>
+            <div className="field-caps">
+              Warning text
+              <InfoTip label="Warning text">What users read and accept or decline, up to 20,000 characters. Line breaks are kept.</InfoTip>
+            </div>
             <textarea
               className="plain-textarea"
               style={{ maxWidth: 'none', fontFamily: 'var(--font-sans)' }}

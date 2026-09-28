@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 
 // In development the API runs separately (`opentrack serve`, port 8090);
 // in production the server serves this build at `/`.
@@ -13,5 +13,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: { '/api': api, '/healthz': api },
+    // The Help page bundles the guides from ../docs/guides (see src/pages/help/guides.ts).
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), '../docs/guides'] },
   },
 })
