@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react'
-import { TbKey, TbLogout, TbUserCircle } from 'react-icons/tb'
+import { TbDevices, TbKey, TbLogout, TbUserCircle } from 'react-icons/tb'
 import { Badge, Button, ContextMenu, ContextMenuItem, Input, Label, Modal, useToast } from 'staresdk'
-import { api } from '../api/client'
+import { api, describePolicy } from '../api/client'
+import { InfoTip } from '../components/InfoTip'
 import { errorMessage } from '../lib/format'
 import { ROLE_LABEL, useAuth } from './context'
+import { SessionsTable } from './SessionsTable'
 
 const VIA: Record<string, string> = {
   session: 'Password or single sign-on',
@@ -14,7 +16,7 @@ const VIA: Record<string, string> = {
 }
 
 function ChangePassword({ onClose }: { onClose: () => void }) {
-  const { setUser } = useAuth()
+  const { user, setUser } = useAuth()
   const { toast } = useToast()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
@@ -44,7 +46,12 @@ function ChangePassword({ onClose }: { onClose: () => void }) {
           <Input id="pw-current" type="password" autoComplete="current-password" autoFocus required value={current} onChange={(e) => setCurrent(e.target.value)} />
         </div>
         <div className="auth-field">
-          <Label size="sm" htmlFor="pw-new">New password</Label>
+          <span className="num-row">
+            <Label size="sm" htmlFor="pw-new">New password</Label>
+            <InfoTip label="New password">
+              {describePolicy(user?.password_policy)} Every session and API token of your account ends; this browser stays signed in.
+            </InfoTip>
+          </span>
           <Input id="pw-new" type="password" autoComplete="new-password" required value={next} onChange={(e) => setNext(e.target.value)} />
         </div>
         <div className="auth-field">
@@ -71,6 +78,7 @@ export function UserChip() {
   const ref = useRef<HTMLDivElement>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [changing, setChanging] = useState(false)
+  const [sessions, setSessions] = useState(false)
   if (!user || !authOn) return null
   const open = () => {
     if (menu) return setMenu(null)
@@ -107,6 +115,18 @@ export function UserChip() {
               </span>
             </ContextMenuItem>
           )}
+          {user.via === 'session' && (
+            <ContextMenuItem
+              onClick={() => {
+                setMenu(null)
+                setSessions(true)
+              }}
+            >
+              <span className="num-row">
+                <TbDevices /> Sessions
+              </span>
+            </ContextMenuItem>
+          )}
           {user.via === 'session' ? (
             <ContextMenuItem danger onClick={signOut}>
               <span className="num-row">
@@ -117,6 +137,20 @@ export function UserChip() {
         </ContextMenu>
       )}
       {changing && <ChangePassword onClose={() => setChanging(false)} />}
+      {sessions && (
+        <Modal title="Your sessions" onClose={() => setSessions(false)} width={820} resizable={false}>
+          <div className="panel-body stack">
+            <span className="num-row muted">
+              Where your account is signed in.
+              <InfoTip label="Sessions">
+                Each sign-in is a session. It ends when you sign out, after a time without use, at the session length, or when a newer sign-in goes past the
+                number allowed at once. End one you do not recognise, and change your password.
+              </InfoTip>
+            </span>
+            <SessionsTable />
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

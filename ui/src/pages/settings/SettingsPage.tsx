@@ -3,6 +3,7 @@ import { TbDownload, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
 import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
+import { AuditPanel } from './AuditPanel'
 import { NodesPanel } from './NodesPanel'
 import { PluginsPanel } from './PluginsPanel'
 import { SecurityPanel } from './SecurityPanel'
@@ -235,6 +236,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
       {admin && <UsersPanel />}
       {admin && <SecurityPanel />}
+      {admin && <AuditPanel />}
       {admin && (
         <NodesPanel
           value={draft.sync}

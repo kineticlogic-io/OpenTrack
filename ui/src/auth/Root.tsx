@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { api, type Banner } from '../api/client'
+import { LastLoginNotice } from './LastLoginNotice'
 import { LoginPage } from './LoginPage'
+import { PasswordChangeScreen } from './PasswordChangeScreen'
 import { WarnGate } from './WarnGate'
 import { here, safeReturnPath, useAuth } from './context'
 
@@ -46,10 +48,27 @@ export function Root() {
       </>
     )
   return (
-    <WarnGate banner={<PublicBanner />}>
-      <Suspense fallback={null}>
-        <App />
-      </Suspense>
-    </WarnGate>
+    <>
+      {!authOn && (
+        <div className="auth-off-banner" role="alert">
+          Authentication disabled (OT_AUTH=off): anyone who reaches this server is an admin
+        </div>
+      )}
+      <WarnGate banner={<PublicBanner />}>
+        {user?.must_change_password ? (
+          <>
+            <PublicBanner />
+            <PasswordChangeScreen />
+          </>
+        ) : (
+          <>
+            <LastLoginNotice />
+            <Suspense fallback={null}>
+              <App />
+            </Suspense>
+          </>
+        )}
+      </WarnGate>
+    </>
   )
 }

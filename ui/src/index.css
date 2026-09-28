@@ -594,6 +594,25 @@ body {
 .classification-bar.top { top: 0; }
 .classification-bar.bottom { bottom: 0; }
 .page.with-banner { padding-top: 19px; padding-bottom: 19px; }
+/* OT_AUTH=off: a red bar that cannot be missed, above the bottom classification bar. */
+.auth-off-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 9998;
+  padding: 4px 16px;
+  border-radius: 4px;
+  background: #c8102e;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  box-shadow: var(--shadow-standard);
+}
 .classification-preview {
   display: inline-block;
   padding: 2px 16px;
