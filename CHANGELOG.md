@@ -5,6 +5,8 @@
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- **Accepting a pair suggestion** merges with hold, as a merge from the track table does:
+  correlation never splits it (split or undo still can) (#12).
 
 ## 0.4.0 (alpha), 2026-09-28
 

@@ -133,8 +133,9 @@ shows open, accepted, rejected, expired or all suggestions.
 Track managers only.
 
 - **Accept a pair suggestion:** *B* is merged into *A*. *A* keeps its number and takes *B*'s
-  source tracks and history; *B* is deleted downstream. Unlike a merge you make yourself, the
-  engine may still split it later if the tracks stop agreeing.
+  source tracks and history; *B* is deleted downstream. It is your decision, like a
+  [merge](#merge) you make in the table: correlation never splits it. To take a source track off
+  again, use [Split](#split) or [undo](#undo) it.
 - **Reject a pair suggestion:** the two are recorded as different objects (**do not pair**), and
   correlation won't pair them again.
 - **Accept a split suggestion:** the source track leaves for a track of its own, and the two are
@@ -343,8 +344,8 @@ To merge tracks:
    groups and pairings. The others are deleted downstream. Tracks not published yet say so.
 4. Choose **Merge into**.
 
-Correlation never splits a track you merged. To take a source track off it again, use
-[Split](#split) or [undo](#undo) the merge.
+Correlation never splits a track you merged, here or by accepting a pair suggestion. To take a
+source track off it again, use [Split](#split) or [undo](#undo) the merge.
 
 ### Split
 

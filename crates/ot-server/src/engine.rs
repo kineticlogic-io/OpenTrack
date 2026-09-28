@@ -1799,6 +1799,18 @@ impl Engine {
         Ok(into)
     }
 
+    /// Hold a track manager's merge (GOLD MRG): every source track on the
+    /// survivor is the manager's, which correlation does not split off.
+    async fn hold(&mut self, into: Uid) -> anyhow::Result<()> {
+        if let Some(t) = self.tracks.get_mut(&into) {
+            for c in &mut t.contributors {
+                c.pairing = PairingType::Manual;
+            }
+            self.save(into, true).await?;
+        }
+        Ok(())
+    }
+
     /// Record an operator's word that two tracks are different objects.
     async fn operator_do_not_pair(
         &mut self,
@@ -1904,8 +1916,11 @@ impl Engine {
                             let into = self
                                 .operator_merge(b, a, &actor, reason.clone(), s.evidence.clone())
                                 .await?;
+                            // A person's decision, as a merge from the table is.
+                            self.hold(into).await?;
                             self.canonical = Some(json!({
                                 "op": "merge", "from": b.doc_id(), "into": into.doc_id(), "reason": reason,
+                                "hold": true,
                             }));
                             Ok(json!({ "merged_into": into.doc_id() }))
                         } else {
@@ -1969,16 +1984,8 @@ impl Engine {
                 let into = self
                     .operator_merge(from, into, &actor, reason, json!({}))
                     .await?;
-                // A track manager's merge (GOLD MRG) holds: every source
-                // track on the survivor is the manager's, which correlation
-                // does not split off.
-                if cmd["hold"].as_bool() == Some(true)
-                    && let Some(t) = self.tracks.get_mut(&into)
-                {
-                    for c in &mut t.contributors {
-                        c.pairing = PairingType::Manual;
-                    }
-                    self.save(into, true).await?;
+                if cmd["hold"].as_bool() == Some(true) {
+                    self.hold(into).await?;
                 }
                 Ok(json!({ "merged_into": into.doc_id() }))
             }
@@ -4046,10 +4053,24 @@ mod tests {
         };
         let (reject, accept) = (about("367"), about("368"));
 
-        // Accepted: merged, into the published AIS track.
+        // Accepted: merged, into the published AIS track, and held as a
+        // merge from the table is: correlation does not split it.
         let answer = operator(&mut e, json!({"op": "accept", "suggestion": accept})).await;
         assert_eq!(answer["ok"], true, "{answer}");
         assert!(pair(&e, "368", "r3"));
+        let merged = track_of(&e, "ais", "368");
+        assert!(
+            e.tracks[&merged]
+                .contributors
+                .iter()
+                .all(|c| c.pairing == PairingType::Manual)
+        );
+        // And it can still be undone.
+        let merge = last_decision(&e, "merge").await;
+        let answer = operator(&mut e, json!({"op": "undo", "decision": merge})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(!pair(&e, "368", "r3"));
+        assert_eq!(track_of(&e, "ais", "368"), merged);
         // Rejected: never paired, and not proposed again.
         let answer = operator(&mut e, json!({"op": "reject", "suggestion": reject})).await;
         assert_eq!(answer["ok"], true, "{answer}");
