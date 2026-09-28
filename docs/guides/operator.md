@@ -35,6 +35,21 @@ runs beside OpenStare). If your site shows a warning notice after sign-in, **AGR
 A bar at the top and bottom of every page shows the system's classification, when your site sets
 one.
 
+After you sign in, a notice says when you last signed in and how many failed attempts there have
+been since. If you don't recognise them, tell your administrator.
+
+Some things your site's security rules may ask of you:
+- **Change your password.** When your password has expired, or an administrator has just set it,
+  OpenTrack asks for a new one before anything else. It needs 15 characters or more, with upper
+  and lower case, a digit and a special character. It can't be one of your last five, and at
+  least 8 characters must differ from the old one.
+- **Sign in again after a break.** A session you haven't used for 15 minutes ends (10 for
+  admins).
+- **Wait after failed attempts.** Three wrong passwords in a row lock your account for 15 minutes,
+  or until an administrator unlocks it.
+- **See your sessions** under **Sessions** in the account menu (top right), and end any you don't
+  recognise.
+
 ### Roles
 
 What you can do depends on your role. Buttons you can't use are greyed out.

@@ -36,6 +36,56 @@ defaults.
 - Nodes sharing their profile must all run this version: older ones refuse correlation settings with
   `labels`.
 
+### FIPS 140-3 cryptography, in every build
+
+See [docs/security/fips.md](docs/security/fips.md).
+
+- **AWS-LC FIPS 3.0** does all of the binary's cryptography: TLS everywhere (rustls' FIPS
+  configuration), session and token signatures, password hashes, the NATS `.creds` signature and
+  every random secret. The process won't start unless the module is in FIPS mode. Building needs
+  Go and CMake.
+- **Passwords** are hashed with PBKDF2-HMAC-SHA256 (600,000 iterations). Argon2id hashes from
+  earlier versions still verify, and are replaced at the account's next sign-in.
+- **SAML** signatures go through OpenSSL with only its validated 3.0.9 FIPS provider, which the
+  image builds and forces. SAML sign-in is off wherever OpenSSL is not in FIPS mode.
+- **No `ring`:** the rumqttc copy in `third_party/` drops it, and `cargo deny` bans it.
+
+### Encryption in transit
+
+- **Redis over TLS:** `rediss://` URLs, with `OT_REDIS_CA` and, for mutual TLS, `OT_REDIS_CERT`
+  and `OT_REDIS_KEY`.
+
+### Supply chain and image
+
+See [docs/security/supply-chain.md](docs/security/supply-chain.md).
+
+- **`cargo deny` in CI** (`deny.toml`): RustSec advisories, a licence allow-list, FIPS bans and
+  crates.io only. It led to fixes for:
+  - quick-xml in the SAML fork (RUSTSEC-2026-0194 and 0195);
+  - webpki in the MQTT client (RUSTSEC-2026-0049, 0098, 0099 and 0104).
+- **Other CI checks:**
+  - `npm audit`;
+  - CycloneDX SBOMs of the binary and the UI (`scripts/security/sbom.py`, uploaded by CI);
+  - actions pinned by commit, with a read-only token.
+- **The image:**
+  - base images pinned by digest, and the Go toolchain checksummed;
+  - `HEALTHCHECK`, run by the new `opentrack health`.
+- **The compose file** runs the image with a read-only root file system, every capability dropped
+  and `no-new-privileges`.
+- **Deployment and assessment:**
+  - a hardening checklist ([docs/security/hardening.md](docs/security/hardening.md));
+  - a control mapping with the open findings
+    ([docs/security/stig-mapping.md](docs/security/stig-mapping.md)).
+
+### Guides and in-app help
+
+- **Guides:** an administrator guide and an operator guide, in `docs/guides/`.
+- **Help tab:** the guides are also in the new Help tab, bundled into the build so they work
+  offline, and each section can be linked (`#help/<guide>/<section>`).
+- **Info tips:** about 160 new ⓘ tips across sources, the pipeline designer, tracks, the registry,
+  the schema, correlation, metrics and settings. Tips that were only native tooltips became info
+  tips, and stale text was corrected.
+
 ## 0.3.4 (alpha), 2026-09-28
 
 ### Non-point contacts

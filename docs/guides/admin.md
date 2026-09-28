@@ -185,6 +185,8 @@ For every role.
 | `OT_SQLITE_PATH` | `data/opentrack.db` | The SQLite database. Created and migrated on start, with its directory. Other files live beside it ([Data directory](#data-directory)). |
 | `OT_REDIS_URL` | `redis://127.0.0.1:6379` | |
 | `OT_REDIS_NAMESPACE` | `tms` | Prefix of every Redis key OpenTrack owns. |
+| `OT_REDIS_CA` | | TLS to Redis (with a `rediss://` URL): trust this CA (PEM) instead of the system's roots. |
+| `OT_REDIS_CERT`, `OT_REDIS_KEY` | | Mutual TLS to Redis: this client certificate and key (PEM). |
 | `OT_SITE_CODE` | `OTK` | The GOLD site code that starts every track number (3 characters, A–Z and 0–9). Fixed for a deployment: changing it changes every new track number. Every node needs its own. |
 | `OT_PROFILES_DIR` | `profiles/trackers` | Tracker profiles shipped with OpenTrack (read only). Profiles imported in the UI go to `profiles/trackers` beside the database instead. |
 | `OT_OBS_WINDOW_SECS` | `600` | How long each source's observation stream keeps reports, in seconds (at least 10). The engine can be down this long without losing any. Redis holds about 500 bytes a report: 16,000 reports a second for 600 s is about 4.8 GB. |
@@ -199,6 +201,8 @@ For `serve`, `writer`, `link` and `synthetic`.
 | `OT_NATS_CREDS` | | A credentials file (JWT and NKey). |
 | `OT_NATS_TOKEN` | | A token. |
 | `OT_NATS_USER`, `OT_NATS_PASSWORD` | | A user and password. |
+| `OT_NATS_CA` | | TLS to NATS: trust this CA (PEM), and refuse a connection without TLS. |
+| `OT_NATS_CERT`, `OT_NATS_KEY` | | Mutual TLS to NATS: this client certificate and key (PEM). |
 | `OT_NATS_STREAM` | `TRACKS` | The JetStream stream. Created if missing, never modified. |
 | `OT_NATS_TRACKS_SUBJECT` | `tracks` | Subject prefix: each track is published on `<prefix>.tms-<UID>`. |
 | `OT_NATS_MAX_AGE_HOURS` | `24` | Message age limit of a stream OpenTrack creates. Live tracks are republished long before this. |
@@ -216,7 +220,8 @@ For `serve` (and `all`).
 | `OT_AUTH` | `on` | `off` turns sign-in off: every caller is an admin. Development only ([Sign-in turned off](#sign-in-turned-off)). |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | The first admin account, made only while there are no accounts ([First admin](#first-admin)). |
 | `OT_SESSION_SECRET` | `session.key` beside the database | The key sessions and API tokens are signed with, at least 32 characters. Unset, one is made on first start and kept in `session.key`. Changing it signs everyone out and voids every API token. |
-| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. |
+| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. An `https://` address also marks cookies `Secure` and sends HSTS. |
+| `OT_PUBLIC_TLS` | off | `1`: a proxy in front of OpenTrack ends TLS, so cookies are `Secure` and HSTS is sent. |
 
 ### TLS
 
@@ -357,11 +362,14 @@ it in the provider's mapping, not here.
 
 - **Your own:** the account menu (top right) → **Change password**. Your other sessions end. It
   is offered only to accounts that signed in with a password.
-- **Someone else's:** the key button on their row. **Set password** sets a new one; **Remove
-  password** makes the account single sign-on only. Either way the account's sessions **and API
-  tokens** end. Remember this before resetting a service account's password.
+- **Someone else's:** the key button on their row. **Set password** sets a temporary one, which the
+  user must change at their next sign-in. **Remove password** makes the account single sign-on
+  only. Either way the account's sessions **and API tokens** end. Remember this before resetting
+  a service account's password.
 - **From the command line:** `opentrack user passwd <email>`, reading the new password from
-  standard input.
+  standard input. It is temporary too.
+
+Every password must meet the [password policy](#password-policy).
 
 Passwords are hashed with PBKDF2-HMAC-SHA256 in the FIPS module (see
 [Security hardening](#security-hardening)). Hashes made before 0.4.0 (Argon2id) still work, and
@@ -859,12 +867,122 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 
 ### Security hardening (0.4.0)
 
-> **In progress.** OpenTrack 0.4.0 is the accreditation release. Its hardening will be documented
-> here as it lands:
->
-> - FIPS 140 validated cryptography;
-> - account lockout after failed sign-ins;
-> - a password policy (length, complexity, history, expiry);
-> - a security audit log.
->
-> Until then, this guide describes 0.3.4 as it is.
+0.4.0 is the accreditation release, aimed at DoD RMF with the ASD STIG and NIST 800-53 Moderate.
+Each control below is on by default, with the STIG value. You can change them in **Settings →
+Security**. How each one maps to a control is in
+[docs/security/stig-mapping.md](../security/stig-mapping.md). Deployment steps are in
+[docs/security/hardening.md](../security/hardening.md).
+
+### FIPS cryptography
+
+All of OpenTrack's cryptography runs in FIPS 140-3 validated modules. That covers TLS, session and
+token signatures, password hashes and random secrets (the AWS-LC FIPS module), and SAML
+signatures (OpenSSL's 3.0.9 FIPS provider, in the image). The process stops at start if AWS-LC
+is not in FIPS mode. SAML sign-in is off wherever OpenSSL is not, which means everywhere outside
+the image. Details: [docs/security/fips.md](../security/fips.md).
+
+### Password policy
+
+For local accounts:
+
+| Setting | Default |
+|---|---|
+| Minimum length | 15 |
+| Upper case, lower case, digit, special character | all required |
+| Characters that must change from the last password | 8 |
+| Earlier passwords that can't be reused | 5 |
+| Minimum age (between changes) | 24 hours (an admin's reset is exempt) |
+| Maximum age | 60 days |
+
+An expired password, or a temporary one an admin set, must be changed at the next sign-in. Until
+it is, that session can do nothing else. The first admin's password is temporary as well. That
+includes the one in `initial-admin.txt`, and `OT_ADMIN_PASSWORD` must already meet the policy.
+
+### Account lockout
+
+Three failed sign-ins within 15 minutes lock an account for 15 minutes. Set the lock time to 0 to
+keep it locked until an admin unlocks it. Every refusal gives the same answer, "wrong email or
+password", whether the account is unknown, turned off, locked or the password is wrong. The
+audit record keeps the real reason. To unlock an account:
+- **Settings → Users:** the open-lock button on its row;
+- **command line:** `opentrack user unlock <email>`;
+- **API:** `POST /api/v1/auth/users/{id}/unlock`.
+
+### Session limits
+
+- **Idle timeout:** 15 minutes, or 10 for admins. The page's own refreshing doesn't count as use;
+  only what the user does.
+- **Absolute lifetime:** the session length (24 hours by default).
+- **Sessions per account:** 3. A fourth sign-in ends the oldest.
+
+Users see and end their own sessions from the account menu, under **Sessions**. Admins see
+everyone's in **Settings → Users → Sessions**. Sessions are kept per node. API tokens aren't
+sessions: they have no idle timeout, only their expiry.
+
+### Inactive accounts
+
+Accounts that haven't signed in for 35 days are turned off. The check runs at sign-in and every
+10 minutes. Re-enabling an account restarts its clock. List break-glass accounts under
+**Never turn off**. Otherwise a sole admin who doesn't sign in for 35 days is turned off too, and only
+`opentrack user enable <email>` on the server brings the account back.
+
+After each sign-in, users see when they last signed in and how many failed attempts there were
+since then.
+
+### Audit record
+
+Every sign-in event is written to an append-only `audit` table, along with every decision the
+decision log records:
+- sign-in succeeded or refused, with the reason and address;
+- sign-out, lockout, unlock, session ended or timed out;
+- password changed, account turned off.
+
+Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
+the chain. The database refuses updates to the table.
+- **Review:** **Settings → Audit**. Filter by time, account, event and outcome, export as CSV, or
+  choose **Verify chain**. The API is `GET /api/v1/audit` (with `format=csv`) and
+  `GET /api/v1/audit/verify`.
+- **Fail closed:** if a sign-in can't be recorded, it is refused.
+- **Retention:** kept forever by default. With a retention period set, older rows are purged and
+  the purge itself is recorded, so the chain still verifies.
+- **Chain head:** written to the log every hour. Keep the logs apart from the database, so that a
+  truncated tail can be spotted.
+
+### Web protections
+
+Every response carries:
+- a Content Security Policy (this origin only, no framing);
+- `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a
+  minimal `Permissions-Policy`;
+- HSTS over TLS;
+- `Cache-Control: no-store` on the API.
+
+The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` whenever TLS is in use,
+including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_URL`).
+
+### Encryption in transit
+
+| Link | How |
+|---|---|
+| Browsers and API clients | `OT_TLS_CERT`/`OT_TLS_KEY`, optional client certificates (`OT_TLS_CLIENT_CA`), or a TLS proxy |
+| NATS | a `tls://` URL, `OT_NATS_CA`, and mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY` |
+| Redis | a `rediss://` URL, `OT_REDIS_CA`, and mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY` |
+| Feeds | per source, in its transport's TLS settings |
+
+### Container hardening
+
+The image runs as an unprivileged user and has a health check (`opentrack health`). Its base
+images are pinned by digest. The compose file runs it with:
+- a read-only root file system (only `/data` and scratch space are writable);
+- every Linux capability dropped;
+- `no-new-privileges`.
+
+### Upgrading to 0.4.0
+
+- **Everyone signs in again:** sessions from before the upgrade have no server-side record.
+- **Password age** counts from the upgrade, so existing passwords expire 60 days later. They also
+  must meet the policy at their next change.
+- **Password hashes** move from Argon2id to PBKDF2 at each account's next sign-in.
+- **SAML** works only in the image, where OpenSSL has its FIPS provider.
+- **Nodes that share their profile** must all run 0.4.0. Older nodes refuse correlation settings
+  that carry the classification order.
