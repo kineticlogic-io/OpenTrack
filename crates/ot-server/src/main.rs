@@ -157,6 +157,11 @@ struct ServeArgs {
     /// accounts Settings → Security maps them to.
     #[arg(long, env = "OT_TLS_CLIENT_CA", requires = "tls_cert")]
     tls_client_ca: Option<String>,
+    /// Browsers reach this server over TLS that a proxy in front of it ends
+    /// (`1`): session cookies are `Secure` and HSTS is sent, as when this
+    /// server serves TLS itself.
+    #[arg(long, env = "OT_PUBLIC_TLS", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
+    public_tls: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -328,7 +333,12 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         auth: Arc::new(auth::Auth::new(
             secret,
             disabled,
-            args.tls_cert.is_some(),
+            args.tls_cert.is_some()
+                || args.public_tls
+                || args
+                    .public_url
+                    .as_deref()
+                    .is_some_and(|u| u.starts_with("https://")),
             args.public_url.clone(),
             auth_settings,
         )),
