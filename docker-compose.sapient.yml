@@ -1,0 +1,29 @@
+# SAPIENT demo: mosquitto (MQTT broker) + redis + nats, wired to a local
+# opentrack binary and a local sapient-sim binary.
+#
+# Usage:
+#   docker compose -f docker-compose.sapient.yml up -d
+#   # Wait ~10s for OpenTrack API, then:
+#   ./scripts/demo-sapient.sh
+#
+# OpenTrack UI: http://localhost:8090 (sign in as the seeded admin)
+# SAPIENT source appears in Sources; detections flow in every 2s.
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./scripts/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+
+  nats:
+    image: nats:2
+    command: ["-js"]
+    ports:
+      - "4222:4222"
