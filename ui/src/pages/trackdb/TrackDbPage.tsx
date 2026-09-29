@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TbArrowMerge, TbLink, TbSearch, TbTrash, TbUsersGroup, TbX } from 'react-icons/tb'
+import { TbArrowMerge, TbLink, TbLinkOff, TbSearch, TbTrash, TbUsersGroup, TbX } from 'react-icons/tb'
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, useToast, type DataTableColumn } from 'staresdk'
@@ -327,6 +327,11 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       setMerging(null)
       toast({ variant: 'success', title: 'Merged', message: `into ${label(byId.get(into)!)}` })
     })
+  const doNotPair = () =>
+    run('recorded', async () => {
+      await api.doNotPair(ticked[0], ticked[1])
+      toast({ variant: 'success', title: 'Do not pair', message: tickedRows.map(label).join(', ') })
+    })
   const remove = async () => {
     const ok = await confirm(
       `Delete ${ticked.length} track${ticked.length === 1 ? '' : 's'}? ${tickedGroups.length ? 'Groups are dissolved (their members stay). ' : ''}They are deleted downstream; a source still reporting starts a new track.`,
@@ -450,7 +455,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               <span className="muted">Tick tracks to pair, merge, group or delete them.</span>
               <InfoTip label="Track management">
                 Pair: the same object, kept as separate tracks. Merge: one track survives with the others&apos; history and sources, and
-                correlation never splits it again. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
+                correlation never splits it again. Do not pair (two tracks): different objects, which correlation never pairs or merges; undo it
+                in the log below. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
                 centre. Delete: the track is deleted downstream.
               </InfoTip>
               <span className="spacer" />
@@ -479,6 +485,15 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 onClick={() => setMerging(ticked[0])}
               >
                 Merge
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<TbLinkOff />}
+                disabled={!canManage || busy || tickedTracks.length !== 2 || tickedGroups.length > 0}
+                onClick={doNotPair}
+              >
+                Do not pair
               </Button>
               <Button
                 size="sm"

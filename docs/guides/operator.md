@@ -133,8 +133,9 @@ shows open, accepted, rejected, expired or all suggestions.
 Track managers only.
 
 - **Accept a pair suggestion:** *B* is merged into *A*. *A* keeps its number and takes *B*'s
-  source tracks and history; *B* is deleted downstream. Unlike a merge you make yourself, the
-  engine may still split it later if the tracks stop agreeing.
+  source tracks and history; *B* is deleted downstream. It is your decision, like a
+  [merge](#merge) you make in the table: correlation never splits it. To take a source track off
+  again, use [Split](#split) or [undo](#undo) it.
 - **Reject a pair suggestion:** the two are recorded as different objects (**do not pair**), and
   correlation won't pair them again.
 - **Accept a split suggestion:** the source track leaves for a track of its own, and the two are
@@ -345,8 +346,8 @@ To merge tracks:
    groups and pairings. The others are deleted downstream. Tracks not published yet say so.
 4. Choose **Merge into**.
 
-Correlation never splits a track you merged. To take a source track off it again, use
-[Split](#split) or [undo](#undo) the merge.
+Correlation never splits a track you merged, here or by accepting a pair suggestion. To take a
+source track off it again, use [Split](#split) or [undo](#undo) the merge.
 
 ### Split
 
@@ -360,12 +361,16 @@ again.
 ### Do not pair
 
 A **do not pair** rule records that two tracks are different objects, so correlation never pairs
-them. You make one by:
+or merges them, even when they share an identifier. You make one by:
+- ticking exactly two tracks (not groups) in the table and choosing **Do not pair**, before
+  correlation proposes them;
 - **rejecting** a pair suggestion ([Accept or reject](#accept-or-reject));
 - **splitting** a source track off ([Split](#split)).
 
-It shows in the log as **Do not pair**, and can be undone there. (The API also takes it directly:
-`POST /api/v1/tracks/do-not-pair`.)
+The rule is between their source tracks, so it holds for them whatever track they report for
+later. It doesn't stop you pairing or merging them yourself. It shows in the
+[management log](#management-log) as **Do not pair**, and can be [undone](#undo) there. (The API
+also takes it directly: `POST /api/v1/tracks/do-not-pair`.)
 
 ### Delete
 
