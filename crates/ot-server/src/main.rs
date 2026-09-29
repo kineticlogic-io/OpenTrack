@@ -101,8 +101,10 @@ enum Command {
     Health {
         #[arg(long, env = "OT_BIND", default_value = "0.0.0.0:8090")]
         bind: SocketAddr,
+        // A String, not a PathBuf: docker compose passes an unset variable
+        // as empty, which a PathBuf refuses.
         #[arg(long, env = "OT_TLS_CERT")]
-        tls_cert: Option<PathBuf>,
+        tls_cert: Option<String>,
     },
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
@@ -294,7 +296,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Health { bind, tls_cert } => health(bind, tls_cert.is_some()),
+        Command::Health { bind, tls_cert } => {
+            health(bind, tls_cert.is_some_and(|s| !s.trim().is_empty()))
+        }
         Command::Retire { uid, reason } => {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(
@@ -490,5 +494,16 @@ mod tests {
         let _ = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())
             .with_no_client_auth();
+    }
+
+    #[test]
+    fn health_takes_an_empty_tls_cert_as_unset() {
+        // As docker compose passes OT_TLS_CERT when it isn't set.
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["opentrack", "health", "--tls-cert="]).unwrap();
+        let crate::Command::Health { tls_cert, .. } = cli.command else {
+            panic!("not the health command");
+        };
+        assert_eq!(tls_cert.as_deref(), Some(""));
     }
 }

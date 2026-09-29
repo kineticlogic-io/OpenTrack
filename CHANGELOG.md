@@ -29,6 +29,8 @@
   `PUT /api/v1/auth/users/{id}` refuses to change it (409) (#11).
 - **SAML's IdP entity ID, sign-in URL and signing certificate are read-only**, read from the pasted
   metadata at every save and read; to change them, paste new metadata (#8, finding F-3).
+- **Fixed:** the image's health check failed under docker compose without TLS (`opentrack health`
+  refused the empty `OT_TLS_CERT` compose passes), so the container showed unhealthy.
 
 ## 0.4.0 (alpha), 2026-09-28
 
