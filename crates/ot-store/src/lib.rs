@@ -21,6 +21,7 @@ pub mod schema;
 pub mod sources;
 pub mod sqlite;
 pub mod sync;
+pub mod uid_counter;
 pub mod undo;
 
 pub use audit::{AuditEvent, AuditFilter, AuditRow, AuditVerify};
@@ -41,4 +42,5 @@ pub use schema::SchemaVersion;
 pub use sources::{SourceRevision, SourceRow, SourceWrite};
 pub use sqlite::{Db, Decision, StoreError};
 pub use sync::SyncStatus;
+pub use uid_counter::{UidCounterAdvanced, UidSighting};
 pub use undo::Undone;

@@ -4,6 +4,12 @@
 
 - **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
   along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
+- **Track numbers are never issued twice after a restore** (#16): on start, before issuing any, the
+  engine finds the highest track number of its site in use in SQLite, Redis and the NATS tracks
+  stream, moves the counter past it (never back) and records a `uid_counter_advanced` decision.
+  Tracks this node left in the stream that are no longer live (after Redis was lost) get a delete,
+  recorded as a `stale_tracks_deleted` decision.
+  The manual `UPDATE uid_sequences` step is gone from the restore procedure.
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.

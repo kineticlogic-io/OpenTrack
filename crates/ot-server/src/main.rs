@@ -428,7 +428,11 @@ async fn run_writer(common: Common, args: WriterArgs) -> anyhow::Result<()> {
 async fn run_engine(common: Common, args: EngineArgs) -> anyhow::Result<()> {
     common.open_db()?;
     plugins::start(&common).await;
-    engine::Engine::new(common, args.settings())
+    let settings = engine::EngineSettings {
+        uid_check_nats: Some(Duration::from_secs(10)),
+        ..args.settings()
+    };
+    engine::Engine::new(common, settings)
         .await?
         .run(shutdown_signal())
         .await
