@@ -316,6 +316,8 @@ export interface SystemMetrics {
     emitted_by_source: Record<string, number>
     engine: Record<string, number>
     writer: Record<string, number>
+    /** The TAK output (cot role): sent, errors, dropped, per output as `<counter>:<id>`; gauges clients, tracks. */
+    cot?: Record<string, number>
     /** Gauges sampled by the server (last value in the minute). */
     system: Record<string, number>
   }[]
@@ -413,6 +415,65 @@ export interface AppSettings {
   history_interval_secs?: number | null
   /** Sharing the picture with other OpenTrack nodes. */
   sync?: SyncSettings
+  /** Cursor-on-Target outputs to TAK (the cot role). */
+  tak?: TakSettings
+}
+
+/** TLS to a TAK Server (as a feed's client TLS). */
+export interface TakClientTls {
+  ca_file?: string
+  cert_file?: string
+  key_file?: string
+  server_name?: string
+}
+
+/** TLS for a listening output (as a feed's server TLS). */
+export interface TakServerTls {
+  cert_file: string
+  key_file: string
+  client_ca_file?: string
+  client_cert_optional?: boolean
+  client_crl_files?: string[]
+}
+
+export type TakDelivery =
+  | { kind: 'tak_server'; host: string; port: number; tls?: TakClientTls }
+  | { kind: 'multicast'; group: string; port: number; ttl: number; interface?: string }
+  | { kind: 'listen'; bind: string; tls?: TakServerTls }
+
+/** One TAK output (see docs/guides/admin.md#tak-output). */
+export interface TakOutput {
+  id: string
+  enabled: boolean
+  /** Seconds after each send that TAK drops a track; re-sent every half of it. */
+  stale_secs: number
+  /** Track number and sources in <remarks>. */
+  remarks: boolean
+  delivery: TakDelivery
+}
+
+export interface TakSettings {
+  outputs: TakOutput[]
+}
+
+/** How each TAK output is going (GET /tak/status). */
+export interface TakStatus {
+  /** Whether a cot role is writing its status. */
+  running: boolean
+  at?: string | null
+  tracks?: number | null
+  outputs: {
+    id: string
+    kind: TakDelivery['kind']
+    enabled: boolean
+    encrypted: boolean
+    state: string
+    clients: number
+    sent: number
+    errors: number
+    dropped: number
+    last_error: string | null
+  }[]
 }
 
 /** What a producer's .proto files define (POST /protobuf/describe). */
@@ -983,6 +1044,7 @@ function auditParams(q: AuditQuery): string {
 export const api = {
   status: () => get<ServerStatus>('/status'),
   syncStatus: () => get<SyncStatus>('/sync/status'),
+  takStatus: () => get<TakStatus>('/tak/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
   tracks: (limit = 10000) => get<{ total: number; tracks: TrackRow[] }>(`/tracks?limit=${limit}`),

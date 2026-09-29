@@ -7,6 +7,7 @@ import { AuditPanel } from './AuditPanel'
 import { NodesPanel } from './NodesPanel'
 import { PluginsPanel } from './PluginsPanel'
 import { SecurityPanel } from './SecurityPanel'
+import { TakPanel } from './TakPanel'
 import { UsersPanel } from './UsersPanel'
 import { useCan } from '../../auth/context'
 import { errorMessage } from '../../lib/format'
@@ -260,6 +261,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
           onSave={save}
         />
       )}
+      {admin && <TakPanel value={draft.tak} onChange={(tak) => setDraft({ ...draft, tak })} dirty={dirty} saving={saving} saved={saved} onSave={save} />}
 
       <PluginsPanel />
 
