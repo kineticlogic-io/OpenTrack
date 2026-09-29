@@ -35,6 +35,16 @@ themselves are described in the administrator guide, under
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |
 | Feeds | each source's transport TLS settings; don't use `insecure_skip_verify` |
+| TAK output | Settings → TAK output: a TAK Server over TLS (8089) with a client certificate; a listening output with TLS and a **client CA** (and revocation lists) so only enrolled TAK clients connect |
+
+**TAK outputs in plaintext expose the picture.** A plain TCP output (to a TAK Server's 8087 or a
+listening output without TLS) sends every published track in the clear, and a plain listening
+output lets anyone who can reach its port take the whole picture. **Multicast is always
+plaintext**: anyone on the network segment (or as far as its TTL reaches) can read it. Use them
+only on a network that is itself protected and accredited for the picture's classification, and
+document the risk acceptance; keep multicast TTL at 1. The TAK output panel marks each output TLS or
+plaintext, and the `cot` role logs a warning when a plaintext output starts. OpenTrack sends
+events as the tracks are, without adding classification markings to them.
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 

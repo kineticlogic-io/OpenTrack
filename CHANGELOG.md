@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### TAK output (0.5.0)
+
+OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (#35).
+
+- **`opentrack cot`**, a new role (also run by `opentrack all`): reads the outbox in its own
+  consumer group (`track-cot`), so a slow TAK link never holds up NATS, and sends exactly the
+  tracks NATS gets. `OT_COT_CONSUMER`, `OT_COT_MIN_INTERVAL_SECS` (default 2 s per track;
+  identity and classification changes at once).
+- **Three deliveries, any number of outputs**, in **Settings → TAK output** (saved with the
+  instance settings as `tak`, applied within 5 s without a restart): a **TAK Server**'s streaming
+  input over TCP or TLS with a client certificate (reconnecting with backoff, the picture on every
+  connect); **UDP multicast** SA (default `239.2.3.1:6969`, TTL, interface; one event per
+  datagram); and **listening** for ATAK/WinTAK clients over TCP or TLS with optional client
+  certificates and revocation lists (each client gets the picture, then the stream; a client more
+  than 8,192 events behind is dropped). All TLS through the FIPS module.
+- **Events:** `uid` `tms-<UID>`, `type` from the SIDC (2525C with function id, 2525D identity and
+  symbol set, or a CoT type) or affiliation and domain, `how` `m-f`, `ce`/`le` from the position
+  error (`9999999` unknown), course, speed, callsign, optional remarks (track number, sources);
+  refreshed every half of the stale time (default 60 s). Ends are `t-x-d-d` deletes with a `link`
+  to the uid and `__forcedelete`, stale at once. No label handling: tracks go out as they are.
+- **Status and metrics:** `GET /api/v1/tak/status` and the panel (state, clients, events, errors,
+  TLS or plaintext); `cot` in `/api/v1/metrics` (`sent`, `errors`, `dropped`, `clients`, per
+  output too) and a TAK output chart on the Overview.
+- `Sidc::cot_type` in `ot-core`: SIDC to CoT type.
+- Docs: admin guide [TAK output](docs/guides/admin.md#tak-output), operator guide "In TAK",
+  hardening (plaintext CoT and multicast expose the picture).
+
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.

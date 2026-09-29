@@ -68,6 +68,14 @@ socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Setti
 written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
 test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
 
+**Outputs: NATS and TAK.** Every published track goes to NATS as JSON (`opentrack.track.v2`, one
+subject per track, for OpenStare and other consumers) and, when an admin configures it, to TAK as
+Cursor-on-Target: to a TAK Server's streaming input (TCP or TLS with a client certificate), as UDP
+SA multicast, or to ATAK/WinTAK clients connecting to OpenTrack (TCP or TLS, with optional client
+certificates), each getting the live picture on connect. The `cot` role reads the outbox in its own
+consumer group, so a slow TAK link never holds up NATS. See the admin guide,
+[TAK output](docs/guides/admin.md#tak-output).
+
 **Entities.** One registry of real-world objects: identifiers of any scheme (`mmsi`, `icao`,
 `elnot`...), a status, the OTH-GOLD minimum (name, class name, domain, affiliation, track type, CoT
 type, SIDC) and typed free-form attributes. Each source's pipeline links entity fields and track
@@ -87,6 +95,8 @@ flowchart TB
     writer["<b>writer</b> role<br/>coalesce · publish"]
     nats[["NATS JetStream<br/>stream TRACKS · subject tracks.tms-&lt;UID&gt;"]]
     consumers["OpenStare and other consumers"]
+    cot["<b>cot</b> role<br/>own outbox group · CoT XML"]
+    tak[["TAK<br/>TAK Server · SA multicast · ATAK/WinTAK clients"]]
 
     serve["<b>serve</b> role<br/>REST API + React UI :8090"]
     cmds[("Redis<br/>command queue")]
@@ -94,6 +104,7 @@ flowchart TB
     plugins["<b>plugins</b><br/>WebAssembly (sandboxed, in process) · external (socket)"]
 
     feeds --> sources --> obs --> engine --> live --> writer --> nats --> consumers
+    live --> cot --> tak
     serve -- operator commands --> cmds --> engine
     serve -. reads .-> live
     sqlite -. configuration and registry .-> sources
@@ -103,8 +114,8 @@ flowchart TB
     plugins -. pairing scorers .-> engine
 ```
 
-* **Roles.** `opentrack all` runs every role in one process; `serve`, `sources`, `engine` and
-  `writer` run them separately (each is stateless beyond SQLite and Redis). The engine owns live
+* **Roles.** `opentrack all` runs every role in one process; `serve`, `sources`, `engine`,
+  `writer` and `cot` run them separately (each is stateless beyond SQLite and Redis). The engine owns live
   track state; the API sends it commands and waits for its answer, so it works in or out of process.
 * **Storage.** **SQLite** holds everything a person decided or configured (sources and their
   revisions, the output schema, the entity registry and its revisions, correlation settings, the
@@ -128,7 +139,7 @@ crates/
   ot-plugin   plugin hosts: WebAssembly components (wasmtime, grants) and external plugins over a socket
   ot-codec-stanag4607  STANAG 4607 (Edition 3) GMTI decoder: every segment type, typed and as JSON records
   ot-sapient  SAPIENT (BSI Flex 335 v2.0) decoder: SapientMessage protobuf to JSON records
-  ot-server   the `opentrack` binary: serve | sources | engine | writer | all | migrate | synthetic | bench | plugin | retire
+  ot-server   the `opentrack` binary: serve | sources | engine | writer | cot | all | migrate | synthetic | bench | plugin | retire
 docs/
   nats-output.md   the published track contract, for consumers
   algorithms.md    tracker and correlation algorithms, versions and scores
@@ -236,6 +247,10 @@ A track message (`opentrack.track.v2`, `upsert` or `delete`) carries:
 
 Full contract: [docs/nats-output.md](docs/nats-output.md).
 
+The same tracks go to TAK as CoT events (`uid` `tms-<UID>`, `type` from the SIDC or affiliation
+and domain, `how` `m-f`, position error as `ce`/`le`, course, speed and callsign), refreshed before
+they go stale, and a `t-x-d-d` delete when they end: [TAK output](docs/guides/admin.md#tak-output).
+
 ## Sign-in and roles
 
 Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
@@ -306,7 +321,7 @@ Requires Rust (stable), Node 22, Redis and a NATS server with JetStream enabled.
 cargo build --release
 (cd ui && npm ci && npm run build)
 
-# every role in one process: control plane (API + UI on :8090), sources, engine, writer
+# every role in one process: control plane (API + UI on :8090), sources, engine, writer, cot
 ./target/release/opentrack all
 
 # add a source through the API, then enable it
@@ -385,6 +400,8 @@ Turning it on:
 | `OT_NATS_TRACKS_SUBJECT` | `tracks` | subject prefix: tracks go to `<prefix>.tms-<UID>` |
 | `OT_NATS_MAX_AGE_HOURS` | `24` | message age limit for a stream OpenTrack creates |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | per-track write coalescing |
+| `OT_COT_CONSUMER` | `cot-1` | the `cot` role's consumer name on the outbox (run one per namespace) |
+| `OT_COT_MIN_INTERVAL_SECS` | `2` | per-track TAK event coalescing; the outputs themselves are in Settings → TAK output |
 | `OT_UI_DIR` | `ui/dist` | built UI served at `/` |
 | `OT_AUTH` | `on` | `off` turns sign-in off (development only: every caller is an admin) |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | the first admin account, made when there are none |

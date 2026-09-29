@@ -16,7 +16,7 @@ const LINKED: Record<string, string[]> = {
     'sign-in', 'password-sign-in', 'saml', 'openstare-sign-in', 'client-certificates', 'sign-in-turned-off',
     'banners', 'classification-banner', 'notice-and-consent', 'security-labels', 'settings-tab',
     'sources-and-correlation', 'sources', 'output-schema', 'correlation-settings', 'tracker-profiles',
-    'plugins', 'multi-node', 'backup-and-restore', 'what-to-back-up', 'sqlite-backup', 'redis-backup',
+    'plugins', 'multi-node', 'tak-output', 'backup-and-restore', 'what-to-back-up', 'sqlite-backup', 'redis-backup',
     'configuration-export', 'registry-export', 'restore', 'upgrades', 'purge',
     'monitoring', 'health-checks', 'metrics', 'logs', 'troubleshooting', 'security', 'security-hardening',
   ],
@@ -27,7 +27,7 @@ const LINKED: Record<string, string[]> = {
     'provenance-tab', 'confidence-and-existence', 'track-states', 'not-published', 'history-tab',
     'managing-tracks', 'pair', 'unpair', 'merge', 'split', 'do-not-pair', 'delete', 'groups', 'designate',
     'history-points', 'undo', 'management-log', 'export', 'registry', 'entities', 'entity-editor',
-    'publish-override', 'spreadsheets', 'schema', 'settings', 'common-questions',
+    'publish-override', 'spreadsheets', 'schema', 'settings', 'in-tak', 'common-questions',
   ],
 }
 
