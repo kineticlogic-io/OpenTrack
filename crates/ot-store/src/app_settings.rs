@@ -22,10 +22,18 @@ impl Db {
     }
 
     /// Save the instance settings (checked by the caller), recording who did.
+    /// The decision log, which every viewer reads, gets them without the
+    /// basemap tile URL (it may carry a key): only whether one is set.
     pub fn put_app_settings(&mut self, settings: &Value, actor: &str) -> Result<i64> {
+        let mut evidence = settings.clone();
+        if let Some(u) = evidence.get_mut("basemap_tiles_url")
+            && u.as_str().is_some_and(|s| !s.is_empty())
+        {
+            *u = Value::String("(set)".into());
+        }
         self.write(|tx| {
             let now = now_ms();
-            let d = Decision::new(actor, "app_settings").evidence(settings.clone());
+            let d = Decision::new(actor, "app_settings").evidence(evidence);
             let id = record_decision(tx, &d, now)?;
             tx.execute(
                 "INSERT INTO app_settings (id, settings, updated_at_ms, decision_id) VALUES (1, ?1, ?2, ?3)
@@ -99,5 +107,15 @@ mod tests {
             .unwrap();
         assert_ne!(next, uid);
         assert_eq!(db.app_settings().unwrap(), s, "settings stay");
+    }
+
+    #[test]
+    fn the_decision_log_never_holds_the_tile_url() {
+        let mut db = Db::open_in_memory().unwrap();
+        let s = serde_json::json!({"basemap_tiles_url": "https://t.example/{z}/{x}/{y}.png?key=k"});
+        db.put_app_settings(&s, "op:test").unwrap();
+        assert_eq!(db.app_settings().unwrap(), s, "saved as given");
+        let rows = db.decisions_by_op(&["app_settings"], 10).unwrap();
+        assert_eq!(rows[0].evidence["basemap_tiles_url"], "(set)");
     }
 }

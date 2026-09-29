@@ -11,6 +11,7 @@ use clap::{Args, Parser, Subcommand};
 mod api;
 mod audit_api;
 mod auth;
+mod basemap;
 mod bridge;
 mod config;
 mod config_backup;
