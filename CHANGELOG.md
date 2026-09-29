@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed:** info tips inside a modal (the pipeline designer, Add account, Add plugin…) opened behind it (#45).
 - **Pipeline designer, live preview by stage:** the Live preview pane now fills the designer's
   height and scrolls on its own. It shows the first 5 stored samples (decoded records, in order)
   as pretty-printed JSON as they are after the stage selected on the left: the frames they came
