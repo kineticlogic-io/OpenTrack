@@ -13,6 +13,7 @@ mod audit_api;
 mod auth;
 mod bridge;
 mod config;
+mod config_backup;
 mod control;
 mod correlate;
 mod correlation_api;
@@ -96,6 +97,9 @@ enum Command {
     /// Manage accounts (for a node without the UI).
     #[command(subcommand)]
     User(user_cli::UserCommand),
+    /// Export the whole configuration, or rebuild an empty node from one.
+    #[command(subcommand)]
+    Config(config_backup::ConfigCommand),
     /// Exit 0 when this node's control plane answers (the image's
     /// HEALTHCHECK): `/healthz` over plain HTTP, a TCP connection under TLS.
     Health {
@@ -285,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Synthetic(args) => synthetic::run(&common, args).await,
         Command::Plugin(cmd) => plugin_cli::run(&common, cmd),
         Command::User(cmd) => user_cli::run(&common, cmd),
+        Command::Config(cmd) => config_backup::run(&common, cmd),
         Command::Bench(args) => {
             engine::bench::run(
                 &common,
