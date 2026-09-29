@@ -664,6 +664,11 @@ impl Tracker {
         self.timing.as_ref()
     }
 
+    /// Detections waiting for their scan to complete.
+    pub fn waiting(&self) -> impl Iterator<Item = &Observation> {
+        self.buffer.iter().map(|(o, _)| o)
+    }
+
     /// Queue a detection.
     pub fn push(&mut self, obs: Observation, received_at: DateTime<Utc>) {
         self.buffer.push((obs, received_at));

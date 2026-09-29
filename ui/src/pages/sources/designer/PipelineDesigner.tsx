@@ -5,9 +5,10 @@ import { api, type SchemaOverview, type SourceSpec } from '../../../api/client'
 import { InfoTip } from '../../../components/InfoTip'
 import { errorMessage } from '../../../lib/format'
 import { pipelineStages, DEFAULT_LINKS } from '../../../lib/pipeline'
+import { TRACED_SAMPLES } from '../../../lib/trace'
 import { usePreview } from '../../../lib/usePreview'
-import { PreviewResults } from '../PreviewResults'
 import { MapEditor } from './MapEditor'
+import { StageSamples } from './StageSamples'
 import { AffiliationForm, DecodeForm, FilterForm, JoinForm, PublishForm, RegistryForm, RejectForm, ThrottleForm, TrackerForm, SecurityForm, EmitterMotionForm } from './StageForms'
 
 const PipelineFlow = lazy(() => import('../PipelineFlow'))
@@ -100,7 +101,7 @@ export function PipelineDesigner({
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const [capturing, setCapturing] = useState(false)
-  const { preview, error: previewError, running } = usePreview(spec, sourceId, nonce)
+  const { preview, error: previewError, running } = usePreview(spec, sourceId, nonce, TRACED_SAMPLES)
 
   useEffect(() => {
     api.schema().then(setSchema, (e) => setError(errorMessage(e)))
@@ -285,8 +286,10 @@ export function PipelineDesigner({
             <h3 className="subhead">
               Live preview
               <InfoTip label="Live preview">
-                A dry run of the pipeline as edited (not yet saved) over this source&apos;s stored samples, updated as you change it. Nothing is
-                published.
+                A dry run of the pipeline as edited (not yet saved) over this source&apos;s stored samples, updated as you change it. It shows the
+                first {TRACED_SAMPLES} stored samples (decoded records, in order) as they are after the stage selected on the left: at Transport
+                the frames they came from, then each record, its observation, and at Publish the message as it would be published. A sample
+                dropped or held on the way says where and why. The counts cover everything stored. Nothing is published.
               </InfoTip>
             </h3>
             <span className="muted">{running ? 'running…' : `stored samples of ${sourceId}`}</span>
@@ -301,7 +304,7 @@ export function PipelineDesigner({
           </div>
 
           {previewError && <div className="error-text">{previewError}</div>}
-          {preview ? <PreviewResults result={preview} showMap={false} /> : !previewError && <span className="muted">Running the first preview…</span>}
+          {preview ? <StageSamples result={preview} stageId={stage.id} /> : !previewError && <span className="muted">Running the first preview…</span>}
         </div>
       </div>
     </Modal>

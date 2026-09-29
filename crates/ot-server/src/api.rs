@@ -14,6 +14,7 @@ use ot_source::frame::Frame;
 use ot_source::pipeline::Pipeline;
 use ot_source::schema::{ExtensionField, ExtensionSchema};
 use ot_source::source::SourceSpec;
+use ot_source::trace::Trace;
 use ot_store::{Entity, SourceRow, SourceWrite};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -382,6 +383,10 @@ struct ValidateBody {
     /// Also run the stored probe samples of this source id.
     #[serde(default)]
     stored_samples_of: Option<String>,
+    /// Follow the first this many decoded records stage by stage (0: no
+    /// trace; at most [`ot_source::trace::MAX_SAMPLES`]).
+    #[serde(default)]
+    trace: Option<usize>,
 }
 
 /// Validate a source spec and optionally dry-run sample frames through its
@@ -429,10 +434,14 @@ async fn validate_source(
     let mut pipeline = Pipeline::new(spec.id.clone(), spec.pipeline.clone())
         .map_err(|e| ApiError::unprocessable(e.to_string()))?
         .with_schema(schema);
+    let mut trace = body.trace.filter(|n| *n > 0).map(Trace::new);
     let mut observations = Vec::new();
     let mut errors = Vec::new();
     for frame in frames.iter().take(1000) {
-        let out = pipeline.process(frame, &registry);
+        let out = match trace.as_mut() {
+            Some(t) => pipeline.process_traced(frame, &registry, t),
+            None => pipeline.process(frame, &registry),
+        };
         observations.extend(out.observations);
         if let Some(e) = out.last_error {
             errors.push(e);
@@ -442,14 +451,58 @@ async fn validate_source(
     let last = frames
         .last()
         .map_or_else(chrono::Utc::now, |f| f.received_at);
-    observations.extend(pipeline.flush(last, true).observations);
+    let flushed = match trace.as_mut() {
+        Some(t) => pipeline.flush_traced(last, true, t),
+        None => pipeline.flush(last, true),
+    };
+    observations.extend(flushed.observations);
     let counts: BTreeMap<String, u64> = pipeline.take_counts().pairs().into_iter().collect();
-    Ok(Json(json!({
+    let mut body = json!({
         "valid": true,
         "counts": counts,
         "errors": errors,
         "observations": observations,
-    })))
+    });
+    if let Some(t) = trace {
+        body["trace"] = traced_with_publish(&s, t).await?;
+    }
+    Ok(Json(body))
+}
+
+/// A trace as JSON, each sample ending with a `publish` stage: what it
+/// emitted, as the upsert message a new system track seeded from it would
+/// publish (its UID is correlation's to assign, so it is left out).
+async fn traced_with_publish(s: &AppState, trace: Trace) -> Result<Value, ApiError> {
+    let version = s.with_db(|db| db.latest_published_schema()).await?;
+    let output = published_schema(s, version).await?;
+    let ctx = s.common.publish_context();
+    let now = chrono::Utc::now();
+    let uid = ot_core::Uid::new(s.common.site, 1).map_err(|e| ApiError::internal(e.to_string()))?;
+    let placeholder = json!("assigned by correlation");
+    let mut samples = Vec::with_capacity(trace.samples.len());
+    for sample in &trace.samples {
+        let items: Vec<Value> = sample
+            .emitted
+            .iter()
+            .map(|obs| {
+                let mut t = ot_core::SystemTrack::from_first_observation(uid, obs.clone());
+                if let Some(schema) = &output {
+                    t.attributes = ot_source::schema::resolve_attributes(schema, &t).0;
+                }
+                let mut m = serde_json::to_value(ot_core::wire::to_message(&t, &ctx, now))
+                    .unwrap_or(Value::Null);
+                m["uid"] = placeholder.clone();
+                m["track_id"] = placeholder.clone();
+                ot_source::trace::capped(m)
+            })
+            .collect();
+        let mut v = serde_json::to_value(sample).map_err(|e| ApiError::internal(e.to_string()))?;
+        if let Some(stages) = v["stages"].as_array_mut() {
+            stages.push(json!({ "id": "publish", "items": items }));
+        }
+        samples.push(v);
+    }
+    Ok(json!({ "frames": trace.frames, "samples": samples }))
 }
 
 #[derive(Deserialize)]
@@ -1067,6 +1120,96 @@ mod tests {
         assert_eq!(o["ext"]["registry"]["scheme"], "elnot");
         assert_eq!(o["ext"]["registry"]["grade"], "name");
         assert_eq!(o["classification"]["cot_type"], "a-f-S-C-A");
+        redis.purge_namespace().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dry_run_traces_the_first_records_stage_by_stage() {
+        let Some((app, redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let spec = json!({
+            "id": "trace-test", "name": "Trace test",
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "pipeline": {
+                "codec": {"type": "json"},
+                "mapping": {"rules": [{"name": "pos", "key": "id",
+                    "fields": {"position.latitude": "lat", "position.longitude": "lon", "name": "name"}}]},
+                "filter": {"drop_if": {"path": "name", "eq": "NOISE"}}
+            }
+        });
+        let mut samples = vec![
+            json!({"id": "A", "lat": 10, "lon": 20, "name": "alpha"}).to_string(),
+            json!({"id": "B", "lat": 11, "lon": 21, "name": "NOISE"}).to_string(),
+            "not json".to_owned(),
+        ];
+        samples.extend((0..12).map(|i| json!({"id": i, "lat": 1, "lon": 2}).to_string()));
+        let validate = |trace: Value| {
+            call(
+                &app,
+                "POST",
+                "/api/v1/sources/validate",
+                Some(json!({"spec": spec, "samples": samples, "trace": trace})),
+            )
+        };
+        let (st, plain) = validate(Value::Null).await;
+        assert_eq!(st, StatusCode::OK, "{plain}");
+        assert!(plain.get("trace").is_none(), "off unless asked");
+        let (_, zero) = validate(json!(0)).await;
+        assert!(zero.get("trace").is_none());
+        // Frames are stamped as they arrive, so compare all but the times.
+        let keys = |b: &Value| -> Vec<Value> {
+            b["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| o["source_track_key"].clone())
+                .collect()
+        };
+
+        let (st, body) = validate(json!(3)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        for k in ["valid", "counts", "errors"] {
+            assert_eq!(body[k], plain[k], "{k} unchanged by tracing");
+        }
+        assert_eq!(keys(&body), keys(&plain));
+        let frames = body["trace"]["frames"].as_array().unwrap();
+        let t = body["trace"]["samples"].as_array().unwrap();
+        assert_eq!((t.len(), frames.len()), (3, 3), "one record per frame");
+        assert_eq!(t[0]["frame"], 0);
+        assert_eq!(frames[0]["format"], "json");
+        assert_eq!(frames[0]["content"]["name"], "alpha");
+        let ids: Vec<&str> = t[0]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["decode", "map", "registry", "filter", "publish"]);
+        let publish = &t[0]["stages"][4]["items"][0];
+        assert_eq!(publish["name"], "ALPHA", "the published message");
+        assert_eq!(publish["op"], "upsert");
+        assert_eq!(publish["track_id"], "assigned by correlation");
+        assert_eq!(t[1]["stages"][3]["dropped"], json!(["drop_if matched"]));
+        assert_eq!(t[1]["stages"][4]["items"], json!([]));
+        assert_eq!(
+            frames[2],
+            json!({"format": "text", "bytes": 8, "content": "not json"})
+        );
+        assert!(
+            t[2]["stages"][0]["dropped"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("decode error")
+        );
+
+        let (_, body) = validate(json!(50)).await;
+        assert_eq!(
+            body["trace"]["samples"].as_array().unwrap().len(),
+            10,
+            "capped"
+        );
         redis.purge_namespace().await.unwrap();
     }
 
