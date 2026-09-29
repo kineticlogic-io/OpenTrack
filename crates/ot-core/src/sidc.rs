@@ -135,6 +135,78 @@ impl Sidc {
         }
     }
 
+    /// The Cursor-on-Target type this code stands for, `a-<affiliation>-<battle
+    /// dimension>[-<function>…]`, or `None` when it names no CoT atom (a
+    /// 2525C tactical graphic or weather symbol, a battle dimension of
+    /// unknown).
+    ///
+    /// * **2525C** warfighting (`S`): the function id's characters (positions
+    ///   5-10, up to the first `-`), each an atom: `SFGPUCI---` is
+    ///   `a-f-G-U-C-I`. Exercise identities map to their real-world ones (CoT
+    ///   has no exercise flag). Signals intelligence (`I`) keeps the battle
+    ///   dimension only; stability operations (`O`) and emergency management
+    ///   (`E`) are ground. Tactical graphics (`G`) and weather (`W`) are not
+    ///   atoms.
+    /// * **2525D**: identity and the symbol set's dimension, refined to
+    ///   units (`G-U`), equipment (`G-E`) and installations (`G-I`) on land;
+    ///   the entity code (a table per symbol set) is not translated.
+    /// * **CoT**: the code itself.
+    pub fn cot_type(&self) -> Option<String> {
+        match self.standard {
+            SidcStandard::Cot => Some(self.code.clone()),
+            SidcStandard::Mil2525C => {
+                let aff = match self.char_at(1)? {
+                    'P' | 'G' => 'p',
+                    'U' | 'W' | '-' => 'u',
+                    'A' | 'M' => 'a',
+                    'F' | 'D' => 'f',
+                    'N' | 'L' => 'n',
+                    'S' => 's',
+                    'H' => 'h',
+                    'J' => 'j',
+                    'K' => 'k',
+                    'O' => 'o',
+                    _ => return None,
+                };
+                let dim = self.char_at(2)?;
+                match self.char_at(0)? {
+                    'S' => {
+                        if !matches!(dim, 'P' | 'A' | 'G' | 'S' | 'U' | 'F' | 'X') {
+                            return None;
+                        }
+                        let mut t = format!("a-{aff}-{dim}");
+                        for c in self.code.get(4..10)?.chars().take_while(|c| *c != '-') {
+                            t.push('-');
+                            t.push(c);
+                        }
+                        Some(t)
+                    }
+                    'I' => {
+                        matches!(dim, 'P' | 'A' | 'G' | 'S' | 'U').then(|| format!("a-{aff}-{dim}"))
+                    }
+                    'O' | 'E' => Some(format!("a-{aff}-G")),
+                    _ => None,
+                }
+            }
+            SidcStandard::Mil2525D => {
+                let aff = self.affiliation()?.cot_atom();
+                let dim = match self.code.get(4..6)? {
+                    "10" => "G-U",
+                    "15" => "G-E",
+                    "20" => "G-I",
+                    _ => match self.domain()? {
+                        Domain::Air => "A",
+                        Domain::Space => "P",
+                        Domain::Ground => "G",
+                        Domain::Surface => "S",
+                        Domain::Subsurface => "U",
+                    },
+                };
+                Some(format!("a-{aff}-{dim}"))
+            }
+        }
+    }
+
     /// The same code with its standard identity replaced.
     pub fn with_affiliation(&self, a: Affiliation) -> Sidc {
         let mut bytes = self.code.clone().into_bytes();
@@ -224,6 +296,55 @@ mod tests {
             (cot.affiliation(), cot.domain()),
             (Some(Affiliation::Neutral), Some(Domain::Subsurface))
         );
+    }
+
+    #[test]
+    fn cot_types_from_known_symbols() {
+        let cot = |s: &str| Sidc::parse(s).unwrap().cot_type();
+        for (sidc, want) in [
+            // 2525C warfighting: identity, dimension, then the function id.
+            ("SFGPUCI----", Some("a-f-G-U-C-I")), // friendly infantry
+            ("SHGPUCIZ---", Some("a-h-G-U-C-I-Z")), // hostile mechanized infantry
+            ("SFSPCLDD---", Some("a-f-S-C-L-D-D")), // friendly destroyer
+            ("SHAPMF-----", Some("a-h-A-M-F")),   // hostile fixed wing
+            ("SFAPMFQ----", Some("a-f-A-M-F-Q")), // friendly drone
+            ("SNUP-------", Some("a-n-U")),       // neutral subsurface
+            ("SUPP-------", Some("a-u-P")),       // unknown space track
+            ("SHGPEVAT---", Some("a-h-G-E-V-A-T")), // hostile tank
+            ("SFGPIB-----", Some("a-f-G-I-B")),   // installation
+            ("SAGP-------", Some("a-a-G")),       // assumed friend
+            ("SSSP-------", Some("a-s-S")),       // suspect surface
+            ("SJAP-------", Some("a-j-A")),       // joker
+            ("SKAP-------", Some("a-k-A")),       // faker
+            ("SOGP-------", Some("a-o-G")),       // none
+            ("SPSP-------", Some("a-p-S")),       // pending
+            ("SFFP-------", Some("a-f-F")),       // special operations
+            ("SDGPU------", Some("a-f-G-U")),     // exercise friend
+            ("SWAP-------", Some("a-u-A")),       // exercise unknown
+            ("SGSP-------", Some("a-p-S")),       // exercise pending
+            ("SMSP-------", Some("a-a-S")),       // exercise assumed friend
+            ("SLSP-------", Some("a-n-S")),       // exercise neutral
+            ("sfgpucv---", Some("a-f-G-U-C-V")),  // lower case, padded
+            ("IHAPSCO----", Some("a-h-A")),       // SIGINT: dimension only
+            ("OHVPA------", Some("a-h-G")),       // stability operations
+            ("EFOPA------", Some("a-f-G")),       // emergency management
+            ("SUZP-------", None),                // unknown dimension
+            ("GFGPGLB----", None),                // tactical graphic
+            ("WAS-PL----P", None),                // weather
+            // 2525D: identity and symbol set.
+            ("10033000001211000000", Some("a-f-S")),
+            ("10061000001211000000", Some("a-h-G-U")),
+            ("10031500001101000000", Some("a-f-G-E")),
+            ("10042000001100000000", Some("a-n-G-I")),
+            ("10150100001101000000", Some("a-j-A")),
+            ("10013500000000000000", Some("a-u-U")),
+            ("10030500000000000000", Some("a-f-P")),
+            ("10069900000000000000", None),
+            // A CoT type is itself.
+            ("a-f-S-C-L", Some("a-f-S-C-L")),
+        ] {
+            assert_eq!(cot(sidc).as_deref(), want, "{sidc}");
+        }
     }
 
     #[test]
