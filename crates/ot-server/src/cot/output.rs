@@ -284,8 +284,13 @@ impl Ctx {
     }
 
     /// Hand an event to every connection; drop those too far behind.
-    fn send_all(&self, bytes: Bytes) {
+    /// Rendered only when some connection is there to take it.
+    fn send_all(&self, render: impl FnOnce() -> Bytes) {
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        if clients.is_empty() {
+            return;
+        }
+        let bytes = render();
         clients.retain(|c| match c.tx.try_send(bytes.clone()) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -331,11 +336,11 @@ async fn fan_out(ctx: Ctx) {
         tokio::select! {
             change = rx.recv() => match change {
                 Ok(Change::Upsert(t)) => {
-                    ctx.send_all(ctx.render.event(&t));
+                    ctx.send_all(|| ctx.render.event(&t));
                     refresh.sent(t.uid, Instant::now());
                 }
                 Ok(Change::Delete { uid, last_type }) => {
-                    ctx.send_all(ctx.render.delete(uid, last_type.as_deref()));
+                    ctx.send_all(|| ctx.render.delete(uid, last_type.as_deref()));
                     refresh.remove(uid);
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -347,11 +352,11 @@ async fn fan_out(ctx: Ctx) {
                         .filter(|u| !live.iter().any(|t| t.uid == *u))
                         .collect();
                     for uid in gone {
-                        ctx.send_all(ctx.render.delete(uid, None));
+                        ctx.send_all(|| ctx.render.delete(uid, None));
                         refresh.remove(uid);
                     }
                     for t in live {
-                        ctx.send_all(ctx.render.event(&t));
+                        ctx.send_all(|| ctx.render.event(&t));
                         refresh.sent(t.uid, now);
                     }
                 }
@@ -361,7 +366,7 @@ async fn fan_out(ctx: Ctx) {
                 let now = Instant::now();
                 for uid in refresh.take_due(now) {
                     if let Some(t) = ctx.hub.get(uid) {
-                        ctx.send_all(ctx.render.event(&t));
+                        ctx.send_all(|| ctx.render.event(&t));
                         refresh.sent(uid, now);
                     }
                 }
@@ -743,7 +748,7 @@ mod tests {
         let _slow = ctx.register("slow");
         let mut fast = ctx.register("fast");
         for i in 0..=CLIENT_QUEUE {
-            ctx.send_all(Bytes::from(format!("{i}")));
+            ctx.send_all(|| Bytes::from(format!("{i}")));
             // The fast one keeps up.
             assert!(fast.try_recv().is_ok());
         }
