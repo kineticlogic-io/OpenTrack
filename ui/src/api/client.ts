@@ -841,6 +841,26 @@ export interface PreviewResult {
   counts?: Record<string, number>
   errors?: string[]
   observations?: PreviewObservation[]
+  /** The first frames stage by stage, when the preview asked for a trace. */
+  trace?: TraceFrame[]
+}
+
+/** One input frame of a dry run, and what each stage made of it. */
+export interface TraceFrame {
+  /** The frame as received: parsed JSON, else its text, else its bytes escaped. */
+  frame: { format: 'json' | 'text' | 'binary'; bytes: number; content: unknown }
+  /** The pipeline's stages after the transport, in order (ids as in `pipelineStages`), ending with `publish`. */
+  stages: TraceStage[]
+}
+
+export interface TraceStage {
+  id: string
+  /** What the stage passed on: records up to Map, observations after it, the published message at Publish. */
+  items: unknown[]
+  /** Why records were dropped at this stage, one per record. */
+  dropped?: string[]
+  /** The stage held the frame back (a tracker waiting for the rest of a scan). */
+  held?: boolean
 }
 
 // --- Schema --------------------------------------------------------------------------------
@@ -1042,8 +1062,9 @@ export const api = {
     max_secs?: number
     save_as?: string
   }) => request<ProbeResult>('POST', '/probe', body),
-  preview: (spec: SourceSpec, storedSamplesOf?: string, samples: string[] = []) =>
-    request<PreviewResult>('POST', '/sources/validate', { spec, samples, stored_samples_of: storedSamplesOf }),
+  /** A dry run; `trace` > 0 also follows that many frames stage by stage (at most 10). */
+  preview: (spec: SourceSpec, storedSamplesOf?: string, samples: string[] = [], trace = 0) =>
+    request<PreviewResult>('POST', '/sources/validate', { spec, samples, stored_samples_of: storedSamplesOf, ...(trace > 0 ? { trace } : {}) }),
 
   schema: () => get<SchemaOverview>('/schema'),
   saveDraft: (fields: ExtensionField[], notes?: string) =>
