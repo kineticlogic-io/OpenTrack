@@ -102,3 +102,34 @@ describe('countsLine', () => {
     expect(countsLine(null)).toBe('')
   })
 })
+
+describe('big frames and stage notes', () => {
+  const big: PreviewTrace = {
+    frames: [{ format: 'json', bytes: 91838, truncated: true, content: '{\n  "ac": [\n    {\n      "hex": "ae5662"' }],
+    samples: [
+      {
+        frame: 0,
+        stages: [
+          { id: 'decode', items: [{ hex: 'ae5662' }] },
+          { id: 'map', items: [{ kind: 'static' }, { callsign: 'SURF21' }] },
+          { id: 'join', items: [{ callsign: 'SURF21' }], notes: ['kept as the static identity of ae5662, to fill its later reports'] },
+          { id: 'publish', items: [{ op: 'upsert' }] },
+        ],
+      },
+    ],
+  }
+
+  it('shows a cut JSON frame as its pretty text, saying only the start is there', () => {
+    const [f] = samplesAt(big, 'transport')
+    expect(f.blocks).toEqual(['{\n  "ac": [\n    {\n      "hex": "ae5662"'])
+    expect(f.notes).toEqual(['91,838 bytes: only the start is shown'])
+  })
+
+  it('says a stage note at that stage only, never as a drop', () => {
+    const [atJoin] = samplesAt(big, 'join')
+    expect(atJoin.notes).toEqual(['Identity join: kept as the static identity of ae5662, to fill its later reports'])
+    const [atPublish] = samplesAt(big, 'publish')
+    expect(atPublish.notes).toEqual([])
+    expect(atPublish.blocks).toHaveLength(1)
+  })
+})

@@ -45,10 +45,10 @@ function numbers(ns: number[]): string {
 function frameView(f: TraceFrameView | undefined, title: string): SampleView {
   if (!f) return { title, blocks: [], notes: ['The frame is not in the trace.'] }
   const notes = f.format === 'binary' ? [`${f.bytes} bytes, not text (shown escaped)`] : []
-  if (f.format === 'json' && typeof f.content === 'object' && f.content !== null && 'truncated' in f.content) {
-    notes.push(`${f.bytes} bytes: only the start is shown`)
-  }
-  return { title, blocks: [f.format === 'json' ? pretty(f.content) : String(f.content)], notes }
+  if (f.truncated) notes.push(`${f.bytes.toLocaleString()} bytes: only the start is shown`)
+  // A cut JSON frame comes already pretty-printed, as text.
+  const block = typeof f.content === 'string' ? f.content : pretty(f.content)
+  return { title, blocks: [block], notes }
 }
 
 function note(stageId: string, reason: string): string {
@@ -78,6 +78,8 @@ export function samplesAt(trace: PreviewTrace | undefined, stageId: string): Sam
     const notes: string[] = []
     for (const x of s.stages.slice(0, at + 1)) {
       for (const r of x.dropped ?? []) notes.push(note(x.id, r))
+      // Not a drop: said only at the stage that did it.
+      if (x === s.stages[at]) for (const n of x.notes ?? []) notes.push(`${STAGE_LABEL[x.id] ?? x.id}: ${n}`)
       if (x.held) {
         notes.push(
           `held by ${STAGE_LABEL[x.id] ?? x.id}: waiting for the rest of its scan (the preview ran it at the end of the samples, or when a later frame completed it)`,

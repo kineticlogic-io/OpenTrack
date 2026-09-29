@@ -701,10 +701,10 @@ impl Pipeline {
             for m in &mapped {
                 if m.kind == RuleKind::Static {
                     f.item("map", || mapped_json(m));
-                    f.dropped(
+                    f.note(
                         "join",
                         format!(
-                            "static identity for {}: kept to fill its later reports",
+                            "kept as the static identity of {}, to fill its later reports",
                             m.key
                         ),
                     );
@@ -1158,7 +1158,12 @@ mod tests {
         assert_eq!(trace.frames[0].format, "json");
         // A static report is kept by the join.
         assert_eq!(stage(&f[0], "map").items[0]["kind"], "static");
-        assert!(stage(&f[0], "join").dropped[0].starts_with("static identity for 1"));
+        let join = stage(&f[0], "join");
+        assert!(
+            join.dropped.is_empty(),
+            "keeping a static identity is not a drop"
+        );
+        assert!(join.notes[0].starts_with("kept as the static identity of 1"));
         // A position report: joined, graded, published.
         assert!(
             stage(&f[1], "map").items[0].get("name").is_none(),

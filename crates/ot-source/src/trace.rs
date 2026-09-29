@@ -58,8 +58,12 @@ pub struct FrameView {
     /// Length of the frame in bytes.
     pub bytes: usize,
     /// The parsed JSON, the text, or the bytes escaped (`\xNN`), cut to
-    /// [`MAX_ITEM_BYTES`].
+    /// [`MAX_ITEM_BYTES`]. JSON too big for that comes as its pretty-printed
+    /// text, cut at a line (`truncated` is then set).
     pub content: Value,
+    /// Only the start of the frame is in `content`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 /// A record after one stage.
@@ -73,6 +77,10 @@ pub struct StageTrace {
     /// Why it (or one of its outputs) was dropped here.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
+    /// What this stage did with it that is not a drop (a static identity
+    /// kept to fill later reports, say): shown at this stage only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// The stage held it back (a tracker waiting for the rest of a scan);
     /// what it made of it later is in `items`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -116,6 +124,7 @@ impl Trace {
                     id,
                     items: Vec::new(),
                     dropped: Vec::new(),
+                    notes: Vec::new(),
                     held: false,
                 })
                 .collect(),
@@ -149,6 +158,13 @@ impl SampleTrace {
             s.dropped.push(reason.into());
         }
     }
+
+    /// Note what `id` did with it, when that is not a drop.
+    pub(crate) fn note(&mut self, id: &str, text: impl Into<String>) {
+        if let Some(s) = self.stage(id) {
+            s.notes.push(text.into());
+        }
+    }
 }
 
 impl FrameView {
@@ -156,15 +172,33 @@ impl FrameView {
         let n = bytes.len();
         match std::str::from_utf8(bytes) {
             Ok(text) => match serde_json::from_str::<Value>(text) {
-                Ok(v) => Self {
-                    format: "json",
-                    bytes: n,
-                    content: capped(v),
-                },
+                Ok(v) => {
+                    let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
+                    if pretty.len() <= MAX_ITEM_BYTES {
+                        Self {
+                            format: "json",
+                            bytes: n,
+                            content: v,
+                            truncated: false,
+                        }
+                    } else {
+                        // Readable still: the pretty text, to the last whole line that fits.
+                        let end = pretty[..MAX_ITEM_BYTES.min(pretty.len())]
+                            .rfind('\n')
+                            .unwrap_or(0);
+                        Self {
+                            format: "json",
+                            bytes: n,
+                            content: Value::String(pretty[..end].to_owned()),
+                            truncated: true,
+                        }
+                    }
+                }
                 Err(_) => Self {
                     format: "text",
                     bytes: n,
                     content: Value::String(cut(text, MAX_ITEM_BYTES)),
+                    truncated: text.len() > MAX_ITEM_BYTES,
                 },
             },
             Err(_) => {
@@ -179,6 +213,7 @@ impl FrameView {
                 Self {
                     format: "binary",
                     bytes: n,
+                    truncated: s.ends_with(" …"),
                     content: Value::String(s),
                 }
             }
@@ -226,6 +261,21 @@ mod tests {
             (b.format, b.bytes, b.content),
             ("binary", 3, json!("\\x01A\\xff"))
         );
+    }
+
+    #[test]
+    fn a_big_json_frame_is_its_pretty_start_cut_at_a_line() {
+        let rows: Vec<Value> = (0..4000)
+            .map(|i| json!({"hex": format!("{i:06x}"), "alt": i}))
+            .collect();
+        let raw = serde_json::to_vec(&json!({"ac": rows})).unwrap();
+        let f = FrameView::of(&raw);
+        assert_eq!((f.format, f.bytes, f.truncated), ("json", raw.len(), true));
+        let text = f.content.as_str().unwrap();
+        assert!(text.len() <= MAX_ITEM_BYTES);
+        assert!(text.starts_with("{\n  \"ac\": [\n    {"), "{}", &text[..40]);
+        assert!(!text.ends_with('\n') && text.lines().all(|l| !l.is_empty()));
+        assert!(!FrameView::of(br#"{"a":1}"#).truncated);
     }
 
     #[test]

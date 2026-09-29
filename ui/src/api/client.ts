@@ -856,7 +856,10 @@ export interface PreviewTrace {
 export interface TraceFrameView {
   format: 'json' | 'text' | 'binary'
   bytes: number
+  /** The parsed JSON, or text; a JSON frame too big to send whole is its pretty-printed start (a string). */
   content: unknown
+  /** Only the start of the frame is in `content`. */
+  truncated?: boolean
 }
 
 /** One record (or a frame that did not decode), and what each stage made of it. */
@@ -873,6 +876,8 @@ export interface TraceStage {
   items: unknown[]
   /** Why it (or one of its outputs) was dropped at this stage. */
   dropped?: string[]
+  /** What the stage did with it that is not a drop (a static identity kept, say): shown at this stage only. */
+  notes?: string[]
   /** The stage held it back (a tracker waiting for the rest of a scan). */
   held?: boolean
 }
