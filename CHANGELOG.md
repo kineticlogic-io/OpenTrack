@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Help** reads like a CODEX article: a rail with the guide choice (Operator / Administrator, with
+  their section counts) and the contents (sections open to their sub-sections; the one you're in
+  stays open), beside the guide itself, no longer inside a collapsing panel.
 - **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
   along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
 - **Track numbers are never issued twice after a restore** (#16): on start, before issuing any, the
