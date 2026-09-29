@@ -2,9 +2,17 @@
 
 ## Unreleased
 
+- **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
+  along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- SAPIENT codec: enum values inside map fields come out as names; a NaN or infinite float is `null`
+  instead of failing the whole message (#30).
+- Pipeline designer: the Decode stage shows a protobuf or plugin codec read-only (it is chosen on the
+  Transport tab) instead of letting a format replace it (#3).
+- Transport form: HTTP poll method and body, the byte order of length framing, the length field's
+  adjustment and the gRPC server's keepalive (#6).
 - **Accepting a pair suggestion** merges with hold, as a merge from the track table does:
   correlation never splits it (split or undo still can) (#12).
 - **Do not pair** in the track table, for two ticked tracks: correlation never pairs them; undoable

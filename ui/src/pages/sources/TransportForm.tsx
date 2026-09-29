@@ -33,6 +33,14 @@ const FRAMINGS: Record<string, { label: string; initial: Record<string, unknown>
   length_field: { label: 'Length field in header', initial: { type: 'length_field', offset: 0, width: 'u32', endian: 'big' } },
 }
 
+const ENDIANS: Record<string, { label: string }> = {
+  big: { label: 'Big-endian' },
+  little: { label: 'Little-endian' },
+}
+
+/** Methods offered for an HTTP poll; any other the spec holds is offered too. */
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH']
+
 const CODECS: Record<string, { label: string; initial: Codec }> = {
   json: { label: 'JSON', initial: { type: 'json' } },
   cot_xml: { label: 'Cursor-on-Target XML', initial: { type: 'cot_xml' } },
@@ -131,6 +139,24 @@ function JsonSetting({ label, value, onChange, help }: { label: string; value: u
             // Keep the last valid value; the editor marks the parse error.
           }
         }}
+      />
+    </div>
+  )
+}
+
+/** A free-text setting (an HTTP body) edited in a small code editor. */
+function TextSetting({ label, value, onChange, help, placeholder }: { label: string; value: unknown; onChange: (v: string | undefined) => void; help?: React.ReactNode; placeholder?: string }) {
+  return (
+    <div className="field wide">
+      <FieldLabel label={label} help={help} />
+      <CodeEditor
+        aria-label={label}
+        language="text"
+        value={typeof value === 'string' ? value : ''}
+        minHeight={60}
+        maxHeight={180}
+        placeholder={placeholder}
+        onChange={(t) => onChange(t === '' ? undefined : t)}
       />
     </div>
   )
@@ -447,6 +473,14 @@ export function TransportForm({
             help="Producers connected at once, 1 to 10000; more are refused. Default 64."
           />
           <Text
+            label="Keepalive (s)"
+            type="number"
+            value={transport.keepalive_secs}
+            onChange={(v) => set('keepalive_secs', num(v))}
+            placeholder="20"
+            help="Seconds between HTTP/2 keepalive pings to each connected producer. A producer that does not answer a ping within this long (at least 10 s) is disconnected, so a dead or cut-off connection frees its place. 0: no pings; otherwise 1 to 3600. Default 20."
+          />
+          <Text
             label="Max message (KiB)"
             type="number"
             value={transport.max_message_kib}
@@ -501,6 +535,27 @@ export function TransportForm({
             value={transport.headers}
             onChange={(v) => set('headers', v)}
             help={'HTTP headers sent with every poll, as a JSON object of name → value, e.g. {"Authorization": "Bearer ${env:TOKEN}"}.'}
+          />
+          <div className="field">
+            <FieldLabel
+              label="Method"
+              help="The HTTP method of each poll. Default GET. Use POST (or PUT, PATCH) for an endpoint that takes a query in the request body."
+            />
+            <Select
+              ariaLabel="HTTP method"
+              options={Object.fromEntries(
+                [...new Set([...HTTP_METHODS, String(transport.method ?? 'GET')])].map((m) => [m, { label: m }]),
+              )}
+              value={String(transport.method ?? 'GET')}
+              onChange={(m) => set('method', m === 'GET' ? undefined : m)}
+            />
+          </div>
+          <TextSetting
+            label="Body"
+            value={transport.body}
+            onChange={(v) => set('body', v)}
+            placeholder="optional, e.g. a JSON or GraphQL query"
+            help={'Sent exactly as written as the body of every poll. No Content-Type is added: set one in Headers, e.g. {"Content-Type": "application/json"}. May use ${env:NAME}. Blank: no body.'}
           />
         </>
       )}
@@ -678,14 +733,29 @@ export function TransportForm({
                 type="number"
                 value={framing.offset}
                 onChange={(v) => setFraming('offset', num(v))}
-                help="Where the length field sits, in bytes from the start of the frame. The field counts the whole frame, header included; the frame keeps its header. STANAG 4607: 2."
+                help="Where the length field sits, in bytes from the start of the frame. The field counts the whole frame, header included (unless adjusted below); the frame keeps its header. STANAG 4607: 2."
               />
               <Text
                 label="Length width"
                 value={framing.width}
                 onChange={(v) => setFraming('width', v)}
                 placeholder="u8, u16, u32"
-                help="Size of the length field: u8, u16 or u32 (1, 2 or 4 bytes); big-endian by default. STANAG 4607: u32."
+                help="Size of the length field: u8, u16 or u32 (1, 2 or 4 bytes), in the byte order below. STANAG 4607: u32."
+              />
+              <div className="field">
+                <FieldLabel
+                  label="Byte order"
+                  help="The order of the length field's bytes. Big-endian (network order, most significant byte first) is the default; little-endian puts the least significant first. A u8 field has one byte, so either reads the same. STANAG 4607: big-endian."
+                />
+                <Select ariaLabel="Length byte order" options={ENDIANS} value={String(framing.endian ?? 'big')} onChange={(e) => setFraming('endian', e)} />
+              </div>
+              <Text
+                label="Length adjustment"
+                type="number"
+                value={framing.adjust}
+                onChange={(v) => setFraming('adjust', num(v))}
+                placeholder="0"
+                help="Added to the length field's value to get the whole frame's length, for a field that counts only part of the frame: e.g. the length field's offset plus its width when it counts only the bytes after it. May be negative. A result shorter than the header up to the end of the length field is a framing error: the bytes buffered so far are dropped and counted as an error. Default 0: the field counts the whole frame."
               />
             </>
           )}
@@ -695,8 +765,17 @@ export function TransportForm({
               value={framing.width}
               onChange={(v) => setFraming('width', v)}
               placeholder="u8, u16, u32, varint"
-              help="Size of the length header before each frame: u8, u16 or u32 (1, 2 or 4 bytes; big-endian by default), or varint (protobuf-style). It counts the bytes after it and is not kept in the frame."
+              help="Size of the length header before each frame: u8, u16 or u32 (1, 2 or 4 bytes, in the byte order below), or varint (protobuf-style). It counts the bytes after it and is not kept in the frame."
             />
+          )}
+          {framing.type === 'length_prefix' && framing.width !== 'varint' && (
+            <div className="field">
+              <FieldLabel
+                label="Byte order"
+                help="The order of the length header's bytes. Big-endian (network order, most significant byte first) is the default; little-endian puts the least significant first (SAPIENT: little-endian u32). A u8 header has one byte, so either reads the same; a varint has its own order."
+              />
+              <Select ariaLabel="Prefix byte order" options={ENDIANS} value={String(framing.endian ?? 'big')} onChange={(e) => setFraming('endian', e)} />
+            </div>
           )}
         </>
       )}
