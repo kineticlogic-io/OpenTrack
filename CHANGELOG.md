@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
+  along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.

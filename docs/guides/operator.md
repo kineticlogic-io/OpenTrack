@@ -179,8 +179,10 @@ A selected track can also show:
 Passive sensors (ESM, direction finding) report a line of bearing, not a position; ELINT reports an
 area of uncertainty. OpenTrack fuses them into tracks. On the map, for the selected track only:
 - **Bearing lines:** a dashed gold line from each sensor that currently has a bearing on the track,
-  to the track. Several lines meeting at the track are a cross-fix: the sensors agree on where the
-  emitter is. A line that misses the track by a lot is weak evidence.
+  out along the bearing to the sensor's maximum range (250 km when the sensor doesn't give one),
+  inside a faint outline of its ± error wedge. The track is somewhere on or near each line: several
+  lines crossing at the track are a cross-fix, the sensors agreeing on where the emitter is. A line
+  that passes well away from the track is weak evidence.
 - **Area:** a dashed outline in the track's colour, for the area an ELINT report gave, or for the
   track's error ellipse when its long axis is over 2 km. The object is somewhere inside, most likely near
   the middle.
