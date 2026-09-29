@@ -19,5 +19,6 @@ pub mod schema;
 pub mod secrets;
 pub mod source;
 pub mod tls;
+pub mod trace;
 pub mod tracker;
 pub mod transport;

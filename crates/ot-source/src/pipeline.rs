@@ -22,6 +22,7 @@ use crate::expr::{Condition, ValueSpec, as_string};
 use crate::frame::Frame;
 use crate::mapping::{self, MapOutcome, MappingSpec, RuleKind};
 use crate::registry::{RegistryLookup, RegistryStage};
+use crate::trace::{FrameTrace, Trace};
 
 /// Everything between the transport and the observation stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -131,9 +132,15 @@ pub struct FilterSpec {
 }
 
 impl FilterSpec {
-    fn keep(&self, obs: &Value) -> bool {
-        self.keep_if.as_ref().is_none_or(|c| c.eval(obs))
-            && !self.drop_if.as_ref().is_some_and(|c| c.eval(obs))
+    /// Why the filter drops `obs`, or `None` to keep it.
+    fn verdict(&self, obs: &Value) -> Option<&'static str> {
+        if !self.keep_if.as_ref().is_none_or(|c| c.eval(obs)) {
+            Some("keep_if did not match")
+        } else if self.drop_if.as_ref().is_some_and(|c| c.eval(obs)) {
+            Some("drop_if matched")
+        } else {
+            None
+        }
     }
 }
 
@@ -179,6 +186,30 @@ impl ThrottleSpec {
                 obs.position.latitude,
                 obs.position.longitude,
             ) >= self.min_move_m
+    }
+
+    /// Why `obs` is not due, for a trace.
+    fn why_not(&self, last: Option<&LastWrite>, obs: &Observation) -> String {
+        let Some(last) = last else {
+            return "throttled".into();
+        };
+        let dt = (obs.observed_at - last.at).num_milliseconds() as f64 / 1000.0;
+        if dt < self.min_interval_secs {
+            return format!(
+                "throttled: {dt:.1} s after the last report, under the {} s minimum",
+                self.min_interval_secs
+            );
+        }
+        let moved = distance_m(
+            last.lat,
+            last.lon,
+            obs.position.latitude,
+            obs.position.longitude,
+        );
+        format!(
+            "throttled: moved {moved:.0} m in {dt:.0} s, under {} m and before the {} s heartbeat",
+            self.min_move_m, self.heartbeat_secs
+        )
     }
 }
 
@@ -391,12 +422,74 @@ impl Pipeline {
     }
 
     pub fn process(&mut self, frame: &Frame, registry: &dyn RegistryLookup) -> Output {
+        self.run_frame(frame, registry, None)
+    }
+
+    /// [`Self::process`], recording in `trace` what each stage made of the
+    /// frame while the trace has room (see [`crate::trace`]).
+    pub fn process_traced(
+        &mut self,
+        frame: &Frame,
+        registry: &dyn RegistryLookup,
+        trace: &mut Trace,
+    ) -> Output {
+        self.run_frame(frame, registry, Some(trace))
+    }
+
+    /// The stages a trace records, after the transport, in the order they
+    /// run, with the ids the UI gives them.
+    fn trace_stages(&self) -> Vec<&'static str> {
+        let s = &self.spec;
+        let mut out = vec!["decode"];
+        if !s.mapping.reject.is_empty() {
+            out.push("reject");
+        }
+        out.push("map");
+        if self.has_join() {
+            out.push("join");
+        }
+        out.push("registry");
+        for (id, on) in [
+            ("affiliation", s.affiliation.is_some()),
+            ("filter", s.filter.is_some()),
+            ("tracker", s.tracker.is_some()),
+            ("throttle", s.throttle.is_some()),
+        ] {
+            if on {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// Whether static rules feed an identity join.
+    fn has_join(&self) -> bool {
+        self.spec
+            .mapping
+            .rules
+            .iter()
+            .any(|r| r.kind == RuleKind::Static)
+    }
+
+    fn run_frame(
+        &mut self,
+        frame: &Frame,
+        registry: &dyn RegistryLookup,
+        mut trace: Option<&mut Trace>,
+    ) -> Output {
         let mut out = Output::default();
         self.counts.frames += 1;
+        let at = match trace.as_deref_mut() {
+            Some(t) => t.begin(frame, &self.trace_stages()),
+            None => None,
+        };
         let records = match self.codec.decode(frame) {
             Ok(r) => r,
             Err(e) => {
                 self.counts.decode_errors += 1;
+                if let Some(f) = traced(&mut trace, at) {
+                    f.dropped("decode", format!("decode error: {e}"));
+                }
                 out.last_error = Some(e.to_string());
                 return out;
             }
@@ -408,9 +501,21 @@ impl Pipeline {
             t.set_revisit(h.revisit_secs, h.revisit_source);
         }
         for record in records {
-            self.process_record(&record, frame.received_at, registry, &mut out);
+            let mut f = traced(&mut trace, at);
+            if let Some(f) = f.as_deref_mut() {
+                f.item("decode", || record.clone());
+            }
+            self.process_record(&record, frame.received_at, registry, &mut out, f);
         }
-        self.run_tracker(frame.received_at, false, &mut out);
+        self.run_tracker(frame.received_at, false, &mut out, trace.as_deref_mut(), at);
+        // Plots of this frame still waiting for the rest of their scan.
+        if let Some(Stage::Builtin(t)) = self.tracker.as_ref()
+            && let Some(f) = traced(&mut trace, at)
+            && t.waiting().any(|w| f.plots.contains(w))
+            && let Some(s) = f.stage("tracker")
+        {
+            s.held = true;
+        }
         out
     }
 
@@ -428,17 +533,61 @@ impl Pipeline {
     /// calls this on a timer; a dry run calls it with `force` at the end.
     pub fn flush(&mut self, now: DateTime<Utc>, force: bool) -> Output {
         let mut out = Output::default();
-        self.run_tracker(now, force, &mut out);
+        self.run_tracker(now, force, &mut out, None, None);
         out
     }
 
-    fn run_tracker(&mut self, now: DateTime<Utc>, force: bool, out: &mut Output) {
+    /// [`Self::flush`], adding the reports to the traced frames whose plots
+    /// they came from. With `force` (the end of a dry run), a traced frame
+    /// whose plots gave no report is marked so.
+    pub fn flush_traced(&mut self, now: DateTime<Utc>, force: bool, trace: &mut Trace) -> Output {
+        let mut out = Output::default();
+        self.run_tracker(now, force, &mut out, Some(trace), None);
+        if force {
+            let why = match self.tracker {
+                Some(Stage::Plugin { .. }) => {
+                    "no track report: the tracker plugin reported none while this frame was processed"
+                }
+                _ => {
+                    "no track report: the tracker has not confirmed a track from these plots (or merged them into a nearby plot, or they came too late for their scan)"
+                }
+            };
+            for f in &mut trace.frames {
+                let plots = !f.plots.is_empty();
+                if let Some(s) = f.stage("tracker")
+                    && plots
+                    && s.items.is_empty()
+                    && s.dropped.is_empty()
+                {
+                    s.dropped.push(why.to_owned());
+                }
+            }
+        }
+        out
+    }
+
+    /// Run the tracker stage. When tracing, each report is added to the
+    /// traced frame whose detection it came from (a plugin's, to the frame
+    /// being processed, `current`).
+    fn run_tracker(
+        &mut self,
+        now: DateTime<Utc>,
+        force: bool,
+        out: &mut Output,
+        mut trace: Option<&mut Trace>,
+        current: Option<usize>,
+    ) {
+        // The detection behind each report, only when tracing.
+        let mut dets: Vec<Observation> = Vec::new();
         let reports = match self.tracker.as_mut() {
             None => return,
             Some(Stage::Builtin(t)) => {
                 let force = force || t.spec().scans == crate::tracker::ScanGrouping::Frame;
                 let reports = t.run(now, force);
                 self.counts.late_plots += std::mem::take(&mut t.late);
+                if trace.is_some() {
+                    dets = reports.iter().map(|(_, d)| d.clone()).collect();
+                }
                 reports.into_iter().map(|(obs, _)| obs).collect()
             }
             Some(Stage::Plugin { tracker, version }) => match tracker.run(now, force) {
@@ -457,19 +606,34 @@ impl Pipeline {
                 }
             },
         };
-        for obs in reports {
-            self.emit(obs, out);
+        for (i, obs) in reports.into_iter().enumerate() {
+            let mut f = None;
+            if let Some(t) = trace.as_deref_mut() {
+                let at = match dets.get(i) {
+                    Some(d) => t.frames.iter().position(|f| f.plots.contains(d)),
+                    None => current,
+                };
+                f = at.and_then(|at| t.frames.get_mut(at));
+                if let Some(f) = f.as_deref_mut() {
+                    f.obs("tracker", &obs);
+                }
+            }
+            self.emit(obs, out, f);
         }
     }
 
     /// Throttle, then ship. A source track's end always ships.
-    fn emit(&mut self, obs: Observation, out: &mut Output) {
+    fn emit(&mut self, obs: Observation, out: &mut Output, trace: Option<&mut FrameTrace>) {
         if obs.state == Some(ot_core::TrackState::Dropped) {
             self.throttle.remove(&obs.source_track_key);
         } else if let Some(t) = &self.spec.throttle {
             let key = obs.source_track_key.clone();
-            if !t.due(self.throttle.get(&key), &obs) {
+            let last = self.throttle.get(&key);
+            if !t.due(last, &obs) {
                 self.counts.throttled += 1;
+                if let Some(f) = trace {
+                    f.dropped("throttle", t.why_not(last, &obs));
+                }
                 return;
             }
             self.throttle.insert(
@@ -482,6 +646,10 @@ impl Pipeline {
             );
         }
         self.counts.emitted += 1;
+        if let Some(f) = trace {
+            f.obs("throttle", &obs);
+            f.emitted.push(obs.clone());
+        }
         out.observations.push(obs);
     }
 
@@ -491,19 +659,60 @@ impl Pipeline {
         received_at: DateTime<Utc>,
         registry: &dyn RegistryLookup,
         out: &mut Output,
+        mut trace: Option<&mut FrameTrace>,
     ) {
         self.counts.records += 1;
         let mapped = match self.spec.mapping.apply(record) {
             MapOutcome::Rejected(reason) => {
+                if let Some(f) = trace {
+                    f.dropped("reject", format!("rejected: {reason}"));
+                }
                 *self.counts.rejected.entry(reason).or_default() += 1;
                 return;
             }
             MapOutcome::Unmatched => {
+                if let Some(f) = trace {
+                    f.item("reject", || record.clone());
+                    f.dropped(
+                        "map",
+                        "no mapping rule matched it (or the rule's key was empty)",
+                    );
+                }
                 self.counts.unmatched += 1;
                 return;
             }
             MapOutcome::Mapped(m) => m,
         };
+        // Where a mapped report is finalised into an observation.
+        let join = self.has_join();
+        let made = if join { "join" } else { "map" };
+        if let Some(f) = trace.as_deref_mut() {
+            f.item("reject", || record.clone());
+            for m in &mapped {
+                if m.kind == RuleKind::Static {
+                    f.item("map", || mapped_json(m));
+                    f.dropped(
+                        "join",
+                        format!(
+                            "static identity for {}: kept to fill its later reports",
+                            m.key
+                        ),
+                    );
+                } else if join {
+                    // Before the join fills it in.
+                    let before = mapping::finalize(
+                        &self.source_id,
+                        self.spec.mapping.schema_version,
+                        m,
+                        received_at,
+                    );
+                    match before {
+                        Ok(o) => f.obs("map", &o),
+                        Err(_) => f.item("map", || mapped_json(m)),
+                    }
+                }
+            }
+        }
         // Static rules first, so a record carrying both (AIS msg 19) joins
         // its own identity fields.
         for m in mapped.iter().filter(|m| m.kind == RuleKind::Static) {
@@ -546,6 +755,9 @@ impl Pipeline {
                     && let Err(e) = schema.apply(ext)
                 {
                     self.counts.invalid += 1;
+                    if let Some(f) = trace.as_deref_mut() {
+                        f.dropped(made, format!("invalid: {e}"));
+                    }
                     out.last_error = Some(e);
                     continue;
                 }
@@ -563,10 +775,16 @@ impl Pipeline {
                 Ok(v) => v,
                 Err(e) => {
                     self.counts.invalid += 1;
+                    if let Some(f) = trace.as_deref_mut() {
+                        f.dropped(made, format!("invalid: {e}"));
+                    }
                     out.last_error = Some(e.to_string());
                     continue;
                 }
             };
+            if let Some(f) = trace.as_deref_mut() {
+                f.item(made, || obs.clone());
+            }
             let stage = self
                 .spec
                 .registry
@@ -576,6 +794,9 @@ impl Pipeline {
             // Values mapped to the entity go no further than here.
             if let Some(ext) = obs.get_mut("ext").and_then(Value::as_object_mut) {
                 ext.remove(crate::registry::ENTITY_EXT);
+            }
+            if let Some(f) = trace.as_deref_mut() {
+                f.item("registry", || obs.clone());
             }
             let grade = matched.as_ref().map_or("none", |m| m.grade.as_str());
             if let Some(m) = matched {
@@ -600,34 +821,80 @@ impl Pipeline {
             *self.counts.grades.entry(grade).or_default() += 1;
             if let Some(stage) = &self.spec.affiliation {
                 stage.run(&mut obs);
+                if let Some(f) = trace.as_deref_mut() {
+                    f.item("affiliation", || obs.clone());
+                }
             }
-            if let Some(filter) = &self.spec.filter
-                && !filter.keep(&obs)
-            {
-                self.counts.filtered += 1;
-                continue;
+            if let Some(filter) = &self.spec.filter {
+                if let Some(why) = filter.verdict(&obs) {
+                    self.counts.filtered += 1;
+                    if let Some(f) = trace.as_deref_mut() {
+                        f.dropped("filter", why);
+                    }
+                    continue;
+                }
+                if let Some(f) = trace.as_deref_mut() {
+                    f.item("filter", || obs.clone());
+                }
             }
             let obs: Observation = match serde_json::from_value(obs) {
                 Ok(o) => o,
                 Err(e) => {
                     self.counts.invalid += 1;
+                    if let Some(f) = trace.as_deref_mut() {
+                        f.dropped(self.last_json_stage(), format!("invalid: {e}"));
+                    }
                     out.last_error = Some(e.to_string());
                     continue;
                 }
             };
-            if let Some(t) = self.tracker.as_mut()
-                && m.kind == RuleKind::Observation
-            {
-                self.counts.plots += 1;
-                if self.keep_plots {
-                    out.plots.push(obs.clone());
+            if let Some(t) = self.tracker.as_mut() {
+                if m.kind == RuleKind::Observation {
+                    self.counts.plots += 1;
+                    if self.keep_plots {
+                        out.plots.push(obs.clone());
+                    }
+                    if let Some(f) = trace.as_deref_mut() {
+                        f.plots.push(obs.clone());
+                    }
+                    t.push(obs, received_at);
+                    continue;
                 }
-                t.push(obs, received_at);
-                continue;
+                // A report with its own identity passes the tracker by.
+                if let Some(f) = trace.as_deref_mut() {
+                    f.obs("tracker", &obs);
+                }
             }
-            self.emit(obs, out);
+            self.emit(obs, out, trace.as_deref_mut());
         }
     }
+
+    /// The last stage working on an observation's JSON form.
+    fn last_json_stage(&self) -> &'static str {
+        if self.spec.filter.is_some() {
+            "filter"
+        } else if self.spec.affiliation.is_some() {
+            "affiliation"
+        } else {
+            "registry"
+        }
+    }
+}
+
+/// A frame's trace, if it is being traced.
+fn traced<'a>(trace: &'a mut Option<&mut Trace>, at: Option<usize>) -> Option<&'a mut FrameTrace> {
+    trace.as_deref_mut()?.frames.get_mut(at?)
+}
+
+/// A mapping rule's output as JSON, for a trace.
+fn mapped_json(m: &mapping::Mapped) -> Value {
+    serde_json::json!({
+        "rule": m.rule,
+        "kind": m.kind,
+        "key": m.key,
+        "identifiers": m.identifiers,
+        "fields": m.fields,
+    })
 }
 
 /// Overwrite `base` with every non-null value in `newer` (static updates).
@@ -829,5 +1096,173 @@ mod tests {
         assert_eq!(p.counts.emitted, 6);
         // Nothing waits: frames are scans.
         assert!(p.flush(Utc::now(), true).observations.is_empty());
+    }
+
+    fn stage<'a>(f: &'a crate::trace::FrameTrace, id: &str) -> &'a crate::trace::StageTrace {
+        f.stages.iter().find(|s| s.id == id).expect(id)
+    }
+
+    fn radar(scans: &str) -> PipelineSpec {
+        serde_json::from_value(json!({
+            "codec": { "type": "json", "records": "plots" },
+            "mapping": {
+                "reject": [ { "reason": "no_position", "when": { "path": "lat", "exists": false } } ],
+                "rules": [
+                { "name": "plot", "key": "n",
+                  "fields": { "position.latitude": "lat", "position.longitude": "lon",
+                              "observed_at": { "path": "t", "transforms": ["time"] } } }
+            ] },
+            "tracker": { "algorithm": "gnn", "confirm_hits": 2, "domain": "surface",
+                         "scans": scans, "scan_hold_secs": 60 }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_trace_follows_each_frame_through_its_stages() {
+        let reg = reg();
+        let mut spec = spec();
+        spec.throttle = None;
+        spec.filter = Some(FilterSpec {
+            keep_if: None,
+            drop_if: Some(
+                serde_json::from_value(json!({"path": "position.latitude", "gt": 33})).unwrap(),
+            ),
+        });
+        let mut p = Pipeline::new("ais", spec).unwrap();
+        let mut trace = Trace::new(5);
+        let frame = |rec: Value| Frame::new(rec.to_string().into_bytes());
+        for rec in [
+            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+            json!({"t": "pos", "id": 1, "lat": 32.0, "lon": -117.0, "ts": "2026-09-24T12:00:00Z"}),
+            json!({"t": "pos", "id": 3, "lat": 34.0, "lon": -117.0, "ts": "2026-09-24T12:00:00Z"}),
+        ] {
+            p.process_traced(&frame(rec), &reg, &mut trace);
+        }
+        p.process_traced(&Frame::new(&b"not json"[..]), &reg, &mut trace);
+        let f = &trace.frames;
+        assert_eq!(f.len(), 4);
+        let ids: Vec<&str> = f[0].stages.iter().map(|s| s.id).collect();
+        assert_eq!(
+            ids,
+            ["decode", "map", "join", "registry", "affiliation", "filter"],
+            "only the stages the pipeline has"
+        );
+        assert_eq!(f[0].frame.format, "json");
+        // A static report is kept by the join.
+        assert_eq!(stage(&f[0], "map").items[0]["kind"], "static");
+        assert!(stage(&f[0], "join").dropped[0].starts_with("static identity for 1"));
+        // A position report: joined, graded, published.
+        assert!(
+            stage(&f[1], "map").items[0].get("name").is_none(),
+            "before the join"
+        );
+        assert_eq!(stage(&f[1], "join").items[0]["name"], "EXAMPLE");
+        assert_eq!(
+            stage(&f[1], "registry").items[0]["ext"]["registry"]["grade"],
+            "exact"
+        );
+        assert_eq!(stage(&f[1], "filter").items.len(), 1);
+        assert_eq!(f[1].emitted.len(), 1);
+        // The filter drops the third, with the reason.
+        assert_eq!(stage(&f[2], "registry").items.len(), 1);
+        assert!(stage(&f[2], "filter").items.is_empty());
+        assert_eq!(stage(&f[2], "filter").dropped, ["drop_if matched"]);
+        assert!(f[2].emitted.is_empty());
+        // A frame that does not decode.
+        assert_eq!(f[3].frame.format, "text");
+        assert!(stage(&f[3], "decode").dropped[0].starts_with("decode error"));
+    }
+
+    #[test]
+    fn a_frame_with_several_records_is_followed_record_by_record() {
+        let mut p = Pipeline::new("radar", radar("frame")).unwrap();
+        let mut trace = Trace::new(5);
+        let body = json!({"plots": [
+            {"n": 1, "lat": 63.44, "lon": 10.40, "t": "2026-09-25T10:00:00Z"},
+            {"n": 2, "lon": 10.40, "t": "2026-09-25T10:00:00Z"},
+            {"n": 3, "lat": 63.45, "lon": 10.40, "t": "2026-09-25T10:00:00Z"}
+        ]});
+        p.process_traced(
+            &Frame::new(body.to_string().into_bytes()),
+            &Reg::new(),
+            &mut trace,
+        );
+        let f = &trace.frames[0];
+        assert_eq!(stage(f, "decode").items.len(), 3);
+        assert_eq!(stage(f, "reject").items.len(), 2);
+        assert_eq!(stage(f, "reject").dropped, ["rejected: no_position"]);
+        assert_eq!(stage(f, "map").items.len(), 2);
+        assert_eq!(f.plots.len(), 2);
+        // First scan: nothing confirmed yet, and nothing waits (frames are scans).
+        assert!(!stage(f, "tracker").held);
+        p.flush_traced(Utc::now(), true, &mut trace);
+        assert!(stage(&trace.frames[0], "tracker").dropped[0].starts_with("no track report"));
+    }
+
+    #[test]
+    fn a_tracker_holding_plots_for_their_scan_is_shown() {
+        let mut p = Pipeline::new("radar", radar("time")).unwrap();
+        let mut trace = Trace::new(5);
+        for s in 0..2 {
+            let body = json!({"plots": [
+                {"n": 1, "lat": 63.44, "lon": 10.40 + s as f64 * 1e-4, "t": format!("2026-09-25T10:00:0{s}Z")}
+            ]});
+            p.process_traced(
+                &Frame::new(body.to_string().into_bytes()),
+                &Reg::new(),
+                &mut trace,
+            );
+        }
+        // Each frame's scan waits for more plots of its time.
+        assert!(trace.frames.iter().all(|f| stage(f, "tracker").held));
+        let out = p.flush_traced(Utc::now(), true, &mut trace);
+        assert_eq!(out.observations.len(), 1, "confirmed on the second scan");
+        let (a, b) = (&trace.frames[0], &trace.frames[1]);
+        assert!(stage(a, "tracker").items.is_empty());
+        assert!(stage(a, "tracker").dropped[0].starts_with("no track report"));
+        assert_eq!(
+            stage(b, "tracker").items.len(),
+            1,
+            "the report goes to its plot's frame"
+        );
+        assert_eq!(b.emitted.len(), 1);
+        assert_eq!(
+            stage(b, "tracker").items[0]["source_track_key"],
+            json!(out.observations[0].source_track_key)
+        );
+    }
+
+    #[test]
+    fn tracing_is_off_unless_asked_and_changes_nothing() {
+        let reg = reg();
+        let frames: Vec<Frame> = (0..4)
+            .map(|i| {
+                Frame::new(
+                    pos(
+                        1,
+                        &format!("2026-09-24T12:0{i}:00Z"),
+                        32.0 + i as f64 * 0.01,
+                    )
+                    .to_string()
+                    .into_bytes(),
+                )
+            })
+            .collect();
+        let mut plain = Pipeline::new("ais", spec()).unwrap();
+        let mut traced = Pipeline::new("ais", spec()).unwrap();
+        let mut trace = Trace::new(2);
+        let mut none = Trace::new(0);
+        for f in &frames {
+            let a = plain.process(f, &reg).observations;
+            let b = traced.process_traced(f, &reg, &mut trace).observations;
+            assert_eq!(a, b);
+        }
+        for f in &frames {
+            traced.process_traced(f, &reg, &mut none);
+        }
+        assert!(none.frames.is_empty(), "a zero trace records nothing");
+        assert_eq!(trace.frames.len(), 2, "only the first frames");
+        assert_eq!(Trace::new(50).frames.capacity(), 0);
     }
 }
