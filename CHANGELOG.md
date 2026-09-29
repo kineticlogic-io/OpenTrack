@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### TAK output (0.5.0)
+### TAK output (0.4.1)
 
 OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (#35).
 
