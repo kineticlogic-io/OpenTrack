@@ -1,28 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { TbSearch } from 'react-icons/tb'
-import { CollapsiblePanel, Input, MDText, Tabs, Tree, type Components, type TreeNode } from 'staresdk'
-import { GUIDES, guideHeadings, helpDomId, helpHref, isGuide, parseHelpPath, renderableGuide, type GuideHeading, type GuideId } from '../../lib/help'
+import { useEffect, useMemo, type ReactNode } from 'react'
+import { Facets, MDText, type Components } from 'staresdk'
+import { GUIDES, guideHeadings, helpDomId, helpHref, isGuide, parseHelpPath, renderableGuide, type GuideId } from '../../lib/help'
 import { guideMarkdown } from './guides'
+import { HelpContents } from './HelpContents'
 import './help.css'
-
-const NO_CHECKS = new Set<string>()
-
-/** Sections (level 2) with their sub-sections (level 3) as tree nodes; the title is left out. */
-function sectionTree(headings: GuideHeading[], query: string): TreeNode[] {
-  const q = query.trim().toLowerCase()
-  const nodes: TreeNode[] = []
-  for (const h of headings) {
-    if (h.level === 2) nodes.push({ id: h.anchor, title: h.text, children: [] })
-    else if (h.level === 3 && nodes.length) nodes[nodes.length - 1].children!.push({ id: h.anchor, title: h.text })
-  }
-  const tidy = (n: TreeNode): TreeNode => (n.children?.length ? n : { id: n.id, title: n.title })
-  if (!q) return nodes.map(tidy)
-  const hit = (n: TreeNode) => n.title.toLowerCase().includes(q)
-  return nodes
-    .map((n) => (hit(n) ? n : { ...n, children: (n.children ?? []).filter(hit) }))
-    .filter((n) => hit(n) || (n.children ?? []).length > 0)
-    .map(tidy)
-}
 
 /** Where a link in a guide goes: a section here, the other guide, the repository, or the web. */
 function resolveLink(guide: GuideId, href: string): { kind: 'help'; href: string } | { kind: 'repo'; path: string } | { kind: 'web'; href: string } {
@@ -52,19 +33,16 @@ export default function HelpPage({ sub }: { sub: string }) {
   const markdown = guideMarkdown(guide)
   const headings = useMemo(() => (markdown ? guideHeadings(markdown) : []), [markdown])
   const byLine = useMemo(() => new Map(headings.map((h) => [h.line, h])), [headings])
-  const [query, setQuery] = useState('')
-  // Sections the reader opened (true) or closed (false) in the list; others follow the anchor.
-  const [toggled, setToggled] = useState<Map<string, boolean>>(() => new Map())
+  // Each guide with its number of sections, for the Guide facet.
+  const guideOptions = useMemo(
+    () =>
+      GUIDES.map((g) => {
+        const md = guideMarkdown(g.id)
+        return { value: g.id, label: g.label, count: md ? guideHeadings(md).filter((h) => h.level === 2).length : 0 }
+      }),
+    [],
+  )
 
-  // The section holding the current anchor opens in the list.
-  const parent = useMemo(() => {
-    let section: string | null = null
-    for (const h of headings) {
-      if (h.level <= 2) section = h.level === 2 ? h.anchor : null
-      if (h.anchor === anchor) return section
-    }
-    return null
-  }, [headings, anchor])
   // Scroll to the section the address names (or to the top of a guide), once it is on the page.
   useEffect(() => {
     const id = anchor ? helpDomId(guide, anchor) : `help-${guide}-top`
@@ -116,77 +94,35 @@ export default function HelpPage({ sub }: { sub: string }) {
     }
   }, [guide, byLine])
 
-  const tree = useMemo(() => sectionTree(headings, query), [headings, query])
-  const shownExpanded = useMemo(() => {
-    if (query.trim()) return new Set(tree.map((n) => n.id))
-    return new Set(tree.map((n) => n.id).filter((id) => toggled.get(`${guide}/${id}`) ?? id === parent))
-  }, [query, tree, toggled, parent, guide])
   const go = (g: GuideId, a?: string) => {
     const to = helpHref(g, a)
     // The same address again: no hashchange, so scroll here.
     if (window.location.hash === to) document.getElementById(a ? helpDomId(g, a) : `help-${g}-top`)?.scrollIntoView({ block: 'start' })
     else window.location.hash = to
   }
-  const title = GUIDES.find((g) => g.id === guide)!.label
+  const file = GUIDES.find((g) => g.id === guide)!.file
 
   return (
-    <div className="panels">
-      <Tabs aria-label="Guides" value={guide} onChange={(id) => isGuide(id) && go(id)} tabs={GUIDES.map((g) => ({ id: g.id, label: g.label }))} />
-      {markdown === null ? (
-        <CollapsiblePanel title={title}>
-          <div className="panel-body">
-            <span className="muted">
-              This build of OpenTrack has no guides. They are in the OpenTrack repository, in docs/guides/{GUIDES.find((g) => g.id === guide)!.file}.
-            </span>
-          </div>
-        </CollapsiblePanel>
-      ) : (
-        <div className="help-layout">
-          <nav className="help-nav" aria-label={`${title} sections`}>
-            <CollapsiblePanel
-              title="Contents"
-              titleActions={
-                <div className="search">
-                  <TbSearch aria-hidden />
-                  <Input
-                    aria-label="Find a section"
-                    placeholder="Find"
-                    style={{ paddingLeft: 26 }}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-              }
-            >
-              <div className="panel-body help-tree">
-                {tree.length ? (
-                  <Tree
-                    nodes={tree}
-                    selectable="single"
-                    checkedIds={NO_CHECKS}
-                    onCheckedChange={() => {}}
-                    expandedIds={shownExpanded}
-                    onExpandedChange={(id, open) => setToggled((m) => new Map(m).set(`${guide}/${id}`, open))}
-                    selectedId={anchor || null}
-                    onSelect={(id) => go(guide, id)}
-                  />
-                ) : (
-                  <span className="muted">No section matches.</span>
-                )}
-              </div>
-            </CollapsiblePanel>
-          </nav>
-          <article className="help-doc" id={`help-${guide}-top`}>
-            <CollapsiblePanel title={title}>
-              <div className="panel-body">
-                <MDText markdown={renderableGuide(markdown)} components={components} />
-              </div>
-            </CollapsiblePanel>
-          </article>
-        </div>
-      )}
+    <div className="help-layout">
+      <aside className="help-rail">
+        <Facets
+          label="Guide"
+          options={guideOptions}
+          selected={[guide]}
+          onToggle={(id) => isGuide(id) && go(id)}
+          // One guide is always open: Clear goes back to the first.
+          onClear={() => go(GUIDES[0].id)}
+        />
+        {/* Keyed by guide, so branches opened in one guide don't carry over to the other. */}
+        <HelpContents key={guide} headings={headings} current={anchor} hrefFor={(a) => helpHref(guide, a)} onOpen={(a) => go(guide, a)} />
+      </aside>
+      <article className="help-doc" id={`help-${guide}-top`}>
+        {markdown === null ? (
+          <p className="muted">This build of OpenTrack has no guides. They are in the OpenTrack repository, in docs/guides/{file}.</p>
+        ) : (
+          <MDText markdown={renderableGuide(markdown)} components={components} />
+        )}
+      </article>
     </div>
   )
 }
