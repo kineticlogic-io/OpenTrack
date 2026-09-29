@@ -23,7 +23,7 @@ pub use sidc::{Sidc, SidcStandard};
 pub use track::{
     AttributeNotice, BearingContact, Contributor, PairingType, SystemTrack, TrackKind,
 };
-pub use uid::{SiteCode, Uid, UidError};
+pub use uid::{SiteCode, Uid, UidError, highest_sequence_in};
 
 /// Version of the core schema. Extension-field schema versions are separate
 /// and admin-managed; this only moves when the fixed core changes.

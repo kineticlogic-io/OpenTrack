@@ -51,6 +51,7 @@ mod manage;
 mod nonpoint;
 mod sync;
 mod tma;
+mod uid_guard;
 mod undo;
 use crate::correlate::{self, Approach, Contribution, CorrelationSettings, Evidence, Grid, Mode};
 
@@ -70,6 +71,10 @@ pub struct EngineSettings {
     /// Correlation settings until an operator saves others (then those,
     /// reloaded while running).
     pub correlation: CorrelationSettings,
+    /// On start, also look in the NATS tracks stream for track numbers
+    /// already published, waiting at most this long for it (None: only
+    /// the database and Redis are checked).
+    pub uid_check_nats: Option<Duration>,
 }
 
 impl Default for EngineSettings {
@@ -83,6 +88,7 @@ impl Default for EngineSettings {
             stale_other: Duration::from_secs(15 * 60),
             drop_after: Duration::from_secs(6 * 3600),
             correlation: CorrelationSettings::default(),
+            uid_check_nats: None,
         }
     }
 }
@@ -645,6 +651,8 @@ impl Engine {
             engine.grid.put(uid, p.latitude, p.longitude);
         }
         engine.load_groups(stored_groups).await?;
+        // Before any UID is allocated.
+        engine.guard_uid_counter().await?;
         Ok(engine)
     }
 
@@ -2937,7 +2945,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn obs(at: DateTime<Utc>, name: &str, domain: Domain) -> Observation {
+    pub(super) fn obs(at: DateTime<Utc>, name: &str, domain: Domain) -> Observation {
         serde_json::from_value(serde_json::json!({
             "schema_version": 1, "source_id": "s", "source_track_key": "k",
             "observed_at": at, "received_at": at, "name": name,
@@ -2947,7 +2955,7 @@ mod tests {
         .unwrap()
     }
 
-    fn t0() -> DateTime<Utc> {
+    pub(super) fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 24, 12, 0, 0).unwrap()
     }
 
@@ -3091,6 +3099,22 @@ mod tests {
     }
 
     async fn engine_at(site: &str, sources: &[&str]) -> Option<(Engine, tempfile::TempDir)> {
+        let (common, dir) = test_common(site)?;
+        common.open_db().unwrap();
+        let mut e = Engine::new(common, EngineSettings::default())
+            .await
+            .unwrap();
+        // The synthetic feeds below report once a second with independent
+        // noise, so each report is new evidence.
+        e.settings.correlation.kinematic.min_interval_secs = 1.0;
+        e.sources = sources.iter().map(|s| s.to_string()).collect();
+        e.redis.ensure_obs_groups(&e.sources, GROUP).await.unwrap();
+        Some((e, dir))
+    }
+
+    /// Settings for an engine on a throwaway Redis namespace and database
+    /// (NATS unreachable); None without OT_TEST_REDIS_URL.
+    pub(super) fn test_common(site: &str) -> Option<(Common, tempfile::TempDir)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
         let dir = tempfile::tempdir().unwrap();
         let common = Common {
@@ -3122,16 +3146,7 @@ mod tests {
             obs_window_secs: 600,
             shared_db: Default::default(),
         };
-        common.open_db().unwrap();
-        let mut e = Engine::new(common, EngineSettings::default())
-            .await
-            .unwrap();
-        // The synthetic feeds below report once a second with independent
-        // noise, so each report is new evidence.
-        e.settings.correlation.kinematic.min_interval_secs = 1.0;
-        e.sources = sources.iter().map(|s| s.to_string()).collect();
-        e.redis.ensure_obs_groups(&e.sources, GROUP).await.unwrap();
-        Some((e, dir))
+        Some((common, dir))
     }
 
     /// A report from `source`/`key` at `t0 + secs`, at (lat, lon).

@@ -303,8 +303,9 @@ Everything under `<namespace>:` (`tms:` by default):
 | `tms:sync:…`, `tms:contacts:out` | Messages for other nodes, and bearings no track took, for the writer. |
 
 Redis holds nothing a person decided; it is all rebuilt from the feeds. But the live picture and
-its track numbers are there. Lose Redis, and tracks form again under new numbers. See
-[Restore](#restore).
+its track numbers are there. Lose Redis, and tracks form again under new numbers (never ones
+already issued), and the engine publishes deletes for this node's tracks left in the NATS stream.
+See [Restore](#restore).
 
 ## Users
 
@@ -737,14 +738,18 @@ The entities' revision history is not in the sheet.
    redis-cli --scan --pattern 'tms:*' | xargs -r -n 500 redis-cli del
    ```
    (use your `OT_REDIS_NAMESPACE`). Other applications' keys stay.
-4. **Mind the track numbers.** Track numbers come from a counter in the database. A backup
-   restores the counter to its value then, so numbers issued after the backup can be issued again
-   to other objects. Tracks published after the backup also stay in the NATS stream, as consumers
-   last saw them, until they age out (`OT_NATS_MAX_AGE_HOURS`). If that matters, raise the counter
-   above the highest number consumers have seen before starting, for example:
-   ```sh
-   sqlite3 data/opentrack.db "UPDATE uid_sequences SET next_sequence = 5000000 WHERE site = 'OTK'"
-   ```
+4. **Track numbers are checked on start.** Track numbers come from a counter in the database, so
+   a backup takes the counter back to its value then. Before issuing any number, the engine looks
+   for the highest number of its site code already in use: in the database (track graph, decision
+   log), in Redis (live tracks and their history) and in the NATS tracks stream (its subjects,
+   `<prefix>.tms-<UID>`). If the counter is not past it, the engine moves it on (never back), logs
+   a warning with the old and new values, and records a `uid_counter_advanced` decision saying
+   where the number was found. If NATS cannot be reached then, the engine logs that it could not
+   check the stream and relies on the database and Redis: start NATS first when restoring.
+   Tracks this node published that are no longer live (Redis lost or cleared) would otherwise stay
+   in the stream as consumers last saw them: the engine publishes a delete for each (and logs how
+   many). Subjects of other site codes, or last written by another publisher, are left
+   alone and age out (`OT_NATS_MAX_AGE_HOURS`).
 5. **Start OpenTrack.** Migrations run if the backup is from an older release. Check the Overview
    tab's **System status**.
 
