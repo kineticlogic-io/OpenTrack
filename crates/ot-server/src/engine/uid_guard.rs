@@ -269,6 +269,20 @@ impl Engine {
             "publishing deletes for this site's tracks still shown in NATS but not live here \
              (live state lost?)"
         );
+        // One decision for the lot, so the deletes are in the audit record.
+        let c = self.common.clone();
+        let listed: Vec<String> = upserts.iter().map(|u| u.to_string()).collect();
+        let decision = ot_store::Decision::new("system", "stale_tracks_deleted")
+            .reason(STALE_REASON)
+            .evidence(json!({
+                "site": self.common.site.as_str(),
+                "count": listed.len(),
+                "uids": listed,
+            }));
+        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok(c.open_db()?.record(&decision)?)
+        })
+        .await??;
         for uid in upserts {
             self.redis.retire_system_track(uid, STALE_REASON).await?;
         }
@@ -496,6 +510,17 @@ mod tests {
             })
             .collect();
         assert_eq!(deletes, [uid("UGE000000090")]);
+        let db = c.open_db().unwrap();
+        let id: i64 = db
+            .connection()
+            .query_row(
+                "SELECT id FROM decisions WHERE op = 'stale_tracks_deleted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let d = db.decision(id).unwrap().unwrap();
+        assert_eq!(d["evidence"]["uids"], json!(["UGE000000090"]));
         ot_nats::async_nats::jetstream::new(nats.client().clone())
             .delete_stream(&c.nats.stream)
             .await
