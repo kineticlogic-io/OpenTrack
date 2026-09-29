@@ -10,6 +10,11 @@ import { SettingsRow } from './SettingsRow'
 const ROLE_FIELDS = ROLES.map((name) => ({ name }))
 const asRole = (v: string | null): Role => (ROLES as readonly string[]).includes(v ?? '') ? (v as Role) : 'viewer'
 
+/** An identity provider's field, as its metadata says (read-only). */
+function FromMetadata({ value }: { value: string }) {
+  return value ? <span className="mono small">{value}</span> : <span className="muted small">Read metadata to see it</span>
+}
+
 /** Rows of value → role (the first match wins). */
 function RoleMapping({ rows, onChange, placeholder, label }: { rows: RoleMap[]; onChange: (rows: RoleMap[]) => void; placeholder: string; label: string }) {
   const set = (i: number, patch: Partial<RoleMap>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
@@ -150,7 +155,6 @@ export function SecurityPanel() {
   const { toast } = useToast()
   const [loaded, setLoaded] = useState<AuthSettingsResponse | null>(null)
   const [draft, setDraft] = useState<AuthSettings | null>(null)
-  const [metadata, setMetadata] = useState('')
   const [parsing, setParsing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -159,7 +163,6 @@ export function SecurityPanel() {
     setLoaded(r)
     const { build: _build, ...settings } = r
     setDraft(settings)
-    setMetadata(settings.saml.idp_metadata_xml)
   }
   useEffect(() => {
     api.authSettings().then(take, (e) => toast({ variant: 'error', title: 'Security', message: errorMessage(e) }))
@@ -198,8 +201,8 @@ export function SecurityPanel() {
   const parse = async () => {
     setParsing(true)
     try {
-      const m = await api.parseSamlMetadata(metadata)
-      setSaml({ idp_metadata_xml: m.idp_metadata_xml, idp_entity_id: m.idp_entity_id, sso_url: m.sso_url, signing_cert: m.signing_cert })
+      const m = await api.parseSamlMetadata(saml.idp_metadata_xml)
+      setSaml({ idp_entity_id: m.idp_entity_id, sso_url: m.sso_url, signing_cert: m.signing_cert })
       toast({ variant: 'success', title: 'Metadata read', message: m.idp_entity_id })
     } catch (e) {
       toast({ variant: 'error', title: 'Metadata not read', message: errorMessage(e) })
@@ -345,7 +348,7 @@ export function SecurityPanel() {
             <>
               <SettingsRow
                 label="Enabled"
-                hint="On: the sign-in page offers single sign-on through the identity provider below. It needs the IdP entity ID, sign-in URL and signing certificate, and OT_PUBLIC_URL. Off: SAML sign-ins are refused; accounts made by SAML stay."
+                hint="On: the sign-in page offers single sign-on through the identity provider below. It needs the identity provider's metadata and OT_PUBLIC_URL. Off: SAML sign-ins are refused; accounts made by SAML stay."
               >
                 <Toggle size="sm" aria-label="SAML enabled" value={saml.enabled} onChange={(enabled) => setSaml({ enabled })} />
               </SettingsRow>
@@ -370,24 +373,41 @@ export function SecurityPanel() {
                   </span>
                 )}
               </SettingsRow>
-              <SettingsRow label="IdP metadata" hint="Paste the identity provider's metadata XML and read it: it fills the entity ID, sign-in URL and certificate.">
+              <SettingsRow
+                label="IdP metadata"
+                hint="Paste the identity provider's metadata XML. Sign-on works from it alone: its entity ID, sign-in URL and signing certificate, shown below, are read from it when you choose Read metadata and again when you save. To change them (after a certificate rollover, say), paste new metadata."
+              >
                 <div className="stack" style={{ gap: 4, width: '100%' }}>
-                  <textarea className="plain-textarea" style={{ maxWidth: 560 }} aria-label="IdP metadata XML" rows={4} spellCheck={false} placeholder="<EntityDescriptor …>" value={metadata} onChange={(e) => setMetadata(e.target.value)} />
+                  <textarea
+                    className="plain-textarea"
+                    style={{ maxWidth: 560 }}
+                    aria-label="IdP metadata XML"
+                    rows={4}
+                    spellCheck={false}
+                    placeholder="<EntityDescriptor …>"
+                    value={saml.idp_metadata_xml}
+                    // What it says is unknown until it is read again.
+                    onChange={(e) => setSaml({ idp_metadata_xml: e.target.value, idp_entity_id: '', sso_url: '', signing_cert: '' })}
+                  />
                   <div>
-                    <Button size="sm" variant="ghost" icon={<TbFileImport />} disabled={parsing || !metadata.trim()} onClick={parse}>
+                    <Button size="sm" variant="ghost" icon={<TbFileImport />} disabled={parsing || !saml.idp_metadata_xml.trim()} onClick={parse}>
                       Read metadata
                     </Button>
                   </div>
                 </div>
               </SettingsRow>
-              <SettingsRow label="IdP entity ID" hint="The identity provider's own name for itself (the entityID in its metadata), usually a URL. Read metadata fills it; sign-on itself works from the pasted metadata, so to change the provider, paste and read its metadata again.">
-                <Input style={{ ...INPUT, width: 420 }} aria-label="IdP entity ID" value={saml.idp_entity_id} onChange={(e) => setSaml({ idp_entity_id: e.target.value })} spellCheck={false} />
+              <SettingsRow label="IdP entity ID" hint="The identity provider's own name for itself (the entityID in its metadata), usually a URL. From the metadata: paste new metadata to change it.">
+                <FromMetadata value={saml.idp_entity_id} />
               </SettingsRow>
-              <SettingsRow label="IdP sign-in URL" hint="Where users are sent to sign in (HTTP-Redirect binding).">
-                <Input style={{ ...INPUT, width: 420 }} aria-label="IdP sign-in URL" value={saml.sso_url} onChange={(e) => setSaml({ sso_url: e.target.value })} spellCheck={false} />
+              <SettingsRow label="IdP sign-in URL" hint="Where users are sent to sign in (the metadata's HTTP-Redirect sign-on). From the metadata: paste new metadata to change it.">
+                <FromMetadata value={saml.sso_url} />
               </SettingsRow>
-              <SettingsRow label="IdP signing certificate" hint="PEM or base64 DER.">
-                <textarea className="plain-textarea" style={{ maxWidth: 560 }} aria-label="IdP signing certificate" rows={3} spellCheck={false} value={saml.signing_cert} onChange={(e) => setSaml({ signing_cert: e.target.value })} />
+              <SettingsRow label="IdP signing certificate" hint="The certificate its responses must be signed with (base64 DER). From the metadata: after a rollover, paste the new metadata.">
+                {saml.signing_cert ? (
+                  <textarea className="plain-textarea" style={{ maxWidth: 560 }} aria-label="IdP signing certificate" rows={3} readOnly spellCheck={false} value={saml.signing_cert} />
+                ) : (
+                  <FromMetadata value="" />
+                )}
               </SettingsRow>
               <SettingsRow label="Role attribute" hint="The assertion attribute that carries the user's role.">
                 <Input style={{ ...INPUT, width: 200 }} aria-label="Role attribute" value={saml.role_attribute} onChange={(e) => setSaml({ role_attribute: e.target.value })} spellCheck={false} />

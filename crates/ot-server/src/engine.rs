@@ -70,6 +70,9 @@ pub struct EngineSettings {
     /// Correlation settings until an operator saves others (then those,
     /// reloaded while running).
     pub correlation: CorrelationSettings,
+    /// The approach the command line asked for (`OT_CORRELATION`), if it
+    /// did: saved settings that differ win, with a warning at start.
+    pub correlation_asked: Option<correlate::Approach>,
 }
 
 impl Default for EngineSettings {
@@ -83,6 +86,7 @@ impl Default for EngineSettings {
             stale_other: Duration::from_secs(15 * 60),
             drop_after: Duration::from_secs(6 * 3600),
             correlation: CorrelationSettings::default(),
+            correlation_asked: None,
         }
     }
 }
@@ -188,6 +192,29 @@ fn keep_identity(prev: &Observation, view: &mut Observation) {
     for (k, v) in &prev.ext {
         view.ext.entry(k.clone()).or_insert_with(|| v.clone());
     }
+}
+
+/// The warning when the command line asked for one correlation approach
+/// (`OT_CORRELATION`) but saved settings, which win, name another.
+fn overridden_approach(asked: Option<Approach>, saved: &Value) -> Option<String> {
+    use clap::ValueEnum;
+    let asked = asked?;
+    let stored = serde_json::from_value::<CorrelationSettings>(saved.clone())
+        .ok()?
+        .approach;
+    let name = |a: Approach| {
+        a.to_possible_value()
+            .map(|v| v.get_name().to_owned())
+            .unwrap_or_default()
+    };
+    (stored != asked).then(|| {
+        format!(
+            "OT_CORRELATION={} is ignored: correlation settings saved in Settings -> Correlation \
+             exist and use {}; the saved settings win (change them there)",
+            name(asked),
+            name(stored)
+        )
+    })
 }
 
 /// A decision by the engine, stamped with the correlation version.
@@ -1345,6 +1372,12 @@ impl Engine {
         let Some((version, saved, pairs)) = loaded else {
             return Ok(());
         };
+        if self.correlation_version.is_empty()
+            && let Some(saved) = &saved
+            && let Some(warning) = overridden_approach(self.settings.correlation_asked, saved)
+        {
+            tracing::warn!("{warning}");
+        }
         self.correlation_version = version;
         self.do_not_pair = pairs.into_iter().collect();
         let settings = match saved {
@@ -2962,6 +2995,31 @@ mod tests {
 
     fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 24, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn saved_correlation_settings_that_differ_from_ot_correlation_warn() {
+        let saved = |approach: Approach| {
+            let mut v = serde_json::to_value(CorrelationSettings::default()).unwrap();
+            v["approach"] = json!(approach);
+            v
+        };
+        // Not asked for, or asked for what is saved: nothing to say.
+        assert_eq!(
+            overridden_approach(None, &saved(Approach::Kinematics)),
+            None
+        );
+        assert_eq!(
+            overridden_approach(Some(Approach::Kinematics), &saved(Approach::Kinematics)),
+            None
+        );
+        let w =
+            overridden_approach(Some(Approach::Identifiers), &saved(Approach::Kinematics)).unwrap();
+        assert!(w.contains("OT_CORRELATION=identifiers is ignored"), "{w}");
+        assert!(w.contains("use kinematics;"), "{w}");
+        // Saved before the approach was a setting: its default applies.
+        let w = overridden_approach(Some(Approach::Kinematics), &json!({})).unwrap();
+        assert!(w.contains("use kinematics-metadata;"), "{w}");
     }
 
     #[test]

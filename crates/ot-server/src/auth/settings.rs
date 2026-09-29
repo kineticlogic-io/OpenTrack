@@ -171,12 +171,15 @@ pub struct AuditPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct SamlSettings {
     pub enabled: bool,
-    /// The identity provider's metadata XML (fills the next three).
+    /// The identity provider's metadata XML: sign-on works from it alone.
     pub idp_metadata_xml: String,
+    /// The next three are read from the metadata on every save and read
+    /// (see [`SamlSettings::read_metadata`]), never set on their own: what
+    /// a request carries or older settings stored is replaced.
     pub idp_entity_id: String,
     /// Where users are sent to sign in (HTTP-Redirect binding).
     pub sso_url: String,
-    /// The identity provider's signing certificate (PEM or base64 DER).
+    /// The identity provider's signing certificate (base64 DER).
     pub signing_cert: String,
     /// The assertion attribute that carries the user's role.
     pub role_attribute: String,
@@ -205,6 +208,33 @@ impl Default for SamlSettings {
             button_label: "Sign in with SSO".into(),
         }
     }
+}
+
+impl SamlSettings {
+    /// Fill the identity provider's entity id, sign-in URL and signing
+    /// certificate from the metadata; `Err` (and the three empty) when it
+    /// cannot be read. No metadata: all empty.
+    pub fn read_metadata(&mut self) -> Result<(), String> {
+        let read = if self.idp_metadata_xml.trim().is_empty() {
+            Ok(Default::default())
+        } else {
+            idp_fields(&self.idp_metadata_xml)
+        };
+        let (fields, result) = match read {
+            Ok(f) => (f, Ok(())),
+            Err(e) => (Default::default(), Err(e)),
+        };
+        (self.idp_entity_id, self.sso_url, self.signing_cert) = fields;
+        result
+    }
+}
+
+#[cfg(feature = "saml")]
+use super::saml::idp_fields;
+
+#[cfg(not(feature = "saml"))]
+fn idp_fields(_: &str) -> Result<(String, String, String), String> {
+    Err("this build has no SAML support".into())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

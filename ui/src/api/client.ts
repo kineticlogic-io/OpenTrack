@@ -983,7 +983,14 @@ function auditParams(q: AuditQuery): string {
 }
 
 export const api = {
-  status: () => get<ServerStatus>('/status'),
+  // 503 while SQLite, Redis or NATS is down: the body still says which.
+  status: async (): Promise<ServerStatus> => {
+    const res = await fetch('/api/v1/status', { headers: { 'x-opentrack-actor': ACTOR } })
+    const text = await res.text()
+    const parsed = text ? JSON.parse(text) : {}
+    if (!res.ok && !(res.status === 503 && parsed.service)) throw new ApiError(res.status, parsed.error ?? res.statusText)
+    return parsed as ServerStatus
+  },
   syncStatus: () => get<SyncStatus>('/sync/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
