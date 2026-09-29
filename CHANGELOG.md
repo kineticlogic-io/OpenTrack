@@ -2,25 +2,7 @@
 
 ## Unreleased
 
-- **Fixed:** info tips inside a modal (the pipeline designer, Add account, Add plugin…) opened behind it (#45).
-- **Pipeline designer, live preview by stage:** the Live preview pane now fills the designer's
-  height and scrolls on its own. It shows the first 5 stored samples (decoded records, in order)
-  as pretty-printed JSON as they are after the stage selected on the left: the frames they came
-  from as received (Transport, each once), the record, what Reject kept, the observation from Map
-  through Throttle, and at Publish the message as it would be published. A sample dropped on the
-  way says where and why, and a tracker holding one for its scan says so. One line of counts and
-  any errors sit above; the observations table is gone from this pane.
-  `POST /api/v1/sources/validate` takes `trace: <n>` (at most 10) and answers with `trace`, the
-  first n decoded records stage by stage; without it the response is unchanged, and ingest does no
-  tracing work.
-- **Basemap tiles:** Settings → General → **Basemap tiles** takes an XYZ raster tile URL (such as
-  `https://tiles.example/{z}/{x}/{y}.png`); the Track Management and source preview maps then show
-  those tiles instead of the country outlines. OpenTrack fetches them for the browser
-  (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in account), so the content security policy stays
-  this origin only, internal tile servers work and a key in the URL never reaches browsers. Tiles
-  are not cached on the server; browsers keep them for a day. `GET /api/v1/settings` gains
-  `basemap_tiles` (on or off) and `settings.basemap_tiles_url`, empty for anyone but an admin; the
-  decision log records only that a URL was set. stareSDK 0.1.9.
+## 0.4.2 (alpha), 2026-09-29
 
 ### TAK output
 
@@ -49,6 +31,35 @@ OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (
 - `Sidc::cot_type` in `ot-core`: SIDC to CoT type.
 - Docs: admin guide [TAK output](docs/guides/admin.md#tak-output), operator guide "In TAK",
   hardening (plaintext CoT and multicast expose the picture).
+
+### Maps, sources and the pipeline designer
+
+- **Basemap tiles:** Settings → General → **Basemap tiles** takes an XYZ raster tile URL (such as
+  `https://tiles.example/{z}/{x}/{y}.png`); the Track Management and source preview maps then show
+  those tiles instead of the country outlines. OpenTrack fetches them for the browser
+  (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in account), so the content security policy stays
+  this origin only, internal tile servers work and a key in the URL never reaches browsers. Tiles
+  are not cached on the server; browsers keep them for a day. `GET /api/v1/settings` gains
+  `basemap_tiles` (on or off) and `settings.basemap_tiles_url`, empty for anyone but an admin; the
+  decision log records only that a URL was set. stareSDK 0.1.9.
+- **Pipeline designer, live preview by stage:** the Live preview pane now fills the designer's
+  height and scrolls on its own. It shows the first 5 stored samples (decoded records, in order)
+  as pretty-printed JSON as they are after the stage selected on the left: the frames they came
+  from as received (Transport, each once), the record, what Reject kept, the observation from Map
+  through Throttle, and at Publish the message as it would be published. A sample dropped on the
+  way says where and why, and a tracker holding one for its scan says so. One line of counts and
+  any errors sit above; the observations table is gone from this pane.
+  `POST /api/v1/sources/validate` takes `trace: <n>` (at most 10) and answers with `trace`, the
+  first n decoded records stage by stage; without it the response is unchanged, and ingest does no
+  tracing work.
+- **SAPIENT MQTT demo** (#44): `docker-compose.sapient.yml` (Mosquitto, Redis, NATS),
+  `docs/examples/sapient-mqtt.json` (SAPIENT protobuf over MQTT, decoded by the `sapient` codec,
+  tracked with GNN) and `scripts/demo-sapient.sh`, which starts OpenTrack with sign-in on, acts
+  through a one-day API token for the first admin, and runs the SAPIENT simulator.
+
+### Fixes
+
+- **Fixed:** info tips inside a modal (the pipeline designer, Add account, Add plugin…) opened behind it (#45).
 
 ## 0.4.1 (alpha), 2026-09-29
 
