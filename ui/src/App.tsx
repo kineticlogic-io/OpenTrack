@@ -19,9 +19,9 @@ const HelpPage = lazy(() => import('./pages/help/HelpPage'))
 
 const VIEWS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'tracks', label: 'Track Management' },
   { id: 'sources', label: 'Sources' },
   { id: 'correlation', label: 'Correlation' },
-  { id: 'tracks', label: 'Track Management' },
   { id: 'registry', label: 'Registry' },
   { id: 'schema', label: 'Schema' },
   { id: 'settings', label: 'Settings' },

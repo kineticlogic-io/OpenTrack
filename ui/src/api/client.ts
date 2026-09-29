@@ -540,40 +540,6 @@ export interface SessionRow {
   end_reason: string | null
 }
 
-/** A row of the hash-chained audit record. */
-export interface AuditRow {
-  seq: number
-  at_ms: number
-  actor: string
-  op: string
-  outcome: 'success' | 'failure'
-  ip: string | null
-  detail: Record<string, unknown>
-  decision_id?: number
-  hash: string
-}
-
-export interface AuditQuery {
-  from_ms?: number
-  to_ms?: number
-  actor?: string
-  /** Comma-separated operations. */
-  op?: string
-  outcome?: '' | 'success' | 'failure'
-  before_seq?: number
-  limit?: number
-}
-
-export interface AuditVerify {
-  ok: boolean
-  rows: number
-  first_seq: number | null
-  last_seq: number | null
-  head_hash: string
-  anchor?: { seq: number; hash: string }
-  problems: { seq: number; problem: string }[]
-}
-
 export interface ApiTokenRow {
   jti: string
   name: string
@@ -591,7 +557,6 @@ export interface RoleMap {
 }
 
 export interface AuthSettings {
-  session_hours?: number | null
   disable_password_login: boolean
   saml: {
     enabled: boolean
@@ -607,14 +572,11 @@ export interface AuthSettings {
   }
   openstare: { enabled: boolean; api_url: string; login_url: string; role_mapping: RoleMap[] }
   client_certs: { common_name: string; user: string }[]
-  password: PasswordPolicy
-  lockout: { max_failures: number; window_minutes: number; lock_minutes: number }
-  sessions: { idle_minutes: number; admin_idle_minutes: number | null; max_per_account: number }
-  inactivity: { disable_after_days: number; exempt: string[] }
-  audit: { retention_days: number }
+  /** Break-glass accounts (emails) inactivity never turns off: Settings → Users → Never turn off. */
+  inactivity: { exempt: string[] }
 }
 
-/** Rules for local accounts' passwords (Settings → Security). */
+/** Rules for local accounts' passwords (fixed at the STIG values; `/auth/me` gives them). */
 export interface PasswordPolicy {
   min_length: number
   require_upper: boolean
@@ -629,7 +591,7 @@ export interface PasswordPolicy {
 
 /** The password rules in words, for a password field's ⓘ. */
 export function describePolicy(p: PasswordPolicy | undefined): string {
-  if (!p) return 'The password rules in Settings → Security apply.'
+  if (!p) return 'At least 15 characters, with an upper-case letter, a lower-case letter, a digit and a special character.'
   const classes = [
     p.require_upper && 'an upper-case letter',
     p.require_lower && 'a lower-case letter',
@@ -991,14 +953,6 @@ export interface EntityView {
   tracks: { uid: string; track_id: string; state: string; source_id: string; last_seen: string; notices: AttributeNotice[] }[]
 }
 
-/** An audit query as URL parameters (empty ones left out). */
-function auditParams(q: AuditQuery): string {
-  const p = new URLSearchParams()
-  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v))
-  const s = p.toString()
-  return s ? `?${s}` : ''
-}
-
 export const api = {
   // 503 while SQLite, Redis or NATS is down: the body still says which.
   status: async (): Promise<ServerStatus> => {
@@ -1116,9 +1070,6 @@ export const api = {
       `/auth/sessions${q.all ? '?all=true' : q.user ? `?user=${enc(q.user)}` : ''}`,
     ),
   endSession: (id: string) => request<unknown>('DELETE', `/auth/sessions/${enc(id)}`),
-  audit: (q: AuditQuery) => get<{ rows: AuditRow[]; next_before_seq: number | null }>(`/audit${auditParams(q)}`),
-  auditCsvUrl: (q: AuditQuery) => `/api/v1/audit${auditParams({ ...q, limit: undefined })}${auditParams(q) ? '&' : '?'}format=csv`,
-  verifyAudit: () => get<AuditVerify>('/audit/verify'),
   apiTokens: () => get<{ tokens: ApiTokenRow[] }>('/auth/api-tokens').then((r) => r.tokens),
   createApiToken: (t: { name: string; user_id?: string; days?: number }) =>
     request<{ token: string; jti: string; name: string; user: string; expires_at_ms: number }>('POST', '/auth/api-tokens', t),

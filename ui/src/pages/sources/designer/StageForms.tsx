@@ -321,7 +321,7 @@ export function TrackerForm({ value, onChange }: Props) {
   }, [value.algorithm])
   const algorithmHint =
     value.algorithm === 'plugin'
-      ? 'A tracker plugin (Settings → Plugins): its own algorithm and options.'
+      ? 'A tracker plugin (Settings → General → Plugins): its own algorithm and options.'
       : value.algorithm === 'mht'
         ? 'Multiple hypotheses: fewer false tracks in clutter, more work.'
         : 'Global nearest neighbour: the best plot-to-track assignment each scan.'

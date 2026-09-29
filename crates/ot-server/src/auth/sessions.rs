@@ -112,7 +112,7 @@ pub(super) async fn alive(
     let last = row
         .last_seen_ms
         .max(s.auth.activity.last(&row.id).unwrap_or(0));
-    if now - last > s.auth.settings().sessions.idle_ms(role) {
+    if now - last > super::stig::idle_ms(role) {
         let (id, email) = (row.id.clone(), user.email.clone());
         let ip = row.ip.clone();
         let _ = s

@@ -754,7 +754,7 @@ mod tests {
         db.publish_schema_draft("op:test").unwrap();
         db.put_app_settings(&json!({"site_name": "Garden Island"}), "op:test")
             .unwrap();
-        db.put_auth_settings(&json!({"session_hours": 8.0}))
+        db.put_auth_settings(&json!({"inactivity": {"exempt": ["ann@example.org"]}}))
             .unwrap();
         db.save_correlation_settings(&json!({"mode": "suggest"}), Decision::new("op", "c"))
             .unwrap();

@@ -77,6 +77,13 @@ pub fn export(
     actor: &str,
 ) -> ot_store::sqlite::Result<ConfigFile> {
     let mut f = db.config_snapshot()?;
+    // Sign-in settings as they are read, without any saved before the
+    // account policy was fixed.
+    if !is_empty(&f.auth_settings)
+        && let Ok(a) = serde_json::from_value::<crate::auth::AuthSettings>(f.auth_settings.clone())
+    {
+        f.auth_settings = json!(a);
+    }
     f.opentrack = env!("CARGO_PKG_VERSION").into();
     f.site_code = common.site.to_string();
     f.exported_by = actor.into();
@@ -316,11 +323,12 @@ fn check(common: &Common, f: &mut ConfigFile) -> Vec<String> {
     }
     if !is_empty(&f.auth_settings) {
         match serde_json::from_value::<crate::auth::AuthSettings>(f.auth_settings.clone()) {
-            Ok(a) => {
-                if let Err(e) = a.validate() {
-                    p.push(format!("auth_settings: {e}"));
-                }
-            }
+            Ok(a) => match a.validate() {
+                // Written as the API saves them: settings retired since
+                // (the account policy, now fixed) are dropped.
+                Ok(()) => f.auth_settings = json!(a),
+                Err(e) => p.push(format!("auth_settings: {e}")),
+            },
             Err(e) => p.push(format!("auth_settings: {e}")),
         }
     }
@@ -793,7 +801,9 @@ mod tests {
         db.set_source_enabled("aisstream", true, "op:test").unwrap();
         db.put_app_settings(&json!({"site_name": "Garden Island"}), "op:test")
             .unwrap();
-        db.put_auth_settings(&json!({"session_hours": 8.0, "lockout": {"max_failures": 5, "window_minutes": 15.0, "lock_minutes": 30.0}}))
+        // Saved before the account policy was fixed: those settings are
+        // dropped on the way out and ignored on the way in.
+        db.put_auth_settings(&json!({"session_hours": 8.0, "lockout": {"max_failures": 5, "window_minutes": 15.0, "lock_minutes": 30.0}, "inactivity": {"disable_after_days": 0.0, "exempt": ["ann@example.org"]}}))
             .unwrap();
         // Saved as the API saves them: every setting, defaults filled in.
         let correlation: crate::correlate::CorrelationSettings =
@@ -927,15 +937,27 @@ mod tests {
             .unwrap();
         assert_eq!(row.len(), 1);
         assert_eq!(row[0].actor, "ann@example.org");
+        // Retired sign-in settings are not exported...
+        assert_eq!(
+            doc["auth_settings"]["inactivity"],
+            json!({"exempt": ["ann@example.org"]})
+        );
+        assert!(doc["auth_settings"].get("lockout").is_none());
+        // ...and a file from before, which has them, still imports.
+        let mut old = doc.clone();
+        old["auth_settings"]["session_hours"] = json!(8.0);
+        old["auth_settings"]["password"] = json!({"min_length": 8});
+        old["auth_settings"]["audit"] = json!({"retention_days": 30.0});
+        let old = serde_json::to_vec(&old).unwrap();
 
         let mut dst = fresh(&b);
         assert!(
             present(&dst, &b).unwrap().is_empty(),
             "the first admin does not count"
         );
-        let done = import(&mut dst, &b, &bytes, "cli").unwrap();
+        let done = import(&mut dst, &b, &old, "cli").unwrap();
         assert_eq!(done.counts["accounts"], 2);
-        assert_eq!(done.auth_settings.session_hours, Some(8.0));
+        assert!(done.auth_settings.inactivity.exempts("ann@example.org"));
         assert!(!data_dir(&b).join("initial-admin.txt").exists());
 
         // Everything came across.
@@ -951,7 +973,9 @@ mod tests {
             dst.correlation_settings().unwrap().unwrap()["mode"],
             "suggest"
         );
-        assert_eq!(dst.auth_settings().unwrap()["session_hours"], 8.0);
+        let auth = dst.auth_settings().unwrap();
+        assert_eq!(auth["inactivity"], json!({"exempt": ["ann@example.org"]}));
+        assert!(auth.get("session_hours").is_none() && auth.get("lockout").is_none());
         assert!(
             dst.user_by_email("admin@opentrack.local")
                 .unwrap()

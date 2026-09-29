@@ -64,7 +64,7 @@ OTH-GOLD's track management sets do:
 **Plugins.** Codecs, trackers and pairing scorers of your own, beside the built-in ones. They are
 WebAssembly components run sandboxed inside OpenTrack, with only the memory, time, files and
 network an operator grants them. Or they are external programs serving the same interface over a
-socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → Plugins and
+socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → General → Plugins and
 written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
 test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
 
@@ -247,20 +247,20 @@ Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
 | `admin` | Also configure OpenTrack: sources, settings, plugins, accounts and sign-in |
 
 - **How a caller signs in:**
-  - **A password:** local accounts, PBKDF2-HMAC-SHA256 in the FIPS module (docs/security/fips.md), with a signed `ot_session` cookie. Sessions last 24 h by default.
-  - **SAML single sign-on**, as OpenStare's: paste the identity provider's metadata in Settings → Security, map its role attribute to roles, and set `OT_PUBLIC_URL`.
+  - **A password:** local accounts, PBKDF2-HMAC-SHA256 in the FIPS module (docs/security/fips.md), with a signed `ot_session` cookie. Sessions last 24 h at most.
+  - **SAML single sign-on**, as OpenStare's: paste the identity provider's metadata in Settings → Security → Single sign-on, map its role attribute to roles, and set `OT_PUBLIC_URL`.
   - **OpenStare's own sign-in**, when OpenTrack runs beside OpenStare: a browser signed in to OpenStare on the same host, or an OpenStare API token, is let in with a mapped role.
   - **An API token**, for machines: made in Settings → Users or with `opentrack user token`, sent as `Authorization: Bearer`.
   - **A client certificate** over TLS, mapped to an account in Settings → Security.
 - **The first account** is an admin, from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD`. Without them, it is `admin@opentrack.local`, with a made-up password in `initial-admin.txt` beside the database.
 - **Every change** names the account that made it in the decision log.
-- **Account policy** (Settings → Security; defaults from the DoD application security STIG, 800-53 Moderate):
+- **Account policy** (fixed at the DoD application security STIG values, 800-53 Moderate; not configurable):
   - **Passwords** (local accounts): 15 characters with upper, lower, digit and special; not one of the last 5; 8 characters changed; at most one change a day; 60 days, then changed at the next sign-in. A password an admin sets is temporary: the account must choose its own before anything else. Existing passwords keep working until they change or expire (60 days from the upgrade).
-  - **Lockout:** 3 failed sign-ins within 15 minutes lock the account for 15 minutes (0: until an admin unlocks it, in Settings → Users or `opentrack user unlock`). Every refusal says the same thing.
-  - **Sessions** are kept on the server: 15 minutes idle ends one (10 for admins; the page's own refreshes do not count), as does the session length; at most 3 per account, the oldest ends. Anyone sees and ends their own (account menu → Sessions), admins everyone's. API tokens are not sessions: they only expire. Sessions are per node.
-  - **Inactivity:** accounts not signed in for 35 days are turned off; an admin turns them on again. Break-glass accounts can be exempted.
+  - **Lockout:** 3 failed sign-ins within 15 minutes lock the account for 15 minutes (an admin can unlock it sooner, in Settings → Users or `opentrack user unlock`). Every refusal says the same thing.
+  - **Sessions** are kept on the server: 15 minutes idle ends one (10 for admins; the page's own refreshes do not count), as do 24 hours from sign-in; at most 3 per account, the oldest ends. Anyone sees and ends their own (account menu → Sessions); admins sign an account out everywhere (Settings → Users). API tokens are not sessions: they only expire. Sessions are per node.
+  - **Inactivity:** accounts not signed in for 35 days are turned off; an admin turns them on again. Break-glass accounts are exempt (Settings → Users → Never turn off).
   - After signing in, a notice gives the previous sign-in and the failed attempts since.
-- **Audit record:** every decision and every sign-in event (success and failure with reason and address, sign-out, lockout, unlock, session time-out and end, password change and expiry, accounts turned off, settings changes) in an append-only table, each row SHA-256 chained to the one before. Settings → Audit filters it, exports CSV and verifies the chain (`GET /api/v1/audit`, `/api/v1/audit/verify`, admins). A sign-in whose record cannot be written is refused. Retention is off by default (keep forever); a purge is recorded and the chain stays verifiable.
+- **Audit record:** every decision and every sign-in event (success and failure with reason and address, sign-out, lockout, unlock, session time-out and end, password change and expiry, accounts turned off, settings changes) in an append-only table, each row SHA-256 chained to the one before. Every row is also written to the server log (`audit record`, target `audit`; `OT_LOG_FORMAT=json` for a SIEM); `GET /api/v1/audit` filters it and exports CSV and `/api/v1/audit/verify` checks the chain (admins). A sign-in whose record cannot be written is refused. It is kept forever.
 - **Web hardening:** a content security policy, `nosniff`, no framing, no referrer, HSTS over TLS and `no-store` on the API, on every response. The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` over TLS or behind a TLS proxy (`OT_PUBLIC_TLS=1`).
 - **Security labels:** a fused track or group is marked with the highest classification of its sources (the order is a correlation setting, Settings → Security → Security labels), the union of their restrictions and the intersection of their releasability.
 - **Settings → Banners** can require users to accept a warning after signing in (as OpenStare's warning banner), besides the classification banner.

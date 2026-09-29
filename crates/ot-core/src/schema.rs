@@ -132,13 +132,8 @@ impl SecurityLabel {
 
 /// The classification order a fused track's label is chosen by, lowest
 /// first (settings can replace it).
-pub const DEFAULT_CLASSIFICATION_ORDER: [&str; 5] = [
-    "UNCLASSIFIED",
-    "CUI",
-    "CONFIDENTIAL",
-    "SECRET",
-    "TOP SECRET",
-];
+pub const DEFAULT_CLASSIFICATION_ORDER: [&str; 4] =
+    ["UNCLASSIFIED", "CUI", "CONFIDENTIAL", "SECRET"];
 
 /// A classification as compared: the part before any `//` caveats, upper
 /// case, `_` and `-` as spaces, spaces collapsed, and the usual
@@ -904,9 +899,12 @@ pub(crate) mod tests {
         assert_eq!(r("C"), Some(2));
         assert_eq!(r("s"), Some(3));
         assert_eq!(r("Secret//NOFORN"), Some(3));
-        assert_eq!(r("TS"), Some(4));
-        assert_eq!(r("top_secret"), Some(4));
+        // Not in the default order: ranks above every classification in it.
+        assert_eq!(r("TS"), None);
+        assert_eq!(r("top_secret"), None);
         assert_eq!(r("COSMIC TOP SECRET"), None);
+        let with_ts: Vec<String> = ["U", "S", "TS"].map(String::from).to_vec();
+        assert_eq!(classification_rank("top_secret", &with_ts), Some(2));
     }
 
     #[test]
@@ -927,7 +925,7 @@ pub(crate) mod tests {
         assert_eq!(l.classification, "S", "equals: the first");
         // An unknown classification outranks every known one.
         let odd = label("SPECIAL HANDLING", &[], None);
-        let top = label("TOP SECRET", &[], None);
+        let top = label("SECRET", &[], None);
         let l = SecurityLabel::combine([&top, &odd], &o).unwrap();
         assert_eq!(l.classification, "SPECIAL HANDLING");
         assert!(SecurityLabel::combine([], &o).is_none());
