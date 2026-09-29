@@ -43,6 +43,13 @@ curl -X POST -H 'content-type: application/json' \
      http://127.0.0.1:8090/api/v1/sources/validate
 ```
 
+Add `"trace": 5` (at most 10) to also get `trace`: the first 5 frames stage by stage, as the
+pipeline designer's live preview shows them. Each is `{"frame": {"format": "json" | "text" |
+"binary", "bytes": n, "content": …}, "stages": [{"id": "decode", "items": [...], "dropped":
+["<reason>", ...], "held": true}, ..., {"id": "publish", "items": [<message>]}]}`, with only the
+stages the pipeline has; `dropped` and `held` appear only when set, and an item over 64 KiB is cut
+to a `truncated` marker. Without `trace` the response is unchanged.
+
 ## The pipeline, in order
 
 1. **Transport** delivers frames (`websocket`, `http_poll`, `tcp_client`, `tcp_server`, `udp`, `mqtt`), with framing
