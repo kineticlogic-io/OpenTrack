@@ -115,12 +115,12 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
             </Row>
             {d.tls && (
               <>
-                <Row label="CA file" hint="PEM file, on this node, of the CA that signed the TAK Server's certificate (TAK Server's truststore CA). Empty: the system's trusted roots.">
+                <Row label="CA file" hint="PEM file, on this node, of the CA that signed the TAK Server's certificate (TAK Server's truststore CA). Empty: the system's trusted roots. Converting TAK's .p12 files: Help → Administrator guide → TAK certificates.">
                   <TextInput label="CA file" value={d.tls.ca_file} onChange={(ca_file) => setD({ tls: { ...d.tls, ca_file } })} placeholder="/etc/opentrack/tak/ca.pem" />
                 </Row>
                 <Row
                   label="Client certificate"
-                  hint="PEM certificate (chain), on this node, that OpenTrack presents to TAK Server: one TAK Server's CA issued (for example with its makeCert.sh), exported from the .p12 as PEM. TAK Server's 8089 input requires one."
+                  hint="PEM certificate (chain), on this node, that OpenTrack presents to TAK Server: one TAK Server's CA issued (for example with its makeCert.sh), exported from the .p12 as PEM. TAK Server's 8089 input requires one. Converting TAK's .p12 files: Help → Administrator guide → TAK certificates."
                 >
                   <TextInput label="Client certificate" value={d.tls.cert_file} onChange={(cert_file) => setD({ tls: { ...d.tls, cert_file } })} placeholder="/etc/opentrack/tak/opentrack.pem" />
                 </Row>
@@ -165,13 +165,13 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
             </Row>
             {d.tls && (
               <>
-                <Row label="Certificate" hint="PEM server certificate (chain), on this node, that clients check. Clients must trust its CA (in ATAK: the server's truststore).">
+                <Row label="Certificate" hint="PEM server certificate (chain), on this node, that clients check. Clients must trust its CA (in ATAK: the server's truststore). Converting TAK's .p12 files: Help → Administrator guide → TAK certificates.">
                   <TextInput label="Certificate" value={d.tls.cert_file} onChange={(cert_file) => setD({ tls: { ...d.tls, cert_file } })} placeholder="/etc/opentrack/tak/server.pem" />
                 </Row>
                 <Row label="Key" hint="PEM private key, on this node, of the certificate (keep the file readable only by OpenTrack).">
                   <TextInput label="Key" value={d.tls.key_file} onChange={(key_file) => setD({ tls: { ...d.tls, key_file } })} placeholder="/etc/opentrack/tak/server.key" />
                 </Row>
-                <Row label="Client CA" hint="PEM CA file: when set, clients must present a certificate it signed (mutual TLS, as TAK Server's 8089 does). Empty: any client that trusts the server may connect.">
+                <Row label="Client CA" hint="PEM CA file: when set, clients must present a certificate it signed (mutual TLS, as TAK Server's 8089 does). Empty: any client that trusts the server may connect. Converting TAK's .p12 files: Help → Administrator guide → TAK certificates.">
                   <TextInput label="Client CA" value={d.tls.client_ca_file} onChange={(client_ca_file) => setD({ tls: { ...d.tls, client_ca_file } })} placeholder="/etc/opentrack/tak/client-ca.pem" />
                 </Row>
                 {d.tls.client_ca_file?.trim() && (

@@ -709,10 +709,8 @@ and one of three deliveries:
 - **TAK Server**: OpenTrack connects to a TAK Server's streaming input, as a TAK client does, and
   TAK Server shares the tracks with its users. **Host**, **Port** (8089 with TLS, the usual; 8087
   plain TCP) and **TLS**: the **CA file** that signed the server's certificate (empty: the system
-  roots), the **client certificate** and **client key** TAK Server's 8089 input requires (PEM:
-  export them from the `.p12` TAK Server's `makeCert.sh` made, for example
-  `openssl pkcs12 -in opentrack.p12 -nokeys -out opentrack.pem` and `-nocerts -nodes -out opentrack.key`),
-  and an optional **server name** to check the certificate against. OpenTrack reconnects after a
+  roots), the **client certificate** and **client key** TAK Server's 8089 input requires (PEM,
+  converted from TAK's `.p12`: see [TAK certificates](#tak-certificates)), and an optional **server name** to check the certificate against. OpenTrack reconnects after a
   failure, waiting 1 s and doubling up to a minute, and sends the whole picture on every connect.
 - **Multicast**: UDP datagrams, one event each, to a **group** and **port** (TAK's SA multicast,
   `239.2.3.1:6969`, by default), with a **TTL** (1: this network only) and an optional
@@ -732,6 +730,46 @@ and one of three deliveries:
 Certificate, key and CA fields are paths on the node running the `cot` role (`${env:NAME}`
 references work, as in sources). Keys must be unencrypted PEM; keep them readable only by
 OpenTrack. All TLS runs through the node's FIPS 140-3 module, as every other link does.
+
+### TAK certificates
+
+OpenTrack reads certificates and keys as **PEM** only. TAK Server's certificate scripts
+(`makeRootCa.sh`, `makeCert.sh`) and ATAK use **PKCS#12** (`.p12`) bundles, so convert them with
+OpenSSL. OpenTrack doesn't read `.p12` files itself: the ciphers that protect most `.p12` bundles
+(RC2, 3DES, SHA-1 key derivation) are outside the FIPS module. TAK's scripts protect their
+bundles with the password `atakatak` unless you changed it.
+
+**Pushing to a TAK Server (8089).** Make a client certificate for OpenTrack on the TAK Server
+(`./makeCert.sh client opentrack`, in TAK Server's `certs` directory). If TAK Server checks
+users, authorise that certificate there. Then, on the TAK Server:
+
+```sh
+cd /opt/tak/certs/files
+openssl pkcs12 -in opentrack.p12 -clcerts -nokeys -out opentrack.pem          # client certificate
+openssl pkcs12 -in opentrack.p12 -nocerts -nodes -out opentrack.key           # its key, unencrypted
+openssl pkcs12 -in truststore-root.p12 -nokeys -out tak-ca.pem                # TAK Server's CA
+```
+
+Copy the three files to the node running the `cot` role, readable only by OpenTrack
+(`chmod 600 opentrack.key`). Set them as the output's **Client certificate**, **Client key** and
+**CA file**. OpenSSL 3 may refuse old bundles with "unsupported algorithm"; add `-legacy` to
+those commands.
+
+**ATAK and WinTAK connecting to OpenTrack (Listen for clients, with TLS).** Clients need
+OpenTrack's CA as their trust store. With a client CA set, they also need their own certificate
+from that CA. Both go to the devices as `.p12`:
+
+```sh
+# The trust store: OpenTrack's server CA, for the device's "CA certificate" / truststore.
+openssl pkcs12 -export -nokeys -in opentrack-ca.pem -out opentrack-truststore.p12 -passout pass:atakatak
+# A device's own client certificate and key (signed by the output's client CA).
+openssl pkcs12 -export -in device.pem -inkey device.key -certfile client-ca.pem \
+  -out device.p12 -passout pass:atakatak
+```
+
+A TAK Server CA works as the client CA: devices already enrolled with that TAK Server can then
+connect to OpenTrack with the certificates they have. Use `tak-ca.pem` from above as the
+output's **Client CA**.
 
 > **Plain TCP and multicast send the picture in the clear.** Anyone on the network path can read
 > every track, and anyone who can reach a plain listening output can connect. Use TLS (with client
