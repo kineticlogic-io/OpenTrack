@@ -5,6 +5,8 @@
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- **Fixed:** the image's health check failed under docker compose without TLS (`opentrack health`
+  refused the empty `OT_TLS_CERT` compose passes), so the container showed unhealthy.
 
 ## 0.4.0 (alpha), 2026-09-28
 
