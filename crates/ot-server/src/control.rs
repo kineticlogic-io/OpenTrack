@@ -97,9 +97,12 @@ pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' '
 /// Security headers on every response, the API's and the UI's: the
 /// content security policy, no MIME sniffing, no framing, no referrer, no
 /// powerful browser features, HSTS when served over TLS (here or at a
-/// proxy: `OT_PUBLIC_TLS`), and nothing from the API kept in a cache.
+/// proxy: `OT_PUBLIC_TLS`), and nothing from the API kept in a cache but
+/// basemap tiles.
 async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) -> Response {
-    let api = req.uri().path().starts_with("/api/");
+    let path = req.uri().path();
+    let api = path.starts_with("/api/");
+    let tile = path.starts_with("/api/v1/basemap/");
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     let set = |h: &mut axum::http::HeaderMap, k: &'static str, v: &'static str| {
@@ -125,7 +128,9 @@ async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) ->
             "max-age=31536000; includeSubDomains",
         );
     }
-    if api {
+    // A basemap tile is the one API answer a browser may keep (a day); its
+    // errors are not.
+    if api && !(tile && h.contains_key(CACHE_CONTROL)) {
         h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     }

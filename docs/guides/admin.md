@@ -587,7 +587,7 @@ Banners, but can't change them.
 
 | Panel | What it holds | See |
 |---|---|---|
-| **General** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. **Plugins:** codec, tracker and scorer plugins. | [Plugins](#plugins) |
+| **General** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. **Basemap tiles:** an XYZ tile URL for the maps' background (empty: the built-in country outlines; others see only whether it is on). **Plugins:** codec, tracker and scorer plugins. | [Basemap tiles](#basemap-tiles), [Plugins](#plugins) |
 | **Users**, **API tokens** | Accounts, with the break-glass ones marked **Never turn off**, and machine tokens (admins only). | [Users](#users) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
 | **Data** | Export: live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. **Purge:** retire every live track. | [Configuration export](#configuration-export), [Purge](#purge) |
@@ -596,6 +596,34 @@ Banners, but can't change them.
 | **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
 
 The General, Nodes and Banners panels share one draft: **Save** on any of them saves all three.
+
+### Basemap tiles
+
+The maps (Track Management and the source preview) draw the built-in country outlines, which need
+nothing from outside. For a full map instead, give **Settings → General → Basemap tiles** the URL
+of an XYZ raster tile server, such as `https://tiles.example/{z}/{x}/{y}.png`:
+- An absolute `http` or `https` URL of up to 2048 characters with `{z}`, `{x}` and `{y}` in it.
+  No other placeholders: `{s}` (a choice of subdomains) is refused, so give one host. No
+  `user:pass@`; a key the tile server takes can go in the query, e.g. `?key=...`.
+- The tiles are PNG, JPEG, WebP or AVIF, up to 4 MiB each. Empty turns tiles off.
+
+**OpenTrack fetches the tiles for the browser** (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in
+account), so:
+- browsers need no route to the tile server, and an internal one works;
+- the page's content security policy is unchanged (this origin only);
+- the URL, with any key in it, never reaches browsers. Only admins see it in the settings; everyone
+  else sees whether tiles are on, and the decision log records only that it was set.
+
+A tile the server doesn't have (open ocean, say) is left empty; a tile server that fails, is slow
+(10 s), redirects or sends anything but an image gives that tile a 502, logged with the server's
+host and status.
+
+**Tiles are not cached on the OpenTrack server.** Each browser keeps a tile for a day, so a room
+of operators still makes one request per tile per browser.
+
+The tile provider's terms are yours to meet, including any attribution it requires (OpenTrack
+shows none). OpenStreetMap's public tile servers forbid heavy use such as this; use a provider that
+allows it, or a tile server of your own.
 
 ## Sources and correlation
 

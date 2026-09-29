@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Basemap tiles:** Settings → General → **Basemap tiles** takes an XYZ raster tile URL (such as
+  `https://tiles.example/{z}/{x}/{y}.png`); the Track Management and source preview maps then show
+  those tiles instead of the country outlines. OpenTrack fetches them for the browser
+  (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in account), so the content security policy stays
+  this origin only, internal tile servers work and a key in the URL never reaches browsers. Tiles
+  are not cached on the server; browsers keep them for a day. `GET /api/v1/settings` gains
+  `basemap_tiles` (on or off) and `settings.basemap_tiles_url`, empty for anyone but an admin; the
+  decision log records only that a URL was set. stareSDK 0.1.9.
+
 ## 0.4.1 (alpha), 2026-09-29
 
 ### Settings, simplified

@@ -1880,4 +1880,218 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(body["saml"]["idp_entity_id"], "");
     }
+
+    /// A stand-in tile server on 127.0.0.1: `/t/{z}/{x}/{y}` answers by
+    /// zoom (5: HTML, 6: 404, 7: 500, 8: too big, 9: a redirect), else a
+    /// "PNG" naming what it was asked for.
+    async fn tile_server() -> std::net::SocketAddr {
+        use axum::extract::RawQuery;
+        async fn t(
+            Path((z, x, y)): Path<(u32, String, String)>,
+            RawQuery(q): RawQuery,
+            headers: HeaderMap,
+        ) -> Response {
+            let png = [(axum::http::header::CONTENT_TYPE, "image/png")];
+            match z {
+                5 => ([(axum::http::header::CONTENT_TYPE, "text/html")], "<html>").into_response(),
+                6 => StatusCode::NOT_FOUND.into_response(),
+                7 => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                8 => (png, vec![0u8; 4 * 1024 * 1024 + 1]).into_response(),
+                9 => (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/t/1/0/0.png")],
+                )
+                    .into_response(),
+                _ => {
+                    let ua = headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    (
+                        png,
+                        format!("tile {z}/{x}/{y}?{} {ua}", q.unwrap_or_default()),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/t/{z}/{x}/{y}", axum::routing::get(t));
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        addr
+    }
+
+    /// A GET with its status, headers and raw body.
+    async fn get_raw(
+        app: &axum::Router,
+        uri: &str,
+        auth: Option<&str>,
+    ) -> (StatusCode, HeaderMap, bytes::Bytes) {
+        let mut req =
+            Request::builder()
+                .uri(uri)
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [10, 8, 0, 1],
+                    40000,
+                ))));
+        match auth {
+            Some(a) if a.starts_with("Bearer ") => req = req.header("authorization", a),
+            Some(c) => req = req.header("cookie", c),
+            None => {}
+        }
+        let res = app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn basemap_tiles_for_every_role_and_the_url_for_admins_only() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = admin.unwrap();
+        let (st, viewer, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "v@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{viewer}");
+        let (st, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "map", "user_id": viewer["id"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{tok}");
+        let viewer = format!("Bearer {}", tok["token"].as_str().unwrap());
+
+        // Off: no tiles, and the settings say so.
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/0/0/0", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&viewer), None).await;
+        assert_eq!(body["basemap_tiles"], false, "{body}");
+
+        // Checked on save.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "basemap_tiles_url": "https://{s}.t.example/{z}/{x}/{y}.png" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"].as_str().unwrap().contains("{s}"), "{body}");
+
+        let addr = tile_server().await;
+        let url = format!("http://{addr}/t/{{z}}/{{x}}/{{y}}.png?key=sekrit");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "site_name": "Garden Island", "basemap_tiles_url": url })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["settings"]["basemap_tiles_url"], url.as_str());
+        // An admin reads the URL; a viewer only that tiles are on.
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&admin), None).await;
+        assert_eq!(
+            (
+                body["settings"]["basemap_tiles_url"].as_str(),
+                body["basemap_tiles"].as_bool()
+            ),
+            (Some(url.as_str()), Some(true))
+        );
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&viewer), None).await;
+        assert_eq!(
+            (
+                body["settings"]["basemap_tiles_url"].as_str(),
+                body["basemap_tiles"].as_bool()
+            ),
+            (Some(""), Some(true)),
+            "{body}"
+        );
+        assert_eq!(body["settings"]["site_name"], "Garden Island");
+        // Nor through the decision log, which viewers read.
+        let (st, body, _) = call(
+            &app,
+            "GET",
+            "/api/v1/decisions?op=app_settings",
+            Some(&viewer),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(!body.to_string().contains("sekrit"), "{body}");
+        // The configuration export, an admin's, keeps it.
+        let (st, _, file) = get_raw(&app, "/api/v1/export/config", Some(&admin)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&file).contains("key=sekrit"));
+
+        // A viewer's tile, fetched with the coordinates filled in.
+        let (st, h, body) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::OK, "{body:?}");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.starts_with("tile 3/2/1.png?key=sekrit OpenTrack/"),
+            "{body}"
+        );
+        assert_eq!(h["content-type"], "image/png");
+        assert_eq!(h["cache-control"], "private, max-age=86400");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert!(!h.contains_key("pragma"));
+        // Signed in only.
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        // Coordinates in bounds.
+        for bad in ["25/0/0", "2/4/0", "2/0/4", "1/a/0"] {
+            let (st, h, _) = get_raw(&app, &format!("/api/v1/basemap/{bad}"), Some(&viewer)).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(h["cache-control"], "no-store", "an error is not kept");
+        }
+        // The tile server's answers: 404 passes through; anything but an
+        // image, an error, a tile over 4 MiB or a redirect is a 502.
+        for (z, want) in [
+            (5, StatusCode::BAD_GATEWAY),
+            (6, StatusCode::NOT_FOUND),
+            (7, StatusCode::BAD_GATEWAY),
+            (8, StatusCode::BAD_GATEWAY),
+            (9, StatusCode::BAD_GATEWAY),
+        ] {
+            let (st, _, body) =
+                get_raw(&app, &format!("/api/v1/basemap/{z}/0/0"), Some(&viewer)).await;
+            assert_eq!(st, want, "zoom {z}: {body:?}");
+            assert!(!String::from_utf8_lossy(&body).contains("sekrit"));
+        }
+
+        // Off again: 404.
+        let (st, _, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "basemap_tiles_url": "" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
 }

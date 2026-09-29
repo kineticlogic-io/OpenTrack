@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use axum::Extension;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -12,7 +13,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::api::actor;
+use crate::api::{actor, sees_secrets};
+use crate::auth::AuthUser;
 use crate::control::{ApiError, AppState};
 
 pub fn routes() -> Router<AppState> {
@@ -41,6 +43,10 @@ pub struct AppSettings {
     pub history_interval_secs: Option<f64>,
     /// Sharing the picture with other OpenTrack nodes.
     pub sync: SyncSettings,
+    /// An XYZ raster tile URL template (`{z}`, `{x}`, `{y}`) for the maps'
+    /// basemap, fetched through this server (`crate::basemap`); empty: the
+    /// built-in country outlines. It may carry a key: only admins read it.
+    pub basemap_tiles_url: String,
 }
 
 /// Sharing the picture with other nodes (see `docs/multi-node.md`).
@@ -155,6 +161,78 @@ impl Default for BannerSettings {
     }
 }
 
+/// The longest basemap tile URL template accepted.
+pub const BASEMAP_URL_MAX: usize = 2048;
+
+/// The tile URL for these tile coordinates.
+pub fn fill_tile_url(template: &str, z: u32, x: u64, y: u64) -> String {
+    template
+        .replace("{z}", &z.to_string())
+        .replace("{x}", &x.to_string())
+        .replace("{y}", &y.to_string())
+}
+
+/// Check a basemap tile URL template: empty (off), or an absolute http(s)
+/// URL with `{z}`, `{x}` and `{y}`, no other placeholder and no user or
+/// password in it.
+pub(crate) fn validate_tiles_url(u: &str) -> Result<(), String> {
+    if u.is_empty() {
+        return Ok(());
+    }
+    if u.len() > BASEMAP_URL_MAX {
+        return Err(format!(
+            "basemap tiles URL is at most {BASEMAP_URL_MAX} characters"
+        ));
+    }
+    if u.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("basemap tiles URL: no spaces or control characters".into());
+    }
+    let mut rest = u;
+    while let Some(i) = rest.find(['{', '}']) {
+        let tail = &rest[i..];
+        let close = tail.strip_prefix('{').and_then(|t| t.find('}'));
+        let Some(end) = close else {
+            return Err("basemap tiles URL: an unmatched { or }".into());
+        };
+        let name = &tail[1..=end];
+        match name {
+            "z" | "x" | "y" => {}
+            "s" => {
+                return Err(
+                    "basemap tiles URL: {s} (a choice of subdomains) is not supported; give one host"
+                        .into(),
+                );
+            }
+            other => {
+                return Err(format!(
+                    "basemap tiles URL: {{{other}}} is not a placeholder OpenTrack fills; use {{z}}, {{x}} and {{y}}"
+                ));
+            }
+        }
+        rest = &tail[end + 2..];
+    }
+    for p in ["{z}", "{x}", "{y}"] {
+        if !u.contains(p) {
+            return Err(format!("basemap tiles URL: it needs {p}"));
+        }
+    }
+    let url = reqwest::Url::parse(&fill_tile_url(u, 0, 0, 0))
+        .map_err(|e| format!("basemap tiles URL: not an absolute URL ({e})"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("basemap tiles URL: http or https only".into());
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("basemap tiles URL: give the tile server's host".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(
+            "basemap tiles URL: no user or password in it (user:pass@); put a key in the query if the server takes one"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn hex_colour(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -198,7 +276,7 @@ impl AppSettings {
         if w.text.chars().count() > 20_000 {
             return Err("warning text is at most 20,000 characters".into());
         }
-        Ok(())
+        validate_tiles_url(&self.basemap_tiles_url)
     }
 }
 
@@ -214,20 +292,32 @@ async fn load(s: &AppState) -> Result<AppSettings, ApiError> {
     Ok(settings)
 }
 
-async fn get_settings(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let settings = load(&s).await?;
+/// The settings, with `basemap_tiles` (whether the maps have tiles) for
+/// everyone and the tile URL itself (it may carry a key) for admins only.
+async fn get_settings(
+    State(s): State<AppState>,
+    u: Option<Extension<AuthUser>>,
+) -> Result<Json<Value>, ApiError> {
+    let mut settings = load(&s).await?;
+    let tiles = !settings.basemap_tiles_url.is_empty();
+    if !sees_secrets(u.as_ref()) {
+        settings.basemap_tiles_url.clear();
+    }
     Ok(Json(json!({
         "settings": settings,
         "site_code": s.common.site.to_string(),
         "node_id": s.common.node_id(),
+        "basemap_tiles": tiles,
     })))
 }
 
 async fn put_settings(
     State(s): State<AppState>,
+    u: Option<Extension<AuthUser>>,
     headers: HeaderMap,
-    Json(settings): Json<AppSettings>,
+    Json(mut settings): Json<AppSettings>,
 ) -> Result<Json<Value>, ApiError> {
+    settings.basemap_tiles_url = settings.basemap_tiles_url.trim().to_owned();
     settings.validate().map_err(ApiError::unprocessable)?;
     if settings.sync.peers.contains(&s.common.site.to_string()) {
         return Err(ApiError::unprocessable(format!(
@@ -240,7 +330,7 @@ async fn put_settings(
         actor(&headers),
     );
     s.with_db(move |db| db.put_app_settings(&v, &who)).await?;
-    get_settings(State(s)).await
+    get_settings(State(s), u).await
 }
 
 /// The banner to show, unauthenticated and shaped as OpenStare's
@@ -435,4 +525,60 @@ async fn purge(
         Duration::from_secs(300),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basemap_tile_urls_are_checked() {
+        for ok in [
+            "",
+            "https://tiles.example/{z}/{x}/{y}.png",
+            "http://10.0.0.5:8080/tiles/{z}/{y}/{x}?key=abc",
+            "https://{z}.tiles.example/{x}/{y}",
+        ] {
+            assert_eq!(validate_tiles_url(ok), Ok(()), "{ok}");
+        }
+        let long = format!("https://t.example/{{z}}/{{x}}/{{y}}?k={}", "a".repeat(2048));
+        for (bad, why) in [
+            ("tiles.example/{z}/{x}/{y}.png", "absolute"),
+            ("/tiles/{z}/{x}/{y}.png", "absolute"),
+            ("ftp://tiles.example/{z}/{x}/{y}", "http or https"),
+            ("file:///{z}/{x}/{y}", "http or https"),
+            ("https://tiles.example/{z}/{x}.png", "{y}"),
+            ("https://tiles.example/{x}/{y}.png", "{z}"),
+            ("https://{s}.tiles.example/{z}/{x}/{y}.png", "{s}"),
+            ("https://tiles.example/{z}/{x}/{y}{r}.png", "{r}"),
+            ("https://tiles.example/{z}/{x}/{y.png", "unmatched"),
+            ("https://tiles.example/{z}/{x}/{y}}.png", "unmatched"),
+            (
+                "https://user:pass@tiles.example/{z}/{x}/{y}",
+                "user or password",
+            ),
+            ("https://key@tiles.example/{z}/{x}/{y}", "user or password"),
+            (" https://tiles.example/{z}/{x}/{y}", "spaces"),
+            (long.as_str(), "2048"),
+        ] {
+            let e = validate_tiles_url(bad).expect_err(bad);
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        // Checked as part of the settings, and an old document loads.
+        let old: AppSettings = serde_json::from_value(json!({"site_name": "x"})).unwrap();
+        assert_eq!(old.basemap_tiles_url, "");
+        let bad = AppSettings {
+            basemap_tiles_url: "https://t.example/{z}".into(),
+            ..AppSettings::default()
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn tile_coordinates_fill_the_template() {
+        assert_eq!(
+            fill_tile_url("https://t.example/{z}/{x}/{y}.png?z=1", 3, 5, 7),
+            "https://t.example/3/5/7.png?z=1"
+        );
+    }
 }

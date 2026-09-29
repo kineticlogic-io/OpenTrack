@@ -52,6 +52,7 @@ pub fn routes() -> Router<AppState> {
         .route("/schema/draft/publish", post(publish_schema_draft))
         .merge(crate::registry_api::routes())
         .merge(crate::settings_api::routes())
+        .merge(crate::basemap::routes())
         .merge(crate::correlation_api::routes())
         .merge(crate::sync_api::routes())
         .merge(crate::manage_api::routes())

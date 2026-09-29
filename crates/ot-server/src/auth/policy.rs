@@ -1,4 +1,5 @@
-//! The role each API path needs, in one table: reading needs a viewer,
+//! The role each API path needs, in one table: reading needs a viewer (the
+//! maps' basemap tiles, `/basemap/{z}/{x}/{y}`, too),
 //! managing tracks a track manager, and every other change an admin (a
 //! new route that writes is an admin's until it is listed here).
 
@@ -130,6 +131,9 @@ mod tests {
         assert_eq!(n(Method::POST, "/import/config"), admin);
         assert_eq!(n(Method::GET, "/tracks"), viewer);
         assert_eq!(n(Method::GET, "/sources/ais"), viewer);
+        // The maps' tiles: every signed-in role, as the maps themselves.
+        assert_eq!(n(Method::GET, "/basemap/3/2/1"), viewer);
+        assert!(!allowed_before_password_change("/basemap/3/2/1"));
         assert_eq!(n(Method::POST, "/tracks/pair"), track_manager);
         assert_eq!(n(Method::POST, "/tracks/OTK1/split"), track_manager);
         assert_eq!(n(Method::PUT, "/groups/3"), track_manager);

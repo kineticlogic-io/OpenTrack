@@ -16,6 +16,7 @@ import { TrackCard } from './TrackCard'
 import { ManagementLog } from './ManagementLog'
 import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
+import { useBasemapTiles } from '../../lib/basemap'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
 setWorkerUrl(maplibreWorkerUrl)
@@ -139,6 +140,7 @@ const distinct = (rows: TrackRow[], pick: (t: TrackRow) => string[]) => [...new 
 
 /** Every live track on a map and in a table, with the selected one's details and entity. */
 export default function TrackDbPage({ selected, onSelect }: { selected: string; onSelect: (uid: string) => void }) {
+  const tiles = useBasemapTiles()
   const { toast } = useToast()
   const [logRev, setLogRev] = useState(0)
   const [trail, setTrail] = useState<{ uid: string; points: HistoryPoint[] } | null>(null)
@@ -370,6 +372,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               selectedId={selected || null}
               onSelect={select}
               outlines={OUTLINES}
+              tiles={tiles}
               fitKey="tracks"
               fitTo={fitTo}
               height="100%"
