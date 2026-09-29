@@ -6,6 +6,7 @@ import { InfoTip } from '../../components/InfoTip'
 import { NodesPanel } from './NodesPanel'
 import { PluginsSection } from './PluginsPanel'
 import { SecurityPanel } from './SecurityPanel'
+import { TakPanel } from './TakPanel'
 import { UsersPanel } from './UsersPanel'
 import { useCan } from '../../auth/context'
 import { errorMessage } from '../../lib/format'
@@ -209,6 +210,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
           onSave={save}
         />
       )}
+      {admin && <TakPanel value={draft.tak} onChange={(tak) => setDraft({ ...draft, tak })} dirty={dirty} saving={saving} saved={saved} onSave={save} />}
 
       <CollapsiblePanel title="Data" persistKey="ot.panel.settings.data">
         <div className="panel-body">

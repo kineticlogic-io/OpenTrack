@@ -552,10 +552,33 @@ Everyone sees **Settings**; only admins change it. Operators use it for:
 - The site name, the classification and warning banners, how long position history is kept, and
   the plugins installed.
 
+## In TAK
+
+When an admin sets up a TAK output (Settings → TAK output), the tracks OpenTrack publishes also
+appear in TAK (ATAK, WinTAK, iTAK, and TAK Server's users), as the same tracks OpenStare gets:
+- Each track is a TAK marker named by its callsign or name, or its OpenTrack track number
+  (`OTK000000042`) when it has neither. Its uid is `tms-<UID>`, the id OpenStare uses.
+- Its symbol follows its SIDC, or its affiliation and domain: a hostile air track is a red air
+  symbol, an unknown track with no domain an unknown ground symbol. Designating a track here
+  changes its symbol in TAK within a few seconds.
+- Its details show course and speed, the position error as its circular error, and (when the admin
+  turned remarks on) the track number and the sources reporting it.
+- It moves as OpenTrack updates it (at most every few seconds). A track that ends, is deleted or
+  merged away, or stops being published disappears from TAK at once. A track that stops
+  reporting goes stale in TAK a minute (by default) after its last report and disappears, even
+  while OpenTrack still shows it as lost; it comes back when it reports again. TAK shows each
+  track's time as its last report, not when it was sent.
+- Only tracks: no lines of bearing, areas, history or group drawings. TAK users' own markers and
+  positions do not come back into OpenTrack.
+
 ## Common questions
 
 **Why isn't my track going to OpenStare?** Look at its card's badges: see
 [Not published](#not-published).
+
+**Why isn't my track in TAK?** TAK gets exactly the published tracks: if it is not published it is
+not in TAK either ([Not published](#not-published)). If it is published, ask an admin to check the
+TAK output's status in Settings ([In TAK](#in-tak)).
 
 **Two tracks are one ship. Pair or merge?** Merge, as a rule: one track, one number. Pair when both
 tracks must stay (two sensors' views consumers want to compare).

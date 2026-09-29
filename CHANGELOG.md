@@ -22,6 +22,34 @@
   `basemap_tiles` (on or off) and `settings.basemap_tiles_url`, empty for anyone but an admin; the
   decision log records only that a URL was set. stareSDK 0.1.9.
 
+### TAK output
+
+OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (#35).
+
+- **`opentrack cot`**, a new role (also run by `opentrack all`): reads the outbox in its own
+  consumer group (`track-cot`), so a slow TAK link never holds up NATS, and sends exactly the
+  tracks NATS gets. `OT_COT_CONSUMER`, `OT_COT_MIN_INTERVAL_SECS` (default 2 s per track;
+  identity and classification changes at once).
+- **Three deliveries, any number of outputs**, in **Settings → TAK output** (saved with the
+  instance settings as `tak`, applied within 5 s without a restart): a **TAK Server**'s streaming
+  input over TCP or TLS with a client certificate (reconnecting with backoff, the picture on every
+  connect); **UDP multicast** SA (default `239.2.3.1:6969`, TTL, interface; one event per
+  datagram); and **listening** for ATAK/WinTAK clients over TCP or TLS with optional client
+  certificates and revocation lists (each client gets the picture, then the stream; a client more
+  than 8,192 events behind is dropped). All TLS through the FIPS module.
+- **Events:** `uid` `tms-<UID>`, `type` from the SIDC (2525C with function id, 2525D identity and
+  symbol set, or a CoT type) or affiliation and domain, `how` `m-f`, `ce`/`le` from the position
+  error (`9999999` unknown), course, speed, callsign, optional remarks (track number, sources);
+  timed at the track's last report, stale 60 s (by default) after it, and re-sent every
+  half of it until then, so a track that stops reporting leaves TAK instead of looking current. Ends are `t-x-d-d` deletes with a `link`
+  to the uid and `__forcedelete`, stale at once. No label handling: tracks go out as they are.
+- **Status and metrics:** `GET /api/v1/tak/status` and the panel (state, clients, events, errors,
+  TLS or plaintext); `cot` in `/api/v1/metrics` (`sent`, `errors`, `dropped`, `clients`, per
+  output too) and a TAK output chart on the Overview.
+- `Sidc::cot_type` in `ot-core`: SIDC to CoT type.
+- Docs: admin guide [TAK output](docs/guides/admin.md#tak-output), operator guide "In TAK",
+  hardening (plaintext CoT and multicast expose the picture).
+
 ## 0.4.1 (alpha), 2026-09-29
 
 ### Settings, simplified

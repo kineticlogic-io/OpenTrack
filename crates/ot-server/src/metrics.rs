@@ -24,6 +24,10 @@ use crate::control::{ApiError, AppState};
 pub const SYSTEM: &str = "_system";
 pub const ENGINE: &str = "_engine";
 pub const WRITER: &str = "_writer";
+/// The `cot` role (TAK output): `sent`, `errors`, `dropped` (connections
+/// too slow), each also per output as `<counter>:<id>`; gauges `clients`,
+/// `clients:<id>` and `tracks`.
+pub const COT: &str = "_cot";
 
 const SAMPLE_EVERY: Duration = Duration::from_secs(15);
 /// Window for the per-source rates the topology shows.
@@ -240,6 +244,7 @@ async fn metrics(
     }
     let engine = s.redis.metrics_range(ENGINE, minutes).await?;
     let writer = s.redis.metrics_range(WRITER, minutes).await?;
+    let cot = s.redis.metrics_range(COT, minutes).await?;
     let system = s.redis.metrics_range(SYSTEM, minutes).await?;
 
     let series: Vec<Value> = (0..engine.len())
@@ -257,6 +262,7 @@ async fn metrics(
                 "emitted_by_source": emitted,
                 "engine": engine[i].1,
                 "writer": writer[i].1,
+                "cot": cot[i].1,
                 "system": system[i].1,
             })
         })
@@ -273,6 +279,7 @@ async fn metrics(
             "sources": by_source.iter().map(|(id, rows)| (id.clone(), recent(rows))).collect::<BTreeMap<_, _>>(),
             "engine": recent(&engine),
             "writer": recent(&writer),
+            "cot": recent(&cot),
         },
         "live": live,
     })))

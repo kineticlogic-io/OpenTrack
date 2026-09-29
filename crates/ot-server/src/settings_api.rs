@@ -47,6 +47,8 @@ pub struct AppSettings {
     /// basemap, fetched through this server (`crate::basemap`); empty: the
     /// built-in country outlines. It may carry a key: only admins read it.
     pub basemap_tiles_url: String,
+    /// Cursor-on-Target outputs to TAK (the `cot` role).
+    pub tak: crate::cot::settings::TakSettings,
 }
 
 /// Sharing the picture with other nodes (see `docs/multi-node.md`).
@@ -269,6 +271,7 @@ impl AppSettings {
                 ));
             }
         }
+        self.tak.check()?;
         let w = &self.warning;
         if w.enabled && w.text.trim().is_empty() {
             return Err("warning: give the text users must accept".into());

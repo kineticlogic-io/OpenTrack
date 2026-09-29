@@ -18,6 +18,7 @@ mod config_backup;
 mod control;
 mod correlate;
 mod correlation_api;
+mod cot;
 mod decisions_api;
 mod engine;
 mod fips;
@@ -63,6 +64,9 @@ enum Command {
     Serve(ServeArgs),
     /// Run the writer (Redis outbox to NATS).
     Writer(WriterArgs),
+    /// Stream the published tracks to TAK as Cursor-on-Target (the outputs
+    /// Settings → TAK output configures; idle until one is enabled).
+    Cot(cot::CotArgs),
     /// Run every enabled source (transports and pipelines).
     Sources,
     /// Run the engine (source tracks to system tracks, lifecycle).
@@ -75,12 +79,14 @@ enum Command {
     /// duplicate, cap and partition).
     Bridge(bridge::BridgeArgs),
     /// Run every role in one process: control plane, sources, engine,
-    /// writer, link.
+    /// writer, TAK output, link.
     All {
         #[command(flatten)]
         serve: ServeArgs,
         #[command(flatten)]
         writer: WriterArgs,
+        #[command(flatten)]
+        cot: cot::CotArgs,
         #[command(flatten)]
         engine: EngineArgs,
         #[command(flatten)]
@@ -260,6 +266,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Serve(args) => serve(common, args).await,
         Command::Writer(args) => run_writer(common, args).await,
+        Command::Cot(args) => {
+            common.open_db()?;
+            cot::run(common, args, shutdown_signal()).await
+        }
         Command::Sources => {
             common.open_db()?;
             plugins::start(&common).await;
@@ -271,6 +281,7 @@ async fn main() -> anyhow::Result<()> {
         Command::All {
             serve: s,
             writer: w,
+            cot: c,
             engine: e,
             link: l,
         } => {
@@ -280,6 +291,7 @@ async fn main() -> anyhow::Result<()> {
             tokio::try_join!(
                 serve(common.clone(), s),
                 run_writer(common.clone(), w),
+                cot::run(common.clone(), c, shutdown_signal()),
                 sources::run(common.clone(), shutdown_signal()),
                 link::run(common.clone(), l, shutdown_signal()),
                 run_engine(common, e),
