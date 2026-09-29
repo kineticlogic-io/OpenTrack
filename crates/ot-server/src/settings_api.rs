@@ -41,6 +41,8 @@ pub struct AppSettings {
     pub history_interval_secs: Option<f64>,
     /// Sharing the picture with other OpenTrack nodes.
     pub sync: SyncSettings,
+    /// Cursor-on-Target outputs to TAK (the `cot` role).
+    pub tak: crate::cot::settings::TakSettings,
 }
 
 /// Sharing the picture with other nodes (see `docs/multi-node.md`).
@@ -191,6 +193,7 @@ impl AppSettings {
                 ));
             }
         }
+        self.tak.check()?;
         let w = &self.warning;
         if w.enabled && w.text.trim().is_empty() {
             return Err("warning: give the text users must accept".into());

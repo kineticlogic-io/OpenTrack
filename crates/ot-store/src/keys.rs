@@ -11,6 +11,7 @@
 //! | `<ns>:thist:<uid>`                | a system track's positions (by time, retained) |
 //! | `<ns>:out`                        | stream of publish work for the writer (capped) |
 //! | `<ns>:out:ctl`                    | deletes for the writer (never trimmed)         |
+//! | `<ns>:cot:status`                 | the TAK outputs' status (expires)              |
 //! | `<ns>:metrics:<source>:<minute>`  | per-source, per-minute counters                |
 //! | `<ns>:cache:*`, `<ns>:throttle:*` | static-join cache and write throttles (TTL)    |
 
@@ -93,6 +94,12 @@ impl Keys {
     /// last wrote it (a hash of JSON by part).
     pub fn sync_status(&self) -> String {
         format!("{}:sync:status", self.ns)
+    }
+
+    /// How the TAK outputs are going, as the `cot` role last wrote it
+    /// (JSON, expiring when the role stops writing it).
+    pub fn cot_status(&self) -> String {
+        format!("{}:cot:status", self.ns)
     }
 
     /// Cached static (identity) fields of a source track, for the static join.

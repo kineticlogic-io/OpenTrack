@@ -59,6 +59,7 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         .route("/tracks/{uid}/explain", get(explain))
         .merge(crate::api::routes())
         .merge(crate::metrics::routes())
+        .merge(crate::cot::api::routes())
         .merge(crate::auth::api::routes())
         .merge(crate::decisions_api::routes())
         .merge(crate::audit_api::routes())

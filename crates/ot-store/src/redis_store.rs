@@ -491,6 +491,27 @@ impl RedisStore {
             .collect())
     }
 
+    /// Record how the TAK outputs are going, for `ttl`.
+    pub async fn put_cot_status(&self, status: &serde_json::Value, ttl: Duration) -> Result<()> {
+        redis::cmd("SET")
+            .arg(self.keys.cot_status())
+            .arg(status.to_string())
+            .arg("PX")
+            .arg(ttl.as_millis().max(1) as u64)
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// The TAK outputs' last status, if the `cot` role is writing it.
+    pub async fn cot_status(&self) -> Result<Option<serde_json::Value>> {
+        let raw: Option<String> = redis::cmd("GET")
+            .arg(self.keys.cot_status())
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
     /// Queue a contact for the writer to publish live (capped: they perish).
     pub async fn push_contact(&self, subject: &str, body: &serde_json::Value) -> Result<()> {
         let key = self.keys.contacts_out();
@@ -627,12 +648,19 @@ impl RedisStore {
 
     /// Create a consumer group on the outbox if it does not exist yet.
     pub async fn ensure_outbox_group(&self, group: &str) -> Result<()> {
+        self.ensure_outbox_group_from(group, "0").await
+    }
+
+    /// The same, a new group starting at `from`: `0` for everything the
+    /// outbox holds, `$` for only what is added from now on (a consumer that
+    /// reads the current picture itself).
+    pub async fn ensure_outbox_group_from(&self, group: &str, from: &str) -> Result<()> {
         for stream in [self.keys.outbox(), self.keys.outbox_control()] {
             let res: redis::RedisResult<String> = redis::cmd("XGROUP")
                 .arg("CREATE")
                 .arg(stream)
                 .arg(group)
-                .arg("0")
+                .arg(from)
                 .arg("MKSTREAM")
                 .query_async(&mut self.conn.clone())
                 .await;
