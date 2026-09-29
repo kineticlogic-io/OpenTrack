@@ -166,6 +166,8 @@ export interface CorrelationSettings {
     process_noise_mps2: number
     speed_sigma_mps: number
     object_density_per_km2: number
+    /** Count live tracks within this radius (m) when denser than object_density_per_km2; 0: off. */
+    local_density_radius_m: number
     velocity_spread_mps: number
     prior_probability: number
     pair_probability: number
@@ -182,7 +184,7 @@ export interface CorrelationSettings {
   }
   gate: { base_m: number; max_extrapolation_secs: number }
   freshness_secs: number
-  split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number }
+  split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number; window_secs: number }
   output: OutputFilter
   /** A scorer plugin whose evidence takes the kinematic comparison's place. */
   scorer?: { plugin: string; options?: Record<string, unknown> } | null
@@ -998,7 +1000,14 @@ function auditParams(q: AuditQuery): string {
 }
 
 export const api = {
-  status: () => get<ServerStatus>('/status'),
+  // 503 while SQLite, Redis or NATS is down: the body still says which.
+  status: async (): Promise<ServerStatus> => {
+    const res = await fetch('/api/v1/status', { headers: { 'x-opentrack-actor': ACTOR } })
+    const text = await res.text()
+    const parsed = text ? JSON.parse(text) : {}
+    if (!res.ok && !(res.status === 503 && parsed.service)) throw new ApiError(res.status, parsed.error ?? res.statusText)
+    return parsed as ServerStatus
+  },
   syncStatus: () => get<SyncStatus>('/sync/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),

@@ -295,6 +295,43 @@ impl Nats {
         }
     }
 
+    /// The subjects the tracks stream holds matching `filter`, at most
+    /// `limit` of them (the flag: there were more). `None` when the stream
+    /// does not exist.
+    pub async fn stream_subjects(
+        &self,
+        filter: &str,
+        limit: usize,
+    ) -> Result<Option<(Vec<String>, bool)>, NatsError> {
+        use futures_util::TryStreamExt;
+        let s = match self.js.get_stream(&self.settings.stream).await {
+            Ok(s) => s,
+            Err(e)
+                if matches!(e.kind(), jetstream::context::GetStreamErrorKind::JetStream(ref je)
+                    if je.error_code() == jetstream::ErrorCode::STREAM_NOT_FOUND) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(self.stream_error(e)),
+        };
+        let mut subjects = s
+            .info_with_subjects(filter)
+            .await
+            .map_err(|e| self.stream_error(e))?;
+        let mut out = Vec::new();
+        while let Some((subject, _count)) = subjects
+            .try_next()
+            .await
+            .map_err(|e| self.stream_error(e))?
+        {
+            if out.len() == limit {
+                return Ok(Some((out, true)));
+            }
+            out.push(subject);
+        }
+        Ok(Some((out, false)))
+    }
+
     /// The latest stored message on `subject`, as (headers, body).
     pub async fn last_message(
         &self,
@@ -465,6 +502,35 @@ mod tests {
         assert!(st.connected);
         assert_eq!(st.stream_messages, Some(2));
 
+        n.js.delete_stream(&n.settings().stream).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lists_the_subjects_the_stream_holds() {
+        let Some(n) = nats().await else {
+            eprintln!("skipped: OT_TEST_NATS_URL not set");
+            return;
+        };
+        let filter = format!("{}.>", n.settings().tracks_subject);
+        assert!(n.stream_subjects(&filter, 10).await.unwrap().is_none());
+        n.ensure_stream().await.unwrap();
+        for (i, id) in ["tms-A", "tms-B", "tms-C"].iter().enumerate() {
+            n.publish(msg(&n, id, &i.to_string(), "x")).await.unwrap();
+        }
+        let (mut all, more) = n.stream_subjects(&filter, 10).await.unwrap().unwrap();
+        all.sort();
+        let t = &n.settings().tracks_subject;
+        assert_eq!(
+            all,
+            [
+                format!("{t}.tms-A"),
+                format!("{t}.tms-B"),
+                format!("{t}.tms-C")
+            ]
+        );
+        assert!(!more);
+        let (some, more) = n.stream_subjects(&filter, 2).await.unwrap().unwrap();
+        assert_eq!((some.len(), more), (2, true));
         n.js.delete_stream(&n.settings().stream).await.unwrap();
     }
 

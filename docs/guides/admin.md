@@ -248,7 +248,7 @@ pipelines").
 | `OT_ENGINE_CONSUMER` | `engine-1` | The engine's consumer name on the observation streams. |
 | `OT_CONFIRM_AFTER` | `3` | Reports a new system track needs before it is confirmed (at least 1). A source's own **Confirm after** (in its publish stage) overrides it for that source's tracks. |
 | `OT_DROP_AFTER_HOURS` | `6` | Hours without a report before a system track is dropped and deleted downstream. |
-| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones apply and this is ignored. |
+| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones win and this is ignored; the engine logs a warning at start when it is set and the saved approach differs. |
 | `OT_WRITER_CONSUMER` | `writer-1` | The writer's consumer name; unique per writer. |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | At most one publication of a track this often. Significant changes (identity, classification, state) go at once. |
 
@@ -306,8 +306,9 @@ Everything under `<namespace>:` (`tms:` by default):
 | `tms:sync:…`, `tms:contacts:out` | Messages for other nodes, and bearings no track took, for the writer. |
 
 Redis holds nothing a person decided; it is all rebuilt from the feeds. But the live picture and
-its track numbers are there. Lose Redis, and tracks form again under new numbers. See
-[Restore](#restore).
+its track numbers are there. Lose Redis, and tracks form again under new numbers (never ones
+already issued), and the engine publishes deletes for this node's tracks left in the NATS stream.
+See [Restore](#restore).
 
 ## Users
 
@@ -405,8 +406,9 @@ user passwd` also ends them (turning an account off and on again does not: its t
 ### Users panel
 
 **Settings → Users** (admins only) has two tables:
-- **Users**: email, name, role (change it in place), origin (`local` or `saml`; **SSO** means no
-  password), active, last sign-in, and the password, sign-out and delete buttons.
+- **Users**: email, name, role (change it in place; a `saml` account's comes from the identity
+  provider, see [SAML](#saml)), origin (`local` or `saml`; **SSO** means no password), active,
+  last sign-in, and the password, sign-out and delete buttons.
 - **API tokens**: name, the account it acts as, who made it, when, when it expires, and its state
   (active, expired, revoked).
 
@@ -426,9 +428,8 @@ In the **Sign-in** panel:
 - **Session length (hours):** how long a sign-in lasts, 0.25 to 720. Empty means 24.
 - **Password sign-in:** off means accounts sign in only with SAML or OpenStare. You can turn it off
   only when one of those is on, and not from a session that signed in with a password, so a working
-  way back is proven first. Note that a SAML sign-in also counts as a password-style session here:
-  turn it off while signed in through OpenStare, or with an admin's API token
-  (`PUT /api/v1/auth/settings`).
+  way back is proven first: turn it off while signed in by SAML (keeping SAML on in the same save),
+  through OpenStare, or with an admin's API token (`PUT /api/v1/auth/settings`).
 
 ### SAML
 
@@ -451,9 +452,11 @@ supported.
    - send the user's role in an attribute (in Keycloak, a role list mapper; in Entra ID, app roles,
      sent as `http://schemas.microsoft.com/ws/2008/06/identity/claims/role`).
 3. **Paste the identity provider's metadata XML** into **IdP metadata** and choose **Read
-   metadata**. It fills the IdP entity ID, sign-in URL and signing certificate. The metadata is
-   what OpenTrack uses to check sign-ons: after a certificate rollover, paste the new metadata;
-   editing the three fields alone changes nothing.
+   metadata**. The IdP entity ID, sign-in URL and signing certificate below it then show what the
+   metadata says. They are read-only: the metadata alone is what OpenTrack checks sign-ons against,
+   and the three are read from it again at every save. To change them (after a certificate
+   rollover, say), paste the new metadata. Metadata that cannot be read is refused while SAML is
+   on.
 4. **Role attribute:** the attribute's name (or friendly name), exactly as the provider sends it.
    Default `Role`.
 5. **Role mapping:** rows of attribute value → OpenTrack role. Case does not matter. The rows are
@@ -469,7 +472,10 @@ supported.
 What happens at a sign-on:
 - The first time, OpenTrack makes an account (origin `saml`, no password) with the mapped role.
 - Next time, a `saml` account takes the role the provider gives it now. If its values map to no
-  role and there is no default, it is refused.
+  role and there is no default, it is refused. The identity provider is authoritative for the
+  role: Settings → Users shows a `saml` account's role read-only, and the API refuses to change
+  it (409). To change it, change the mapping here or the user's role at the provider.
+  (`opentrack user role` on the server still can, as a break-glass, until the next sign-on.)
 - If the account with that email was made another way (a local account), the sign-on is refused:
   an identity provider never takes over a local account or its role. Use a different email for
   the local account, or delete it so SAML makes a new one.
@@ -809,14 +815,18 @@ The entities' revision history is not in the sheet.
    redis-cli --scan --pattern 'tms:*' | xargs -r -n 500 redis-cli del
    ```
    (use your `OT_REDIS_NAMESPACE`). Other applications' keys stay.
-4. **Mind the track numbers.** Track numbers come from a counter in the database. A backup
-   restores the counter to its value then, so numbers issued after the backup can be issued again
-   to other objects. Tracks published after the backup also stay in the NATS stream, as consumers
-   last saw them, until they age out (`OT_NATS_MAX_AGE_HOURS`). If that matters, raise the counter
-   above the highest number consumers have seen before starting, for example:
-   ```sh
-   sqlite3 data/opentrack.db "UPDATE uid_sequences SET next_sequence = 5000000 WHERE site = 'OTK'"
-   ```
+4. **Track numbers are checked on start.** Track numbers come from a counter in the database, so
+   a backup takes the counter back to its value then. Before issuing any number, the engine looks
+   for the highest number of its site code already in use: in the database (track graph, decision
+   log), in Redis (live tracks and their history) and in the NATS tracks stream (its subjects,
+   `<prefix>.tms-<UID>`). If the counter is not past it, the engine moves it on (never back), logs
+   a warning with the old and new values, and records a `uid_counter_advanced` decision saying
+   where the number was found. If NATS cannot be reached then, the engine logs that it could not
+   check the stream and relies on the database and Redis: start NATS first when restoring.
+   Tracks this node published that are no longer live (Redis lost or cleared) would otherwise stay
+   in the stream as consumers last saw them: the engine publishes a delete for each (and logs how
+   many). Subjects of other site codes, or last written by another publisher, are left
+   alone and age out (`OT_NATS_MAX_AGE_HOURS`).
 5. **Start OpenTrack.** Migrations run if the backup is from an older release. Check the Overview
    tab's **System status**.
 
@@ -867,8 +877,9 @@ the engine.
   answers. Use it for a container or load-balancer liveness check.
 - **`GET /api/v1/status`** (any role; use a `viewer` API token) reports each dependency with an
   `ok` flag: `sqlite` (with its schema version), `redis`, and `nats` (connected, and the stream
-  usable), plus the version, algorithm versions, site code and node id. It answers 200 even when a
-  dependency is down: check the flags.
+  usable), plus the version, algorithm versions, site code and node id. It answers 200 when all
+  three are up and 503, with the same body, when any is down, so a readiness check or monitor
+  that reads only the status code sees it; the flags say which.
 - **`GET /api/v1/sync/status`**: the link to other nodes.
 
 ### Metrics

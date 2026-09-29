@@ -948,10 +948,17 @@ mod tests {
             (StatusCode::OK, Some("raw.adsb"))
         );
 
-        // Status reports NATS as down without blocking the API.
+        // Status reports NATS as down without blocking the API: 503, with
+        // the body saying which dependency.
         let (st, body) = call(&app, "GET", "/api/v1/status", None).await;
-        assert_eq!(st, StatusCode::OK);
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["nats"]["ok"], false);
+        assert_eq!(body["sqlite"]["ok"], true);
+        assert_eq!(body["redis"]["ok"], true);
+        assert_eq!(body["service"], "opentrack");
+        // Liveness is not readiness: the process answers.
+        let (st, _) = call(&app, "GET", "/healthz", None).await;
+        assert_eq!(st, StatusCode::OK);
         assert_eq!(body["nats"]["stream"], "TRACKS");
 
         let (st, _) = call(&app, "DELETE", "/api/v1/sources/adsb-lol", None).await;

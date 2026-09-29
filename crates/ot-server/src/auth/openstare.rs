@@ -88,5 +88,6 @@ async fn ask(s: &AppState, cookie: Option<&str>, bearer: Option<&str>) -> Option
         via: Via::Openstare,
         jti: None,
         must_change: false,
+        sso: false,
     })
 }

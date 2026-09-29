@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TbArrowMerge, TbLink, TbSearch, TbTrash, TbUsersGroup, TbX } from 'react-icons/tb'
+import { TbArrowMerge, TbLink, TbLinkOff, TbSearch, TbTrash, TbUsersGroup, TbX } from 'react-icons/tb'
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, useToast, type DataTableColumn } from 'staresdk'
 import { MapView, type MapFitTo, type MapLine, type MapPoint } from 'staresdk/map-view'
+import { DEFAULT_BEARING_RANGE_M, bearingLine, bearingWedge } from '../../lib/geodesy'
 import { api, type Entity, type TrackRow } from '../../api/client'
 import { ago, errorMessage, fmtNum, STATE_COLOR } from '../../lib/format'
 import { affiliationColor } from '../../lib/palette'
@@ -224,17 +225,26 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, trailOn, trail, here?.[0], here?.[1]])
   const trailColor = row ? affiliationColor(row.affiliation) : undefined
-  // Non-point evidence of the selected track: a dashed line from each
-  // bearing's sensor to the track, and the outline of its area.
+  // Non-point evidence of the selected track: each bearing as a dashed line
+  // from its sensor out to its maximum range (the track is somewhere on or near
+  // it) with a faint outline of its ±σ wedge, and the outline of its area.
   const evidence: MapLine[] = useMemo(() => {
-    if (!selTrack || selTrack.uid !== selected || !here) return []
-    const out: MapLine[] = (selTrack.bearings ?? []).map((b) => ({
-      id: `bearing-${b.source_id}-${b.source_track_key}`,
-      coordinates: [[b.longitude, b.latitude], here],
-      color: '#d4a017',
-      width: 1.5,
-      dashed: true,
-    }))
+    if (!selTrack || selTrack.uid !== selected) return []
+    const out: MapLine[] = []
+    for (const b of selTrack.bearings ?? []) {
+      const range = b.max_range_m ?? DEFAULT_BEARING_RANGE_M
+      const id = `bearing-${b.source_id}-${b.source_track_key}`
+      if (b.sigma_deg > 0)
+        out.push({
+          id: `${id}-wedge`,
+          coordinates: bearingWedge(b.latitude, b.longitude, b.bearing_deg, b.sigma_deg, range),
+          color: '#d4a017',
+          width: 1,
+          opacity: 0.35,
+        })
+      out.push({ id, coordinates: bearingLine(b.latitude, b.longitude, b.bearing_deg, range), color: '#d4a017', width: 1.5, dashed: true })
+    }
+    if (!here) return out
     const g = selTrack.view.geometry
     let ring: [number, number][] = []
     if (g?.type === 'area') ring = g.polygon.map(([lat, lon]): [number, number] => [lon, lat])
@@ -316,6 +326,11 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       for (const from of ticked.filter((id) => id !== into)) await api.mergeTracks(from, into, true)
       setMerging(null)
       toast({ variant: 'success', title: 'Merged', message: `into ${label(byId.get(into)!)}` })
+    })
+  const doNotPair = () =>
+    run('recorded', async () => {
+      await api.doNotPair(ticked[0], ticked[1])
+      toast({ variant: 'success', title: 'Do not pair', message: tickedRows.map(label).join(', ') })
     })
   const remove = async () => {
     const ok = await confirm(
@@ -440,7 +455,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
               <span className="muted">Tick tracks to pair, merge, group or delete them.</span>
               <InfoTip label="Track management">
                 Pair: the same object, kept as separate tracks. Merge: one track survives with the others&apos; history and sources, and
-                correlation never splits it again. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
+                correlation never splits it again. Do not pair (two tracks): different objects, which correlation never pairs or merges; undo it
+                in the log below. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
                 centre. Delete: the track is deleted downstream.
               </InfoTip>
               <span className="spacer" />
@@ -469,6 +485,15 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
                 onClick={() => setMerging(ticked[0])}
               >
                 Merge
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<TbLinkOff />}
+                disabled={!canManage || busy || tickedTracks.length !== 2 || tickedGroups.length > 0}
+                onClick={doNotPair}
+              >
+                Do not pair
               </Button>
               <Button
                 size="sm"
