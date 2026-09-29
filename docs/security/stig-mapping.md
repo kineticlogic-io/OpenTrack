@@ -50,7 +50,7 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 |---|---|---|
 | F-1 | A SAML sign-in whose email matched a **local** account signed in as that account, with its role (admin even with **Allow admin** off). | **Fixed:** SAML refuses any account it didn't make ("a local account has this email", audited) |
 | F-2 | Viewers could read full source specifications, including inline credentials. | **Fixed:** for everyone but admins, passwords, tokens, header and metadata values, URL credentials and secret-named fields in transport messages read `••••••` in sources, revisions (the decision log carries no specs); `${env:…}` references stay |
-| F-3 | The IdP entity ID, sign-in URL and certificate fields in Settings → Security are display-only: sign-ons are checked against the pasted metadata. | Open (low: misleading configuration) |
+| F-3 | The IdP entity ID, sign-in URL and certificate fields in Settings → Security looked editable, but sign-ons are checked against the pasted metadata alone. | **Fixed:** the three are read-only values read from the metadata on every save and read (what older settings stored is replaced); to change them, paste new metadata |
 | F-4 | `OT_AUTH=off` and per-feed `insecure_skip_verify` exist. | **Accepted** by the product owner; excluded by the hardening checklist |
 | F-5 | The CSP allows inline styles (`style-src 'unsafe-inline'`), which React, MapLibre and CodeMirror need. | Open (low) |
 | F-6 | Client certificates were not checked for revocation. | **Fixed:** CRLs (`OT_TLS_CLIENT_CRL`), end-entity status, fail closed, hot reload. OCSP not supported |

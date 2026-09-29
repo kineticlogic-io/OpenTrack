@@ -2481,6 +2481,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "prost-types",
+ "protox",
  "sapient-rs",
  "serde_json",
  "thiserror 2.0.21",

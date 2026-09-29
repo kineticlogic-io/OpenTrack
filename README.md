@@ -385,6 +385,7 @@ Turning it on:
 | `OT_NATS_TRACKS_SUBJECT` | `tracks` | subject prefix: tracks go to `<prefix>.tms-<UID>` |
 | `OT_NATS_MAX_AGE_HOURS` | `24` | message age limit for a stream OpenTrack creates |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | per-track write coalescing |
+| `OT_CORRELATION` | `kinematics-metadata` | how tracks with no shared identifier pair until correlation settings are saved; saved settings win (a start with different ones saved logs a warning) |
 | `OT_UI_DIR` | `ui/dist` | built UI served at `/` |
 | `OT_AUTH` | `on` | `off` turns sign-in off (development only: every caller is an admin) |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | the first admin account, made when there are none |

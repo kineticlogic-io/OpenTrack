@@ -153,7 +153,10 @@ fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<ServeFile>, HeaderV
     )
 }
 
-async fn status(State(s): State<AppState>) -> Json<Value> {
+/// Every dependency's state. 503 (with the same body) when SQLite, Redis or
+/// NATS is down, so a monitor that reads only the status code sees it;
+/// `/healthz` stays liveness only.
+async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let sqlite = match s.with_db(|db| db.schema_version()).await {
         Ok(v) => json!({ "ok": true, "schema_version": v, "path": s.common.sqlite }),
         Err(e) => json!({ "ok": false, "error": e.message }),
@@ -177,7 +180,13 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         }
         Err(_) => json!({ "ok": false, "error": "timed out" }),
     };
-    Json(json!({
+    let up = [&sqlite, &redis, &nats].iter().all(|d| d["ok"] == true);
+    let code = if up {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let body = json!({
         "service": "opentrack",
         "version": env!("CARGO_PKG_VERSION"),
         "algorithms": {
@@ -192,7 +201,8 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         "sqlite": sqlite,
         "redis": redis,
         "nats": nats,
-    }))
+    });
+    (code, Json(body))
 }
 
 async fn track(

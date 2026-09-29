@@ -197,7 +197,7 @@ pub(super) async fn start_session(
     let ttl = s.auth.session_secs();
     let (token, jti, exp) = s
         .auth
-        .issue(&user, "session", ttl)
+        .issue_as(&user, "session", ttl, how == How::Saml)
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let p = &settings.password;
     let expired = how == How::Password
@@ -272,6 +272,7 @@ pub(super) async fn start_session(
         via: Via::Session,
         jti: Some((jti, exp)),
         must_change: false,
+        sso: how == How::Saml,
     };
     Ok((headers, me_value(s, &au).await?))
 }
@@ -650,6 +651,18 @@ async fn update_user(
                 ));
             }
             let before = db.user(&id)?;
+            // The identity provider is authoritative for a `saml` account's
+            // role: it is set again at every sign-on.
+            if let (Some(u), Some(r)) = (&before, b.role)
+                && u.origin == "saml"
+                && u.role != r.as_str()
+            {
+                return Err(ot_store::StoreError::Conflict(
+                    "a saml account's role comes from the identity provider's role mapping \
+                     (Settings -> Security -> SAML); change it there"
+                        .into(),
+                ));
+            }
             let u = db.update_user(&id, b.name.as_deref(), b.role.map(Role::as_str), b.active)?;
             db.record(&ot_store::Decision {
                 before: before.map(|b| json!(b)),
@@ -844,7 +857,10 @@ async fn revoke_token(
 }
 
 async fn get_settings(State(s): State<AppState>) -> Json<Value> {
-    let mut v = json!(s.auth.settings());
+    let mut settings = s.auth.settings();
+    // Shown as the metadata says, whatever older settings stored.
+    let _ = settings.saml.read_metadata();
+    let mut v = json!(settings);
     v["build"] = json!({ "saml": cfg!(feature = "saml"), "public_url": s.auth.public_url });
     Json(v)
 }
@@ -858,15 +874,25 @@ async fn put_settings(
     if let Some(o) = body.as_object_mut() {
         o.remove("build");
     }
-    let new: AuthSettings =
+    let mut new: AuthSettings =
         serde_json::from_value(body).map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    // The identity provider's entity id, sign-in URL and certificate are
+    // the metadata's: to change them, paste new metadata.
+    if let Err(e) = new.saml.read_metadata()
+        && new.saml.enabled
+    {
+        return Err(ApiError::unprocessable(format!("saml: {e}")));
+    }
     new.validate().map_err(ApiError::unprocessable)?;
     // Turning password sign-in off from a password session would lock you
-    // out if single sign-on then fails: make sure there is a way back.
-    if new.disable_password_login && me.via == Via::Session {
-        return Err(ApiError::conflict(
-            "sign in with single sign-on before turning password sign-in off",
-        ));
+    // out if single sign-on then fails: make sure there is a way back. A
+    // SAML session is that way back, while the same save keeps SAML on.
+    if new.disable_password_login && me.via == Via::Session && !(me.sso && new.saml.enabled) {
+        return Err(ApiError::conflict(if me.sso {
+            "keep SAML on while turning password sign-in off from a SAML session"
+        } else {
+            "sign in with single sign-on before turning password sign-in off"
+        }));
     }
     let before = s.auth.settings();
     let (actor, saved) = (actor(&headers), new.clone());
@@ -1491,8 +1517,8 @@ mod tests {
         .await;
         assert_eq!(
             st,
-            StatusCode::OK,
-            "idle, but not for longer than the last use"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "idle, but not for longer than the last use (and no NATS here)"
         );
         let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
         assert_eq!(st, StatusCode::OK);
@@ -1581,5 +1607,219 @@ mod tests {
             .unwrap();
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts[0].actor, "root@x.org");
+    }
+
+    /// An identity provider's metadata (the certificate is not checked
+    /// until a sign-on).
+    #[cfg(feature = "saml")]
+    const IDP_METADATA: &str = r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.org">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>MIIBexample</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.org/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>"#;
+
+    /// A `saml` account of `role`, and a session it began by single sign-on.
+    #[cfg(feature = "saml")]
+    async fn saml_session(state: &AppState, email: &str, role: &str) -> (String, String) {
+        let (e, r) = (email.to_owned(), role.to_owned());
+        let user = state
+            .with_db(move |db| {
+                db.create_user(&ot_store::NewUser {
+                    id: &crate::fips::uuid_v4(),
+                    email: &e,
+                    name: "",
+                    role: &r,
+                    password_hash: None,
+                    origin: "saml",
+                })
+            })
+            .await
+            .unwrap();
+        let id = user.id.clone();
+        let (headers, _) = start_session(state, user, &Client::default(), How::Saml)
+            .await
+            .unwrap();
+        let cookie = headers[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        (id, cookie)
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn a_saml_admin_turns_password_sign_in_off() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (st, mut settings, _) =
+            call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK);
+        settings["saml"]["enabled"] = json!(true);
+        settings["saml"]["idp_metadata_xml"] = json!(IDP_METADATA);
+        settings["disable_password_login"] = json!(true);
+        // From a password session: refused, SSO is not proven.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("sign in with single sign-on")
+        );
+        // From a SAML session: done.
+        let (_, sso) = saml_session(&state, "sso-admin@x.org", "admin").await;
+        let (st, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&sso), None).await;
+        assert_eq!((st, me["via"].as_str()), (StatusCode::OK, Some("session")));
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&sso),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["disable_password_login"], true);
+        let (st, ..) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "password sign-in is off");
+        // But not while turning SAML itself off (OpenStare on, so the
+        // settings alone would pass).
+        settings["saml"]["enabled"] = json!(false);
+        settings["openstare"]["enabled"] = json!(true);
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&sso),
+            Some(settings),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("keep SAML on"));
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn the_identity_provider_owns_a_saml_accounts_role() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (id, _) = saml_session(&state, "sso-viewer@x.org", "viewer").await;
+        let uri = format!("/api/v1/auth/users/{id}");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("identity provider"),
+            "{body}"
+        );
+        // Its name, its state, and its role unchanged are fine.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "name": "Vee", "role": "viewer", "active": true })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            (body["name"].as_str(), body["role"].as_str()),
+            (Some("Vee"), Some("viewer"))
+        );
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn the_identity_providers_fields_come_from_its_metadata() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (_, mut settings, _) =
+            call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        settings["saml"]["enabled"] = json!(true);
+        settings["saml"]["idp_metadata_xml"] = json!(IDP_METADATA);
+        // Edited fields are not what signs on: they are replaced.
+        settings["saml"]["idp_entity_id"] = json!("https://elsewhere.example.org");
+        settings["saml"]["sso_url"] = json!("");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let saml = &body["saml"];
+        assert_eq!(saml["idp_entity_id"], "https://idp.example.org");
+        assert_eq!(saml["sso_url"], "https://idp.example.org/sso");
+        assert_eq!(saml["signing_cert"], "MIIBexample");
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        assert_eq!(stored["saml"]["idp_entity_id"], "https://idp.example.org");
+        // Settings saved before this, with fields that differ, show the
+        // metadata's.
+        let mut old: AuthSettings = serde_json::from_value(stored).unwrap();
+        old.saml.idp_entity_id = "https://stale.example.org".into();
+        state.auth.set_settings(old);
+        let (_, body, _) = call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        assert_eq!(body["saml"]["idp_entity_id"], "https://idp.example.org");
+        // Metadata that cannot be read is refused while SAML is on.
+        settings["saml"]["idp_metadata_xml"] = json!("<nope/>");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with("saml: "),
+            "{body}"
+        );
+        // Off, it is kept, and the three are empty.
+        settings["saml"]["enabled"] = json!(false);
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["saml"]["idp_entity_id"], "");
     }
 }

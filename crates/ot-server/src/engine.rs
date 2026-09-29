@@ -75,6 +75,9 @@ pub struct EngineSettings {
     /// already published, waiting at most this long for it (None: only
     /// the database and Redis are checked).
     pub uid_check_nats: Option<Duration>,
+    /// The approach the command line asked for (`OT_CORRELATION`), if it
+    /// did: saved settings that differ win, with a warning at start.
+    pub correlation_asked: Option<correlate::Approach>,
 }
 
 impl Default for EngineSettings {
@@ -89,6 +92,7 @@ impl Default for EngineSettings {
             drop_after: Duration::from_secs(6 * 3600),
             correlation: CorrelationSettings::default(),
             uid_check_nats: None,
+            correlation_asked: None,
         }
     }
 }
@@ -194,6 +198,29 @@ fn keep_identity(prev: &Observation, view: &mut Observation) {
     for (k, v) in &prev.ext {
         view.ext.entry(k.clone()).or_insert_with(|| v.clone());
     }
+}
+
+/// The warning when the command line asked for one correlation approach
+/// (`OT_CORRELATION`) but saved settings, which win, name another.
+fn overridden_approach(asked: Option<Approach>, saved: &Value) -> Option<String> {
+    use clap::ValueEnum;
+    let asked = asked?;
+    let stored = serde_json::from_value::<CorrelationSettings>(saved.clone())
+        .ok()?
+        .approach;
+    let name = |a: Approach| {
+        a.to_possible_value()
+            .map(|v| v.get_name().to_owned())
+            .unwrap_or_default()
+    };
+    (stored != asked).then(|| {
+        format!(
+            "OT_CORRELATION={} is ignored: correlation settings saved in Settings -> Correlation \
+             exist and use {}; the saved settings win (change them there)",
+            name(asked),
+            name(stored)
+        )
+    })
 }
 
 /// A decision by the engine, stamped with the correlation version.
@@ -1353,6 +1380,12 @@ impl Engine {
         let Some((version, saved, pairs)) = loaded else {
             return Ok(());
         };
+        if self.correlation_version.is_empty()
+            && let Some(saved) = &saved
+            && let Some(warning) = overridden_approach(self.settings.correlation_asked, saved)
+        {
+            tracing::warn!("{warning}");
+        }
         self.correlation_version = version;
         self.do_not_pair = pairs.into_iter().collect();
         let settings = match saved {
@@ -1807,6 +1840,18 @@ impl Engine {
         Ok(into)
     }
 
+    /// Hold a track manager's merge (GOLD MRG): every source track on the
+    /// survivor is the manager's, which correlation does not split off.
+    async fn hold(&mut self, into: Uid) -> anyhow::Result<()> {
+        if let Some(t) = self.tracks.get_mut(&into) {
+            for c in &mut t.contributors {
+                c.pairing = PairingType::Manual;
+            }
+            self.save(into, true).await?;
+        }
+        Ok(())
+    }
+
     /// Record an operator's word that two tracks are different objects.
     async fn operator_do_not_pair(
         &mut self,
@@ -1815,11 +1860,17 @@ impl Engine {
         actor: &str,
         reason: String,
     ) -> anyhow::Result<()> {
+        if a == b {
+            anyhow::bail!("a track cannot be a different object from itself");
+        }
         let (ka, kb) = (self.keys_of(a), self.keys_of(b));
         if ka.is_empty() || kb.is_empty() {
             anyhow::bail!("both tracks must be live");
         }
-        let decision = Decision::new(actor, "do_not_pair").reason(reason);
+        // The tracks it was made on, for the management log.
+        let decision = Decision::new(actor, "do_not_pair")
+            .reason(reason)
+            .evidence(json!({ "tracks": [a.doc_id(), b.doc_id()] }));
         let c = self.common.clone();
         let (la, lb) = (ka.clone(), kb.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
@@ -1912,8 +1963,11 @@ impl Engine {
                             let into = self
                                 .operator_merge(b, a, &actor, reason.clone(), s.evidence.clone())
                                 .await?;
+                            // A person's decision, as a merge from the table is.
+                            self.hold(into).await?;
                             self.canonical = Some(json!({
                                 "op": "merge", "from": b.doc_id(), "into": into.doc_id(), "reason": reason,
+                                "hold": true,
                             }));
                             Ok(json!({ "merged_into": into.doc_id() }))
                         } else {
@@ -1977,16 +2031,8 @@ impl Engine {
                 let into = self
                     .operator_merge(from, into, &actor, reason, json!({}))
                     .await?;
-                // A track manager's merge (GOLD MRG) holds: every source
-                // track on the survivor is the manager's, which correlation
-                // does not split off.
-                if cmd["hold"].as_bool() == Some(true)
-                    && let Some(t) = self.tracks.get_mut(&into)
-                {
-                    for c in &mut t.contributors {
-                        c.pairing = PairingType::Manual;
-                    }
-                    self.save(into, true).await?;
+                if cmd["hold"].as_bool() == Some(true) {
+                    self.hold(into).await?;
                 }
                 Ok(json!({ "merged_into": into.doc_id() }))
             }
@@ -2957,6 +3003,31 @@ mod tests {
 
     pub(super) fn t0() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 24, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn saved_correlation_settings_that_differ_from_ot_correlation_warn() {
+        let saved = |approach: Approach| {
+            let mut v = serde_json::to_value(CorrelationSettings::default()).unwrap();
+            v["approach"] = json!(approach);
+            v
+        };
+        // Not asked for, or asked for what is saved: nothing to say.
+        assert_eq!(
+            overridden_approach(None, &saved(Approach::Kinematics)),
+            None
+        );
+        assert_eq!(
+            overridden_approach(Some(Approach::Kinematics), &saved(Approach::Kinematics)),
+            None
+        );
+        let w =
+            overridden_approach(Some(Approach::Identifiers), &saved(Approach::Kinematics)).unwrap();
+        assert!(w.contains("OT_CORRELATION=identifiers is ignored"), "{w}");
+        assert!(w.contains("use kinematics;"), "{w}");
+        // Saved before the approach was a setting: its default applies.
+        let w = overridden_approach(Some(Approach::Kinematics), &json!({})).unwrap();
+        assert!(w.contains("use kinematics-metadata;"), "{w}");
     }
 
     #[test]
@@ -4061,10 +4132,24 @@ mod tests {
         };
         let (reject, accept) = (about("367"), about("368"));
 
-        // Accepted: merged, into the published AIS track.
+        // Accepted: merged, into the published AIS track, and held as a
+        // merge from the table is: correlation does not split it.
         let answer = operator(&mut e, json!({"op": "accept", "suggestion": accept})).await;
         assert_eq!(answer["ok"], true, "{answer}");
         assert!(pair(&e, "368", "r3"));
+        let merged = track_of(&e, "ais", "368");
+        assert!(
+            e.tracks[&merged]
+                .contributors
+                .iter()
+                .all(|c| c.pairing == PairingType::Manual)
+        );
+        // And it can still be undone.
+        let merge = last_decision(&e, "merge").await;
+        let answer = operator(&mut e, json!({"op": "undo", "decision": merge})).await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(!pair(&e, "368", "r3"));
+        assert_eq!(track_of(&e, "ais", "368"), merged);
         // Rejected: never paired, and not proposed again.
         let answer = operator(&mut e, json!({"op": "reject", "suggestion": reject})).await;
         assert_eq!(answer["ok"], true, "{answer}");
@@ -4588,6 +4673,29 @@ mod tests {
         assert_eq!(a["ok"], true, "{a}");
         assert!(e.tracks[&t[0]].paired_with.is_empty());
         assert!(e.tracks[&t[2]].paired_with.is_empty());
+
+        // A "do not pair" from the track table, undone.
+        let a = operator(
+            &mut e,
+            json!({"op": "do_not_pair", "a": id(t[0]), "b": id(t[0])}),
+        )
+        .await;
+        assert_eq!(a["ok"], false, "{a}");
+        let a = operator(
+            &mut e,
+            json!({"op": "do_not_pair", "a": id(t[0]), "b": id(t[2])}),
+        )
+        .await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert_eq!(e.do_not_pair.len(), 1);
+        let logged = e
+            .db(|db| db.decisions_by_op(&["do_not_pair"], 1))
+            .await
+            .unwrap();
+        assert_eq!(logged[0].evidence["tracks"], json!([id(t[0]), id(t[2])]));
+        let a = operator(&mut e, undo(logged[0].id)).await;
+        assert_eq!(a["ok"], true, "{a}");
+        assert!(e.do_not_pair.is_empty());
         e.redis.purge_namespace().await.unwrap();
     }
 
