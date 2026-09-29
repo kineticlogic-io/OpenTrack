@@ -730,6 +730,7 @@ body {
 .auth-field { display: flex; flex-direction: column; gap: var(--space-xs); }
 .auth-field > label:not([class]) { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
 .auth-error { font-size: 12px; color: var(--color-destructive); }
+.purge-warning { margin: 0; line-height: 1.5; }
 .auth-error-tag { font-weight: 600; }
 .warn-text { font-size: 13px; line-height: 1.6; color: var(--color-text-primary); white-space: pre-wrap; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .warn-actions { display: flex; gap: var(--space-md); flex-shrink: 0; }

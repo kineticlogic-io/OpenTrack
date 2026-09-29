@@ -864,8 +864,8 @@ change between releases.
 ## Purge
 
 **Settings → Data → Purge** (admins; `POST /api/v1/admin/purge`) clears the picture:
-1. Optionally turn on **Also delete history**.
-2. Type the site code in **Confirm**, then **Purge tracks**, and confirm.
+1. Select **Purge tracks**.
+2. In the window that opens, optionally turn on **Also delete history**, then select **Purge**.
 
 It then:
 - dissolves every group;
@@ -877,8 +877,8 @@ It keeps sources, the output schema, the registry and its entities, settings, ac
 and the decision log (a purge is itself a decision). Sources keep reporting, so new tracks appear
 at once, with new numbers. It cannot be undone.
 
-The API call is `{"confirm": "<site code>", "history": true|false}`. It waits up to 5 minutes for
-the engine.
+The API call is `{"confirm": "<site code>", "history": true|false}`: the API still asks for the
+site code, so a stray request can't purge. It waits up to 5 minutes for the engine.
 
 ## Monitoring
 
