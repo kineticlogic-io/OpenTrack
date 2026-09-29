@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Full configuration export and import** (#15). `GET /api/v1/export/config` (admins, audited,
+  `Cache-Control: no-store`) and `opentrack config export` now write the whole configuration as
+  `opentrack-config` version 2: sources with their secrets, schema versions, correlation, instance
+  and sign-in settings, accounts with their password hashes and history, API token records, the
+  registry, plugins (components included), imported tracker profiles and the track number counter;
+  never the session key, sessions, the audit record or track state. `opentrack config import
+  <file>` and `POST /api/v1/import/config` rebuild an **empty** node from it (refusing any other,
+  with what it has), checking every section first and writing all of it in one transaction; the
+  imported accounts replace the first admin. Settings → Data export warns that the file holds
+  secrets, and offers the import while the node is empty. See the admin guide, Backup and restore.
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.

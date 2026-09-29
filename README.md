@@ -296,7 +296,8 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 | Correlation | `GET/PUT /correlation/settings`, `GET /correlation/suggestions`, `POST /correlation/suggestions/{id}/accept\|reject`, `POST /tracks/{uid}/split`, `/tracks/do-not-pair`, `GET /correlation/decisions` |
 | Registry | `GET/POST /registry/entities`, `GET/PUT/DELETE /registry/entities/{id}`, `GET /registry/fields`, `GET /registry/export`, `POST /registry/import-sheet` |
 | Schema | `GET /schema`, `PUT/DELETE /schema/draft`, `POST /schema/draft/publish` |
-| Settings | `GET/PUT /settings`, `GET /public/banner`, `/public/warning-banner`, `GET /export/tracks`, `/export/config`, `POST /admin/purge` |
+| Settings | `GET/PUT /settings`, `GET /public/banner`, `/public/warning-banner`, `GET /export/tracks`, `POST /admin/purge` |
+| Configuration backup | `GET /export/config` (the whole configuration, secrets included; admins), `GET/POST /import/config` (whether this node is empty; rebuild it from an export; admins) |
 
 ## Running
 
