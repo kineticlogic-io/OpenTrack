@@ -344,6 +344,23 @@ export interface SystemMetrics {
   }
 }
 
+/** `GET /import/config`: whether a configuration may be imported here. */
+export interface ConfigImportStatus {
+  empty: boolean
+  /** What makes the node non-empty, one line each. */
+  present: string[]
+  format: string
+  version: number
+}
+
+/** `POST /import/config`: what the import restored. */
+export interface ConfigImported {
+  imported: boolean
+  decision: number
+  counts: Record<string, number | boolean>
+  notes: string[]
+}
+
 export class ApiError extends Error {
   readonly status: number
   constructor(status: number, message: string) {
@@ -1103,6 +1120,28 @@ export const api = {
     request<{ idp_metadata_xml: string; idp_entity_id: string; sso_url: string; signing_cert: string }>('POST', '/auth/saml/parse-metadata', { xml }),
   exportUrl: (what: 'tracks.geojson' | 'tracks.csv' | 'config') =>
     what === 'config' ? '/api/v1/export/config' : `/api/v1/export/tracks?format=${what === 'tracks.csv' ? 'csv' : 'geojson'}`,
+  /** Whether this node may import a configuration (it has none yet), and if not, what it has. Admins. */
+  configImportStatus: () => get<ConfigImportStatus>('/import/config'),
+  /** Rebuild this empty node from a full configuration export. The caller's account is replaced. */
+  importConfig: async (file: File): Promise<ConfigImported> => {
+    const res = await fetch('/api/v1/import/config', {
+      method: 'POST',
+      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/json' },
+      body: file,
+    })
+    const text = await res.text()
+    let parsed: { error?: string; problems?: string[] } & Partial<ConfigImported> = {}
+    try {
+      parsed = text ? JSON.parse(text) : {}
+    } catch {
+      parsed = { error: text }
+    }
+    if (!res.ok) {
+      const detail = parsed.problems?.length ? `${parsed.problems.join('; ')}` : parsed.error
+      throw new ApiError(res.status, detail ?? res.statusText)
+    }
+    return parsed as ConfigImported
+  },
   purge: (confirm: string, history: boolean) =>
     request<{ retired: number; history?: { nodes: number; edges: number } | null }>('POST', '/admin/purge', { confirm, history }),
 

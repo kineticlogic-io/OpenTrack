@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { TbDownload, TbTrash } from 'react-icons/tb'
-import { Badge, Button, CollapsiblePanel, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
-import { api, type AppSettings, type AppSettingsResponse } from '../../api/client'
+import { TbDownload, TbTrash, TbUpload } from 'react-icons/tb'
+import { Badge, Button, CollapsiblePanel, FileDropZone, Input, Label, SaveButton, Toggle, useToast } from 'staresdk'
+import { api, type AppSettings, type AppSettingsResponse, type ConfigImportStatus } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { AuditPanel } from './AuditPanel'
 import { NodesPanel } from './NodesPanel'
@@ -26,6 +26,18 @@ const SITE_CODE_INFO =
   "OTH-GOLD's track UID form, a site code then a 9-digit sequence. It keeps track numbers unique between the sites feeding one " +
   'picture, so every OpenTrack needs its own. It is set at deployment (OT_SITE_CODE) and cannot change here: published track numbers would change with it.'
 
+const CONFIG_EXPORT_INFO =
+  "The whole configuration, to back this node up or rebuild it: sources (with their credentials), output schema versions, " +
+  'correlation, instance and sign-in settings, accounts with their password hashes, API token records, the registry, plugins, ' +
+  'imported tracker profiles and the track number counter. It holds secrets and password hashes: keep it as safe as the ' +
+  'database and delete copies you no longer need. The session signing key, sessions, the audit record and track state are ' +
+  'never in it, so API tokens work again only on a node with the same key. Admins only; each export is audited.'
+
+const CONFIG_IMPORT_INFO =
+  'Rebuild this node from a full configuration export. Offered only while this node has no configuration (no sources, ' +
+  'registry, plugins or saved settings, no account but its first admin, and no earlier import). Everything is imported or nothing is. The ' +
+  'imported accounts replace the first admin, so you sign in again with one of them.'
+
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="settings-row">
@@ -49,6 +61,14 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const admin = useCan('admin')
+  const [importStatus, setImportStatus] = useState<ConfigImportStatus | null>(null)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importing, setImporting] = useState(false)
+
+  useEffect(() => {
+    if (!admin) return
+    api.configImportStatus().then(setImportStatus, () => setImportStatus(null))
+  }, [admin])
 
   useEffect(() => {
     api.appSettings().then(
@@ -103,6 +123,26 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
       toast({ variant: 'error', title: 'Not purged', message: errorMessage(e) })
     } finally {
       setPurging(false)
+    }
+  }
+
+  const importConfig = async () => {
+    if (!importFile) return
+    const ok = await confirm(
+      `Every source, setting, account, registry entity and plugin in ${importFile.name} is written into this node, and its accounts replace yours: you will sign in again with one of them.`,
+      { title: 'Import the configuration', confirmLabel: 'Import' },
+    )
+    if (!ok) return
+    setImporting(true)
+    try {
+      const r = await api.importConfig(importFile)
+      toast({ variant: 'success', title: 'Configuration imported', message: r.notes.join(' ') })
+      window.setTimeout(() => window.location.assign('/'), 2500)
+    } catch (e) {
+      toast({ variant: 'error', title: 'Not imported', message: errorMessage(e) })
+      api.configImportStatus().then(setImportStatus, () => setImportStatus(null))
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -275,11 +315,33 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               </Button>
             </div>
           </Row>
-          <Row label="Configuration" hint="Sources, output schema versions, correlation and instance settings, as one JSON file for backup. Admins only.">
+          <Row label="Full configuration" hint={CONFIG_EXPORT_INFO}>
             <Button size="sm" variant="ghost" disabled={!admin} icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
               Configuration
             </Button>
           </Row>
+          {admin && importStatus?.empty && (
+            <Row label="Import configuration" hint={CONFIG_IMPORT_INFO}>
+              <div className="stack">
+                <FileDropZone
+                  inputId="config-import-file"
+                  accept=".json,application/json"
+                  acceptedExtensions={['.json']}
+                  file={importFile}
+                  onFileChange={setImportFile}
+                  onReject={(m) => toast({ variant: 'error', title: 'Configuration', message: m })}
+                  label="A full configuration export (.json)"
+                  hint={`${importStatus.format} version ${importStatus.version}`}
+                  compact
+                />
+                <div className="num-row">
+                  <Button size="sm" variant="primary" icon={<TbUpload />} disabled={!importFile || importing} onClick={importConfig}>
+                    Import
+                  </Button>
+                </div>
+              </div>
+            </Row>
+          )}
           <Row label="Registry" hint="Entities with their identifiers and attributes: export and import them on the Registry tab.">
             <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
               Registry XLSX
