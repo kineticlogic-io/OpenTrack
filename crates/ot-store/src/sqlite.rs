@@ -167,12 +167,18 @@ impl Db {
 
     /// Run `f` in an immediate (write-locked) transaction.
     pub fn write<T>(&mut self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        let tx = self
+        // Audit rows appended in it reach the server log only if it commits.
+        let done = self
             .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let out = f(&tx)?;
-        tx.commit()?;
-        Ok(out)
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(Into::into)
+            .and_then(|tx| {
+                let out = f(&tx)?;
+                tx.commit()?;
+                Ok(out)
+            });
+        crate::audit::log_pending(done.is_ok());
+        done
     }
 
     /// Create a system track for a source track: allocate a UID, record the
