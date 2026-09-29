@@ -38,8 +38,7 @@ impl Decoder {
         let msg = DynamicMessage::decode(self.message_desc.clone(), bytes)
             .map_err(|e| SapientError::Decode(e.to_string()))?;
 
-        let value = message_to_json(&msg).map_err(SapientError::Decode)?;
-        Ok(vec![value])
+        Ok(vec![message_to_json(&msg)])
     }
 }
 
@@ -49,7 +48,7 @@ impl Default for Decoder {
     }
 }
 
-fn message_to_json(msg: &DynamicMessage) -> Result<JsonValue, String> {
+fn message_to_json(msg: &DynamicMessage) -> JsonValue {
     let mut obj = Map::new();
     for (field, val) in msg.fields() {
         let kind = field.kind();
@@ -62,51 +61,56 @@ fn message_to_json(msg: &DynamicMessage) -> Result<JsonValue, String> {
         }
 
         let key = field.name();
-        let json_val = value_to_json(val, &kind)?;
-        obj.insert(key.to_owned(), json_val);
+        obj.insert(key.to_owned(), value_to_json(val, &kind));
     }
-    Ok(JsonValue::Object(obj))
+    JsonValue::Object(obj)
 }
 
-fn value_to_json(val: &Value, kind: &Kind) -> Result<JsonValue, String> {
+fn value_to_json(val: &Value, kind: &Kind) -> JsonValue {
     match val {
-        Value::Bool(b) => Ok(JsonValue::Bool(*b)),
-        Value::I32(v) => Ok(JsonValue::Number((*v).into())),
-        Value::I64(v) => Ok(JsonValue::Number(serde_json::Number::from(*v))),
-        Value::U32(v) => Ok(JsonValue::Number((*v).into())),
-        Value::U64(v) => Ok(JsonValue::Number(serde_json::Number::from(*v))),
+        Value::Bool(b) => JsonValue::Bool(*b),
+        Value::I32(v) => JsonValue::Number((*v).into()),
+        Value::I64(v) => JsonValue::Number(serde_json::Number::from(*v)),
+        Value::U32(v) => JsonValue::Number((*v).into()),
+        Value::U64(v) => JsonValue::Number(serde_json::Number::from(*v)),
         Value::F32(v) => float_to_json(*v as f64),
         Value::F64(v) => float_to_json(*v),
-        Value::String(s) => Ok(JsonValue::String(s.to_owned())),
-        Value::Bytes(b) => Ok(JsonValue::String(hex_encode(b))),
+        Value::String(s) => JsonValue::String(s.to_owned()),
+        Value::Bytes(b) => JsonValue::String(hex_encode(b)),
         Value::EnumNumber(n) => {
             if let Kind::Enum(enum_desc) = kind
                 && let Some(val_desc) = enum_desc.get_value(*n)
             {
-                return Ok(JsonValue::String(val_desc.name().to_owned()));
+                return JsonValue::String(val_desc.name().to_owned());
             }
-            Ok(JsonValue::Number((*n).into()))
+            JsonValue::Number((*n).into())
         }
         Value::Message(m) => message_to_json(m),
         Value::List(items) => {
-            let arr: Result<Vec<_>, _> = items.iter().map(|v| value_to_json(v, kind)).collect();
-            Ok(JsonValue::Array(arr?))
+            JsonValue::Array(items.iter().map(|v| value_to_json(v, kind)).collect())
         }
         Value::Map(entries) => {
+            // A map field's kind is its entry message; the values take the
+            // entry's value field kind (so enum values come out as names).
+            let value_kind = match kind {
+                Kind::Message(entry) if entry.is_map_entry() => {
+                    entry.map_entry_value_field().kind()
+                }
+                _ => kind.clone(),
+            };
             let mut map = Map::new();
             for (k, v) in entries {
-                let k_str = map_key_to_string(k);
-                map.insert(k_str, value_to_json(v, kind)?);
+                map.insert(map_key_to_string(k), value_to_json(v, &value_kind));
             }
-            Ok(JsonValue::Object(map))
+            JsonValue::Object(map)
         }
     }
 }
 
-fn float_to_json(v: f64) -> Result<JsonValue, String> {
-    serde_json::Number::from_f64(v)
-        .map(JsonValue::Number)
-        .ok_or_else(|| format!("cannot encode float {v} as JSON"))
+/// JSON has no NaN or infinity: such a value becomes `null`, and the rest of
+/// the message still decodes.
+fn float_to_json(v: f64) -> JsonValue {
+    serde_json::Number::from_f64(v).map_or(JsonValue::Null, JsonValue::Number)
 }
 
 fn map_key_to_string(key: &prost_reflect::MapKey) -> String {
@@ -273,6 +277,69 @@ mod tests {
         assert!(obj.get("additional_information").is_none());
         assert!(obj.get("registration").is_none());
         assert!(obj.get("detection_report").is_none());
+    }
+
+    #[test]
+    fn non_finite_float_becomes_null() {
+        let mut msg = build_test_message();
+        if let Some(Content::DetectionReport(dr)) = &mut msg.content {
+            dr.detection_confidence = Some(f32::NAN);
+            if let Some(LocationOneof::Location(loc)) = &mut dr.location_oneof {
+                loc.z = Some(f64::INFINITY);
+            }
+        }
+        let mut buf = Vec::new();
+        msg.encode(&mut buf).unwrap();
+
+        let records = Decoder::default().decode(&buf).unwrap();
+        let dr = &records[0]["detection_report"];
+        assert_eq!(dr["detection_confidence"], JsonValue::Null);
+        assert_eq!(dr["location"]["z"], JsonValue::Null);
+        assert_eq!(dr["object_id"], JsonValue::String("obj-123".into()));
+        assert!(dr["location"]["x"].is_f64(), "the rest still decodes");
+    }
+
+    #[test]
+    fn map_values_use_the_entry_value_kind() {
+        // SAPIENT has no map fields: a small schema with a map of enums.
+        struct One;
+        impl protox::file::FileResolver for One {
+            fn open_file(&self, name: &str) -> Result<protox::file::File, protox::Error> {
+                protox::file::File::from_source(
+                    name,
+                    r#"syntax = "proto3";
+                    package t;
+                    enum Colour { COLOUR_UNSPECIFIED = 0; RED = 1; GREEN = 2; }
+                    message M { map<string, Colour> colours = 1; }"#,
+                )
+            }
+        }
+        let mut compiler = protox::Compiler::with_file_resolver(One);
+        compiler.open_file("t.proto").unwrap();
+        let desc = compiler
+            .descriptor_pool()
+            .get_message_by_name("t.M")
+            .unwrap();
+
+        let mut msg = DynamicMessage::new(desc);
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            prost_reflect::MapKey::String("a".into()),
+            Value::EnumNumber(2),
+        );
+        map.insert(
+            prost_reflect::MapKey::String("b".into()),
+            Value::EnumNumber(7),
+        );
+        msg.set_field_by_name("colours", Value::Map(map));
+
+        let json = message_to_json(&msg);
+        assert_eq!(json["colours"]["a"], JsonValue::String("GREEN".into()));
+        assert_eq!(
+            json["colours"]["b"],
+            JsonValue::from(7),
+            "unknown number kept"
+        );
     }
 
     #[test]

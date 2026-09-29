@@ -628,6 +628,7 @@ impl CorrelationSettings {
             ("kinematic.velocity_spread_mps", k.velocity_spread_mps),
             ("kinematic.window_secs", k.window_secs),
             ("kinematic.max_age_secs", k.max_age_secs),
+            ("split.window_secs", self.split.window_secs),
             ("gate.base_m", self.gate.base_m),
             (
                 "gate.max_extrapolation_secs",
@@ -669,8 +670,13 @@ impl CorrelationSettings {
                 ));
             }
         }
-        if !(k.min_interval_secs.is_finite() && k.min_interval_secs >= 0.0) {
-            return Err("kinematic.min_interval_secs must not be negative".into());
+        for (name, v) in [
+            ("kinematic.min_interval_secs", k.min_interval_secs),
+            ("kinematic.local_density_radius_m", k.local_density_radius_m),
+        ] {
+            if !(v.is_finite() && v >= 0.0) {
+                return Err(format!("{name} must not be negative"));
+            }
         }
         for (name, m, n) in [
             ("kinematic", k.m, k.n),
@@ -1876,6 +1882,20 @@ mod tests {
         s.validate().unwrap();
         let bad: CorrelationSettings = serde_json::from_value(json!({"split": {"m": 7}})).unwrap();
         assert!(bad.validate().unwrap_err().contains("split.m"));
+        for (bad, name) in [
+            (json!({"split": {"window_secs": 0.0}}), "split.window_secs"),
+            (
+                json!({"kinematic": {"local_density_radius_m": -1.0}}),
+                "kinematic.local_density_radius_m",
+            ),
+        ] {
+            let bad: CorrelationSettings = serde_json::from_value(bad).unwrap();
+            assert!(bad.validate().unwrap_err().contains(name));
+        }
+        // 0 turns the local density off.
+        let off: CorrelationSettings =
+            serde_json::from_value(json!({"kinematic": {"local_density_radius_m": 0.0}})).unwrap();
+        off.validate().unwrap();
         assert!(serde_json::from_value::<CorrelationSettings>(json!({"nope": 1})).is_err());
     }
 
