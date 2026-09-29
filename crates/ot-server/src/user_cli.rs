@@ -142,6 +142,11 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
                 ..ot_store::Decision::new(ACTOR, "update_user")
             })?;
             println!("{email} is now {}", after.role);
+            if after.origin == "saml" {
+                println!(
+                    "(a saml account: its next sign-on sets the identity provider's role again)"
+                );
+            }
         }
         UserCommand::Passwd { email } => {
             let u = find(&db, &email)?;
