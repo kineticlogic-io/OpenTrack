@@ -25,11 +25,8 @@ export function StageSamples({ result, stageId }: { result: PreviewResult; stage
       <div className="stage-samples">
         {samples.length === 0 && <span className="muted">No stored samples. Capture some from the feed.</span>}
         {samples.map((s) => (
-          <section key={s.n} className="stage-sample">
-            <div className="stage-sample-head">
-              #{s.n}
-              {s.blocks.length > 1 && <span className="muted"> · {s.blocks.length} from this frame</span>}
-            </div>
+          <section key={s.title} className="stage-sample">
+            <div className="stage-sample-head">{s.title}</div>
             {s.notes.map((n, i) => (
               <div key={i} className="muted">
                 {n}

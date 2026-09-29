@@ -287,9 +287,9 @@ export function PipelineDesigner({
               Live preview
               <InfoTip label="Live preview">
                 A dry run of the pipeline as edited (not yet saved) over this source&apos;s stored samples, updated as you change it. It shows the
-                first {TRACED_SAMPLES} stored samples as they are after the stage selected on the left: the frame as received at Transport, the
-                decoded records, then the observations, and at Publish the message as it would be published. A sample dropped or held on the way
-                says where and why. The counts cover all the samples. Nothing is published.
+                first {TRACED_SAMPLES} stored samples (decoded records, in order) as they are after the stage selected on the left: at Transport
+                the frames they came from, then each record, its observation, and at Publish the message as it would be published. A sample
+                dropped or held on the way says where and why. The counts cover everything stored. Nothing is published.
               </InfoTip>
             </h3>
             <span className="muted">{running ? 'running…' : `stored samples of ${sourceId}`}</span>

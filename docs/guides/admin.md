@@ -642,24 +642,26 @@ messages show as `••••••` (`${env:…}` references stay visible). Se
 The pipeline designer's **Live preview** (right-hand pane) is a dry run of the pipeline as edited,
 not yet saved, over the source's stored samples; **Capture samples** replaces them with up to 20
 frames (or 15 s) of the live feed. Nothing is published. The pane shows the first 5 samples, each
-under its own header (#1, #2…) as pretty-printed JSON, **as they are after the stage selected on
-the left**:
-- **Transport:** the frame as received: JSON pretty-printed, other text as it is, and binary
-  escaped (`\xNN`) with its length.
-- **Decode:** the records the codec made of it. A frame of several records shows each, under the
-  frame's header.
-- **Reject:** the records kept. **Map:** the observations the mapping made (before the identity
-  join fills them in, when there is one).
-- **Identity join, Entity links, Affiliation, Filter, Tracker, Throttle:** the observations after
-  each. A tracker's reports show under the sample whose plot made them.
+a decoded record in decode order (the first frame's, then the next frame's if it has fewer), under
+its own header (#1, #2…) as pretty-printed JSON, **as they are after the stage selected on the
+left**:
+- **Transport:** each frame the samples came from, once, as received ("frame 1 (samples
+  #1–#5)"): JSON pretty-printed, other text as it is, binary escaped (`\xNN`) with its length; a
+  frame over 64 KiB shows only its start.
+- **Decode:** the record. A frame that does not decode is a sample of its own, with the error.
+- **Reject:** the record, if kept. **Map:** what the mapping made of it: the observation (before
+  the identity join fills it in, when there is one), or a static rule's identity fields.
+- **Identity join, Entity links, Affiliation, Filter, Tracker, Throttle:** the observation after
+  each. A tracker's report shows under the sample whose plot made it.
 - **Publish:** the message as it would be published for a new system track seeded from the
   observation (the GOLD fields and the output schema's attributes; its UID is correlation's to
   assign, and correlation decides whether and when it is published).
 
-Sample #1 is the same frame at every stage. A sample dropped on the way says where and why
+Sample #1 is the same record at every stage. A sample dropped on the way says where and why
 ("rejected: no_position", "dropped by Filter: drop_if matched"), and a tracker waiting for the rest
-of a scan says it held the sample. Above the samples, one line counts what the pipeline did with
-all the stored samples (frames, records, dropped…), with any errors.
+of a scan says it held the sample. The frames' other records are processed too (they count, and
+move the tracker and throttle) but not shown. Above the samples, one line counts what the pipeline
+did with all the stored samples (frames, records, dropped…), with any errors.
 
 ### Output schema
 

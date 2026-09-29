@@ -1,10 +1,10 @@
 /**
- * The pipeline designer's live preview: the first stored samples as they are after one stage,
- * from the dry run's trace (`POST /sources/validate` with `trace`).
+ * The pipeline designer's live preview: the first stored records (samples) as they are after one
+ * stage, from the dry run's trace (`POST /sources/validate` with `trace`).
  */
-import type { PreviewResult, TraceFrame } from '../api/client'
+import type { PreviewResult, PreviewTrace, TraceFrameView } from '../api/client'
 
-/** Samples the designer follows through the pipeline. */
+/** Records the designer follows through the pipeline. */
 export const TRACED_SAMPLES = 5
 
 /** Stage names for "dropped by …", by the stage ids of `pipelineStages`. */
@@ -22,22 +22,33 @@ export const STAGE_LABEL: Record<string, string> = {
   publish: 'Publish',
 }
 
-/** One sample (input frame) after a stage. */
+/** One block of the pane: a sample after a stage, or at Transport a frame the samples came from. */
 export interface SampleView {
-  /** 1-based, the same frame at every stage. */
-  n: number
-  /** Each thing the stage passed on, ready to show: pretty JSON, or the frame's text. */
+  /** `#2`, or at Transport `frame 1 (samples #1–#5)`. */
+  title: string
+  /** What the stage passed on, ready to show: pretty JSON, or the frame's text. */
   blocks: string[]
-  /** What happened to the rest: dropped where, held by a stage. */
+  /** What happened to it: dropped where and why, held by a stage. */
   notes: string[]
 }
 
 const pretty = (v: unknown) => JSON.stringify(v, null, 2) ?? String(v)
 
+/** `#1–#5` for a run of sample numbers, else `#1, #3`. */
+function numbers(ns: number[]): string {
+  const run = ns.every((n, i) => i === 0 || n === ns[i - 1] + 1)
+  if (ns.length > 2 && run) return `#${ns[0]}–#${ns[ns.length - 1]}`
+  return ns.map((n) => `#${n}`).join(', ')
+}
+
 /** The frame as received: JSON pretty-printed, text as it is, binary escaped with its length. */
-function transport(f: TraceFrame): SampleView['blocks'] {
-  const { format, content } = f.frame
-  return [format === 'json' ? pretty(content) : String(content)]
+function frameView(f: TraceFrameView | undefined, title: string): SampleView {
+  if (!f) return { title, blocks: [], notes: ['The frame is not in the trace.'] }
+  const notes = f.format === 'binary' ? [`${f.bytes} bytes, not text (shown escaped)`] : []
+  if (f.format === 'json' && typeof f.content === 'object' && f.content !== null && 'truncated' in f.content) {
+    notes.push(`${f.bytes} bytes: only the start is shown`)
+  }
+  return { title, blocks: [f.format === 'json' ? pretty(f.content) : String(f.content)], notes }
 }
 
 function note(stageId: string, reason: string): string {
@@ -46,29 +57,36 @@ function note(stageId: string, reason: string): string {
 }
 
 /**
- * The traced samples as they are after `stageId`. A frame's records are grouped under it; a
- * record dropped at or before the stage becomes a note saying where and why, and a stage that
- * held the frame back (a tracker waiting for the rest of a scan) says so.
+ * The traced samples as they are after `stageId`. At Transport each frame they came from shows
+ * once, naming its samples. Elsewhere each sample shows what the stage passed on; a sample
+ * dropped at or before the stage says where and why, and one a stage held back (a tracker
+ * waiting for the rest of a scan) says so.
  */
-export function samplesAt(trace: TraceFrame[] | undefined, stageId: string): SampleView[] {
-  return (trace ?? []).slice(0, TRACED_SAMPLES).map((f, i) => {
-    const n = i + 1
-    if (stageId === 'transport') {
-      const notes = f.frame.format === 'binary' ? [`${f.frame.bytes} bytes, not text (shown escaped)`] : []
-      return { n, blocks: transport(f), notes }
-    }
-    const at = f.stages.findIndex((s) => s.id === stageId)
-    if (at < 0) return { n, blocks: [], notes: ['This stage was not in the pipeline the preview ran.'] }
+export function samplesAt(trace: PreviewTrace | undefined, stageId: string): SampleView[] {
+  const samples = (trace?.samples ?? []).slice(0, TRACED_SAMPLES)
+  if (stageId === 'transport') {
+    const byFrame = new Map<number, number[]>()
+    samples.forEach((s, i) => byFrame.set(s.frame, [...(byFrame.get(s.frame) ?? []), i + 1]))
+    return [...byFrame].map(([frame, ns]) =>
+      frameView(trace?.frames[frame], `frame ${frame + 1} (sample${ns.length > 1 ? 's' : ''} ${numbers(ns)})`),
+    )
+  }
+  return samples.map((s, i) => {
+    const title = `#${i + 1}`
+    const at = s.stages.findIndex((x) => x.id === stageId)
+    if (at < 0) return { title, blocks: [], notes: ['This stage was not in the pipeline the preview ran.'] }
     const notes: string[] = []
-    for (const s of f.stages.slice(0, at + 1)) {
-      for (const r of s.dropped ?? []) notes.push(note(s.id, r))
-      if (s.held) {
-        notes.push(`held by ${STAGE_LABEL[s.id] ?? s.id}: waiting for the rest of its scan (the preview ran it at the end of the samples, or when a later frame completed it)`)
+    for (const x of s.stages.slice(0, at + 1)) {
+      for (const r of x.dropped ?? []) notes.push(note(x.id, r))
+      if (x.held) {
+        notes.push(
+          `held by ${STAGE_LABEL[x.id] ?? x.id}: waiting for the rest of its scan (the preview ran it at the end of the samples, or when a later frame completed it)`,
+        )
       }
     }
-    const blocks = f.stages[at].items.map(pretty)
+    const blocks = s.stages[at].items.map(pretty)
     if (!blocks.length && !notes.length) notes.push('Nothing came out of this stage.')
-    return { n, blocks, notes }
+    return { title, blocks, notes }
   })
 }
 

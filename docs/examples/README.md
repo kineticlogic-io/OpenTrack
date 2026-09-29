@@ -43,12 +43,14 @@ curl -X POST -H 'content-type: application/json' \
      http://127.0.0.1:8090/api/v1/sources/validate
 ```
 
-Add `"trace": 5` (at most 10) to also get `trace`: the first 5 frames stage by stage, as the
-pipeline designer's live preview shows them. Each is `{"frame": {"format": "json" | "text" |
-"binary", "bytes": n, "content": …}, "stages": [{"id": "decode", "items": [...], "dropped":
-["<reason>", ...], "held": true}, ..., {"id": "publish", "items": [<message>]}]}`, with only the
-stages the pipeline has; `dropped` and `held` appear only when set, and an item over 64 KiB is cut
-to a `truncated` marker. Without `trace` the response is unchanged.
+Add `"trace": 5` (at most 10) to also get `trace`: the first 5 decoded records (samples), in
+decode order, stage by stage, as the pipeline designer's live preview shows them:
+`{"frames": [{"format": "json" | "text" | "binary", "bytes": n, "content": …}], "samples":
+[{"frame": <index in frames>, "stages": [{"id": "decode", "items": [...], "dropped":
+["<reason>"], "held": true}, ..., {"id": "publish", "items": [<message>]}]}]}`. Each frame the
+samples came from is listed once; a frame that does not decode is a sample of its own. Only the
+stages the pipeline has are listed, `dropped` and `held` appear only when set, and an item or frame
+over 64 KiB is cut to a `truncated` marker. Without `trace` the response is unchanged.
 
 ## The pipeline, in order
 
