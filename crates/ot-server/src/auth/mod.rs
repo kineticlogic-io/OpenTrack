@@ -20,6 +20,7 @@ mod saml;
 pub use saml::openssl_fips;
 pub mod sessions;
 pub mod settings;
+pub mod stig;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -151,8 +152,6 @@ pub struct Auth {
     saml: saml::State,
 }
 
-/// Session lifetime when the settings give none.
-const SESSION_HOURS: f64 = 24.0;
 /// Sign-in attempts per address: a burst of 5, then one a second.
 const ATTEMPT_BURST: f64 = 5.0;
 
@@ -202,8 +201,7 @@ impl Auth {
     }
 
     fn session_secs(&self) -> i64 {
-        let h = self.settings().session_hours.unwrap_or(SESSION_HOURS);
-        (h * 3600.0) as i64
+        stig::SESSION_HOURS * 3600
     }
 
     /// A signed token for an account; returns it with its id and expiry (ms).
@@ -386,9 +384,7 @@ pub fn bootstrap_admin(
     }
     let (email, password, file) = match (email, password) {
         (Some(e), Some(p)) if !e.trim().is_empty() => {
-            settings::PasswordPolicy::default()
-                .check(p)
-                .map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
+            password::check(p).map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
             (e.trim().to_owned(), p.to_owned(), None)
         }
         _ => {

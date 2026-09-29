@@ -1,7 +1,7 @@
 //! The account policy's clock, once a minute: save when sessions were
 //! last used, end idle and expired sessions, turn off inactive accounts,
-//! purge the audit record past its retention, and (with sign-in off) say
-//! so loudly.
+//! log the audit record's head, and (with sign-in off) say so loudly. The
+//! policy is fixed ([`super::stig`]); the audit record is kept forever.
 
 use std::time::Duration;
 
@@ -9,6 +9,7 @@ use ot_store::AuditEvent;
 use ot_store::sqlite::now_ms;
 use serde_json::json;
 
+use super::stig;
 use crate::control::{ApiError, AppState};
 
 const TICK: Duration = Duration::from_secs(60);
@@ -42,8 +43,8 @@ async fn once(s: &AppState, n: u64) -> Result<(), ApiError> {
     if !seen.is_empty() {
         s.with_db(move |db| db.touch_sessions(&seen)).await?;
     }
-    let idle = settings.sessions.idle_ms(crate::auth::Role::Viewer);
-    let admin_idle = settings.sessions.idle_ms(crate::auth::Role::Admin);
+    let idle = stig::idle_ms(crate::auth::Role::Viewer);
+    let admin_idle = stig::idle_ms(crate::auth::Role::Admin);
     let ended = s
         .with_db(move |db| {
             let ended = db.end_stale_sessions(now - idle, now - admin_idle)?;
@@ -67,20 +68,6 @@ async fn once(s: &AppState, n: u64) -> Result<(), ApiError> {
         disable_inactive(s, &settings.inactivity).await?;
     }
     if n.is_multiple_of(60) {
-        let days = settings.audit.retention_days;
-        if days > 0.0 {
-            let before = now - (days * 86_400_000.0) as i64;
-            let purged = s
-                .with_db(move |db| db.purge_audit(before, "system"))
-                .await?;
-            if purged > 0 {
-                tracing::info!(
-                    rows = purged,
-                    days,
-                    "purged the audit record past its retention"
-                );
-            }
-        }
         // The chain's head in the log too: kept elsewhere, it shows if the
         // newest rows were ever cut off.
         let (seq, hash) = s.with_db(|db| db.audit_head()).await?;
@@ -89,16 +76,14 @@ async fn once(s: &AppState, n: u64) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Turn off accounts nobody has signed in to for the set number of days.
+/// Turn off accounts nobody has signed in to for
+/// [`stig::DISABLE_INACTIVE_AFTER_DAYS`], except the break-glass ones.
 pub async fn disable_inactive(
     s: &AppState,
     p: &super::settings::InactivityPolicy,
 ) -> Result<usize, ApiError> {
-    if p.disable_after_days <= 0.0 {
-        return Ok(0);
-    }
-    let cutoff = now_ms() - (p.disable_after_days * 86_400_000.0) as i64;
-    let (exempt, days) = (p.exempt.clone(), p.disable_after_days);
+    let cutoff = now_ms() - stig::INACTIVE_MS;
+    let (exempt, days) = (p.exempt.clone(), stig::DISABLE_INACTIVE_AFTER_DAYS);
     let off = s
         .with_db(move |db| {
             let off = db.disable_inactive(cutoff, &exempt)?;

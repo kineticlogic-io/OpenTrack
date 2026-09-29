@@ -18,6 +18,7 @@ use ot_store::sqlite::now_ms;
 
 use super::sessions::ended;
 use super::{AuthSettings, AuthUser, Role, Via, hash_password, verify_password};
+use super::{password, stig};
 use crate::api::actor;
 use crate::control::{ApiError, AppState};
 
@@ -148,18 +149,16 @@ pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiErr
         "can_change_password": session && has_password,
         "must_change_password": false,
     });
-    let settings = s.auth.settings();
     if let Some(user) = &user {
         v["must_change_password"] = json!(has_password && user.must_change_password);
-        let max_days = settings.password.max_age_days;
-        if has_password && max_days > 0.0 {
+        if has_password {
             v["password_expires_at_ms"] = json!(
                 user.password_changed_at_ms
-                    .map(|t| t + (max_days * 86_400_000.0) as i64)
+                    .map(|t| t + stig::PASSWORD_MAX_AGE_MS)
             );
         }
-        v["idle_timeout_ms"] = json!(settings.sessions.idle_ms(u.role));
-        v["password_policy"] = json!(settings.password);
+        v["idle_timeout_ms"] = json!(stig::idle_ms(u.role));
+        v["password_policy"] = stig::password_policy();
     }
     if let Some(row) = row {
         v["session"] = json!(row.id);
@@ -185,9 +184,8 @@ pub(super) async fn start_session(
     let now = now_ms();
     let inactive = &settings.inactivity;
     if how != How::PasswordChange
-        && inactive.disable_after_days > 0.0
         && !inactive.exempts(&user.email)
-        && user.last_activity_ms() < now - (inactive.disable_after_days * 86_400_000.0) as i64
+        && user.last_activity_ms() < now - stig::INACTIVE_MS
     {
         super::maintenance::disable_inactive(s, inactive).await?;
         let e = failed_login(&user.email, client, "inactive", how);
@@ -199,14 +197,12 @@ pub(super) async fn start_session(
         .auth
         .issue_as(&user, "session", ttl, how == How::Saml)
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    let p = &settings.password;
     let expired = how == How::Password
-        && p.max_age_days > 0.0
         && !user.must_change_password
         && user
             .password_changed_at_ms
-            .is_some_and(|t| now - t > (p.max_age_days * 86_400_000.0) as i64);
-    let max = settings.sessions.max_per_account as usize;
+            .is_some_and(|t| now - t > stig::PASSWORD_MAX_AGE_MS);
+    let max = stig::SESSIONS_PER_ACCOUNT;
     let (id, email, c, j) = (
         user.id.clone(),
         user.email.clone(),
@@ -245,13 +241,11 @@ pub(super) async fn start_session(
             })?;
             // Past the limit, the oldest sessions end.
             let mut out = Vec::new();
-            if max > 0 {
-                for old in db.sessions(Some(&id), false, 1000)?.iter().skip(max) {
-                    if db.end_session(&old.id, "limit")? {
-                        db.revoke_token(&old.id, old.expires_at_ms)?;
-                        db.audit(&ended(&email, &old.id, "limit", old.ip.as_deref()))?;
-                        out.push(old.id.clone());
-                    }
+            for old in db.sessions(Some(&id), false, 1000)?.iter().skip(max) {
+                if db.end_session(&old.id, "limit")? {
+                    db.revoke_token(&old.id, old.expires_at_ms)?;
+                    db.audit(&ended(&email, &old.id, "limit", old.ip.as_deref()))?;
+                    out.push(old.id.clone());
                 }
             }
             Ok(out)
@@ -344,15 +338,13 @@ async fn login(
     }
     if !ok {
         tracing::info!(%email, "sign-in refused");
-        let l = settings.lockout.clone();
         let (id, e1, c1) = (user.id.clone(), email.clone(), client.clone());
         s.with_db(move |db| {
-            let lock_ms = (l.lock_minutes * 60_000.0) as i64;
             let f = db.note_login_failure(
                 &id,
-                (l.window_minutes * 60_000.0) as i64,
-                i64::from(l.max_failures),
-                lock_ms,
+                stig::LOCKOUT_WINDOW_MS,
+                i64::from(stig::LOCKOUT_FAILURES),
+                stig::LOCK_MS,
             )?;
             db.audit(
                 &failed_login(&e1, &c1, "bad_password", How::Password)
@@ -366,7 +358,7 @@ async fn login(
                         .detail(json!({
                             "user": id,
                             "failures": f.count,
-                            "minutes": if lock_ms > 0 { json!(l.lock_minutes) } else { json!("until unlocked") },
+                            "minutes": stig::LOCK_MINUTES,
                         })),
                 )?;
             }
@@ -466,8 +458,7 @@ async fn change_password(
         ));
     }
     let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
-    let policy = s.auth.settings().password;
-    policy.check(&b.new).map_err(ApiError::unprocessable)?;
+    password::check(&b.new).map_err(ApiError::unprocessable)?;
     let email = u.email.clone();
     let Some((user, Some(hash))) = s.with_db(move |db| db.password_hash(&email)).await? else {
         return Err(ApiError::bad_request("this account has no password"));
@@ -481,33 +472,28 @@ async fn change_password(
         s.with_db(move |db| db.audit(&e)).await?;
         return Ok(unauthorized("the current password is wrong"));
     }
-    policy
-        .check_change(&b.current, &b.new)
-        .map_err(ApiError::unprocessable)?;
+    password::check_change(&b.current, &b.new).map_err(ApiError::unprocessable)?;
     let forced = user.must_change_password;
     if !forced
-        && policy.min_age_hours > 0.0
         && user
             .password_changed_at_ms
-            .is_some_and(|t| now_ms() - t < (policy.min_age_hours * 3_600_000.0) as i64)
+            .is_some_and(|t| now_ms() - t < stig::PASSWORD_MIN_AGE_MS)
     {
         return Err(ApiError::unprocessable(format!(
             "a password can change once every {} hours: ask an admin to reset it if you must",
-            policy.min_age_hours
+            stig::PASSWORD_MIN_AGE_HOURS
         )));
     }
-    if policy.history > 0 {
-        let (id, n) = (user.id.clone(), policy.history);
-        let recent = s
-            .with_db(move |db| db.recent_password_hashes(&id, n))
-            .await?;
-        let candidate = b.new.clone();
-        if blocking(move || recent.iter().any(|h| verify_password(&candidate, h))).await? {
-            return Err(ApiError::unprocessable(format!(
-                "choose a password other than your last {}",
-                policy.history
-            )));
-        }
+    let id = user.id.clone();
+    let recent = s
+        .with_db(move |db| db.recent_password_hashes(&id, stig::PASSWORD_HISTORY))
+        .await?;
+    let candidate = b.new.clone();
+    if blocking(move || recent.iter().any(|h| verify_password(&candidate, h))).await? {
+        return Err(ApiError::unprocessable(format!(
+            "choose a password other than your last {}",
+            stig::PASSWORD_HISTORY
+        )));
     }
     let new = blocking(move || hash_password(&b.new))
         .await?
@@ -564,10 +550,9 @@ async fn create_user(
     Json(b): Json<NewUser>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     check_email(&b.email)?;
-    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            policy.check(&p).map_err(ApiError::unprocessable)?;
+            password::check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -714,10 +699,9 @@ async fn reset_password(
     headers: HeaderMap,
     Json(b): Json<Reset>,
 ) -> Result<StatusCode, ApiError> {
-    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            policy.check(&p).map_err(ApiError::unprocessable)?;
+            password::check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -1607,6 +1591,80 @@ mod tests {
             .unwrap();
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts[0].actor, "root@x.org");
+    }
+
+    #[tokio::test]
+    async fn a_loosened_policy_saved_before_it_was_fixed_does_not_apply() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // A 0.4.0 pre-release saved these; the node loads them as it starts.
+        let old = json!({
+            "session_hours": 720.0,
+            "password": {"min_length": 8, "require_upper": false, "require_lower": false,
+                         "require_digit": false, "require_special": false, "history": 0},
+            "lockout": {"max_failures": 0, "window_minutes": 1.0, "lock_minutes": 0.0},
+            "sessions": {"idle_minutes": 1440.0, "admin_idle_minutes": null, "max_per_account": 0},
+            "inactivity": {"disable_after_days": 0.0, "exempt": []},
+            "audit": {"retention_days": 7.0},
+        });
+        let saved = old.clone();
+        state
+            .with_db(move |db| db.put_auth_settings(&saved))
+            .await
+            .unwrap();
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        let loaded: AuthSettings = serde_json::from_value(stored).unwrap();
+        state.auth.set_settings(loaded);
+
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let (_, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(me["idle_timeout_ms"], 10 * 60_000);
+        assert_eq!(me["password_policy"]["min_length"], 15);
+        // A 10-character password is refused.
+        let (st, body, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "w@x.org", "role": "viewer", "password": "abcdefghij" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (st, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "w@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        // Three failures lock it.
+        for _ in 0..3 {
+            let (st, _) = sign_in(&app, "w@x.org", "Wrong-Wrong-Wrong-1").await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED);
+        }
+        let (st, _) = sign_in(&app, "w@x.org", VIEW).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "locked");
+        // Saving the old document again is accepted; the retired settings
+        // are neither kept nor shown.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&admin),
+            Some(old),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        for k in ["session_hours", "password", "lockout", "sessions", "audit"] {
+            assert!(body.get(k).is_none() && stored.get(k).is_none(), "{k}");
+        }
+        assert_eq!(stored["inactivity"], json!({"exempt": []}));
     }
 
     /// An identity provider's metadata (the certificate is not checked
