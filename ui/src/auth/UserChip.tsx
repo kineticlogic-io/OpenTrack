@@ -143,8 +143,8 @@ export function UserChip() {
             <span className="num-row muted">
               Where your account is signed in.
               <InfoTip label="Sessions">
-                Each sign-in is a session. It ends when you sign out, after a time without use, at the session length, or when a newer sign-in goes past the
-                number allowed at once. End one you do not recognise, and change your password.
+                Each sign-in is a session. It ends when you sign out, after 15 minutes without use (10 for admins), 24 hours after it began, or when a
+                fourth sign-in ends the oldest of three. End one you do not recognise, and change your password.
               </InfoTip>
             </span>
             <SessionsTable />
