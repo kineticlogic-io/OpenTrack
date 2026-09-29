@@ -432,6 +432,8 @@ export interface AppSettings {
   history_interval_secs?: number | null
   /** Sharing the picture with other OpenTrack nodes. */
   sync?: SyncSettings
+  /** XYZ raster tile URL template for the maps' basemap (empty: the country outlines). Admins only: empty for anyone else. */
+  basemap_tiles_url?: string
 }
 
 /** What a producer's .proto files define (POST /protobuf/describe). */
@@ -615,6 +617,8 @@ export interface AppSettingsResponse {
   settings: AppSettings
   site_code: string
   node_id: string
+  /** Whether the maps show basemap tiles (whoever asks; the URL is an admin's). */
+  basemap_tiles: boolean
 }
 
 /** What a spreadsheet import does, row by row. */

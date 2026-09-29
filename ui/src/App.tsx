@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { TbMoon, TbSun } from 'react-icons/tb'
 import { Badge, Button, DockProvider, PageHeader, Tabs, useTheme } from 'staresdk'
 import { api, type Banner, type ServerStatus } from './api/client'
+import { BasemapCtx } from './lib/basemap'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
 import { UserChip } from './auth/UserChip'
@@ -49,13 +50,20 @@ export default function App() {
   useEffect(() => {
     api.status().then(setStatus, () => setStatus(null))
   }, [])
-  // Site name and classification banner (Settings), this instance's own.
+  // Site name, classification banner and whether the maps have basemap tiles (Settings), this instance's own.
   const [siteName, setSiteName] = useState('')
+  const [basemapTiles, setBasemapTiles] = useState(false)
   const [banner, setBanner] = useState<Banner | null>(null)
   const [settingsRev, setSettingsRev] = useState(0)
   useEffect(() => {
     const load = () => {
-      api.appSettings().then((r) => setSiteName(r.settings.site_name), () => {})
+      api.appSettings().then(
+        (r) => {
+          setSiteName(r.settings.site_name)
+          setBasemapTiles(r.basemap_tiles === true)
+        },
+        () => {},
+      )
       api.banner().then((b) => setBanner(b.enabled ? b : null), () => {})
     }
     load()
@@ -68,6 +76,7 @@ export default function App() {
 
   return (
     <DockProvider>
+      <BasemapCtx.Provider value={basemapTiles}>
       {banner && (
         <>
           <div className="classification-bar top" style={{ background: banner.background, color: banner.color }}>
@@ -116,6 +125,7 @@ export default function App() {
           </Suspense>
         </main>
       </div>
+      </BasemapCtx.Provider>
     </DockProvider>
   )
 }

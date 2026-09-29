@@ -37,6 +37,9 @@ const CONFIG_IMPORT_INFO =
   'registry, plugins or saved settings, no account but its first admin, and no earlier import). Everything is imported or nothing is. The ' +
   'imported accounts replace the first admin, so you sign in again with one of them.'
 
+const BASEMAP_HINT =
+  'An XYZ tile URL, such as https://tiles.example/{z}/{x}/{y}.png. OpenTrack fetches the tiles for the browser. Empty: the built-in country outlines.'
+
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="settings-row">
@@ -172,6 +175,22 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
               </InfoTip>
               {historyEstimate && <span className="muted">≈ {historyEstimate} per 1,000 tracks</span>}
             </div>
+          </Row>
+          <Row label="Basemap tiles" hint={BASEMAP_HINT}>
+            {admin ? (
+              <Input
+                style={{ ...INPUT, width: 420 }}
+                aria-label="Basemap tiles URL"
+                placeholder="https://tiles.example/{z}/{x}/{y}.png"
+                value={draft.basemap_tiles_url ?? ''}
+                maxLength={2048}
+                onChange={(e) => setDraft({ ...draft, basemap_tiles_url: e.target.value })}
+              />
+            ) : (
+              <Badge color={loaded.basemap_tiles ? 'success' : 'grey'} size="sm">
+                {loaded.basemap_tiles ? 'on' : 'off'}
+              </Badge>
+            )}
           </Row>
         </div>
         <PluginsSection />

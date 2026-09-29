@@ -8,6 +8,7 @@ import { fmtNum } from '../../lib/format'
 import { affiliationColor } from '../../lib/palette'
 import { PIPELINE_COUNTS_INFO } from '../../lib/sourceState'
 import { InfoTip } from '../../components/InfoTip'
+import { useBasemapTiles } from '../../lib/basemap'
 
 const OUTLINES = '/world-110m.geo.json'
 
@@ -49,6 +50,7 @@ const COLUMNS: DataTableColumn<PreviewObservation>[] = [
 
 /** Counts, errors, observations and a map for a dry run. */
 export function PreviewResults({ result, showMap = true }: { result: PreviewResult; showMap?: boolean }) {
+  const tiles = useBasemapTiles()
   const [selected, setSelected] = useState<string | null>(null)
   const observations = useMemo(() => result.observations ?? [], [result])
   // Several observations of one track: keep the latest per key for table and map.
@@ -99,6 +101,7 @@ export function PreviewResults({ result, showMap = true }: { result: PreviewResu
         selectedId={selected}
         onSelect={setSelected}
         outlines={OUTLINES}
+        tiles={tiles}
         fitKey={latest.length > 0 ? 'fit' : 'empty'}
         height={220}
       />
