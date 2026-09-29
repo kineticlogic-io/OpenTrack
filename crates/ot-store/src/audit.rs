@@ -6,8 +6,8 @@
 //! detail, decision_id]` with `detail` as the exact text stored. Changing,
 //! removing or inserting a row breaks the chain from there on, which
 //! [`Db::verify_audit`] finds. Rows are never updated or deleted (triggers
-//! refuse it): the record is kept forever. A database purged by a 0.4.0
-//! pre-release's retention setting keeps the last purged row's hash as the
+//! refuse it): the record is kept forever. A database purged by 0.4.0
+//! (alpha)'s retention setting keeps the last purged row's hash as the
 //! anchor the chain continues from, and the purge's own row.
 
 use aws_lc_rs::digest;
@@ -103,7 +103,7 @@ pub struct AuditVerify {
     pub last_seq: Option<i64>,
     /// The newest row's hash: note it elsewhere to detect a cut-off tail.
     pub head_hash: String,
-    /// Where the chain starts after a retention purge (0.4.0 pre-releases).
+    /// Where the chain starts after a retention purge (0.4.0 alpha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
     /// The first problems found (at most 20), by sequence number.
@@ -526,7 +526,7 @@ mod tests {
         Db::open_in_memory().unwrap()
     }
 
-    /// What a retention purge in 0.4.0 pre-releases did (the record is
+    /// What a retention purge in 0.4.0 alpha did (the record is
     /// now kept forever): a database purged then must still verify.
     impl Db {
         /// Delete rows older than `before_ms` (retention), keeping the chain

@@ -1599,7 +1599,7 @@ mod tests {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
         };
-        // A 0.4.0 pre-release saved these; the node loads them as it starts.
+        // 0.4.0 (alpha) saved these; the node loads them as it starts.
         let old = json!({
             "session_hours": 720.0,
             "password": {"min_length": 8, "require_upper": false, "require_lower": false,

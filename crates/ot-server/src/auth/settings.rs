@@ -22,7 +22,7 @@ pub struct AuthSettings {
     /// Break-glass accounts inactivity never turns off.
     pub inactivity: InactivityPolicy,
     /// Settings saved before the account policy was fixed (0.4.0
-    /// pre-releases): read and ignored, never written.
+    /// alpha): read and ignored, never written.
     #[serde(rename = "session_hours", skip_serializing)]
     pub retired_session_hours: Retired,
     #[serde(rename = "password", skip_serializing)]
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn settings_saved_before_the_policy_was_fixed_still_load() {
-        // A 0.4.0 pre-release document, the policy loosened throughout.
+        // A 0.4.0 (alpha) document, the policy loosened throughout.
         let old = serde_json::json!({
             "session_hours": 720.0,
             "password": {"min_length": 8, "require_upper": false, "history": 0},

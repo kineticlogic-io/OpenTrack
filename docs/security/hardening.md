@@ -44,27 +44,28 @@ TLS runs only FIPS-approved suites (docs/security/fips.md).
   unless the identity provider should make admins.
 - **Local accounts:** SAML never signs in to a local account (a matching email is refused), so
   keep local accounts to break-glass and service use.
-- **Password sign-in:** with single sign-on in place, consider **Disable password sign-in**. Keep
-  one break-glass local admin, exempt from inactivity (**Never turn off**).
+- **Password sign-in:** with single sign-on in place, consider turning **Password sign-in** off
+  (Settings → Security → Single sign-on). Keep one break-glass local admin, with **Never turn
+  off** on its row in Settings → Users so inactivity doesn't turn it off.
 - **Notice and consent:** turn on the DoD notice and consent banner (Settings → Banners) with
   your standard text, and the classification banner.
 
-## Keep the defaults
+## Fixed values
 
-The STIG values are the defaults in **Settings → Security**:
+The account policy is fixed at the STIG values; there is nothing to set:
 - **Passwords:** 15 characters or more, all four character classes, 8 characters changed, 5
   remembered, a minimum age of 24 h and a maximum of 60 days.
 - **Lockout:** 3 failures in 15 minutes lock the account for 15 minutes.
-- **Sessions:** idle timeout 15 minutes (admins 10), 3 per account.
-- **Inactivity:** accounts are turned off after 35 days.
-
-Loosening any of them needs a documented risk acceptance.
+- **Sessions:** idle timeout 15 minutes (admins 10), 3 per account, 24 hours at most.
+- **Inactivity:** accounts are turned off after 35 days, except those marked **Never turn off**.
+- **Audit record:** kept forever.
 
 ## Operate
 
-- **Review the audit record** (Settings → Audit) at the interval your plan sets. Run **Verify
-  chain**. Export CSV for your SIEM, or ship the JSON logs (`OT_LOG_FORMAT=json`), which also carry
-  the hourly chain head.
+- **Review the audit record** at the interval your plan sets, in your SIEM: ship the JSON logs
+  (`OT_LOG_FORMAT=json`). Every audit row is logged as an `audit record` event (target `audit`),
+  and the hourly chain head is logged too. The API gives the record itself to admins
+  (`GET /api/v1/audit`, CSV with `format=csv`); check the chain with `GET /api/v1/audit/verify`.
 - **Keep logs off the host.** A copy of the chain head outside the database is what shows that
   the audit tail was cut.
 - **Back up** SQLite with `sqlite3 .backup` (online), and Redis. Protect backups like the data

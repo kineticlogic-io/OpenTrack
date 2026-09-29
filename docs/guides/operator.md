@@ -38,15 +38,15 @@ one.
 After you sign in, a notice says when you last signed in and how many failed attempts there have
 been since. If you don't recognise them, tell your administrator.
 
-Some things your site's security rules may ask of you:
+OpenTrack's security rules (fixed, from the DoD application security STIG) ask this of you:
 - **Change your password.** When your password has expired, or an administrator has just set it,
   OpenTrack asks for a new one before anything else. It needs 15 characters or more, with upper
   and lower case, a digit and a special character. It can't be one of your last five, and at
   least 8 characters must differ from the old one.
 - **Sign in again after a break.** A session you haven't used for 15 minutes ends (10 for
-  admins).
-- **Wait after failed attempts.** Three wrong passwords in a row lock your account for 15 minutes,
-  or until an administrator unlocks it.
+  admins), and every session ends 24 hours after you signed in.
+- **Wait after failed attempts.** Three wrong passwords within 15 minutes lock your account for 15
+  minutes. An administrator can unlock it sooner.
 - **See your sessions** under **Sessions** in the account menu (top right), and end any you don't
   recognise.
 

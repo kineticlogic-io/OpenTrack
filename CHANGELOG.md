@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The account policy is fixed at the STIG values**, no longer a setting: passwords of 15
+  characters or more with upper, lower, digit and special, 5 remembered, 8 characters changed, a
+  24 h minimum and 60 day maximum age; 3 failed sign-ins within 15 minutes lock an account for 15
+  minutes; sessions end after 15 minutes idle (10 for admins) and 24 hours at most, 3 per account;
+  accounts not signed in for 35 days are turned off. The audit record is kept forever: the
+  retention setting and its purge are gone. `/api/v1/auth/settings` no longer has
+  `session_hours`, `password`, `lockout`, `sessions`, `audit` or `inactivity.disable_after_days`;
+  saved settings and configuration files that still have them load, and those are ignored and
+  dropped. Settings → Security loses the Sign-in, Password policy and Lockout and inactivity panels.
+- **Settings → Security → Single sign-on:** SAML, OpenStare sign-in, client certificates and the
+  Password sign-in switch are one panel with one Save.
+- **Settings → Users → Never turn off:** break-glass accounts inactivity never turns off are
+  marked on their row (still stored as `inactivity.exempt`). The all-sessions panel is gone; the
+  account menu's own sessions and **Sign out everywhere** stay.
+- **The audit record is reviewed in the server logs**: every row is also logged as an `audit
+  record` event (target `audit`, with seq, actor, op, outcome, ip, detail, decision id and hash;
+  a decision's before and after stay out of the log). Settings → Audit is gone;
+  `GET /api/v1/audit` and `/api/v1/audit/verify` stay, for admins.
 - **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
   along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
 - **Track numbers are never issued twice after a restore** (#16): on start, before issuing any, the

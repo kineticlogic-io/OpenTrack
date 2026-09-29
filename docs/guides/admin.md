@@ -344,8 +344,8 @@ password.
 
 ### Adding accounts
 
-In **Settings → Users**, **Add account**: email, name, role, and a password of at least 8
-characters. Leave the password empty for an account that signs in only with single sign-on.
+In **Settings → Users**, **Add account**: email, name, role, and a password that meets the
+[password policy](#password-policy). Leave the password empty for an account that signs in only with single sign-on.
 Accounts that SAML makes appear here on their first sign-on, with the origin `saml`. From the
 command line: `opentrack user add`.
 
@@ -408,7 +408,8 @@ user passwd` also ends them (turning an account off and on again does not: its t
 **Settings → Users** (admins only) has two tables:
 - **Users**: email, name, role (change it in place; a `saml` account's comes from the identity
   provider, see [SAML](#saml)), origin (`local` or `saml`; **SSO** means no password), active,
-  last sign-in, and the password, sign-out and delete buttons.
+  **Never turn off** (a break-glass account, which [inactivity](#inactive-accounts) never turns
+  off), state, last sign-in, and the password, sign-out and delete buttons.
 - **API tokens**: name, the account it acts as, who made it, when, when it expires, and its state
   (active, expired, revoked).
 
@@ -416,20 +417,21 @@ user passwd` also ends them (turning an account off and on again does not: its t
 
 OpenTrack accepts several ways of signing in at once. For each request it tries, in order: a client
 certificate, an API token, its own session cookie, then (when trusted) OpenStare's session or
-token. Settings → Security holds the sign-in settings; changes take effect at once and go in the
-decision log.
+token. The **Single sign-on** panel in Settings → Security holds the sign-in settings, in one form
+with one **Save**: the **Password sign-in** switch, then a section each for SAML, OpenStare sign-in
+and client certificates. Changes take effect at once and go in the decision log.
 
 ### Password sign-in
 
 Local accounts sign in with email and password at `/login`. The session is a signed `ot_session`
-cookie (HttpOnly, SameSite=Lax, and Secure over TLS).
+cookie (HttpOnly, SameSite=Strict, and Secure over TLS). It lasts at most 24 hours; see
+[Session limits](#session-limits).
 
-In the **Sign-in** panel:
-- **Session length (hours):** how long a sign-in lasts, 0.25 to 720. Empty means 24.
-- **Password sign-in:** off means accounts sign in only with SAML or OpenStare. You can turn it off
-  only when one of those is on, and not from a session that signed in with a password, so a working
-  way back is proven first: turn it off while signed in by SAML (keeping SAML on in the same save),
-  through OpenStare, or with an admin's API token (`PUT /api/v1/auth/settings`).
+**Password sign-in**, at the top of the Single sign-on panel: off means accounts sign in only with
+SAML or OpenStare. You can turn it off only when one of those is on, and not from a session that
+signed in with a password, so a working way back is proven first: turn it off while signed in by
+SAML (keeping SAML on in the same save), through OpenStare, or with an admin's API token
+(`PUT /api/v1/auth/settings`).
 
 ### SAML
 
@@ -439,7 +441,7 @@ signed response with the HTTP-POST binding. Sign-on started at the identity prov
 supported.
 
 1. **Set `OT_PUBLIC_URL`** to the address browsers use, such as `https://opentrack.example.org`,
-   and restart. The **Service provider** row in Settings → Security then shows the two addresses
+   and restart. The **Service provider** row in the Single sign-on panel's SAML section then shows the two addresses
    the identity provider needs:
    - entity ID and metadata: `<OT_PUBLIC_URL>/api/v1/auth/saml/metadata`
    - assertion consumer service (ACS): `<OT_PUBLIC_URL>/api/v1/auth/saml/acs`
@@ -499,7 +501,7 @@ For each, OpenTrack asks OpenStare's `/api/auth/me` who it is, and keeps the ans
 seconds. So an OpenStare sign-out or revocation holds here within 30 seconds. No OpenTrack
 account is made; the decision log records the user's OpenStare email.
 
-In the **OpenStare sign-in** panel:
+In the Single sign-on panel's **OpenStare sign-in** section:
 - **API URL:** OpenStare's API as the OpenTrack server reaches it. Default `http://127.0.0.1:3001`.
 - **Sign-in page URL:** OpenStare's sign-in page as browsers reach it. It puts a "Sign in with
   OpenStare" button on OpenTrack's sign-in page. Empty: no button.
@@ -513,7 +515,7 @@ With mutual TLS, a machine can sign in with its certificate alone.
 
 1. Serve over TLS with a client CA: `OT_TLS_CERT`, `OT_TLS_KEY` and `OT_TLS_CLIENT_CA`.
 2. Make an account for the machine (with no password), with the role it needs.
-3. In **Client certificates**, add a row: the certificate subject's common name (CN), and the
+3. In the Single sign-on panel's **Client certificates** section, add a row: the certificate subject's common name (CN), and the
    account's email. Save.
 
 A certificate the CA signed whose CN is listed signs in as that account, while the account is
@@ -577,8 +579,9 @@ settings, plugins and exports, but can't change them.
 |---|---|---|
 | **Instance** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. | |
 | **Banners** | Classification banner and warning banner. | [Banners](#banners) |
-| **Users**, **API tokens** | Accounts and machine tokens (admins only). | [Users](#users) |
-| **Sign-in**, **SAML single sign-on**, **OpenStare sign-in**, **Client certificates** | The sign-in settings (admins only). | [Sign-in](#sign-in) |
+| **Users**, **API tokens** | Accounts, with the break-glass ones marked **Never turn off**, and machine tokens (admins only). | [Users](#users) |
+| **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
+| **Security labels** | The classification order a fused track's label is chosen by (admins only). | [Security labels](#security-labels) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
 | **Plugins** | Codec, tracker and scorer plugins. | [Plugins](#plugins) |
 | **Data export** | Live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. | [Configuration export](#configuration-export) |
@@ -734,7 +737,7 @@ What it holds (the file's sections):
 | `schema_versions` | Every output schema version (`version`, `status`, `published_at_ms`, `notes`, `fields`), the draft too. |
 | `correlation_settings` | The saved correlation settings, security labels included (`null`: never saved). |
 | `app_settings` | The instance settings as saved (site name, banners, position history, nodes), `{}` if never saved. |
-| `auth_settings` | The sign-in settings as saved: SAML, OpenStare trust, client certificate mappings, and the password, lockout, session, inactivity and audit policies. |
+| `auth_settings` | The sign-in settings as saved: password sign-in, SAML, OpenStare trust, client certificate mappings, and the accounts inactivity never turns off. A file from 0.4.0 may also have password, lockout, session, inactivity-period and audit-retention settings: they import, and are ignored (those values are fixed). |
 | `accounts` | Every account: `id`, `email`, `name`, `role`, `active`, `origin`, `password_hash`, `password_history`, `password_changed_at_ms`, `must_change_password`, `locked_until_ms`, `last_login_at_ms` and the other account dates. |
 | `api_tokens` | Every API token's record: `jti`, `name`, `user_id`, `created_by`, `expires_at_ms`, `revoked_at_ms`. Not the tokens themselves, which are never stored. |
 | `registry.entities` | Every entity as the registry API shapes it: identifiers, status, publish override, the OTH-GOLD minimum and attributes. |
@@ -905,6 +908,7 @@ error.
 
 OpenTrack logs to standard output (`docker compose logs -f opentrack`). Set `OT_LOG_FORMAT=json`
 for a log collector, and `OT_LOG` for more or less detail ([Logging](#logging)). Worth watching:
+- `audit record` (target `audit`): every audit row, see [Audit record](#audit-record);
 - `SAML sign-on refused` and `sign-in refused`;
 - `OpenStare sign-in check failed`;
 - a source's connection errors;
@@ -956,8 +960,10 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 ### Security hardening (0.4.0)
 
 0.4.0 is the accreditation release, aimed at DoD RMF with the ASD STIG and NIST 800-53 Moderate.
-Each control below is on by default, with the STIG value. You can change them in **Settings →
-Security**. How each one maps to a control is in
+Each control below is always on, at the STIG value: the password policy, lockout, session limits,
+inactivity and audit retention are fixed, not settings. What an admin sets is the break-glass
+accounts (**Never turn off** in Settings → Users) and sign-in itself (the **Single sign-on**
+panel). How each one maps to a control is in
 [docs/security/stig-mapping.md](../security/stig-mapping.md). Deployment steps are in
 [docs/security/hardening.md](../security/hardening.md).
 
@@ -973,7 +979,7 @@ the image. Details: [docs/security/fips.md](../security/fips.md).
 
 For local accounts:
 
-| Setting | Default |
+| Rule | Value |
 |---|---|
 | Minimum length | 15 |
 | Upper case, lower case, digit, special character | all required |
@@ -988,10 +994,9 @@ includes the one in `initial-admin.txt`, and `OT_ADMIN_PASSWORD` must already me
 
 ### Account lockout
 
-Three failed sign-ins within 15 minutes lock an account for 15 minutes. Set the lock time to 0 to
-keep it locked until an admin unlocks it. Every refusal gives the same answer, "wrong email or
+Three failed sign-ins within 15 minutes lock an account for 15 minutes. Every refusal gives the same answer, "wrong email or
 password", whether the account is unknown, turned off, locked or the password is wrong. The
-audit record keeps the real reason. To unlock an account:
+audit record keeps the real reason. To unlock an account sooner:
 - **Settings → Users:** the open-lock button on its row;
 - **command line:** `opentrack user unlock <email>`;
 - **API:** `POST /api/v1/auth/users/{id}/unlock`.
@@ -1000,18 +1005,20 @@ audit record keeps the real reason. To unlock an account:
 
 - **Idle timeout:** 15 minutes, or 10 for admins. The page's own refreshing doesn't count as use;
   only what the user does.
-- **Absolute lifetime:** the session length (24 hours by default).
+- **Absolute lifetime:** 24 hours, used or not.
 - **Sessions per account:** 3. A fourth sign-in ends the oldest.
 
-Users see and end their own sessions from the account menu, under **Sessions**. Admins see
-everyone's in **Settings → Users → Sessions**. Sessions are kept per node. API tokens aren't
+Users see and end their own sessions from the account menu, under **Sessions**. An admin ends all
+of an account's sessions with **Sign out everywhere** on its row in Settings → Users
+([Revoking sessions](#revoking-sessions)). Sessions are kept per node. API tokens aren't
 sessions: they have no idle timeout, only their expiry.
 
 ### Inactive accounts
 
 Accounts that haven't signed in for 35 days are turned off. The check runs at sign-in and every
-10 minutes. Re-enabling an account restarts its clock. List break-glass accounts under
-**Never turn off**. Otherwise a sole admin who doesn't sign in for 35 days is turned off too, and only
+10 minutes. Re-enabling an account restarts its clock. Mark break-glass accounts with **Never
+turn off** on their row in Settings → Users (keep them few, with sealed passwords). Otherwise a
+sole admin who doesn't sign in for 35 days is turned off too, and only
 `opentrack user enable <email>` on the server brings the account back.
 
 After each sign-in, users see when they last signed in and how many failed attempts there were
@@ -1027,12 +1034,20 @@ decision log records:
 
 Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
 the chain. The database refuses updates to the table.
-- **Review:** **Settings → Audit**. Filter by time, account, event and outcome, export as CSV, or
-  choose **Verify chain**. The API is `GET /api/v1/audit` (with `format=csv`) and
-  `GET /api/v1/audit/verify`.
+- **Review in the server logs:** every row is also logged, once written, as an `audit record`
+  event (target `audit`) with its `seq`, `actor`, `op`, `outcome`, `ip`, `detail`, `decision_id`
+  and `hash`. Set `OT_LOG_FORMAT=json` and ship the log to your SIEM. A decision's `before` and
+  `after` (the configuration it changed, which can hold source credentials) are left out of the
+  log; its `decision_id` finds them in the API. For example:
+
+  ```json
+  {"timestamp":"2026-09-29T14:02:11.418220Z","level":"INFO","fields":{"message":"audit record","seq":4182,"actor":"ann@example.org","op":"login","outcome":"failure","ip":"10.1.2.3","detail":"{\"consecutive\":2,\"reason\":\"bad_password\",\"via\":\"password\"}","hash":"55e122e2f66b7312482b6dd6624afe22e3c4f0d6f1b44c29cb1333c1a32c5d84"},"target":"audit"}
+  ```
+- **Review through the API** (admins): `GET /api/v1/audit` filters by time (`from_ms`, `to_ms`),
+  account (`actor`), event (`op`, comma-separated) and `outcome`, pages back with `before_seq`,
+  and gives CSV with `format=csv`. `GET /api/v1/audit/verify` checks the chain.
 - **Fail closed:** if a sign-in can't be recorded, it is refused.
-- **Retention:** kept forever by default. With a retention period set, older rows are purged and
-  the purge itself is recorded, so the chain still verifies.
+- **Retention:** kept forever. Nothing deletes rows.
 - **Chain head:** written to the log every hour. Keep the logs apart from the database, so that a
   truncated tail can be spotted.
 
