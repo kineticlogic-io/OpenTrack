@@ -589,6 +589,38 @@ fn write_revision(tx: &Transaction<'_>, e: &Entity, now: i64, decision_id: i64) 
     Ok(())
 }
 
+/// Write an entity as a configuration import restores it: its row (as it
+/// was last updated), its identifiers and a revision under the import's
+/// decision. An identifier another entity holds fails the import.
+pub(crate) fn restore_entity(
+    tx: &Transaction<'_>,
+    e: &Entity,
+    decision_id: i64,
+    now: i64,
+) -> Result<()> {
+    let at = if e.updated_at_ms > 0 {
+        e.updated_at_ms
+    } else {
+        now
+    };
+    write_row(tx, e, at)?;
+    for i in &e.identifiers {
+        if let Some(h) = holder(tx, i)? {
+            return Err(StoreError::Conflict(format!(
+                "{} is listed by entities {h} and {}",
+                i.label(),
+                e.id
+            )));
+        }
+        tx.execute(
+            "INSERT INTO registry_identifiers (scheme, value, entity_id, expected_name, source, added_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![i.scheme, i.value, e.id, i.expected_name, i.source, at],
+        )?;
+    }
+    write_revision(tx, e, now, decision_id)
+}
+
 impl Db {
     pub fn entity(&self, id: &str) -> Result<Option<Entity>> {
         load(self.connection(), id)
