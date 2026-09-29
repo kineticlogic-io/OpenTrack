@@ -564,8 +564,10 @@ appear in TAK (ATAK, WinTAK, iTAK, and TAK Server's users), as the same tracks O
 - Its details show course and speed, the position error as its circular error, and (when the admin
   turned remarks on) the track number and the sources reporting it.
 - It moves as OpenTrack updates it (at most every few seconds). A track that ends, is deleted or
-  merged away, or stops being published disappears from TAK at once. If OpenTrack stops sending,
-  its tracks go stale in TAK (by default after a minute) and disappear.
+  merged away, or stops being published disappears from TAK at once. A track that stops
+  reporting goes stale in TAK a minute (by default) after its last report and disappears, even
+  while OpenTrack still shows it as lost; it comes back when it reports again. TAK shows each
+  track's time as its last report, not when it was sent.
 - Only tracks: no lines of bearing, areas, history or group drawings. TAK users' own markers and
   positions do not come back into OpenTrack.
 

@@ -28,15 +28,18 @@ fn out(id: &str, delivery: Delivery) -> TakOutput {
     }
 }
 
+/// A track reported just now (the output sends nothing past its stale time).
 fn cot(n: u64, lat: f64) -> CotTrack {
-    CotTrack::of(&track(
+    let mut c = CotTrack::of(&track(
         n,
         serde_json::json!({
             "name": format!("TRACK {n}"),
             "position": {"latitude": lat, "longitude": -117.0},
             "classification": {"affiliation": "hostile", "domain": "air"}
         }),
-    ))
+    ));
+    c.observed_at = chrono::Utc::now();
+    c
 }
 
 fn hub_with(tracks: &[CotTrack]) -> Arc<Hub> {
@@ -379,6 +382,54 @@ async fn sends_multicast_sa() {
         return;
     }
     udp_round_trip(&group.to_string(), receiver).await;
+}
+
+#[tokio::test]
+async fn a_track_whose_reports_stopped_is_not_in_the_picture() {
+    // Track 1 reported 10 minutes ago (the output's stale time is 60 s); track 2 just now.
+    let mut old = cot(1, 32.0);
+    old.observed_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    let addr = free_port();
+    let hub = hub_with(&[old.clone(), cot(2, 33.0)]);
+    let (_counters, task) = start(
+        out(
+            "eud",
+            Delivery::Listen {
+                bind: addr.to_string(),
+                tls: None,
+            },
+        ),
+        &hub,
+    );
+    let stream = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Ok(c) = tokio::net::TcpStream::connect(addr).await {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut client = Events::new(stream);
+    let first = client.next().await;
+    assert_eq!(
+        first[0].1["uid"], "tms-OTK000000002",
+        "only the track still reporting"
+    );
+    // Timed at its report, not at the send.
+    let time: chrono::DateTime<chrono::Utc> = first[0].1["time"].parse().unwrap();
+    assert!(chrono::Utc::now() - time < chrono::Duration::seconds(5));
+    // An update of the silent track changes nothing either (its report is still 10 minutes old)…
+    hub.upsert(old);
+    // …while a new report brings it back.
+    hub.upsert(cot(1, 32.5));
+    let back = client.until("tms-OTK000000001", "a-").await;
+    assert_eq!(
+        back.iter().find(|(n, _)| n == "point").unwrap().1["lat"],
+        "32.5"
+    );
+    task.abort();
 }
 
 #[tokio::test]

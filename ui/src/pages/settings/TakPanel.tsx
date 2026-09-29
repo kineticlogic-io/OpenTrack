@@ -88,7 +88,7 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
         </Row>
         <Row
           label="Stale after"
-          hint="Seconds after each event that TAK treats a track as stale and removes it if it hears nothing more (CoT stale time), 10 to 86400; 60 by default. OpenTrack sends each live track again every half of this, so a live track never goes stale, and a track OpenTrack stops sending (the output or OpenTrack stopped) disappears from TAK within this time."
+          hint="Seconds after a track's last report that TAK treats it as stale and removes it (CoT stale time), 10 to 86400; 60 by default. OpenTrack re-sends a track every half of this until then and then stops, so a track that stops reporting leaves TAK this long after its last report, and comes back when it reports again. Events are timed at the last report, not at sending."
         >
           <div className="num-row">
             <NumberInput label="Stale seconds" value={o.stale_secs} onChange={(stale_secs) => setO({ ...o, stale_secs })} min={10} max={86400} />
@@ -314,7 +314,7 @@ export function TakPanel({
       titleActions={
         <InfoTip label="TAK output">
           The published tracks, as Cursor-on-Target events, to TAK: every track OpenTrack publishes to NATS becomes a TAK track (its SIDC or affiliation and
-          domain as the symbol, its name or callsign, course, speed and position error), refreshed before it goes stale, and removed from TAK when it ends. The
+          domain as the symbol, its name or callsign, course, speed and position error), timed at its last report and refreshed until it goes stale, and removed from TAK when it ends. The
           opentrack cot role sends them (opentrack all runs it). Add, change or turn off outputs here, then save: they apply within a few seconds.
         </InfoTip>
       }

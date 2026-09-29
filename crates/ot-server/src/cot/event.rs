@@ -201,12 +201,31 @@ fn point(w: &mut Writer<Vec<u8>>, lat: f64, lon: f64, hae: f64, ce: f64, le: f64
     );
 }
 
-/// A track's event, sent at `now` and stale `stale` later. `remarks`: add
-/// the remarks (track number and sources).
-pub fn event_xml(t: &CotTrack, now: DateTime<Utc>, stale: Duration, remarks: bool) -> Vec<u8> {
+/// A track's event: timed at its last report (never later than `now`, for a
+/// source whose clock runs ahead) and stale `stale` after it, so TAK lets a
+/// track go when its reports stop, however often it is re-sent. `None` once
+/// that is past: nothing to send. `remarks`: add the remarks (track number
+/// and sources).
+pub fn event_xml(
+    t: &CotTrack,
+    now: DateTime<Utc>,
+    stale: Duration,
+    remarks: bool,
+) -> Option<Vec<u8>> {
+    let seen = t.observed_at.min(now);
+    let stale_at = seen + chrono::Duration::from_std(stale).unwrap_or(chrono::Duration::MAX);
+    if stale_at <= now {
+        return None;
+    }
     let mut w = Writer::new(Vec::with_capacity(512));
-    let stale_at = now + chrono::Duration::from_std(stale).unwrap_or(chrono::Duration::MAX);
-    start(&mut w, &event_uid(t.uid), &t.cot_type, "m-f", now, stale_at);
+    start(
+        &mut w,
+        &event_uid(t.uid),
+        &t.cot_type,
+        "m-f",
+        seen,
+        stale_at,
+    );
     point(
         &mut w,
         t.lat,
@@ -239,7 +258,7 @@ pub fn event_xml(t: &CotTrack, now: DateTime<Utc>, stale: Duration, remarks: boo
     }
     write(&mut w, Event::End(BytesEnd::new("detail")));
     write(&mut w, Event::End(BytesEnd::new("event")));
-    w.into_inner()
+    Some(w.into_inner())
 }
 
 /// The delete for a track that ended: `t-x-d-d`, linking to the track's uid
@@ -366,14 +385,14 @@ pub(crate) mod tests {
             source_id: "radar-1".into(),
             ..t.contributors[0].clone()
         });
-        let xml = event_xml(&CotTrack::of(&t), at(), Duration::from_secs(60), true);
+        let xml = event_xml(&CotTrack::of(&t), at(), Duration::from_secs(60), true).unwrap();
         let text = String::from_utf8(xml.clone()).unwrap();
         assert_eq!(
             text,
             concat!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
                 r#"<event version="2.0" uid="tms-OTK000000001" type="a-f-S-C-L-D-D" how="m-f" "#,
-                r#"time="2026-09-29T12:00:05.250Z" start="2026-09-29T12:00:05.250Z" stale="2026-09-29T12:01:05.250Z">"#,
+                r#"time="2026-09-29T12:00:00.000Z" start="2026-09-29T12:00:00.000Z" stale="2026-09-29T12:01:00.000Z">"#,
                 r#"<point lat="32.68" lon="-117.23" hae="12.5" ce="100.0" le="20.0"/>"#,
                 r#"<detail><track course="270.0" speed="5.00"/><contact callsign="TED STEVENS"/>"#,
                 r#"<remarks>OpenTrack OTK000000001; sources: ais, radar-1</remarks></detail></event>"#,
@@ -385,12 +404,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_event_is_timed_at_the_last_report_and_goes_stale_after_it() {
+        let c = CotTrack::of(&track(4, serde_json::json!({})));
+        let stale = Duration::from_secs(60);
+        let times = |now: &str| {
+            event_xml(&c, now.parse().unwrap(), stale, false).map(|xml| {
+                let e = parse(&xml)[0].1.clone();
+                (e["time"].clone(), e["start"].clone(), e["stale"].clone())
+            })
+        };
+        // Re-sent 50 s after the report: still the report's times, not the send time.
+        let at_report = (
+            "2026-09-29T12:00:00.000Z".to_string(),
+            "2026-09-29T12:00:00.000Z".to_string(),
+            "2026-09-29T12:01:00.000Z".to_string(),
+        );
+        assert_eq!(times("2026-09-29T12:00:50Z"), Some(at_report));
+        // Past its stale time: nothing to send, however long the track stays live.
+        assert_eq!(times("2026-09-29T12:01:00Z"), None);
+        assert_eq!(times("2026-09-29T17:00:00Z"), None);
+        // A report stamped ahead of this clock is timed now, not in the future.
+        let early = times("2026-09-29T11:59:30Z").unwrap();
+        assert_eq!(
+            (early.0.as_str(), early.2.as_str()),
+            ("2026-09-29T11:59:30.000Z", "2026-09-29T12:00:30.000Z")
+        );
+    }
+
+    #[test]
     fn unknowns_use_cot_conventions() {
         let t = track(2, serde_json::json!({}));
         let c = CotTrack::of(&t);
         assert_eq!(c.cot_type, "a-u-G");
         assert_eq!(c.callsign, "OTK000000002");
-        let xml = event_xml(&c, at(), Duration::from_secs(30), false);
+        let xml = event_xml(&c, at(), Duration::from_secs(30), false).unwrap();
         let parsed = parse(&xml);
         let point = &parsed.iter().find(|(n, _)| n == "point").unwrap().1;
         assert_eq!(
@@ -402,7 +449,7 @@ pub(crate) mod tests {
             ("9999999.0", "9999999.0", "9999999.0")
         );
         assert!(parsed.iter().all(|(n, _)| n != "track" && n != "remarks"));
-        assert_eq!(parsed[0].1["stale"], "2026-09-29T12:00:35.250Z");
+        assert_eq!(parsed[0].1["stale"], "2026-09-29T12:00:30.000Z");
     }
 
     #[test]
@@ -410,7 +457,7 @@ pub(crate) mod tests {
         let mut c = CotTrack::of(&track(3, serde_json::json!({})));
         c.callsign = r#"A<B>&"C" 'D'"#.into();
         c.remarks = "x < y & z > w ]]>".into();
-        let xml = event_xml(&c, at(), Duration::from_secs(60), true);
+        let xml = event_xml(&c, at(), Duration::from_secs(60), true).unwrap();
         let text = String::from_utf8(xml.clone()).unwrap();
         assert!(!text.contains("A<B>"), "{text}");
         let parsed = parse(&xml);

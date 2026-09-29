@@ -29,7 +29,8 @@ OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (
 - **Events:** `uid` `tms-<UID>`, `type` from the SIDC (2525C with function id, 2525D identity and
   symbol set, or a CoT type) or affiliation and domain, `how` `m-f`, `ce`/`le` from the position
   error (`9999999` unknown), course, speed, callsign, optional remarks (track number, sources);
-  refreshed every half of the stale time (default 60 s). Ends are `t-x-d-d` deletes with a `link`
+  timed at the track's last report, stale 60 s (by default) after it, and re-sent every
+  half of it until then, so a track that stops reporting leaves TAK instead of looking current. Ends are `t-x-d-d` deletes with a `link`
   to the uid and `__forcedelete`, stale at once. No label handling: tracks go out as they are.
 - **Status and metrics:** `GET /api/v1/tak/status` and the panel (state, clients, events, errors,
   TLS or plaintext); `cot` in `/api/v1/metrics` (`sent`, `errors`, `dropped`, `clients`, per

@@ -133,8 +133,10 @@ impl Render {
         }
     }
 
-    pub fn event(&self, t: &CotTrack) -> Bytes {
-        Bytes::from(event::event_xml(t, Utc::now(), self.stale, self.remarks))
+    /// The track's event, or `None` once it is past its stale time (its
+    /// reports stopped): it is not sent again until it reports.
+    pub fn event(&self, t: &CotTrack) -> Option<Bytes> {
+        event::event_xml(t, Utc::now(), self.stale, self.remarks).map(Bytes::from)
     }
 
     pub fn delete(&self, uid: Uid, last_type: Option<&str>) -> Bytes {
@@ -285,12 +287,12 @@ impl Ctx {
 
     /// Hand an event to every connection; drop those too far behind.
     /// Rendered only when some connection is there to take it.
-    fn send_all(&self, render: impl FnOnce() -> Bytes) {
+    fn send_all(&self, render: impl FnOnce() -> Option<Bytes>) {
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         if clients.is_empty() {
             return;
         }
-        let bytes = render();
+        let Some(bytes) = render() else { return };
         clients.retain(|c| match c.tx.try_send(bytes.clone()) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -328,19 +330,25 @@ async fn fan_out(ctx: Ctx) {
     // Connections get the picture when they connect: due again from now.
     let now = Instant::now();
     for t in ctx.hub.snapshot() {
-        refresh.sent(t.uid, now);
+        if ctx.render.event(&t).is_some() {
+            refresh.sent(t.uid, now);
+        }
     }
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             change = rx.recv() => match change {
-                Ok(Change::Upsert(t)) => {
-                    ctx.send_all(|| ctx.render.event(&t));
-                    refresh.sent(t.uid, Instant::now());
-                }
+                Ok(Change::Upsert(t)) => match ctx.render.event(&t) {
+                    Some(bytes) => {
+                        ctx.send_all(|| Some(bytes));
+                        refresh.sent(t.uid, Instant::now());
+                    }
+                    // Its reports stopped long enough ago that TAK has let it go.
+                    None => refresh.remove(t.uid),
+                },
                 Ok(Change::Delete { uid, last_type }) => {
-                    ctx.send_all(|| ctx.render.delete(uid, last_type.as_deref()));
+                    ctx.send_all(|| Some(ctx.render.delete(uid, last_type.as_deref())));
                     refresh.remove(uid);
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -352,12 +360,14 @@ async fn fan_out(ctx: Ctx) {
                         .filter(|u| !live.iter().any(|t| t.uid == *u))
                         .collect();
                     for uid in gone {
-                        ctx.send_all(|| ctx.render.delete(uid, None));
+                        ctx.send_all(|| Some(ctx.render.delete(uid, None)));
                         refresh.remove(uid);
                     }
                     for t in live {
-                        ctx.send_all(|| ctx.render.event(&t));
-                        refresh.sent(t.uid, now);
+                        if let Some(bytes) = ctx.render.event(&t) {
+                            ctx.send_all(|| Some(bytes));
+                            refresh.sent(t.uid, now);
+                        }
                     }
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
@@ -365,8 +375,9 @@ async fn fan_out(ctx: Ctx) {
             _ = tick.tick() => {
                 let now = Instant::now();
                 for uid in refresh.take_due(now) {
-                    if let Some(t) = ctx.hub.get(uid) {
-                        ctx.send_all(|| ctx.render.event(&t));
+                    // Re-sent until its stale time; after that it waits for a report.
+                    if let Some(bytes) = ctx.hub.get(uid).and_then(|t| ctx.render.event(&t)) {
+                        ctx.send_all(|| Some(bytes));
                         refresh.sent(uid, now);
                     }
                 }
@@ -401,7 +412,10 @@ where
     let mut batch: Vec<u8> = Vec::with_capacity(WRITE_BATCH);
     let mut n = 0u64;
     for t in ctx.hub.snapshot() {
-        batch.extend_from_slice(&ctx.render.event(&t));
+        let Some(bytes) = ctx.render.event(&t) else {
+            continue;
+        };
+        batch.extend_from_slice(&bytes);
         n += 1;
         if batch.len() >= WRITE_BATCH {
             write(&mut wr, &mut batch, &mut n, &ctx.counters).await?;
@@ -571,7 +585,10 @@ async fn multicast(group: String, port: u16, ttl: u32, interface: Option<String>
             ctx.counters.set_state("sending");
             backoff = Duration::from_secs(1);
             for t in ctx.hub.snapshot() {
-                socket.send_to(&ctx.render.event(&t), dest).await?;
+                let Some(bytes) = ctx.render.event(&t) else {
+                    continue;
+                };
+                socket.send_to(&bytes, dest).await?;
                 ctx.counters.sent.fetch_add(1, Ordering::Relaxed);
             }
             while let Some(bytes) = queue.recv().await {
@@ -748,7 +765,7 @@ mod tests {
         let _slow = ctx.register("slow");
         let mut fast = ctx.register("fast");
         for i in 0..=CLIENT_QUEUE {
-            ctx.send_all(|| Bytes::from(format!("{i}")));
+            ctx.send_all(|| Some(Bytes::from(format!("{i}"))));
             // The fast one keeps up.
             assert!(fast.try_recv().is_ok());
         }

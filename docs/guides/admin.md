@@ -749,7 +749,7 @@ Every output has:
 |---|---|
 | **Name** | 1 to 32 letters, digits, `-` or `_`, unique. It names the output in logs, the status and the metrics. |
 | **On** | Send to it, or keep it without sending. |
-| **Stale after** | Seconds after each event that TAK drops a track it hears nothing more of (10 to 86400, default 60). OpenTrack sends each live track again every half of this, so live tracks never go stale, and tracks disappear from TAK within this time when OpenTrack stops sending. |
+| **Stale after** | Seconds after a track's **last report** that TAK lets it go (10 to 86400, default 60). OpenTrack re-sends a track every half of this until then, then stops: a track that stops reporting greys out and leaves TAK this long after its last report, even while OpenTrack still holds it (OpenTrack keeps a silent track for up to 6 hours). A new report brings it back. If OpenTrack itself stops sending, tracks leave TAK the same way. |
 | **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. |
 
 and one of three deliveries:
@@ -764,7 +764,7 @@ and one of three deliveries:
   `239.2.3.1:6969`, by default), with a **TTL** (1: this network only) and an optional
   **interface** address to send from. ATAK and WinTAK on the network hear it with no setup. A
   unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
-  when the output starts; after that each track at least every half of its stale time.
+  when the output starts; after that each track at least every half of its stale time, while it is still reporting.
 - **Listen for clients**: OpenTrack is the server. It listens on **Listen on** (such as
   `0.0.0.0:8089`) and ATAK or WinTAK connect to it as to a TAK Server (a server connection to this
   node and port; SSL when TLS is on). Each client gets the whole picture, then every change. With
@@ -834,8 +834,8 @@ Each published track is one CoT event:
 | `uid` | `tms-<UID>`, the track's id on NATS too. |
 | `type` | The track's symbol: a 2525C SIDC as `a-<affiliation>-<dimension>-<function…>` (`SFSPCLDD---` is `a-f-S-C-L-D-D`; exercise identities as their real ones); a 2525D SIDC as its identity and symbol set (`a-h-G-U` for a hostile land unit, `a-f-G-E`, `a-n-G-I`, `a-f-S`; the entity code is not translated); a CoT type as it is. Without one (or for a tactical graphic or weather symbol), affiliation and domain: `a-h-A`, `a-f-S`, `a-u-G` (ground when the domain is unknown). An explicit affiliation (an entity, a track manager) overrides the symbol's. |
 | `how` | `m-f` (machine, fused). |
-| `time`, `start` | When the event is sent. |
-| `stale` | `time` plus the output's stale time. |
+| `time`, `start` | The track's last report (its observation time; never later than now, for a source whose clock runs ahead). Re-sending a track does not make it look newer. |
+| `stale` | `time` plus the output's stale time. A track past it is not sent (not re-sent, not in the picture a client gets on connecting) until it reports again. |
 | `point` | Latitude, longitude, `hae` (height above the ellipsoid) and the error: `ce` the circular 1-sigma horizontal error (from the ellipse, covariance or circular error), `le` the vertical error. `9999999` when unknown. |
 | `detail/track` | `course` (degrees true) and `speed` (m/s), when known. |
 | `detail/contact` | `callsign`: the track's callsign, a `callsign` identifier, its name, its platform's name, or its track number (`OTK000000042`). |
