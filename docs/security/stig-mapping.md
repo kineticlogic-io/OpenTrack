@@ -1,6 +1,6 @@
 # Control mapping (NIST 800-53 Moderate / ASD STIG)
 
-Status of OpenTrack 0.4.1 against the controls an application-level assessment covers. Controls
+Status of OpenTrack 0.4.2 against the controls an application-level assessment covers. Controls
 are cited by NIST 800-53 number. The ASD STIG requirements that implement them are named in
 words, because STIG V-IDs change between releases: check each against the STIG release your
 assessor uses. "Inherited" means the hosting environment provides the control.
