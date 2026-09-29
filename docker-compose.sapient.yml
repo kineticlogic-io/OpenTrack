@@ -6,7 +6,9 @@
 #   # Wait ~10s for OpenTrack API, then:
 #   ./scripts/demo-sapient.sh
 #
-# OpenTrack UI: http://localhost:8090 (sign in as the seeded admin)
+# OpenTrack UI: http://localhost:8090. Sign-in is on: sign in as the first admin
+# (admin@opentrack.local) with the temporary password in data-sapient/initial-admin.txt,
+# then choose a new one.
 # SAPIENT source appears in Sources; detections flow in every 2s.
 
 services:

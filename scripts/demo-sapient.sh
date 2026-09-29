@@ -11,6 +11,10 @@ SIM_BIN="${SIM_BIN:-$SIM_ROOT/target/debug/sapient-sim}"
 SIM_SCENARIO="${SIM_SCENARIO:-$SIM_ROOT/scenarios/multi-asset-london.yml}"
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data-sapient}"
 SOURCE_SPEC="$ROOT_DIR/docs/examples/sapient-mqtt.json"
+# The first admin: OpenTrack seeds it on first start, with a temporary password in
+# $DATA_DIR/initial-admin.txt (or OT_ADMIN_EMAIL / OT_ADMIN_PASSWORD if you set them).
+ADMIN_EMAIL="${OT_ADMIN_EMAIL:-admin@opentrack.local}"
+export OT_SQLITE_PATH="$DATA_DIR/opentrack.db"
 
 # 1. Ensure OpenTrack binary and data dir exist.
 if [ ! -x "$OT_BIN" ]; then
@@ -25,8 +29,6 @@ if ! pgrep -f "opentrack all" >/dev/null 2>&1; then
   OT_BIND="$OT_HOST" \
     OT_REDIS_URL="redis://127.0.0.1:6379" \
     OT_NATS_URL="nats://127.0.0.1:4222" \
-    OT_AUTH=off \
-    OT_SQLITE_PATH="$DATA_DIR/opentrack.db" \
     OT_LOG=info \
     "$OT_BIN" all &
   OT_PID=$!
@@ -50,16 +52,25 @@ if ! curl -sf "http://$OT_HOST/healthz" >/dev/null 2>&1; then
   exit 1
 fi
 
-# 4. Create or update and enable the SAPIENT-MQTT source.
+# 4. Sign-in is on: this script acts through a one-day API token for the first admin, made
+#    with the CLI from the same database (and the session key beside it).
+# The token is the last line: the CLI logs to standard output before it.
+TOKEN="$("$OT_BIN" user token "$ADMIN_EMAIL" --name sapient-demo --days 1 | tail -n1)"
+AUTH=(-H "Authorization: Bearer $TOKEN")
+if [ -r "$DATA_DIR/initial-admin.txt" ]; then
+  echo "Sign in to the UI with the temporary password in $DATA_DIR/initial-admin.txt"
+fi
+
+# 5. Create or update and enable the SAPIENT-MQTT source.
 echo "Configuring SAPIENT-MQTT source..."
-curl -sf -X PUT "http://$OT_HOST/api/v1/sources/sapient-mqtt" \
+curl -sf "${AUTH[@]}" -X PUT "http://$OT_HOST/api/v1/sources/sapient-mqtt" \
   -H 'Content-Type: application/json' \
   -d @"$SOURCE_SPEC" \
   | jq '{id, revision, enabled}'
-curl -sf -X POST "http://$OT_HOST/api/v1/sources/sapient-mqtt/enable" \
+curl -sf "${AUTH[@]}" -X POST "http://$OT_HOST/api/v1/sources/sapient-mqtt/enable" \
   | jq '{id, revision, enabled}'
 
-# 5. Start the SAPIENT simulator (if binary exists).
+# 6. Start the SAPIENT simulator (if binary exists).
 if [ -x "$SIM_BIN" ] && [ -r "$SIM_SCENARIO" ]; then
   echo "Starting SAPIENT simulator..."
   SAPIENT_BROKER="mqtt://127.0.0.1:1883" \
@@ -75,11 +86,11 @@ else
   echo "         Scenario: $SIM_SCENARIO" >&2
 fi
 
-# 6. Tail source status.
+# 7. Tail source status.
 echo ""
 echo "=== Watching source status (Ctrl-C to stop) ==="
 while true; do
-  curl -s "http://$OT_HOST/api/v1/sources/sapient-mqtt" \
+  curl -s "${AUTH[@]}" "http://$OT_HOST/api/v1/sources/sapient-mqtt" \
     | jq -r '[.id, (.enabled|tostring), (.status.link.connected|tostring), ((.status.totals_since_start.plots // 0)|tostring)] | @tsv' \
     2>/dev/null
   echo "--- $(date +%T) ---"
