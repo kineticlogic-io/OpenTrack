@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Help** reads like a CODEX article: a rail with the guide choice (Operator / Administrator, with
+  their section counts) and the contents (sections open to their sub-sections; the one you're in
+  stays open), beside the guide itself, no longer inside a collapsing panel.
 - **Security labels:** the classification order is a list you drag into order, add to and remove
   from (Settings → Security). The default is `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`, `SECRET`; a
   classification not in the list, such as `TOP SECRET` unless you add it, still ranks above them all.
