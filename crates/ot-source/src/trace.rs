@@ -1,9 +1,14 @@
-//! A stage-by-stage record of what a pipeline did with a few frames, for the
-//! pipeline designer's live preview.
+//! A stage-by-stage record of what a pipeline did with its first few
+//! records, for the pipeline designer's live preview.
 //!
 //! Tracing is opt-in: [`crate::pipeline::Pipeline::process_traced`] fills a
 //! [`Trace`]; [`crate::pipeline::Pipeline::process`] takes no trace and
 //! neither clones nor allocates for one.
+//!
+//! A sample is one decoded record, in decode order: the first frame's
+//! records first, later frames' only while the trace has room. A frame that
+//! does not decode is a sample of its own. Other records are processed as
+//! usual (they move the tracker, throttle and counts) but not recorded.
 
 use ot_core::Observation;
 use serde::Serialize;
@@ -14,28 +19,33 @@ use crate::frame::Frame;
 /// Largest JSON item kept whole; bigger ones are cut to a marker.
 pub const MAX_ITEM_BYTES: usize = 64 * 1024;
 
-/// The most frames one trace follows.
-pub const MAX_FRAMES: usize = 10;
+/// The most records one trace follows.
+pub const MAX_SAMPLES: usize = 10;
 
-/// The first frames through a pipeline, stage by stage.
+/// The first records through a pipeline, stage by stage.
 #[derive(Debug, Default, Serialize)]
 pub struct Trace {
-    pub frames: Vec<FrameTrace>,
+    /// The frames the samples came from, as received, each once.
+    pub frames: Vec<FrameView>,
+    pub samples: Vec<SampleTrace>,
     #[serde(skip)]
     limit: usize,
+    /// The frame being processed, once it is in `frames`.
+    #[serde(skip)]
+    open: Option<usize>,
 }
 
-/// One input frame and what became of it after each stage.
+/// One record and what became of it after each stage.
 #[derive(Debug, Serialize)]
-pub struct FrameTrace {
-    /// The frame as received (the transport stage).
-    pub frame: FrameView,
+pub struct SampleTrace {
+    /// Index in [`Trace::frames`] of the frame it came from.
+    pub frame: usize,
     /// The pipeline's stages after the transport, in order, only those it has.
     pub stages: Vec<StageTrace>,
-    /// What the pipeline emitted from this frame, to show as published.
+    /// What the pipeline emitted from this record, to show as published.
     #[serde(skip)]
     pub emitted: Vec<Observation>,
-    /// Detections this frame gave the tracker stage.
+    /// Detections this record gave the tracker stage.
     #[serde(skip)]
     pub(crate) plots: Vec<Observation>,
 }
@@ -47,43 +57,59 @@ pub struct FrameView {
     pub format: &'static str,
     /// Length of the frame in bytes.
     pub bytes: usize,
-    /// The parsed JSON, the text, or the bytes escaped (`\xNN`).
+    /// The parsed JSON, the text, or the bytes escaped (`\xNN`), cut to
+    /// [`MAX_ITEM_BYTES`].
     pub content: Value,
 }
 
-/// A frame's records after one stage.
+/// A record after one stage.
 #[derive(Debug, Serialize)]
 pub struct StageTrace {
     /// The stage id, as the UI names it (`decode`, `map`, `filter`…).
     pub id: &'static str,
-    /// What this stage passed on: records up to the map stage, observations
-    /// after it.
+    /// What this stage passed on: the record up to the reject stage, the
+    /// mapping's outputs, then observations.
     pub items: Vec<Value>,
-    /// Why records were dropped here, one entry per record.
+    /// Why it (or one of its outputs) was dropped here.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
-    /// The stage held the frame's records back (a tracker waiting for the
-    /// rest of a scan); what it made of them later is in `items`.
+    /// The stage held it back (a tracker waiting for the rest of a scan);
+    /// what it made of it later is in `items`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
 }
 
 impl Trace {
-    /// Follow the first `frames` frames (at most [`MAX_FRAMES`]).
-    pub fn new(frames: usize) -> Self {
+    /// Follow the first `records` records (at most [`MAX_SAMPLES`]).
+    pub fn new(records: usize) -> Self {
         Self {
-            frames: Vec::new(),
-            limit: frames.min(MAX_FRAMES),
+            limit: records.min(MAX_SAMPLES),
+            ..Self::default()
         }
     }
 
-    /// Start tracing a frame, if the trace still has room.
+    /// A new frame is being processed.
+    pub(crate) fn start_frame(&mut self) {
+        self.open = None;
+    }
+
+    /// Start tracing a record of `frame` (or the frame itself, when it does
+    /// not decode), if the trace still has room.
     pub(crate) fn begin(&mut self, frame: &Frame, stages: &[&'static str]) -> Option<usize> {
-        if self.frames.len() >= self.limit {
+        if self.samples.len() >= self.limit {
             return None;
         }
-        self.frames.push(FrameTrace {
-            frame: FrameView::of(&frame.bytes),
+        let at = match self.open {
+            Some(at) => at,
+            None => {
+                self.frames.push(FrameView::of(&frame.bytes));
+                let at = self.frames.len() - 1;
+                self.open = Some(at);
+                at
+            }
+        };
+        self.samples.push(SampleTrace {
+            frame: at,
             stages: stages
                 .iter()
                 .map(|id| StageTrace {
@@ -96,11 +122,11 @@ impl Trace {
             emitted: Vec::new(),
             plots: Vec::new(),
         });
-        Some(self.frames.len() - 1)
+        Some(self.samples.len() - 1)
     }
 }
 
-impl FrameTrace {
+impl SampleTrace {
     pub fn stage(&mut self, id: &str) -> Option<&mut StageTrace> {
         self.stages.iter_mut().find(|s| s.id == id)
     }

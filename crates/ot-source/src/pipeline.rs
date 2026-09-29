@@ -22,7 +22,7 @@ use crate::expr::{Condition, ValueSpec, as_string};
 use crate::frame::Frame;
 use crate::mapping::{self, MapOutcome, MappingSpec, RuleKind};
 use crate::registry::{RegistryLookup, RegistryStage};
-use crate::trace::{FrameTrace, Trace};
+use crate::trace::{SampleTrace, Trace};
 
 /// Everything between the transport and the observation stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -426,7 +426,7 @@ impl Pipeline {
     }
 
     /// [`Self::process`], recording in `trace` what each stage made of the
-    /// frame while the trace has room (see [`crate::trace`]).
+    /// frame's records while the trace has room (see [`crate::trace`]).
     pub fn process_traced(
         &mut self,
         frame: &Frame,
@@ -479,16 +479,22 @@ impl Pipeline {
     ) -> Output {
         let mut out = Output::default();
         self.counts.frames += 1;
-        let at = match trace.as_deref_mut() {
-            Some(t) => t.begin(frame, &self.trace_stages()),
-            None => None,
+        let stages = match trace.as_deref_mut() {
+            Some(t) => {
+                t.start_frame();
+                self.trace_stages()
+            }
+            None => Vec::new(),
         };
         let records = match self.codec.decode(frame) {
             Ok(r) => r,
             Err(e) => {
                 self.counts.decode_errors += 1;
-                if let Some(f) = traced(&mut trace, at) {
-                    f.dropped("decode", format!("decode error: {e}"));
+                // A frame that does not decode is a sample of its own.
+                if let Some(t) = trace.as_deref_mut()
+                    && let Some(at) = t.begin(frame, &stages)
+                {
+                    t.samples[at].dropped("decode", format!("decode error: {e}"));
                 }
                 out.last_error = Some(e.to_string());
                 return out;
@@ -501,20 +507,28 @@ impl Pipeline {
             t.set_revisit(h.revisit_secs, h.revisit_source);
         }
         for record in records {
-            let mut f = traced(&mut trace, at);
+            let mut f = match trace.as_deref_mut() {
+                Some(t) => t.begin(frame, &stages).map(|at| &mut t.samples[at]),
+                None => None,
+            };
             if let Some(f) = f.as_deref_mut() {
                 f.item("decode", || record.clone());
             }
             self.process_record(&record, frame.received_at, registry, &mut out, f);
         }
-        self.run_tracker(frame.received_at, false, &mut out, trace.as_deref_mut(), at);
-        // Plots of this frame still waiting for the rest of their scan.
+        self.run_tracker(frame.received_at, false, &mut out, trace.as_deref_mut());
+        // Plots still waiting for the rest of their scan.
         if let Some(Stage::Builtin(t)) = self.tracker.as_ref()
-            && let Some(f) = traced(&mut trace, at)
-            && t.waiting().any(|w| f.plots.contains(w))
-            && let Some(s) = f.stage("tracker")
+            && let Some(tr) = trace
         {
-            s.held = true;
+            for f in &mut tr.samples {
+                if !f.plots.is_empty()
+                    && t.waiting().any(|w| f.plots.contains(w))
+                    && let Some(s) = f.stage("tracker")
+                {
+                    s.held = true;
+                }
+            }
         }
         out
     }
@@ -533,26 +547,26 @@ impl Pipeline {
     /// calls this on a timer; a dry run calls it with `force` at the end.
     pub fn flush(&mut self, now: DateTime<Utc>, force: bool) -> Output {
         let mut out = Output::default();
-        self.run_tracker(now, force, &mut out, None, None);
+        self.run_tracker(now, force, &mut out, None);
         out
     }
 
-    /// [`Self::flush`], adding the reports to the traced frames whose plots
-    /// they came from. With `force` (the end of a dry run), a traced frame
-    /// whose plots gave no report is marked so.
+    /// [`Self::flush`], adding the reports to the traced samples whose plots
+    /// they came from. With `force` (the end of a dry run), a sample whose
+    /// plots gave no report is marked so.
     pub fn flush_traced(&mut self, now: DateTime<Utc>, force: bool, trace: &mut Trace) -> Output {
         let mut out = Output::default();
-        self.run_tracker(now, force, &mut out, Some(trace), None);
+        self.run_tracker(now, force, &mut out, Some(trace));
         if force {
             let why = match self.tracker {
                 Some(Stage::Plugin { .. }) => {
-                    "no track report: the tracker plugin reported none while this frame was processed"
+                    "a tracker plugin's reports are not traced back to the records behind them"
                 }
                 _ => {
                     "no track report: the tracker has not confirmed a track from these plots (or merged them into a nearby plot, or they came too late for their scan)"
                 }
             };
-            for f in &mut trace.frames {
+            for f in &mut trace.samples {
                 let plots = !f.plots.is_empty();
                 if let Some(s) = f.stage("tracker")
                     && plots
@@ -566,16 +580,14 @@ impl Pipeline {
         out
     }
 
-    /// Run the tracker stage. When tracing, each report is added to the
-    /// traced frame whose detection it came from (a plugin's, to the frame
-    /// being processed, `current`).
+    /// Run the tracker stage. When tracing, each report of the built-in
+    /// tracker is added to the sample whose detection it came from.
     fn run_tracker(
         &mut self,
         now: DateTime<Utc>,
         force: bool,
         out: &mut Output,
         mut trace: Option<&mut Trace>,
-        current: Option<usize>,
     ) {
         // The detection behind each report, only when tracing.
         let mut dets: Vec<Observation> = Vec::new();
@@ -609,11 +621,9 @@ impl Pipeline {
         for (i, obs) in reports.into_iter().enumerate() {
             let mut f = None;
             if let Some(t) = trace.as_deref_mut() {
-                let at = match dets.get(i) {
-                    Some(d) => t.frames.iter().position(|f| f.plots.contains(d)),
-                    None => current,
-                };
-                f = at.and_then(|at| t.frames.get_mut(at));
+                f = dets
+                    .get(i)
+                    .and_then(|d| t.samples.iter_mut().find(|f| f.plots.contains(d)));
                 if let Some(f) = f.as_deref_mut() {
                     f.obs("tracker", &obs);
                 }
@@ -623,7 +633,7 @@ impl Pipeline {
     }
 
     /// Throttle, then ship. A source track's end always ships.
-    fn emit(&mut self, obs: Observation, out: &mut Output, trace: Option<&mut FrameTrace>) {
+    fn emit(&mut self, obs: Observation, out: &mut Output, trace: Option<&mut SampleTrace>) {
         if obs.state == Some(ot_core::TrackState::Dropped) {
             self.throttle.remove(&obs.source_track_key);
         } else if let Some(t) = &self.spec.throttle {
@@ -659,7 +669,7 @@ impl Pipeline {
         received_at: DateTime<Utc>,
         registry: &dyn RegistryLookup,
         out: &mut Output,
-        mut trace: Option<&mut FrameTrace>,
+        mut trace: Option<&mut SampleTrace>,
     ) {
         self.counts.records += 1;
         let mapped = match self.spec.mapping.apply(record) {
@@ -881,11 +891,6 @@ impl Pipeline {
     }
 }
 
-/// A frame's trace, if it is being traced.
-fn traced<'a>(trace: &'a mut Option<&mut Trace>, at: Option<usize>) -> Option<&'a mut FrameTrace> {
-    trace.as_deref_mut()?.frames.get_mut(at?)
-}
-
 /// A mapping rule's output as JSON, for a trace.
 fn mapped_json(m: &mapping::Mapped) -> Value {
     serde_json::json!({
@@ -1098,7 +1103,7 @@ mod tests {
         assert!(p.flush(Utc::now(), true).observations.is_empty());
     }
 
-    fn stage<'a>(f: &'a crate::trace::FrameTrace, id: &str) -> &'a crate::trace::StageTrace {
+    fn stage<'a>(f: &'a crate::trace::SampleTrace, id: &str) -> &'a crate::trace::StageTrace {
         f.stages.iter().find(|s| s.id == id).expect(id)
     }
 
@@ -1119,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trace_follows_each_frame_through_its_stages() {
+    fn a_trace_follows_each_record_through_its_stages() {
         let reg = reg();
         let mut spec = spec();
         spec.throttle = None;
@@ -1140,15 +1145,17 @@ mod tests {
             p.process_traced(&frame(rec), &reg, &mut trace);
         }
         p.process_traced(&Frame::new(&b"not json"[..]), &reg, &mut trace);
-        let f = &trace.frames;
-        assert_eq!(f.len(), 4);
+        // One record per frame: a sample per frame, each frame kept once.
+        let f = &trace.samples;
+        assert_eq!((f.len(), trace.frames.len()), (4, 4));
+        assert_eq!(f.iter().map(|s| s.frame).collect::<Vec<_>>(), [0, 1, 2, 3]);
         let ids: Vec<&str> = f[0].stages.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
             ["decode", "map", "join", "registry", "affiliation", "filter"],
             "only the stages the pipeline has"
         );
-        assert_eq!(f[0].frame.format, "json");
+        assert_eq!(trace.frames[0].format, "json");
         // A static report is kept by the join.
         assert_eq!(stage(&f[0], "map").items[0]["kind"], "static");
         assert!(stage(&f[0], "join").dropped[0].starts_with("static identity for 1"));
@@ -1169,35 +1176,54 @@ mod tests {
         assert!(stage(&f[2], "filter").items.is_empty());
         assert_eq!(stage(&f[2], "filter").dropped, ["drop_if matched"]);
         assert!(f[2].emitted.is_empty());
-        // A frame that does not decode.
-        assert_eq!(f[3].frame.format, "text");
+        // A frame that does not decode is a sample of its own.
+        assert_eq!(trace.frames[3].format, "text");
         assert!(stage(&f[3], "decode").dropped[0].starts_with("decode error"));
     }
 
     #[test]
-    fn a_frame_with_several_records_is_followed_record_by_record() {
-        let mut p = Pipeline::new("radar", radar("frame")).unwrap();
-        let mut trace = Trace::new(5);
+    fn each_record_of_a_frame_is_a_sample_of_its_own() {
         let body = json!({"plots": [
             {"n": 1, "lat": 63.44, "lon": 10.40, "t": "2026-09-25T10:00:00Z"},
             {"n": 2, "lon": 10.40, "t": "2026-09-25T10:00:00Z"},
             {"n": 3, "lat": 63.45, "lon": 10.40, "t": "2026-09-25T10:00:00Z"}
         ]});
-        p.process_traced(
-            &Frame::new(body.to_string().into_bytes()),
-            &Reg::new(),
-            &mut trace,
-        );
-        let f = &trace.frames[0];
-        assert_eq!(stage(f, "decode").items.len(), 3);
-        assert_eq!(stage(f, "reject").items.len(), 2);
-        assert_eq!(stage(f, "reject").dropped, ["rejected: no_position"]);
-        assert_eq!(stage(f, "map").items.len(), 2);
-        assert_eq!(f.plots.len(), 2);
+        let frame = Frame::new(body.to_string().into_bytes());
+        let mut p = Pipeline::new("radar", radar("frame")).unwrap();
+        let mut trace = Trace::new(5);
+        p.process_traced(&frame, &Reg::new(), &mut trace);
+        // Three samples from one frame, which is kept once.
+        let s = &trace.samples;
+        assert_eq!((s.len(), trace.frames.len()), (3, 1));
+        assert!(s.iter().all(|s| s.frame == 0));
+        assert_eq!(trace.frames[0].content["plots"][2]["n"], 3);
+        for (i, sample) in s.iter().enumerate() {
+            let decoded = &stage(sample, "decode").items;
+            assert_eq!(decoded.len(), 1);
+            assert_eq!(decoded[0]["n"], i + 1, "decode order");
+        }
+        assert_eq!(stage(&s[0], "map").items.len(), 1);
+        assert!(stage(&s[1], "reject").items.is_empty());
+        assert_eq!(stage(&s[1], "reject").dropped, ["rejected: no_position"]);
+        assert!(stage(&s[1], "map").items.is_empty());
+        assert_eq!(stage(&s[2], "map").items[0]["source_track_key"], "3");
         // First scan: nothing confirmed yet, and nothing waits (frames are scans).
-        assert!(!stage(f, "tracker").held);
+        assert!(!stage(&s[0], "tracker").held);
         p.flush_traced(Utc::now(), true, &mut trace);
-        assert!(stage(&trace.frames[0], "tracker").dropped[0].starts_with("no track report"));
+        let s = &trace.samples;
+        assert!(stage(&s[0], "tracker").dropped[0].starts_with("no track report"));
+        assert!(
+            stage(&s[1], "tracker").dropped.is_empty(),
+            "no plot of its own"
+        );
+
+        // Fewer samples than records: the rest are processed, not recorded.
+        let mut p = Pipeline::new("radar", radar("frame")).unwrap();
+        let mut trace = Trace::new(2);
+        p.process_traced(&frame, &Reg::new(), &mut trace);
+        p.process_traced(&frame, &Reg::new(), &mut trace);
+        assert_eq!((trace.samples.len(), trace.frames.len()), (2, 1));
+        assert_eq!(p.counts.records, 6);
     }
 
     #[test]
@@ -1215,16 +1241,17 @@ mod tests {
             );
         }
         // Each frame's scan waits for more plots of its time.
-        assert!(trace.frames.iter().all(|f| stage(f, "tracker").held));
+        assert_eq!(trace.samples.len(), 2);
+        assert!(trace.samples.iter().all(|f| stage(f, "tracker").held));
         let out = p.flush_traced(Utc::now(), true, &mut trace);
         assert_eq!(out.observations.len(), 1, "confirmed on the second scan");
-        let (a, b) = (&trace.frames[0], &trace.frames[1]);
+        let (a, b) = (&trace.samples[0], &trace.samples[1]);
         assert!(stage(a, "tracker").items.is_empty());
         assert!(stage(a, "tracker").dropped[0].starts_with("no track report"));
         assert_eq!(
             stage(b, "tracker").items.len(),
             1,
-            "the report goes to its plot's frame"
+            "the report goes to its plot's sample"
         );
         assert_eq!(b.emitted.len(), 1);
         assert_eq!(
@@ -1261,8 +1288,7 @@ mod tests {
         for f in &frames {
             traced.process_traced(f, &reg, &mut none);
         }
-        assert!(none.frames.is_empty(), "a zero trace records nothing");
-        assert_eq!(trace.frames.len(), 2, "only the first frames");
-        assert_eq!(Trace::new(50).frames.capacity(), 0);
+        assert!(none.samples.is_empty(), "a zero trace records nothing");
+        assert_eq!(trace.samples.len(), 2, "only the first records");
     }
 }

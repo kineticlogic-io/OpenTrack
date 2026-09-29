@@ -383,8 +383,8 @@ struct ValidateBody {
     /// Also run the stored probe samples of this source id.
     #[serde(default)]
     stored_samples_of: Option<String>,
-    /// Follow the first this many frames stage by stage (0: no trace; at
-    /// most [`ot_source::trace::MAX_FRAMES`]).
+    /// Follow the first this many decoded records stage by stage (0: no
+    /// trace; at most [`ot_source::trace::MAX_SAMPLES`]).
     #[serde(default)]
     trace: Option<usize>,
 }
@@ -469,7 +469,7 @@ async fn validate_source(
     Ok(Json(body))
 }
 
-/// A trace as JSON, each frame ending with a `publish` stage: what it
+/// A trace as JSON, each sample ending with a `publish` stage: what it
 /// emitted, as the upsert message a new system track seeded from it would
 /// publish (its UID is correlation's to assign, so it is left out).
 async fn traced_with_publish(s: &AppState, trace: Trace) -> Result<Value, ApiError> {
@@ -479,9 +479,9 @@ async fn traced_with_publish(s: &AppState, trace: Trace) -> Result<Value, ApiErr
     let now = chrono::Utc::now();
     let uid = ot_core::Uid::new(s.common.site, 1).map_err(|e| ApiError::internal(e.to_string()))?;
     let placeholder = json!("assigned by correlation");
-    let mut frames = Vec::with_capacity(trace.frames.len());
-    for f in trace.frames {
-        let items: Vec<Value> = f
+    let mut samples = Vec::with_capacity(trace.samples.len());
+    for sample in &trace.samples {
+        let items: Vec<Value> = sample
             .emitted
             .iter()
             .map(|obs| {
@@ -496,13 +496,13 @@ async fn traced_with_publish(s: &AppState, trace: Trace) -> Result<Value, ApiErr
                 ot_source::trace::capped(m)
             })
             .collect();
-        let mut v = serde_json::to_value(&f).map_err(|e| ApiError::internal(e.to_string()))?;
+        let mut v = serde_json::to_value(sample).map_err(|e| ApiError::internal(e.to_string()))?;
         if let Some(stages) = v["stages"].as_array_mut() {
             stages.push(json!({ "id": "publish", "items": items }));
         }
-        frames.push(v);
+        samples.push(v);
     }
-    Ok(Value::Array(frames))
+    Ok(json!({ "frames": trace.frames, "samples": samples }))
 }
 
 #[derive(Deserialize)]
@@ -1124,7 +1124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dry_run_traces_the_first_frames_stage_by_stage() {
+    async fn dry_run_traces_the_first_records_stage_by_stage() {
         let Some((app, redis)) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
@@ -1174,10 +1174,12 @@ mod tests {
             assert_eq!(body[k], plain[k], "{k} unchanged by tracing");
         }
         assert_eq!(keys(&body), keys(&plain));
-        let t = body["trace"].as_array().unwrap();
-        assert_eq!(t.len(), 3);
-        assert_eq!(t[0]["frame"]["format"], "json");
-        assert_eq!(t[0]["frame"]["content"]["name"], "alpha");
+        let frames = body["trace"]["frames"].as_array().unwrap();
+        let t = body["trace"]["samples"].as_array().unwrap();
+        assert_eq!((t.len(), frames.len()), (3, 3), "one record per frame");
+        assert_eq!(t[0]["frame"], 0);
+        assert_eq!(frames[0]["format"], "json");
+        assert_eq!(frames[0]["content"]["name"], "alpha");
         let ids: Vec<&str> = t[0]["stages"]
             .as_array()
             .unwrap()
@@ -1192,7 +1194,7 @@ mod tests {
         assert_eq!(t[1]["stages"][3]["dropped"], json!(["drop_if matched"]));
         assert_eq!(t[1]["stages"][4]["items"], json!([]));
         assert_eq!(
-            t[2]["frame"],
+            frames[2],
             json!({"format": "text", "bytes": 8, "content": "not json"})
         );
         assert!(
@@ -1203,7 +1205,11 @@ mod tests {
         );
 
         let (_, body) = validate(json!(50)).await;
-        assert_eq!(body["trace"].as_array().unwrap().len(), 10, "capped");
+        assert_eq!(
+            body["trace"]["samples"].as_array().unwrap().len(),
+            10,
+            "capped"
+        );
         redis.purge_namespace().await.unwrap();
     }
 
