@@ -35,8 +35,15 @@ const SIGNED_IN: &[&str] = &["/auth/me", "/auth/password", "/auth/sessions"];
 const SIGNED_IN_UNDER: &[&str] = &["/auth/sessions/"];
 
 /// Reads that are an admin's: they show secrets (source credentials),
-/// accounts or the audit record.
-const ADMIN_READS: &[&str] = &["/auth/", "/export/config", "/probe", "/audit"];
+/// accounts or the audit record, or what a configuration import would
+/// replace.
+const ADMIN_READS: &[&str] = &[
+    "/auth/",
+    "/export/config",
+    "/import/config",
+    "/probe",
+    "/audit",
+];
 
 /// What a session that must change its password may still call.
 const BEFORE_PASSWORD_CHANGE: &[&str] = &[
@@ -119,6 +126,8 @@ mod tests {
         assert!(!allowed_before_password_change("/tracks"));
         assert_eq!(n(Method::GET, "/auth/users"), admin);
         assert_eq!(n(Method::GET, "/export/config"), admin);
+        assert_eq!(n(Method::GET, "/import/config"), admin);
+        assert_eq!(n(Method::POST, "/import/config"), admin);
         assert_eq!(n(Method::GET, "/tracks"), viewer);
         assert_eq!(n(Method::GET, "/sources/ais"), viewer);
         assert_eq!(n(Method::POST, "/tracks/pair"), track_manager);

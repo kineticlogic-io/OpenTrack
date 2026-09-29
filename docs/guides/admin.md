@@ -103,6 +103,8 @@ also come from files:
 - tracker profiles as JSON files in `profiles/trackers/`;
 - plugins with `opentrack plugin add`;
 - accounts with `opentrack user` ([User commands](#user-commands)).
+- or everything at once, from another node's export: `opentrack config import <file>`
+  ([Rebuild a node](#rebuild-a-node-from-a-configuration-export)).
 
 A node that only collects and correlates needs `sources` and `engine`, plus `writer` to publish.
 It can start from a database prepared elsewhere (`OT_SQLITE_PATH`). Give every node its own
@@ -133,6 +135,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 |---|---|
 | `synthetic` | Pushes synthetic tracks through the pipeline: `--count`, `--lat`, `--lon`, `--move-secs`; `--verify` waits until each is in the NATS stream, `--retire` retires them afterwards. To test without touching operational subjects, give it and the writer their own `OT_NATS_STREAM`, `OT_NATS_TRACKS_SUBJECT` and `OT_REDIS_NAMESPACE`. |
 | `bench` | Runs a recorded scenario through the real pipelines and engine as fast as they go and writes the results (`opentrack bench <scenario dir> --out <dir>`). Publishes nothing. See `scripts/benchmark/README.md`. |
+| `config export [--out <file>]` / `config import <file>` / `config status` | Writes the whole configuration (secrets included) to standard output or a file; rebuilds an empty node from one; says whether this node is empty. See [Configuration export](#configuration-export). |
 | `retire <uid>` | Retires one system track: records the decision (`--reason`), closes its links in the track graph and queues its delete for the writer. Takes `OTK000000042` or `tms-OTK000000042`. |
 
 ### Plugin commands
@@ -322,8 +325,8 @@ as it is now, so a role change or a deactivation takes effect at once.
 
 In the API: reading needs `viewer`; changes under `/tracks/`, `/groups`, `/registry`,
 `/correlation/suggestions/`, `/decisions/` and `/history/` need `track_manager`; every other
-change needs `admin`, as do reads under `/auth/` (other than your own profile), `/export/config`
-and `/probe`.
+change needs `admin`, as do reads under `/auth/` (other than your own profile), `/export/config`,
+`/import/config`, `/probe` and `/audit`.
 
 Every change records the account that made it in the decision log.
 
@@ -578,7 +581,7 @@ settings, plugins and exports, but can't change them.
 | **Sign-in**, **SAML single sign-on**, **OpenStare sign-in**, **Client certificates** | The sign-in settings (admins only). | [Sign-in](#sign-in) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
 | **Plugins** | Codec, tracker and scorer plugins. | [Plugins](#plugins) |
-| **Data export** | Live tracks as GeoJSON or CSV, the configuration (admins only), the registry as XLSX. | [Configuration export](#configuration-export) |
+| **Data export** | Live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. | [Configuration export](#configuration-export) |
 | **Purge** | Retire every live track. | [Purge](#purge) |
 
 The Instance, Banners and Nodes panels share one draft: **Save** on any of them saves all three.
@@ -680,6 +683,7 @@ The registry, sources and plugins are not shared between nodes.
 | `.env` or wherever the `OT_*` settings live | The deployment's settings. | Copy it; it holds secrets. |
 | Redis | The live picture and its track numbers. Optional, but see [Restore](#restore). | [Redis backup](#redis-backup). |
 | External plugins | Only their address is in the database. | Back up their programs. |
+| A [configuration export](#configuration-export) (optional) | The configuration in one file, to rebuild a node from. Not the track state or the audit record. | `opentrack config export --out <file>`; keep it as safe as the database. |
 
 ### SQLite backup
 
@@ -710,17 +714,85 @@ applications' keys included. Take it at the same time as the SQLite backup.
 
 ### Configuration export
 
-**Settings → Data export → Configuration** (admins; `GET /api/v1/export/config`) downloads one JSON
-file with:
-- every source's spec, whether it is enabled, and its priority;
-- every output schema version (drafts too);
-- the correlation settings;
-- the instance settings (site name, banners, position history, nodes).
+**Settings → Data export → Full configuration** (admins; `GET /api/v1/export/config`, or
+`opentrack config export`) downloads the node's whole configuration as one JSON file, to back it
+up or to [rebuild the node](#rebuild-a-node-from-a-configuration-export) from. Every export is
+recorded (an `export_config` decision in the audit record, with who exported it and how much), and
+the download is an attachment no cache keeps (`Cache-Control: no-store`).
 
-It does **not** hold: the registry, accounts and API tokens, sign-in settings, plugins, tracker
-profiles, groups, the decision log, the track graph or any live track. It is a readable record of
-the configuration, useful to compare or rebuild by hand. There is no import: to restore, use a
-database backup.
+**It holds secrets.** Source credentials, password hashes, the SAML and OpenStare settings and
+plugin components are in it as stored. Keep it as safe as the database: an encrypted volume or a
+vault, readable by admins only, and delete copies you no longer need. `opentrack config export
+--out <file>` writes a file only its owner can read.
+
+What it holds (the file's sections):
+
+| Section | What |
+|---|---|
+| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`. |
+| `sources` | Every source as stored: `id`, `name`, `transport`, `codec`, `enabled`, `priority`, `revision`, `spec` (with its secrets), `raw_subject` (raw output, if consented). |
+| `schema_versions` | Every output schema version (`version`, `status`, `published_at_ms`, `notes`, `fields`), the draft too. |
+| `correlation_settings` | The saved correlation settings, security labels included (`null`: never saved). |
+| `app_settings` | The instance settings as saved (site name, banners, position history, nodes), `{}` if never saved. |
+| `auth_settings` | The sign-in settings as saved: SAML, OpenStare trust, client certificate mappings, and the password, lockout, session, inactivity and audit policies. |
+| `accounts` | Every account: `id`, `email`, `name`, `role`, `active`, `origin`, `password_hash`, `password_history`, `password_changed_at_ms`, `must_change_password`, `locked_until_ms`, `last_login_at_ms` and the other account dates. |
+| `api_tokens` | Every API token's record: `jti`, `name`, `user_id`, `created_by`, `expires_at_ms`, `revoked_at_ms`. Not the tokens themselves, which are never stored. |
+| `registry.entities` | Every entity as the registry API shapes it: identifiers, status, publish override, the OTH-GOLD minimum and attributes. |
+| `plugins` | Every added plugin: `name`, `runtime`, `version`, `manifest`, `wasm` (the component, base64) and `sha256`, or `address` (external), `grants`, `enabled`. |
+| `tracker_profiles` | The tracker profiles imported on this node (not the shipped ones), each as its file. |
+| `uid_sequences` | The next track number per site code (`site`, `next_sequence`). |
+
+What it never holds: the session signing key (`session.key` or `OT_SESSION_SECRET`), sessions,
+the audit record, the decision log, the track graph, groups, correlation suggestions, entity and
+source revision history, anything in Redis, and the `OT_*` deployment settings. API tokens are
+signed with the session key, so the tokens in the file work again only on a node with the same
+key. External plugins' programs are not in it (only their address).
+
+Files from 0.4.0 and earlier (no `format`, version 1) held only sources, schema versions and
+correlation and instance settings; they cannot be imported.
+
+### Rebuild a node from a configuration export
+
+An import rebuilds a node that has **no configuration yet**, and refuses any other, listing what is
+there. A node is empty when it has:
+- no sources, registry entities, plugins, API tokens or imported tracker profiles;
+- no output schema version but the built-in version 1;
+- no saved correlation, instance or sign-in settings (the defaults);
+- at most one account, an admin: the first admin made on first start.
+- never imported a configuration before.
+
+Track state (tracks, other decisions, the audit record) does not count. On a new node:
+
+```sh
+opentrack config status                     # empty?
+opentrack config import opentrack-config-OTK-20260929-1200.json
+opentrack serve                              # or all; restart a running server
+```
+
+The CLI is the usual way: an empty node's only account is its first admin. From the UI, an admin
+of an empty node (after changing the first admin's password) sees **Settings → Data export →
+Import configuration**; `POST /api/v1/import/config` with the file as the body does the same, and
+`GET /api/v1/import/config` says whether the node is empty (`{"empty", "present"}`).
+
+The import checks every section first, as the API checks it when saved: sources against the file's
+output schema versions, each settings document by its own rules, accounts (unique emails, valid
+roles, at least one active admin), tokens against the accounts, entities and their identifiers,
+plugins (the component's SHA-256 must match), tracker profiles, track numbers. A malformed file,
+another format or version, or any invalid section is refused with every problem listed, and
+nothing is written. Then it writes everything in one SQLite transaction (tracker profile files
+included, removed again if the transaction fails), recorded as one `import_config` decision.
+
+- **Accounts:** the imported accounts replace the first admin (whatever its email), with their
+  password hashes, history and flags, so everyone signs in with their old password.
+  `initial-admin.txt` is deleted. A file with no accounts (from a node with sign-in off) keeps the
+  first admin.
+- **API tokens:** set the same `OT_SESSION_SECRET` (or copy `session.key`) for them to work;
+  otherwise revoke them and issue new ones.
+- **Raw output** of a source is consented again by the import decision.
+- **Track numbers** continue from the file's counter (or this node's, if higher), so no number is
+  issued twice. Keep the same `OT_SITE_CODE`; the import notes it if the file came from another
+  site.
+- Restart a server that was running during a CLI import, so it reads the new sign-in settings.
 
 ### Registry export
 

@@ -1,5 +1,6 @@
 //! The Settings tab over the API: instance settings (site name,
-//! classification banner), data export, and purging the tracks.
+//! classification banner), track export, and purging the tracks. The
+//! configuration export is `config_backup`'s.
 
 use std::time::Duration;
 
@@ -20,7 +21,6 @@ pub fn routes() -> Router<AppState> {
         .route("/public/banner", get(banner))
         .route("/public/warning-banner", get(warning_banner))
         .route("/export/tracks", get(export_tracks))
-        .route("/export/config", get(export_config))
         .route("/admin/purge", post(purge))
 }
 
@@ -160,7 +160,7 @@ fn hex_colour(s: &str) -> bool {
 }
 
 impl AppSettings {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.site_name.chars().count() > 64 {
             return Err("site_name is at most 64 characters".into());
         }
@@ -403,36 +403,6 @@ async fn export_tracks(
             "format {other:?}: use geojson or csv"
         ))),
     }
-}
-
-/// The configuration as one JSON document, for backup: sources, output
-/// schema versions, correlation and instance settings.
-async fn export_config(State(s): State<AppState>) -> Result<Response, ApiError> {
-    let (sources, schema, correlation, app) = s
-        .with_db(|db| {
-            Ok((
-                db.list_sources()?,
-                db.schema_versions()?,
-                db.correlation_settings()?,
-                db.app_settings()?,
-            ))
-        })
-        .await?;
-    let body = serde_json::to_vec_pretty(&json!({
-        "opentrack": env!("CARGO_PKG_VERSION"),
-        "site_code": s.common.site.to_string(),
-        "exported_at": chrono::Utc::now(),
-        "sources": sources.iter().map(|r| json!({"spec": r.spec, "enabled": r.enabled, "priority": r.priority})).collect::<Vec<_>>(),
-        "schema_versions": schema.iter().map(|v| json!({"version": v.version, "status": v.status, "notes": v.notes, "fields": v.fields})).collect::<Vec<_>>(),
-        "correlation_settings": correlation,
-        "app_settings": app,
-    }))
-    .map_err(|e| ApiError::internal(e.to_string()))?;
-    download(
-        body,
-        "application/json",
-        format!("opentrack-config-{}.json", stamp()),
-    )
 }
 
 #[derive(Deserialize)]

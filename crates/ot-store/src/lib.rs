@@ -9,6 +9,7 @@
 mod app_settings;
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod correlation;
 pub mod graph;
 pub mod groups;
