@@ -902,6 +902,45 @@ export interface PreviewResult {
   counts?: Record<string, number>
   errors?: string[]
   observations?: PreviewObservation[]
+  /** The first decoded records stage by stage, when the preview asked for a trace. */
+  trace?: PreviewTrace
+}
+
+/** A dry run's first records (samples), each followed through the pipeline. */
+export interface PreviewTrace {
+  /** The frames the samples came from, as received, each once. */
+  frames: TraceFrameView[]
+  samples: TraceSample[]
+}
+
+/** A frame as received: parsed JSON, else its text, else its bytes escaped; cut at 64 KiB. */
+export interface TraceFrameView {
+  format: 'json' | 'text' | 'binary'
+  bytes: number
+  /** The parsed JSON, or text; a JSON frame too big to send whole is its pretty-printed start (a string). */
+  content: unknown
+  /** Only the start of the frame is in `content`. */
+  truncated?: boolean
+}
+
+/** One record (or a frame that did not decode), and what each stage made of it. */
+export interface TraceSample {
+  /** Index in `frames` of the frame it came from. */
+  frame: number
+  /** The pipeline's stages after the transport, in order (ids as in `pipelineStages`), ending with `publish`. */
+  stages: TraceStage[]
+}
+
+export interface TraceStage {
+  id: string
+  /** What the stage passed on: the record up to Reject, the mapping's outputs, then observations, the published message at Publish. */
+  items: unknown[]
+  /** Why it (or one of its outputs) was dropped at this stage. */
+  dropped?: string[]
+  /** What the stage did with it that is not a drop (a static identity kept, say): shown at this stage only. */
+  notes?: string[]
+  /** The stage held it back (a tracker waiting for the rest of a scan). */
+  held?: boolean
 }
 
 // --- Schema --------------------------------------------------------------------------------
@@ -1104,8 +1143,9 @@ export const api = {
     max_secs?: number
     save_as?: string
   }) => request<ProbeResult>('POST', '/probe', body),
-  preview: (spec: SourceSpec, storedSamplesOf?: string, samples: string[] = []) =>
-    request<PreviewResult>('POST', '/sources/validate', { spec, samples, stored_samples_of: storedSamplesOf }),
+  /** A dry run; `trace` > 0 also follows that many decoded records stage by stage (at most 10). */
+  preview: (spec: SourceSpec, storedSamplesOf?: string, samples: string[] = [], trace = 0) =>
+    request<PreviewResult>('POST', '/sources/validate', { spec, samples, stored_samples_of: storedSamplesOf, ...(trace > 0 ? { trace } : {}) }),
 
   schema: () => get<SchemaOverview>('/schema'),
   saveDraft: (fields: ExtensionField[], notes?: string) =>

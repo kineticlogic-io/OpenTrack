@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Pipeline designer, live preview by stage:** the Live preview pane now fills the designer's
+  height and scrolls on its own. It shows the first 5 stored samples (decoded records, in order)
+  as pretty-printed JSON as they are after the stage selected on the left: the frames they came
+  from as received (Transport, each once), the record, what Reject kept, the observation from Map
+  through Throttle, and at Publish the message as it would be published. A sample dropped on the
+  way says where and why, and a tracker holding one for its scan says so. One line of counts and
+  any errors sit above; the observations table is gone from this pane.
+  `POST /api/v1/sources/validate` takes `trace: <n>` (at most 10) and answers with `trace`, the
+  first n decoded records stage by stage; without it the response is unchanged, and ingest does no
+  tracing work.
 - **Basemap tiles:** Settings → General → **Basemap tiles** takes an XYZ raster tile URL (such as
   `https://tiles.example/{z}/{x}/{y}.png`); the Track Management and source preview maps then show
   those tiles instead of the country outlines. OpenTrack fetches them for the browser
