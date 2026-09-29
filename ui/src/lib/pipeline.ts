@@ -221,7 +221,7 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
       tr.algorithm === 'plugin'
         ? [
             ...profile,
-            { label: 'Tracker', value: `the ${String(tr.plugin ?? '?')} plugin (Settings → Plugins)` },
+            { label: 'Tracker', value: `the ${String(tr.plugin ?? '?')} plugin (Settings → General → Plugins)` },
             { label: 'Options', value: Object.keys((tr.options as Obj | undefined) ?? {}).length ? JSON.stringify(tr.options) : 'its defaults' },
             { label: 'Track keys', value: 'as the plugin names them' },
           ]

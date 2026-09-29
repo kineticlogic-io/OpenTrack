@@ -168,7 +168,7 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
         hint={
           scorers.length
             ? "A scorer plugin's evidence (its likelihood ratio and gate) in place of each kinematic comparison's. The test above, its thresholds and every decision stay OpenTrack's."
-            : 'Add a scorer plugin in Settings → Plugins to score pairs your own way.'
+            : 'Add a scorer plugin in Settings → General → Plugins to score pairs your own way.'
         }
       >
         <div className="num-row">

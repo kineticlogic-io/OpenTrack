@@ -4,7 +4,7 @@ import { Badge, Button, CollapsiblePanel, FileDropZone, Input, Label, SaveButton
 import { api, type AppSettings, type AppSettingsResponse, type ConfigImportStatus } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { NodesPanel } from './NodesPanel'
-import { PluginsPanel } from './PluginsPanel'
+import { PluginsSection } from './PluginsPanel'
 import { SecurityPanel } from './SecurityPanel'
 import { UsersPanel } from './UsersPanel'
 import { useCan } from '../../auth/context'
@@ -147,7 +147,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
   return (
     <div className="stack">
-      <CollapsiblePanel title="Instance" persistKey="ot.panel.settings.instance" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
+      <CollapsiblePanel title="General" persistKey="ot.panel.settings.instance" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
         <div className="panel-body">
           <Row label="Site name" hint="A name for this instance, up to 64 characters, shown in the header and browser tab as OpenTrack · name. Display only: track numbers use the site code.">
             <div className="num-row">
@@ -191,6 +191,85 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
                 2,000 tracks for 12 h every 10 s take about 1.1 GB; 16,000 tracks about 9 GB.
               </InfoTip>
               {historyEstimate && <span className="muted">≈ {historyEstimate} per 1,000 tracks</span>}
+            </div>
+          </Row>
+        </div>
+        <PluginsSection />
+      </CollapsiblePanel>
+
+      {admin && <UsersPanel />}
+
+      {admin && (
+        <NodesPanel
+          value={draft.sync}
+          onChange={(sync) => setDraft({ ...draft, sync })}
+          siteCode={loaded.site_code}
+          dirty={dirty}
+          saving={saving}
+          saved={saved}
+          onSave={save}
+        />
+      )}
+
+      <CollapsiblePanel title="Data" persistKey="ot.panel.settings.data">
+        <div className="panel-body">
+          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
+            <div className="num-row">
+              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
+                GeoJSON
+              </Button>
+              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.csv'), '_self')}>
+                CSV
+              </Button>
+            </div>
+          </Row>
+          <Row label="Full configuration" hint={CONFIG_EXPORT_INFO}>
+            <Button size="sm" variant="ghost" disabled={!admin} icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
+              Configuration
+            </Button>
+          </Row>
+          {admin && importStatus?.empty && (
+            <Row label="Import configuration" hint={CONFIG_IMPORT_INFO}>
+              <div className="stack">
+                <FileDropZone
+                  inputId="config-import-file"
+                  accept=".json,application/json"
+                  acceptedExtensions={['.json']}
+                  file={importFile}
+                  onFileChange={setImportFile}
+                  onReject={(m) => toast({ variant: 'error', title: 'Configuration', message: m })}
+                  label="A full configuration export (.json)"
+                  hint={`${importStatus.format} version ${importStatus.version}`}
+                  compact
+                />
+                <div className="num-row">
+                  <Button size="sm" variant="primary" icon={<TbUpload />} disabled={!importFile || importing} onClick={importConfig}>
+                    Import
+                  </Button>
+                </div>
+              </div>
+            </Row>
+          )}
+          <Row label="Registry" hint="Entities with their identifiers and attributes: export and import them on the Registry tab.">
+            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
+              Registry XLSX
+            </Button>
+          </Row>
+          <h4 className="subhead">
+            Purge
+            <InfoTip label="Purge">
+              Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry and the decision log stay.
+            </InfoTip>
+          </h4>
+          <Row label="Also delete history" hint="The track graph: how every track was formed, paired, merged and split.">
+            <Toggle size="sm" aria-label="Also delete history" value={purgeHistory} onChange={setPurgeHistory} />
+          </Row>
+          <Row label="Confirm" hint={`Type the site code, ${loaded.site_code}.`}>
+            <div className="num-row">
+              <Input style={{ ...INPUT, width: 120 }} aria-label="Site code to confirm" value={purgeConfirm} onChange={(e) => setPurgeConfirm(e.target.value)} spellCheck={false} />
+              <Button size="sm" variant="danger" icon={<TbTrash />} disabled={!admin || purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
+                Purge tracks
+              </Button>
             </div>
           </Row>
         </div>
@@ -285,92 +364,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
         </div>
       </CollapsiblePanel>
 
-      {admin && <UsersPanel />}
       {admin && <SecurityPanel />}
-      {admin && (
-        <NodesPanel
-          value={draft.sync}
-          onChange={(sync) => setDraft({ ...draft, sync })}
-          siteCode={loaded.site_code}
-          dirty={dirty}
-          saving={saving}
-          saved={saved}
-          onSave={save}
-        />
-      )}
-
-      <PluginsPanel />
-
-      <CollapsiblePanel title="Data export" persistKey="ot.panel.settings.export">
-        <div className="panel-body">
-          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
-            <div className="num-row">
-              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
-                GeoJSON
-              </Button>
-              <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.csv'), '_self')}>
-                CSV
-              </Button>
-            </div>
-          </Row>
-          <Row label="Full configuration" hint={CONFIG_EXPORT_INFO}>
-            <Button size="sm" variant="ghost" disabled={!admin} icon={<TbDownload />} onClick={() => window.open(api.exportUrl('config'), '_self')}>
-              Configuration
-            </Button>
-          </Row>
-          {admin && importStatus?.empty && (
-            <Row label="Import configuration" hint={CONFIG_IMPORT_INFO}>
-              <div className="stack">
-                <FileDropZone
-                  inputId="config-import-file"
-                  accept=".json,application/json"
-                  acceptedExtensions={['.json']}
-                  file={importFile}
-                  onFileChange={setImportFile}
-                  onReject={(m) => toast({ variant: 'error', title: 'Configuration', message: m })}
-                  label="A full configuration export (.json)"
-                  hint={`${importStatus.format} version ${importStatus.version}`}
-                  compact
-                />
-                <div className="num-row">
-                  <Button size="sm" variant="primary" icon={<TbUpload />} disabled={!importFile || importing} onClick={importConfig}>
-                    Import
-                  </Button>
-                </div>
-              </div>
-            </Row>
-          )}
-          <Row label="Registry" hint="Entities with their identifiers and attributes: export and import them on the Registry tab.">
-            <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.registryExportUrl('xlsx'), '_self')}>
-              Registry XLSX
-            </Button>
-          </Row>
-        </div>
-      </CollapsiblePanel>
-
-      <CollapsiblePanel
-        title="Purge"
-        persistKey="ot.panel.settings.purge"
-        titleActions={
-          <InfoTip label="Purge">
-            Retire every live track, and delete the published ones in OpenStare. Sources, the output schema, the registry and the decision log stay.
-          </InfoTip>
-        }
-      >
-        <div className="panel-body">
-          <Row label="Also delete history" hint="The track graph: how every track was formed, paired, merged and split.">
-            <Toggle size="sm" aria-label="Also delete history" value={purgeHistory} onChange={setPurgeHistory} />
-          </Row>
-          <Row label="Confirm" hint={`Type the site code, ${loaded.site_code}.`}>
-            <div className="num-row">
-              <Input style={{ ...INPUT, width: 120 }} aria-label="Site code to confirm" value={purgeConfirm} onChange={(e) => setPurgeConfirm(e.target.value)} spellCheck={false} />
-              <Button size="sm" variant="danger" icon={<TbTrash />} disabled={!admin || purging || purgeConfirm.trim() !== loaded.site_code} onClick={purge}>
-                Purge tracks
-              </Button>
-            </div>
-          </Row>
-        </div>
-      </CollapsiblePanel>
     </div>
   )
 }

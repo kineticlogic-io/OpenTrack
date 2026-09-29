@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Security labels:** the classification order is a list you drag into order, add to and remove
+  from (Settings → Security). The default is `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`, `SECRET`; a
+  classification not in the list, such as `TOP SECRET` unless you add it, still ranks above them all.
+  A node that already saved an order keeps it.
 - **The account policy is fixed at the STIG values**, no longer a setting: passwords of 15
   characters or more with upper, lower, digit and special, 5 remembered, 8 characters changed, a
   24 h minimum and 60 day maximum age; 3 failed sign-ins within 15 minutes lock an account for 15

@@ -144,7 +144,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
   kind it provides with its default options, and prints its manifest and what worked. It changes
   nothing and exits non-zero when something failed.
 - `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--replace]` adds it, as
-  Settings → Plugins does. `--replace` installs a new build of a plugin that is already added.
+  Settings → General → Plugins does. `--replace` installs a new build of a plugin that is already added.
 - `opentrack plugin list` lists the plugins added and whether each is enabled.
 
 An address is `host:port`, `tcp://host:port` or `unix:/path`. Grants are JSON, for example
@@ -565,29 +565,37 @@ stage, **Security label** (Sources → a source → Pipeline):
 
 The label goes into each published track message as `security`
 ([docs/nats-output.md](../nats-output.md)). A track that several labelled sources report for
-carries the label of its **highest-priority** source, not the most restrictive one. Set source
-priorities with that in mind, or keep sources of different classification apart.
+carries:
+- the **highest classification** among them;
+- **every restriction** any of them has;
+- only the **releasability they all share** (`NONE` when they share none).
 
-The values are free text for now.
+Which classification is highest comes from the list in **Settings → Security → Security labels**.
+It runs lowest first, and by default reads `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`, `SECRET`.
+- **Reorder:** drag a row by its handle.
+- **Add or remove:** **Add classification** adds a row; the × removes one.
+- **Save** when you're done.
+
+Case does not matter, `U`, `C`, `S` and `TS` stand for their names, and caveats after `//` are
+ignored when ranking. A classification that isn't in the list ranks above all of them, so a track
+is never marked too low. Add `TOP SECRET` (or your own levels) if your sources carry them.
 
 ## Settings tab
 
-The **Settings** tab, panel by panel. Viewers and track managers see the instance and banner
-settings, plugins and exports, but can't change them.
+The **Settings** tab, panel by panel, in order. Viewers and track managers see General, Data and
+Banners, but can't change them.
 
 | Panel | What it holds | See |
 |---|---|---|
-| **Instance** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. | |
-| **Banners** | Classification banner and warning banner. | [Banners](#banners) |
+| **General** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. **Plugins:** codec, tracker and scorer plugins. | [Plugins](#plugins) |
 | **Users**, **API tokens** | Accounts, with the break-glass ones marked **Never turn off**, and machine tokens (admins only). | [Users](#users) |
-| **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
-| **Security labels** | The classification order a fused track's label is chosen by (admins only). | [Security labels](#security-labels) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
-| **Plugins** | Codec, tracker and scorer plugins. | [Plugins](#plugins) |
-| **Data export** | Live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. | [Configuration export](#configuration-export) |
-| **Purge** | Retire every live track. | [Purge](#purge) |
+| **Data** | Export: live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. **Purge:** retire every live track. | [Configuration export](#configuration-export), [Purge](#purge) |
+| **Banners** | Classification banner and warning banner. | [Banners](#banners) |
+| **Security labels** | The classification order a fused track's label is chosen by (admins only). | [Security labels](#security-labels) |
+| **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
 
-The Instance, Banners and Nodes panels share one draft: **Save** on any of them saves all three.
+The General, Nodes and Banners panels share one draft: **Save** on any of them saves all three.
 
 ## Sources and correlation
 
@@ -627,7 +635,7 @@ database.
 
 ## Plugins
 
-Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → Plugins**
+Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → General → Plugins**
 (admins change it; others see it):
 - **Add plugin:** a WebAssembly component (`.wasm`, run sandboxed inside OpenTrack), or an
   external plugin's address (a program of its own serving the plugin interface on a socket).
@@ -717,7 +725,7 @@ applications' keys included. Take it at the same time as the SQLite backup.
 
 ### Configuration export
 
-**Settings → Data export → Full configuration** (admins; `GET /api/v1/export/config`, or
+**Settings → Data → Full configuration** (admins; `GET /api/v1/export/config`, or
 `opentrack config export`) downloads the node's whole configuration as one JSON file, to back it
 up or to [rebuild the node](#rebuild-a-node-from-a-configuration-export) from. Every export is
 recorded (an `export_config` decision in the audit record, with who exported it and how much), and
@@ -773,7 +781,7 @@ opentrack serve                              # or all; restart a running server
 ```
 
 The CLI is the usual way: an empty node's only account is its first admin. From the UI, an admin
-of an empty node (after changing the first admin's password) sees **Settings → Data export →
+of an empty node (after changing the first admin's password) sees **Settings → Data →
 Import configuration**; `POST /api/v1/import/config` with the file as the body does the same, and
 `GET /api/v1/import/config` says whether the node is empty (`{"empty", "present"}`).
 
@@ -855,7 +863,7 @@ change between releases.
 
 ## Purge
 
-**Settings → Purge** (admins; `POST /api/v1/admin/purge`) clears the picture:
+**Settings → Data → Purge** (admins; `POST /api/v1/admin/purge`) clears the picture:
 1. Optionally turn on **Also delete history**.
 2. Type the site code in **Confirm**, then **Purge tracks**, and confirm.
 
@@ -935,7 +943,7 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 | Tracks are live but consumers don't get them. | See why each is not published on its track card (operator guide, "Not published"): not confirmed, only sensors that may not stand alone report for it, the output filter holds it, or an entity says never. |
 | `docker compose up` refuses to start. | `.env` is missing next to `docker-compose.yml`. |
 | The container exits at once. | The data directory isn't writable by uid 1000 (see its log). |
-| Redis memory keeps growing. | Position history (Settings → Instance), `OT_OBS_WINDOW_SECS`, and the number of tracks. See [Redis](#redis). |
+| Redis memory keeps growing. | Position history (Settings → General), `OT_OBS_WINDOW_SECS`, and the number of tracks. See [Redis](#redis). |
 
 ## Security
 

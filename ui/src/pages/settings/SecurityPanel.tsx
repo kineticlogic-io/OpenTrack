@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { TbFileImport, TbPlus, TbX } from 'react-icons/tb'
-import { Badge, Button, CollapsiblePanel, FieldSelect, Input, SaveButton, Toggle, useToast } from 'staresdk'
+import { Badge, Button, CollapsiblePanel, FieldSelect, Input, SaveButton, SortableList, Toggle, useToast } from 'staresdk'
 import { api, ROLES, type AuthSettings, type AuthSettingsResponse, type CorrelationSettings, type Role, type RoleMap } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
@@ -37,31 +37,45 @@ function RoleMapping({ rows, onChange, placeholder, label }: { rows: RoleMap[]; 
   )
 }
 
+/** The classification order before one is saved, lowest first (the server's default). */
+const DEFAULT_ORDER = ['UNCLASSIFIED', 'CUI', 'CONFIDENTIAL', 'SECRET']
+
+/** A classification in the list, with an id that stays with it while it is dragged or edited. */
+interface LevelRow {
+  id: string
+  name: string
+}
+
+let nextRowId = 0
+const levelRows = (names: string[]): LevelRow[] => names.map((name) => ({ id: `level-${nextRowId++}`, name }))
+
 /**
  * Settings → Security → Security labels: the classification order a fused track's label is
- * chosen by. It is a correlation setting (the engine applies it), saved on its own.
+ * chosen by, as a list to drag into order. It is a correlation setting (the engine applies it),
+ * saved on its own.
  */
 function LabelOrder() {
   const { toast } = useToast()
   const [settings, setSettings] = useState<CorrelationSettings | null>(null)
-  const [text, setText] = useState('')
+  const [levels, setLevels] = useState<LevelRow[]>([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const order = (s: CorrelationSettings | null) => s?.labels?.classification_order ?? ['UNCLASSIFIED', 'CUI', 'CONFIDENTIAL', 'SECRET', 'TOP SECRET']
+  const order = (s: CorrelationSettings | null) => s?.labels?.classification_order ?? DEFAULT_ORDER
   useEffect(() => {
     api.correlationSettings().then(
       (r) => {
         setSettings(r.settings)
-        setText(order(r.settings).join('\n'))
+        setLevels(levelRows(order(r.settings)))
       },
       (e) => toast({ variant: 'error', title: 'Security labels', message: errorMessage(e) }),
     )
   }, [toast])
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-  const dirty = settings != null && JSON.stringify(lines) !== JSON.stringify(order(settings))
+  const names = levels.map((l) => l.name.trim()).filter(Boolean)
+  const dirty = settings != null && JSON.stringify(names) !== JSON.stringify(order(settings))
+  const edit = (next: LevelRow[]) => {
+    setLevels(next)
+    setSaved(false)
+  }
   const save = async () => {
     if (!settings) return
     setSaving(true)
@@ -69,9 +83,9 @@ function LabelOrder() {
     try {
       // Read again just before: the rest of the correlation settings stay as they are now.
       const now = await api.correlationSettings()
-      const r = await api.saveCorrelationSettings({ ...now.settings, labels: { classification_order: lines } })
+      const r = await api.saveCorrelationSettings({ ...now.settings, labels: { classification_order: names } })
       setSettings(r.settings)
-      setText(order(r.settings).join('\n'))
+      setLevels(levelRows(order(r.settings)))
       setSaved(true)
     } catch (e) {
       toast({ variant: 'error', title: 'Not saved', message: errorMessage(e) })
@@ -87,15 +101,47 @@ function LabelOrder() {
         <InfoTip label="Security labels">
           A track fused from several sources is marked with the highest classification of theirs in this order, every restriction any of them has, and
           only the releasability they all share (the intersection of their comma-separated lists; NONE when they share none). A classification not in
-          the list ranks above all of them, so a track is never marked too low.
+          the list ranks above all of them, so a track is never marked too low. Lowest first; drag the handle to reorder. Case does not matter, U, C, S
+          and TS stand for their names, and caveats after // are ignored when ranking.
         </InfoTip>
       }
       actions={<SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}
     >
       <div className="panel-body stack">
-        <SettingsRow label="Classification order" hint="One per line, lowest first. Case does not matter; U, C, S and TS stand for their names, and caveats after // are ignored when ranking.">
-          <textarea className="plain-textarea" style={{ maxWidth: 320 }} aria-label="Classification order" rows={6} spellCheck={false} value={text} onChange={(e) => setText(e.target.value)} />
-        </SettingsRow>
+        <div className="label-order">
+          <SortableList<LevelRow>
+            items={levels}
+            getId={(l) => l.id}
+            onReorder={edit}
+            itemLabel="classification"
+            renderItem={(l, i) => (
+              <div className="num-row">
+                <span className="muted small mono label-rank">{i + 1}</span>
+                <Input
+                  style={{ ...INPUT, width: 260 }}
+                  aria-label={`Classification ${i + 1}`}
+                  value={l.name}
+                  spellCheck={false}
+                  onChange={(e) => edit(levels.map((x) => (x.id === l.id ? { ...x, name: e.target.value } : x)))}
+                />
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  icon={<TbX />}
+                  aria-label={`Remove ${l.name || `classification ${i + 1}`}`}
+                  title="Remove"
+                  disabled={levels.length <= 1}
+                  onClick={() => edit(levels.filter((x) => x.id !== l.id))}
+                />
+              </div>
+            )}
+          />
+          <div>
+            <Button size="sm" variant="ghost" icon={<TbPlus />} disabled={levels.length >= 32} onClick={() => edit([...levels, ...levelRows([''])])}>
+              Add classification
+            </Button>
+          </div>
+        </div>
       </div>
     </CollapsiblePanel>
   )

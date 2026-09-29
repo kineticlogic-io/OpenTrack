@@ -463,7 +463,7 @@ refresh button reloads it now.
 
 ## Export
 
-Anyone can download the picture. **Settings → Data export → Live tracks**:
+Anyone can download the picture. **Settings → Data → Live tracks**:
 - **GeoJSON:** every live track as a point feature, with the published fields and attributes, its
   state, confidence and source tracks.
 - **CSV:** one row per track: track id, name, class, domain, affiliation, force code, track type,

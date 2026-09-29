@@ -64,7 +64,7 @@ OTH-GOLD's track management sets do:
 **Plugins.** Codecs, trackers and pairing scorers of your own, beside the built-in ones. They are
 WebAssembly components run sandboxed inside OpenTrack, with only the memory, time, files and
 network an operator grants them. Or they are external programs serving the same interface over a
-socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → Plugins and
+socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → General → Plugins and
 written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
 test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
 
