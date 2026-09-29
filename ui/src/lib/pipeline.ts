@@ -221,7 +221,7 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
       tr.algorithm === 'plugin'
         ? [
             ...profile,
-            { label: 'Tracker', value: `the ${String(tr.plugin ?? '?')} plugin (Settings → Plugins)` },
+            { label: 'Tracker', value: `the ${String(tr.plugin ?? '?')} plugin (Settings → General → Plugins)` },
             { label: 'Options', value: Object.keys((tr.options as Obj | undefined) ?? {}).length ? JSON.stringify(tr.options) : 'its defaults' },
             { label: 'Track keys', value: 'as the plugin names them' },
           ]
@@ -282,6 +282,22 @@ export function pipelineStages(spec: SourceSpec): Stage[] {
     ],
   })
   return out
+}
+
+// --- Decode stage ------------------------------------------------------------------------
+
+/** The codecs the Decode stage edits; the others (protobuf, plugins) are chosen on the Transport tab. */
+export const DECODE_CODECS = ['json', 'cot_xml', 'xml']
+
+/**
+ * A codec the Decode stage only shows: its type and its message or plugin, or null for one it
+ * edits. Choosing a Decode format would replace such a codec's schema, plugin and options.
+ */
+export function transportCodec(codec: Obj | undefined): { type: string; name?: string } | null {
+  const type = String(codec?.type ?? 'json')
+  if (DECODE_CODECS.includes(type)) return null
+  const name = type === 'protobuf' ? codec?.message : type === 'plugin' ? codec?.plugin : undefined
+  return typeof name === 'string' && name ? { type, name } : { type }
 }
 
 // --- Entity links --------------------------------------------------------------------------

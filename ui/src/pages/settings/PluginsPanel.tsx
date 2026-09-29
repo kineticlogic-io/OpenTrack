@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { TbPlayerPlay, TbPlus, TbShieldLock, TbTrash } from 'react-icons/tb'
-import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, FileDropZone, Input, Label, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
+import { Badge, Button, DataTable, FieldSelect, FileDropZone, Input, Label, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { api, type PluginGrants, type PluginInfo } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { useCan } from '../../auth/context'
@@ -176,8 +176,9 @@ function GrantsEditor({ plugin, onClose, onSaved }: { plugin: PluginInfo; onClos
   )
 }
 
-/** Settings → Plugins: the built-in and added plugins, what uses them, and their grants. */
-export function PluginsPanel() {
+/** Settings → General → Plugins: the built-in and added plugins, what uses them, and their grants. */
+/** Settings → General → Plugins: a section of the General panel. */
+export function PluginsSection() {
   const { toast, confirm } = useToast()
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null)
   const [adding, setAdding] = useState(false)
@@ -311,31 +312,29 @@ export function PluginsPanel() {
   ]
 
   return (
-    <CollapsiblePanel
-      title="Plugins"
-      persistKey="ot.panel.settings.plugins"
-      titleActions={
-        <InfoTip label="Plugins">
-          Codecs, trackers and pairing scorers of your own, beside the built-in ones. A WebAssembly plugin runs sandboxed inside OpenTrack with only what
-          you grant it; an external one is a program of its own that OpenTrack connects to. Sources pick codec and tracker plugins in their pipeline;
-          correlation settings pick a scorer. Write them with the SDKs in sdk/ (Rust, Python).
-          <br />
-          <br />
-          Provides: what it can be used as (codec, tracker, scorer). Runs as: built in, WebAssembly (with its size and the start of its SHA-256
-          fingerprint) or the address of an external plugin. Status: loaded, loading, disabled, or error with the reason. The switch enables
-          it: off unloads it, so a source using it cannot start until it is back on, and a correlation scorer falls back to the kinematic score.
-          ▶ checks it loads and opens; the shield edits its grants.
-        </InfoTip>
-      }
-      actions={
-        admin && (
+    <div className="panel-body stack">
+      <div className="section-head">
+        <h4 className="subhead">
+          Plugins
+          <InfoTip label="Plugins">
+            Codecs, trackers and pairing scorers of your own, beside the built-in ones. A WebAssembly plugin runs sandboxed inside OpenTrack with only what
+            you grant it; an external one is a program of its own that OpenTrack connects to. Sources pick codec and tracker plugins in their pipeline;
+            correlation settings pick a scorer. Write them with the SDKs in sdk/ (Rust, Python).
+            <br />
+            <br />
+            Provides: what it can be used as (codec, tracker, scorer). Runs as: built in, WebAssembly (with its size and the start of its SHA-256
+            fingerprint) or the address of an external plugin. Status: loaded, loading, disabled, or error with the reason. The switch enables
+            it: off unloads it, so a source using it cannot start until it is back on, and a correlation scorer falls back to the kinematic score.
+            ▶ checks it loads and opens; the shield edits its grants.
+          </InfoTip>
+        </h4>
+        {admin && (
           <Button size="sm" icon={<TbPlus />} onClick={() => setAdding(true)}>
             Add plugin
           </Button>
-        )
-      }
-    >
-      <div className="panel-body">
+        )}
+      </div>
+      <div>
         {plugins === null ? (
           <span className="muted">LOADING…</span>
         ) : (
@@ -361,6 +360,6 @@ export function PluginsPanel() {
           }}
         />
       )}
-    </CollapsiblePanel>
+    </div>
   )
 }

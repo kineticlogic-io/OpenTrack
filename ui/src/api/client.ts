@@ -166,6 +166,8 @@ export interface CorrelationSettings {
     process_noise_mps2: number
     speed_sigma_mps: number
     object_density_per_km2: number
+    /** Count live tracks within this radius (m) when denser than object_density_per_km2; 0: off. */
+    local_density_radius_m: number
     velocity_spread_mps: number
     prior_probability: number
     pair_probability: number
@@ -182,7 +184,7 @@ export interface CorrelationSettings {
   }
   gate: { base_m: number; max_extrapolation_secs: number }
   freshness_secs: number
-  split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number }
+  split: { propose: boolean; automatic: boolean; split_probability: number; gate_probability: number; m: number; n: number; window_secs: number }
   output: OutputFilter
   /** A scorer plugin whose evidence takes the kinematic comparison's place. */
   scorer?: { plugin: string; options?: Record<string, unknown> } | null
@@ -346,6 +348,23 @@ export interface SystemMetrics {
   }
 }
 
+/** `GET /import/config`: whether a configuration may be imported here. */
+export interface ConfigImportStatus {
+  empty: boolean
+  /** What makes the node non-empty, one line each. */
+  present: string[]
+  format: string
+  version: number
+}
+
+/** `POST /import/config`: what the import restored. */
+export interface ConfigImported {
+  imported: boolean
+  decision: number
+  counts: Record<string, number | boolean>
+  notes: string[]
+}
+
 export class ApiError extends Error {
   readonly status: number
   constructor(status: number, message: string) {
@@ -415,6 +434,8 @@ export interface AppSettings {
   history_interval_secs?: number | null
   /** Sharing the picture with other OpenTrack nodes. */
   sync?: SyncSettings
+  /** XYZ raster tile URL template for the maps' basemap (empty: the country outlines). Admins only: empty for anyone else. */
+  basemap_tiles_url?: string
   /** Cursor-on-Target outputs to TAK (the cot role). */
   tak?: TakSettings
 }
@@ -582,40 +603,6 @@ export interface SessionRow {
   end_reason: string | null
 }
 
-/** A row of the hash-chained audit record. */
-export interface AuditRow {
-  seq: number
-  at_ms: number
-  actor: string
-  op: string
-  outcome: 'success' | 'failure'
-  ip: string | null
-  detail: Record<string, unknown>
-  decision_id?: number
-  hash: string
-}
-
-export interface AuditQuery {
-  from_ms?: number
-  to_ms?: number
-  actor?: string
-  /** Comma-separated operations. */
-  op?: string
-  outcome?: '' | 'success' | 'failure'
-  before_seq?: number
-  limit?: number
-}
-
-export interface AuditVerify {
-  ok: boolean
-  rows: number
-  first_seq: number | null
-  last_seq: number | null
-  head_hash: string
-  anchor?: { seq: number; hash: string }
-  problems: { seq: number; problem: string }[]
-}
-
 export interface ApiTokenRow {
   jti: string
   name: string
@@ -633,7 +620,6 @@ export interface RoleMap {
 }
 
 export interface AuthSettings {
-  session_hours?: number | null
   disable_password_login: boolean
   saml: {
     enabled: boolean
@@ -649,14 +635,11 @@ export interface AuthSettings {
   }
   openstare: { enabled: boolean; api_url: string; login_url: string; role_mapping: RoleMap[] }
   client_certs: { common_name: string; user: string }[]
-  password: PasswordPolicy
-  lockout: { max_failures: number; window_minutes: number; lock_minutes: number }
-  sessions: { idle_minutes: number; admin_idle_minutes: number | null; max_per_account: number }
-  inactivity: { disable_after_days: number; exempt: string[] }
-  audit: { retention_days: number }
+  /** Break-glass accounts (emails) inactivity never turns off: Settings → Users → Never turn off. */
+  inactivity: { exempt: string[] }
 }
 
-/** Rules for local accounts' passwords (Settings → Security). */
+/** Rules for local accounts' passwords (fixed at the STIG values; `/auth/me` gives them). */
 export interface PasswordPolicy {
   min_length: number
   require_upper: boolean
@@ -671,7 +654,7 @@ export interface PasswordPolicy {
 
 /** The password rules in words, for a password field's ⓘ. */
 export function describePolicy(p: PasswordPolicy | undefined): string {
-  if (!p) return 'The password rules in Settings → Security apply.'
+  if (!p) return 'At least 15 characters, with an upper-case letter, a lower-case letter, a digit and a special character.'
   const classes = [
     p.require_upper && 'an upper-case letter',
     p.require_lower && 'a lower-case letter',
@@ -695,6 +678,8 @@ export interface AppSettingsResponse {
   settings: AppSettings
   site_code: string
   node_id: string
+  /** Whether the maps show basemap tiles (whoever asks; the URL is an admin's). */
+  basemap_tiles: boolean
 }
 
 /** What a spreadsheet import does, row by row. */
@@ -1033,16 +1018,15 @@ export interface EntityView {
   tracks: { uid: string; track_id: string; state: string; source_id: string; last_seen: string; notices: AttributeNotice[] }[]
 }
 
-/** An audit query as URL parameters (empty ones left out). */
-function auditParams(q: AuditQuery): string {
-  const p = new URLSearchParams()
-  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, String(v))
-  const s = p.toString()
-  return s ? `?${s}` : ''
-}
-
 export const api = {
-  status: () => get<ServerStatus>('/status'),
+  // 503 while SQLite, Redis or NATS is down: the body still says which.
+  status: async (): Promise<ServerStatus> => {
+    const res = await fetch('/api/v1/status', { headers: { 'x-opentrack-actor': ACTOR } })
+    const text = await res.text()
+    const parsed = text ? JSON.parse(text) : {}
+    if (!res.ok && !(res.status === 503 && parsed.service)) throw new ApiError(res.status, parsed.error ?? res.statusText)
+    return parsed as ServerStatus
+  },
   syncStatus: () => get<SyncStatus>('/sync/status'),
   takStatus: () => get<TakStatus>('/tak/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
@@ -1152,9 +1136,6 @@ export const api = {
       `/auth/sessions${q.all ? '?all=true' : q.user ? `?user=${enc(q.user)}` : ''}`,
     ),
   endSession: (id: string) => request<unknown>('DELETE', `/auth/sessions/${enc(id)}`),
-  audit: (q: AuditQuery) => get<{ rows: AuditRow[]; next_before_seq: number | null }>(`/audit${auditParams(q)}`),
-  auditCsvUrl: (q: AuditQuery) => `/api/v1/audit${auditParams({ ...q, limit: undefined })}${auditParams(q) ? '&' : '?'}format=csv`,
-  verifyAudit: () => get<AuditVerify>('/audit/verify'),
   apiTokens: () => get<{ tokens: ApiTokenRow[] }>('/auth/api-tokens').then((r) => r.tokens),
   createApiToken: (t: { name: string; user_id?: string; days?: number }) =>
     request<{ token: string; jti: string; name: string; user: string; expires_at_ms: number }>('POST', '/auth/api-tokens', t),
@@ -1165,6 +1146,28 @@ export const api = {
     request<{ idp_metadata_xml: string; idp_entity_id: string; sso_url: string; signing_cert: string }>('POST', '/auth/saml/parse-metadata', { xml }),
   exportUrl: (what: 'tracks.geojson' | 'tracks.csv' | 'config') =>
     what === 'config' ? '/api/v1/export/config' : `/api/v1/export/tracks?format=${what === 'tracks.csv' ? 'csv' : 'geojson'}`,
+  /** Whether this node may import a configuration (it has none yet), and if not, what it has. Admins. */
+  configImportStatus: () => get<ConfigImportStatus>('/import/config'),
+  /** Rebuild this empty node from a full configuration export. The caller's account is replaced. */
+  importConfig: async (file: File): Promise<ConfigImported> => {
+    const res = await fetch('/api/v1/import/config', {
+      method: 'POST',
+      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/json' },
+      body: file,
+    })
+    const text = await res.text()
+    let parsed: { error?: string; problems?: string[] } & Partial<ConfigImported> = {}
+    try {
+      parsed = text ? JSON.parse(text) : {}
+    } catch {
+      parsed = { error: text }
+    }
+    if (!res.ok) {
+      const detail = parsed.problems?.length ? `${parsed.problems.join('; ')}` : parsed.error
+      throw new ApiError(res.status, detail ?? res.statusText)
+    }
+    return parsed as ConfigImported
+  },
   purge: (confirm: string, history: boolean) =>
     request<{ retired: number; history?: { nodes: number; edges: number } | null }>('POST', '/admin/purge', { confirm, history }),
 

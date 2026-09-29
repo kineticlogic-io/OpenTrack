@@ -119,6 +119,33 @@ impl FromStr for Uid {
     }
 }
 
+/// The highest sequence of a `site` UID written anywhere in `text` (JSON,
+/// a Redis key, a subject): the site code followed by exactly 9 digits, not
+/// part of a longer word or number. For finding numbers already issued.
+pub fn highest_sequence_in(text: &str, site: SiteCode) -> Option<u64> {
+    let bytes = text.as_bytes();
+    let code = site.as_str().as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric();
+    let mut best = None;
+    let mut from = 0;
+    while let Some(at) = text[from..].find(site.as_str()).map(|i| from + i) {
+        from = at + 1;
+        let end = at + code.len() + 9;
+        if end > bytes.len()
+            || (at > 0 && word(bytes[at - 1]))
+            || bytes.get(end).is_some_and(|b| word(*b))
+            || !bytes[at + code.len()..end].iter().all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        let seq: u64 = text[at + code.len()..end].parse().unwrap_or(0);
+        if seq > 0 && best.is_none_or(|b| seq > b) {
+            best = Some(seq);
+        }
+    }
+    best
+}
+
 impl Serialize for Uid {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -166,5 +193,18 @@ mod tests {
         assert!("OTK00000004x".parse::<Uid>().is_err());
         assert!("OTK+00000042".parse::<Uid>().is_err());
         assert!(Uid::from_doc_id("ais-338924210").is_err());
+    }
+
+    #[test]
+    fn finds_the_highest_site_number_in_text() {
+        let site = SiteCode::new("OTK").unwrap();
+        let text = r#"{"a":"tms-OTK000000042","b":["OTK000000007","XOTK000000900"],
+            "c":"OTK0000009991","d":"AAA000000500","e":"tracks.tms-OTK000000043"}"#;
+        assert_eq!(highest_sequence_in(text, site), Some(43));
+        assert_eq!(highest_sequence_in("OTK000000000 OTK12345", site), None);
+        assert_eq!(
+            highest_sequence_in("tms:sys:OTK999999999", site),
+            Some(MAX_SEQUENCE)
+        );
     }
 }

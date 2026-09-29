@@ -2,7 +2,16 @@
 
 ## Unreleased
 
-### TAK output (0.4.1)
+- **Basemap tiles:** Settings → General → **Basemap tiles** takes an XYZ raster tile URL (such as
+  `https://tiles.example/{z}/{x}/{y}.png`); the Track Management and source preview maps then show
+  those tiles instead of the country outlines. OpenTrack fetches them for the browser
+  (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in account), so the content security policy stays
+  this origin only, internal tile servers work and a key in the URL never reaches browsers. Tiles
+  are not cached on the server; browsers keep them for a day. `GET /api/v1/settings` gains
+  `basemap_tiles` (on or off) and `settings.basemap_tiles_url`, empty for anyone but an admin; the
+  decision log records only that a URL was set. stareSDK 0.1.9.
+
+### TAK output
 
 OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (#35).
 
@@ -29,9 +38,101 @@ OpenTrack streams its published tracks to TAK as Cursor-on-Target, beside NATS (
 - Docs: admin guide [TAK output](docs/guides/admin.md#tak-output), operator guide "In TAK",
   hardening (plaintext CoT and multicast expose the picture).
 
+## 0.4.1 (alpha), 2026-09-29
+
+### Settings, simplified
+
+- **Settings in a new order:** General, Users, API tokens, Nodes, Data, Banners, Security labels,
+  Single sign-on. **General** (was Instance) holds **Plugins**; **Data** holds the exports, the
+  configuration import and **Purge**.
+- **Purge** is one button that opens a confirmation, with **Also delete history** in it; no site
+  code to type.
+- **The account policy is fixed at the STIG values**, no longer a setting: passwords of 15
+  characters or more with upper, lower, digit and special, 5 remembered, 8 characters changed, a
+  24 h minimum and 60 day maximum age; 3 failed sign-ins within 15 minutes lock an account for 15
+  minutes; sessions end after 15 minutes idle (10 for admins) and 24 hours at most, 3 per account;
+  accounts not signed in for 35 days are turned off. The audit record is kept forever: the
+  retention setting and its purge are gone. `/api/v1/auth/settings` no longer has
+  `session_hours`, `password`, `lockout`, `sessions`, `audit` or `inactivity.disable_after_days`;
+  saved settings and configuration files that still have them load, and those are ignored and
+  dropped. Settings → Security loses the Sign-in, Password policy and Lockout and inactivity panels.
+- **Settings → Security → Single sign-on:** SAML, OpenStare sign-in, client certificates and the
+  Password sign-in switch are one panel with one Save.
+- **Settings → Users → Never turn off:** break-glass accounts inactivity never turns off are
+  marked on their row (still stored as `inactivity.exempt`). The all-sessions panel is gone; the
+  account menu's own sessions and **Sign out everywhere** stay.
+- **The audit record is reviewed in the server logs**: every row is also logged as an `audit
+  record` event (target `audit`, with seq, actor, op, outcome, ip, detail, decision id and hash;
+  a decision's before and after stay out of the log). Settings → Audit is gone;
+  `GET /api/v1/audit` and `/api/v1/audit/verify` stay, for admins.
+- **Security labels:** the classification order is a list you drag into order, add to and remove
+  from (Settings → Security). The default is `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`, `SECRET`; a
+  classification not in the list, such as `TOP SECRET` unless you add it, still ranks above them all.
+  A node that already saved an order keeps it.
+
+### Interface
+
+- **Track Management** is the second tab, right after Overview.
+- **Help** reads like a CODEX article: a rail with the guide choice (Operator / Administrator, with
+  their section counts) and the contents (sections open to their sub-sections; the one you're in
+  stays open), beside the guide itself, no longer inside a collapsing panel.
+- **Bearing lines** on the map run from the sensor out to its maximum range (250 km when unset)
+  along the great circle, with a faint ±σ wedge, instead of ending at the track (#17).
+- Pipeline designer: the Decode stage shows a protobuf or plugin codec read-only (it is chosen on the
+  Transport tab) instead of letting a format replace it (#3).
+- Transport form: HTTP poll method and body, the byte order of length framing, the length field's
+  adjustment and the gRPC server's keepalive (#6).
+
+### Track management and correlation
+
+- **Accepting a pair suggestion** merges with hold, as a merge from the track table does:
+  correlation never splits it (split or undo still can) (#12).
+- **Do not pair** in the track table, for two ticked tracks: correlation never pairs them; undoable
+  from the management log, which now names the tracks (#4).
+- **Correlation settings:** the split window and the local density radius can be set in the UI;
+  the server refuses a split window that isn't positive or a negative radius (#5).
+- **`OT_CORRELATION` overridden by saved correlation settings** now says so: the engine logs a
+  warning at start when it is set and the saved approach differs (#14).
+
+### Sources
+
 - **SAPIENT codec** (BSI Flex 335 v2.0): a built-in `sapient` codec plugin (`ot-sapient`,
   decoding with the schema `sapient-rs` ships), framed on TCP by a 4-byte little-endian length
   prefix; example in `docs/examples/sapient.json`.
+- SAPIENT codec: enum values inside map fields come out as names; a NaN or infinite float is `null`
+  instead of failing the whole message (#30).
+
+### Sign-in
+
+- **An admin signed in by SAML can turn password sign-in off** (keeping SAML on in the same save);
+  from a password session it is still refused (#10).
+- **A `saml` account's role is the identity provider's:** Settings → Users shows it read-only, and
+  `PUT /api/v1/auth/users/{id}` refuses to change it (409) (#11).
+- **SAML's IdP entity ID, sign-in URL and signing certificate are read-only**, read from the pasted
+  metadata at every save and read; to change them, paste new metadata (#8, finding F-3).
+
+### Operations
+
+- **Full configuration export and import** (#15). `GET /api/v1/export/config` (admins, audited,
+  `Cache-Control: no-store`) and `opentrack config export` now write the whole configuration as
+  `opentrack-config` version 2: sources with their secrets, schema versions, correlation, instance
+  and sign-in settings, accounts with their password hashes and history, API token records, the
+  registry, plugins (components included), imported tracker profiles and the track number counter;
+  never the session key, sessions, the audit record or track state. `opentrack config import
+  <file>` and `POST /api/v1/import/config` rebuild an **empty** node from it (refusing any other,
+  with what it has), checking every section first and writing all of it in one transaction; the
+  imported accounts replace the first admin. Settings → Data warns that the file holds
+  secrets, and offers the import while the node is empty. See the admin guide, Backup and restore.
+- **Track numbers are never issued twice after a restore** (#16): on start, before issuing any, the
+  engine finds the highest track number of its site in use in SQLite, Redis and the NATS tracks
+  stream, moves the counter past it (never back) and records a `uid_counter_advanced` decision.
+  Tracks this node left in the stream that are no longer live (after Redis was lost) get a delete,
+  recorded as a `stale_tracks_deleted` decision.
+  The manual `UPDATE uid_sequences` step is gone from the restore procedure.
+- **`/api/v1/status` answers 503** (same body) when SQLite, Redis or NATS is down, so a monitor
+  that reads only the status code sees it; `/healthz` stays liveness only (#7).
+- **Fixed:** the image's health check failed under docker compose without TLS (`opentrack health`
+  refused the empty `OT_TLS_CERT` compose passes), so the container showed unhealthy.
 
 ## 0.4.0 (alpha), 2026-09-28
 

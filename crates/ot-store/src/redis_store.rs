@@ -951,6 +951,44 @@ impl RedisStore {
         Ok(out)
     }
 
+    /// Every UID with a system track key, readable or not.
+    pub async fn live_system_uids(&self) -> Result<std::collections::HashSet<Uid>> {
+        let prefix = self.keys.system_track("");
+        Ok(self
+            .scan(&format!("{prefix}*"))
+            .await?
+            .iter()
+            .filter_map(|k| k.strip_prefix(&prefix)?.parse().ok())
+            .collect())
+    }
+
+    /// The highest UID of `site` in Redis, per kind of key: live system
+    /// tracks and track position history (which outlives the track).
+    pub async fn uid_sightings(
+        &self,
+        site: ot_core::SiteCode,
+    ) -> Result<Vec<crate::uid_counter::UidSighting>> {
+        let mut out = Vec::new();
+        for prefix in [self.keys.system_track(""), self.keys.track_history("")] {
+            let keys = self.scan(&format!("{prefix}{}*", site.as_str())).await?;
+            let best = keys
+                .iter()
+                .filter_map(|k| {
+                    let uid: Uid = k.strip_prefix(&prefix)?.parse().ok()?;
+                    (uid.site() == site).then_some((uid.sequence(), k))
+                })
+                .max();
+            if let Some((seq, key)) = best {
+                out.push(crate::uid_counter::UidSighting::new(
+                    "redis",
+                    key.clone(),
+                    seq,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// Persist one static-cache entry (JSON) with a TTL.
     pub async fn put_static(
         &self,

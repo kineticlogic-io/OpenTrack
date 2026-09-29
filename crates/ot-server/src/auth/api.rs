@@ -18,6 +18,7 @@ use ot_store::sqlite::now_ms;
 
 use super::sessions::ended;
 use super::{AuthSettings, AuthUser, Role, Via, hash_password, verify_password};
+use super::{password, stig};
 use crate::api::actor;
 use crate::control::{ApiError, AppState};
 
@@ -148,18 +149,16 @@ pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiErr
         "can_change_password": session && has_password,
         "must_change_password": false,
     });
-    let settings = s.auth.settings();
     if let Some(user) = &user {
         v["must_change_password"] = json!(has_password && user.must_change_password);
-        let max_days = settings.password.max_age_days;
-        if has_password && max_days > 0.0 {
+        if has_password {
             v["password_expires_at_ms"] = json!(
                 user.password_changed_at_ms
-                    .map(|t| t + (max_days * 86_400_000.0) as i64)
+                    .map(|t| t + stig::PASSWORD_MAX_AGE_MS)
             );
         }
-        v["idle_timeout_ms"] = json!(settings.sessions.idle_ms(u.role));
-        v["password_policy"] = json!(settings.password);
+        v["idle_timeout_ms"] = json!(stig::idle_ms(u.role));
+        v["password_policy"] = stig::password_policy();
     }
     if let Some(row) = row {
         v["session"] = json!(row.id);
@@ -185,9 +184,8 @@ pub(super) async fn start_session(
     let now = now_ms();
     let inactive = &settings.inactivity;
     if how != How::PasswordChange
-        && inactive.disable_after_days > 0.0
         && !inactive.exempts(&user.email)
-        && user.last_activity_ms() < now - (inactive.disable_after_days * 86_400_000.0) as i64
+        && user.last_activity_ms() < now - stig::INACTIVE_MS
     {
         super::maintenance::disable_inactive(s, inactive).await?;
         let e = failed_login(&user.email, client, "inactive", how);
@@ -197,16 +195,14 @@ pub(super) async fn start_session(
     let ttl = s.auth.session_secs();
     let (token, jti, exp) = s
         .auth
-        .issue(&user, "session", ttl)
+        .issue_as(&user, "session", ttl, how == How::Saml)
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    let p = &settings.password;
     let expired = how == How::Password
-        && p.max_age_days > 0.0
         && !user.must_change_password
         && user
             .password_changed_at_ms
-            .is_some_and(|t| now - t > (p.max_age_days * 86_400_000.0) as i64);
-    let max = settings.sessions.max_per_account as usize;
+            .is_some_and(|t| now - t > stig::PASSWORD_MAX_AGE_MS);
+    let max = stig::SESSIONS_PER_ACCOUNT;
     let (id, email, c, j) = (
         user.id.clone(),
         user.email.clone(),
@@ -245,13 +241,11 @@ pub(super) async fn start_session(
             })?;
             // Past the limit, the oldest sessions end.
             let mut out = Vec::new();
-            if max > 0 {
-                for old in db.sessions(Some(&id), false, 1000)?.iter().skip(max) {
-                    if db.end_session(&old.id, "limit")? {
-                        db.revoke_token(&old.id, old.expires_at_ms)?;
-                        db.audit(&ended(&email, &old.id, "limit", old.ip.as_deref()))?;
-                        out.push(old.id.clone());
-                    }
+            for old in db.sessions(Some(&id), false, 1000)?.iter().skip(max) {
+                if db.end_session(&old.id, "limit")? {
+                    db.revoke_token(&old.id, old.expires_at_ms)?;
+                    db.audit(&ended(&email, &old.id, "limit", old.ip.as_deref()))?;
+                    out.push(old.id.clone());
                 }
             }
             Ok(out)
@@ -272,6 +266,7 @@ pub(super) async fn start_session(
         via: Via::Session,
         jti: Some((jti, exp)),
         must_change: false,
+        sso: how == How::Saml,
     };
     Ok((headers, me_value(s, &au).await?))
 }
@@ -343,15 +338,13 @@ async fn login(
     }
     if !ok {
         tracing::info!(%email, "sign-in refused");
-        let l = settings.lockout.clone();
         let (id, e1, c1) = (user.id.clone(), email.clone(), client.clone());
         s.with_db(move |db| {
-            let lock_ms = (l.lock_minutes * 60_000.0) as i64;
             let f = db.note_login_failure(
                 &id,
-                (l.window_minutes * 60_000.0) as i64,
-                i64::from(l.max_failures),
-                lock_ms,
+                stig::LOCKOUT_WINDOW_MS,
+                i64::from(stig::LOCKOUT_FAILURES),
+                stig::LOCK_MS,
             )?;
             db.audit(
                 &failed_login(&e1, &c1, "bad_password", How::Password)
@@ -365,7 +358,7 @@ async fn login(
                         .detail(json!({
                             "user": id,
                             "failures": f.count,
-                            "minutes": if lock_ms > 0 { json!(l.lock_minutes) } else { json!("until unlocked") },
+                            "minutes": stig::LOCK_MINUTES,
                         })),
                 )?;
             }
@@ -465,8 +458,7 @@ async fn change_password(
         ));
     }
     let client = Client::new(peer.as_ref().map(|p| &p.0), &headers);
-    let policy = s.auth.settings().password;
-    policy.check(&b.new).map_err(ApiError::unprocessable)?;
+    password::check(&b.new).map_err(ApiError::unprocessable)?;
     let email = u.email.clone();
     let Some((user, Some(hash))) = s.with_db(move |db| db.password_hash(&email)).await? else {
         return Err(ApiError::bad_request("this account has no password"));
@@ -480,33 +472,28 @@ async fn change_password(
         s.with_db(move |db| db.audit(&e)).await?;
         return Ok(unauthorized("the current password is wrong"));
     }
-    policy
-        .check_change(&b.current, &b.new)
-        .map_err(ApiError::unprocessable)?;
+    password::check_change(&b.current, &b.new).map_err(ApiError::unprocessable)?;
     let forced = user.must_change_password;
     if !forced
-        && policy.min_age_hours > 0.0
         && user
             .password_changed_at_ms
-            .is_some_and(|t| now_ms() - t < (policy.min_age_hours * 3_600_000.0) as i64)
+            .is_some_and(|t| now_ms() - t < stig::PASSWORD_MIN_AGE_MS)
     {
         return Err(ApiError::unprocessable(format!(
             "a password can change once every {} hours: ask an admin to reset it if you must",
-            policy.min_age_hours
+            stig::PASSWORD_MIN_AGE_HOURS
         )));
     }
-    if policy.history > 0 {
-        let (id, n) = (user.id.clone(), policy.history);
-        let recent = s
-            .with_db(move |db| db.recent_password_hashes(&id, n))
-            .await?;
-        let candidate = b.new.clone();
-        if blocking(move || recent.iter().any(|h| verify_password(&candidate, h))).await? {
-            return Err(ApiError::unprocessable(format!(
-                "choose a password other than your last {}",
-                policy.history
-            )));
-        }
+    let id = user.id.clone();
+    let recent = s
+        .with_db(move |db| db.recent_password_hashes(&id, stig::PASSWORD_HISTORY))
+        .await?;
+    let candidate = b.new.clone();
+    if blocking(move || recent.iter().any(|h| verify_password(&candidate, h))).await? {
+        return Err(ApiError::unprocessable(format!(
+            "choose a password other than your last {}",
+            stig::PASSWORD_HISTORY
+        )));
     }
     let new = blocking(move || hash_password(&b.new))
         .await?
@@ -563,10 +550,9 @@ async fn create_user(
     Json(b): Json<NewUser>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     check_email(&b.email)?;
-    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            policy.check(&p).map_err(ApiError::unprocessable)?;
+            password::check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -650,6 +636,18 @@ async fn update_user(
                 ));
             }
             let before = db.user(&id)?;
+            // The identity provider is authoritative for a `saml` account's
+            // role: it is set again at every sign-on.
+            if let (Some(u), Some(r)) = (&before, b.role)
+                && u.origin == "saml"
+                && u.role != r.as_str()
+            {
+                return Err(ot_store::StoreError::Conflict(
+                    "a saml account's role comes from the identity provider's role mapping \
+                     (Settings -> Security -> SAML); change it there"
+                        .into(),
+                ));
+            }
             let u = db.update_user(&id, b.name.as_deref(), b.role.map(Role::as_str), b.active)?;
             db.record(&ot_store::Decision {
                 before: before.map(|b| json!(b)),
@@ -701,10 +699,9 @@ async fn reset_password(
     headers: HeaderMap,
     Json(b): Json<Reset>,
 ) -> Result<StatusCode, ApiError> {
-    let policy = s.auth.settings().password;
     let hash = match b.password {
         Some(p) => {
-            policy.check(&p).map_err(ApiError::unprocessable)?;
+            password::check(&p).map_err(ApiError::unprocessable)?;
             Some(
                 blocking(move || hash_password(&p))
                     .await?
@@ -844,7 +841,10 @@ async fn revoke_token(
 }
 
 async fn get_settings(State(s): State<AppState>) -> Json<Value> {
-    let mut v = json!(s.auth.settings());
+    let mut settings = s.auth.settings();
+    // Shown as the metadata says, whatever older settings stored.
+    let _ = settings.saml.read_metadata();
+    let mut v = json!(settings);
     v["build"] = json!({ "saml": cfg!(feature = "saml"), "public_url": s.auth.public_url });
     Json(v)
 }
@@ -858,15 +858,25 @@ async fn put_settings(
     if let Some(o) = body.as_object_mut() {
         o.remove("build");
     }
-    let new: AuthSettings =
+    let mut new: AuthSettings =
         serde_json::from_value(body).map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    // The identity provider's entity id, sign-in URL and certificate are
+    // the metadata's: to change them, paste new metadata.
+    if let Err(e) = new.saml.read_metadata()
+        && new.saml.enabled
+    {
+        return Err(ApiError::unprocessable(format!("saml: {e}")));
+    }
     new.validate().map_err(ApiError::unprocessable)?;
     // Turning password sign-in off from a password session would lock you
-    // out if single sign-on then fails: make sure there is a way back.
-    if new.disable_password_login && me.via == Via::Session {
-        return Err(ApiError::conflict(
-            "sign in with single sign-on before turning password sign-in off",
-        ));
+    // out if single sign-on then fails: make sure there is a way back. A
+    // SAML session is that way back, while the same save keeps SAML on.
+    if new.disable_password_login && me.via == Via::Session && !(me.sso && new.saml.enabled) {
+        return Err(ApiError::conflict(if me.sso {
+            "keep SAML on while turning password sign-in off from a SAML session"
+        } else {
+            "sign in with single sign-on before turning password sign-in off"
+        }));
     }
     let before = s.auth.settings();
     let (actor, saved) = (actor(&headers), new.clone());
@@ -1491,8 +1501,8 @@ mod tests {
         .await;
         assert_eq!(
             st,
-            StatusCode::OK,
-            "idle, but not for longer than the last use"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "idle, but not for longer than the last use (and no NATS here)"
         );
         let (st, ..) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
         assert_eq!(st, StatusCode::OK);
@@ -1581,5 +1591,507 @@ mod tests {
             .unwrap();
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts[0].actor, "root@x.org");
+    }
+
+    #[tokio::test]
+    async fn a_loosened_policy_saved_before_it_was_fixed_does_not_apply() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // 0.4.0 (alpha) saved these; the node loads them as it starts.
+        let old = json!({
+            "session_hours": 720.0,
+            "password": {"min_length": 8, "require_upper": false, "require_lower": false,
+                         "require_digit": false, "require_special": false, "history": 0},
+            "lockout": {"max_failures": 0, "window_minutes": 1.0, "lock_minutes": 0.0},
+            "sessions": {"idle_minutes": 1440.0, "admin_idle_minutes": null, "max_per_account": 0},
+            "inactivity": {"disable_after_days": 0.0, "exempt": []},
+            "audit": {"retention_days": 7.0},
+        });
+        let saved = old.clone();
+        state
+            .with_db(move |db| db.put_auth_settings(&saved))
+            .await
+            .unwrap();
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        let loaded: AuthSettings = serde_json::from_value(stored).unwrap();
+        state.auth.set_settings(loaded);
+
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let (_, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(me["idle_timeout_ms"], 10 * 60_000);
+        assert_eq!(me["password_policy"]["min_length"], 15);
+        // A 10-character password is refused.
+        let (st, body, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "w@x.org", "role": "viewer", "password": "abcdefghij" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (st, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "w@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        // Three failures lock it.
+        for _ in 0..3 {
+            let (st, _) = sign_in(&app, "w@x.org", "Wrong-Wrong-Wrong-1").await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED);
+        }
+        let (st, _) = sign_in(&app, "w@x.org", VIEW).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "locked");
+        // Saving the old document again is accepted; the retired settings
+        // are neither kept nor shown.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&admin),
+            Some(old),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        for k in ["session_hours", "password", "lockout", "sessions", "audit"] {
+            assert!(body.get(k).is_none() && stored.get(k).is_none(), "{k}");
+        }
+        assert_eq!(stored["inactivity"], json!({"exempt": []}));
+    }
+
+    /// An identity provider's metadata (the certificate is not checked
+    /// until a sign-on).
+    #[cfg(feature = "saml")]
+    const IDP_METADATA: &str = r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.org">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>MIIBexample</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.org/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>"#;
+
+    /// A `saml` account of `role`, and a session it began by single sign-on.
+    #[cfg(feature = "saml")]
+    async fn saml_session(state: &AppState, email: &str, role: &str) -> (String, String) {
+        let (e, r) = (email.to_owned(), role.to_owned());
+        let user = state
+            .with_db(move |db| {
+                db.create_user(&ot_store::NewUser {
+                    id: &crate::fips::uuid_v4(),
+                    email: &e,
+                    name: "",
+                    role: &r,
+                    password_hash: None,
+                    origin: "saml",
+                })
+            })
+            .await
+            .unwrap();
+        let id = user.id.clone();
+        let (headers, _) = start_session(state, user, &Client::default(), How::Saml)
+            .await
+            .unwrap();
+        let cookie = headers[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        (id, cookie)
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn a_saml_admin_turns_password_sign_in_off() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (st, mut settings, _) =
+            call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK);
+        settings["saml"]["enabled"] = json!(true);
+        settings["saml"]["idp_metadata_xml"] = json!(IDP_METADATA);
+        settings["disable_password_login"] = json!(true);
+        // From a password session: refused, SSO is not proven.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("sign in with single sign-on")
+        );
+        // From a SAML session: done.
+        let (_, sso) = saml_session(&state, "sso-admin@x.org", "admin").await;
+        let (st, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&sso), None).await;
+        assert_eq!((st, me["via"].as_str()), (StatusCode::OK, Some("session")));
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&sso),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["disable_password_login"], true);
+        let (st, ..) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "password sign-in is off");
+        // But not while turning SAML itself off (OpenStare on, so the
+        // settings alone would pass).
+        settings["saml"]["enabled"] = json!(false);
+        settings["openstare"]["enabled"] = json!(true);
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&sso),
+            Some(settings),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("keep SAML on"));
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn the_identity_provider_owns_a_saml_accounts_role() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (id, _) = saml_session(&state, "sso-viewer@x.org", "viewer").await;
+        let uri = format!("/api/v1/auth/users/{id}");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("identity provider"),
+            "{body}"
+        );
+        // Its name, its state, and its role unchanged are fine.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&root),
+            Some(json!({ "name": "Vee", "role": "viewer", "active": true })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            (body["name"].as_str(), body["role"].as_str()),
+            (Some("Vee"), Some("viewer"))
+        );
+    }
+
+    #[cfg(feature = "saml")]
+    #[tokio::test]
+    async fn the_identity_providers_fields_come_from_its_metadata() {
+        let Some((app, state)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, root) = sign_in(&app, "root@x.org", ROOT).await;
+        let root = root.unwrap();
+        let (_, mut settings, _) =
+            call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        settings["saml"]["enabled"] = json!(true);
+        settings["saml"]["idp_metadata_xml"] = json!(IDP_METADATA);
+        // Edited fields are not what signs on: they are replaced.
+        settings["saml"]["idp_entity_id"] = json!("https://elsewhere.example.org");
+        settings["saml"]["sso_url"] = json!("");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let saml = &body["saml"];
+        assert_eq!(saml["idp_entity_id"], "https://idp.example.org");
+        assert_eq!(saml["sso_url"], "https://idp.example.org/sso");
+        assert_eq!(saml["signing_cert"], "MIIBexample");
+        let stored = state.with_db(|db| db.auth_settings()).await.unwrap();
+        assert_eq!(stored["saml"]["idp_entity_id"], "https://idp.example.org");
+        // Settings saved before this, with fields that differ, show the
+        // metadata's.
+        let mut old: AuthSettings = serde_json::from_value(stored).unwrap();
+        old.saml.idp_entity_id = "https://stale.example.org".into();
+        state.auth.set_settings(old);
+        let (_, body, _) = call(&app, "GET", "/api/v1/auth/settings", Some(&root), None).await;
+        assert_eq!(body["saml"]["idp_entity_id"], "https://idp.example.org");
+        // Metadata that cannot be read is refused while SAML is on.
+        settings["saml"]["idp_metadata_xml"] = json!("<nope/>");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with("saml: "),
+            "{body}"
+        );
+        // Off, it is kept, and the three are empty.
+        settings["saml"]["enabled"] = json!(false);
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/auth/settings",
+            Some(&root),
+            Some(settings),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["saml"]["idp_entity_id"], "");
+    }
+
+    /// A stand-in tile server on 127.0.0.1: `/t/{z}/{x}/{y}` answers by
+    /// zoom (5: HTML, 6: 404, 7: 500, 8: too big, 9: a redirect), else a
+    /// "PNG" naming what it was asked for.
+    async fn tile_server() -> std::net::SocketAddr {
+        use axum::extract::RawQuery;
+        async fn t(
+            Path((z, x, y)): Path<(u32, String, String)>,
+            RawQuery(q): RawQuery,
+            headers: HeaderMap,
+        ) -> Response {
+            let png = [(axum::http::header::CONTENT_TYPE, "image/png")];
+            match z {
+                5 => ([(axum::http::header::CONTENT_TYPE, "text/html")], "<html>").into_response(),
+                6 => StatusCode::NOT_FOUND.into_response(),
+                7 => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                8 => (png, vec![0u8; 4 * 1024 * 1024 + 1]).into_response(),
+                9 => (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/t/1/0/0.png")],
+                )
+                    .into_response(),
+                _ => {
+                    let ua = headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    (
+                        png,
+                        format!("tile {z}/{x}/{y}?{} {ua}", q.unwrap_or_default()),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/t/{z}/{x}/{y}", axum::routing::get(t));
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        addr
+    }
+
+    /// A GET with its status, headers and raw body.
+    async fn get_raw(
+        app: &axum::Router,
+        uri: &str,
+        auth: Option<&str>,
+    ) -> (StatusCode, HeaderMap, bytes::Bytes) {
+        let mut req =
+            Request::builder()
+                .uri(uri)
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [10, 8, 0, 1],
+                    40000,
+                ))));
+        match auth {
+            Some(a) if a.starts_with("Bearer ") => req = req.header("authorization", a),
+            Some(c) => req = req.header("cookie", c),
+            None => {}
+        }
+        let res = app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn basemap_tiles_for_every_role_and_the_url_for_admins_only() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = admin.unwrap();
+        let (st, viewer, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "v@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{viewer}");
+        let (st, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "map", "user_id": viewer["id"] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{tok}");
+        let viewer = format!("Bearer {}", tok["token"].as_str().unwrap());
+
+        // Off: no tiles, and the settings say so.
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/0/0/0", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&viewer), None).await;
+        assert_eq!(body["basemap_tiles"], false, "{body}");
+
+        // Checked on save.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "basemap_tiles_url": "https://{s}.t.example/{z}/{x}/{y}.png" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"].as_str().unwrap().contains("{s}"), "{body}");
+
+        let addr = tile_server().await;
+        let url = format!("http://{addr}/t/{{z}}/{{x}}/{{y}}.png?key=sekrit");
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "site_name": "Garden Island", "basemap_tiles_url": url })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["settings"]["basemap_tiles_url"], url.as_str());
+        // An admin reads the URL; a viewer only that tiles are on.
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&admin), None).await;
+        assert_eq!(
+            (
+                body["settings"]["basemap_tiles_url"].as_str(),
+                body["basemap_tiles"].as_bool()
+            ),
+            (Some(url.as_str()), Some(true))
+        );
+        let (_, body, _) = call(&app, "GET", "/api/v1/settings", Some(&viewer), None).await;
+        assert_eq!(
+            (
+                body["settings"]["basemap_tiles_url"].as_str(),
+                body["basemap_tiles"].as_bool()
+            ),
+            (Some(""), Some(true)),
+            "{body}"
+        );
+        assert_eq!(body["settings"]["site_name"], "Garden Island");
+        // Nor through the decision log, which viewers read.
+        let (st, body, _) = call(
+            &app,
+            "GET",
+            "/api/v1/decisions?op=app_settings",
+            Some(&viewer),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(!body.to_string().contains("sekrit"), "{body}");
+        // The configuration export, an admin's, keeps it.
+        let (st, _, file) = get_raw(&app, "/api/v1/export/config", Some(&admin)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&file).contains("key=sekrit"));
+
+        // A viewer's tile, fetched with the coordinates filled in.
+        let (st, h, body) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::OK, "{body:?}");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.starts_with("tile 3/2/1.png?key=sekrit OpenTrack/"),
+            "{body}"
+        );
+        assert_eq!(h["content-type"], "image/png");
+        assert_eq!(h["cache-control"], "private, max-age=86400");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert!(!h.contains_key("pragma"));
+        // Signed in only.
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        // Coordinates in bounds.
+        for bad in ["25/0/0", "2/4/0", "2/0/4", "1/a/0"] {
+            let (st, h, _) = get_raw(&app, &format!("/api/v1/basemap/{bad}"), Some(&viewer)).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(h["cache-control"], "no-store", "an error is not kept");
+        }
+        // The tile server's answers: 404 passes through; anything but an
+        // image, an error, a tile over 4 MiB or a redirect is a 502.
+        for (z, want) in [
+            (5, StatusCode::BAD_GATEWAY),
+            (6, StatusCode::NOT_FOUND),
+            (7, StatusCode::BAD_GATEWAY),
+            (8, StatusCode::BAD_GATEWAY),
+            (9, StatusCode::BAD_GATEWAY),
+        ] {
+            let (st, _, body) =
+                get_raw(&app, &format!("/api/v1/basemap/{z}/0/0"), Some(&viewer)).await;
+            assert_eq!(st, want, "zoom {z}: {body:?}");
+            assert!(!String::from_utf8_lossy(&body).contains("sekrit"));
+        }
+
+        // Off again: 404.
+        let (st, _, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({ "basemap_tiles_url": "" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
     }
 }

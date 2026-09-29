@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { TbPlus, TbTrash, TbX } from 'react-icons/tb'
 import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { api, type EmitterMotion, type PluginInfo, type SecurityLabel } from '../../../api/client'
-import { DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
+import { DECODE_CODECS, DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, transportCodec, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
 import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
@@ -34,11 +34,21 @@ function Row({ label, children, hint }: { label: string; children: React.ReactNo
   )
 }
 
-const CODECS = ['json', 'cot_xml', 'xml']
-
 /** How frames become records. */
 export function DecodeForm({ value, onChange }: Props) {
   const type = String(value.type ?? 'json')
+  const fixed = transportCodec(value)
+  if (fixed)
+    return (
+      <div className="stack">
+        <Row
+          label="Format"
+          hint="This codec is chosen on the source's Transport tab (Codec), with its .proto files and message or its plugin and options; change it there. Picking a format here would replace them."
+        >
+          <span className="mono">{fixed.name ? `${fixed.type} · ${fixed.name}` : fixed.type}</span>
+        </Row>
+      </div>
+    )
   return (
     <div className="stack">
       <Row
@@ -47,7 +57,7 @@ export function DecodeForm({ value, onChange }: Props) {
       >
         <FieldSelect
           ariaLabel="Codec"
-          fields={CODECS.map((name) => ({ name }))}
+          fields={DECODE_CODECS.map((name) => ({ name }))}
           value={type}
           onChange={(t) => onChange(t === 'xml' ? { type: t, record_element: '' } : { type: t ?? 'json' })}
           style={{ width: 160 }}
@@ -311,7 +321,7 @@ export function TrackerForm({ value, onChange }: Props) {
   }, [value.algorithm])
   const algorithmHint =
     value.algorithm === 'plugin'
-      ? 'A tracker plugin (Settings → Plugins): its own algorithm and options.'
+      ? 'A tracker plugin (Settings → General → Plugins): its own algorithm and options.'
       : value.algorithm === 'mht'
         ? 'Multiple hypotheses: fewer false tracks in clutter, more work.'
         : 'Global nearest neighbour: the best plot-to-track assignment each scan.'

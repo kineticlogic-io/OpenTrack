@@ -2,7 +2,7 @@
 
 For track managers and viewers: the people who watch the picture and keep it right. Installing,
 configuring and securing OpenTrack is in the [administrator guide](admin.md). Written for
-OpenTrack **0.3.4**.
+OpenTrack **0.4.1**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI can link to it (in the app:
 `#help/operator/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses: lowercase,
@@ -38,15 +38,15 @@ one.
 After you sign in, a notice says when you last signed in and how many failed attempts there have
 been since. If you don't recognise them, tell your administrator.
 
-Some things your site's security rules may ask of you:
+OpenTrack's security rules (fixed, from the DoD application security STIG) ask this of you:
 - **Change your password.** When your password has expired, or an administrator has just set it,
   OpenTrack asks for a new one before anything else. It needs 15 characters or more, with upper
   and lower case, a digit and a special character. It can't be one of your last five, and at
   least 8 characters must differ from the old one.
 - **Sign in again after a break.** A session you haven't used for 15 minutes ends (10 for
-  admins).
-- **Wait after failed attempts.** Three wrong passwords in a row lock your account for 15 minutes,
-  or until an administrator unlocks it.
+  admins), and every session ends 24 hours after you signed in.
+- **Wait after failed attempts.** Three wrong passwords within 15 minutes lock your account for 15
+  minutes. An administrator can unlock it sooner.
 - **See your sessions** under **Sessions** in the account menu (top right), and end any you don't
   recognise.
 
@@ -133,8 +133,9 @@ shows open, accepted, rejected, expired or all suggestions.
 Track managers only.
 
 - **Accept a pair suggestion:** *B* is merged into *A*. *A* keeps its number and takes *B*'s
-  source tracks and history; *B* is deleted downstream. Unlike a merge you make yourself, the
-  engine may still split it later if the tracks stop agreeing.
+  source tracks and history; *B* is deleted downstream. It is your decision, like a
+  [merge](#merge) you make in the table: correlation never splits it. To take a source track off
+  again, use [Split](#split) or [undo](#undo) it.
 - **Reject a pair suggestion:** the two are recorded as different objects (**do not pair**), and
   correlation won't pair them again.
 - **Accept a split suggestion:** the source track leaves for a track of its own, and the two are
@@ -179,8 +180,10 @@ A selected track can also show:
 Passive sensors (ESM, direction finding) report a line of bearing, not a position; ELINT reports an
 area of uncertainty. OpenTrack fuses them into tracks. On the map, for the selected track only:
 - **Bearing lines:** a dashed gold line from each sensor that currently has a bearing on the track,
-  to the track. Several lines meeting at the track are a cross-fix: the sensors agree on where the
-  emitter is. A line that misses the track by a lot is weak evidence.
+  out along the bearing to the sensor's maximum range (250 km when the sensor doesn't give one),
+  inside a faint outline of its ± error wedge. The track is somewhere on or near each line: several
+  lines crossing at the track are a cross-fix, the sensors agreeing on where the emitter is. A line
+  that passes well away from the track is weak evidence.
 - **Area:** a dashed outline in the track's colour, for the area an ELINT report gave, or for the
   track's error ellipse when its long axis is over 2 km. The object is somewhere inside, most likely near
   the middle.
@@ -343,8 +346,8 @@ To merge tracks:
    groups and pairings. The others are deleted downstream. Tracks not published yet say so.
 4. Choose **Merge into**.
 
-Correlation never splits a track you merged. To take a source track off it again, use
-[Split](#split) or [undo](#undo) the merge.
+Correlation never splits a track you merged, here or by accepting a pair suggestion. To take a
+source track off it again, use [Split](#split) or [undo](#undo) the merge.
 
 ### Split
 
@@ -358,12 +361,16 @@ again.
 ### Do not pair
 
 A **do not pair** rule records that two tracks are different objects, so correlation never pairs
-them. You make one by:
+or merges them, even when they share an identifier. You make one by:
+- ticking exactly two tracks (not groups) in the table and choosing **Do not pair**, before
+  correlation proposes them;
 - **rejecting** a pair suggestion ([Accept or reject](#accept-or-reject));
 - **splitting** a source track off ([Split](#split)).
 
-It shows in the log as **Do not pair**, and can be undone there. (The API also takes it directly:
-`POST /api/v1/tracks/do-not-pair`.)
+The rule is between their source tracks, so it holds for them whatever track they report for
+later. It doesn't stop you pairing or merging them yourself. It shows in the
+[management log](#management-log) as **Do not pair**, and can be [undone](#undo) there. (The API
+also takes it directly: `POST /api/v1/tracks/do-not-pair`.)
 
 ### Delete
 
@@ -456,7 +463,7 @@ refresh button reloads it now.
 
 ## Export
 
-Anyone can download the picture. **Settings → Data export → Live tracks**:
+Anyone can download the picture. **Settings → Data → Live tracks**:
 - **GeoJSON:** every live track as a point feature, with the published fields and attributes, its
   state, confidence and source tracks.
 - **CSV:** one row per track: track id, name, class, domain, affiliation, force code, track type,

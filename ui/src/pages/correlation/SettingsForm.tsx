@@ -122,6 +122,12 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <span className="muted">m/s</span>
         </div>
       </Row>
+      <Row
+        label="Local density radius (m)"
+        hint="Counts the live tracks within this distance of a report (the one it is compared with left out) and uses their density instead of Another object's when it is higher: in a crowded harbour a close approach is weaker evidence than at sea. Tracks more than about 5 km away are never counted. 0 turns it off. Default 500 m."
+      >
+        <Num label="Local density radius" value={k.local_density_radius_m} onChange={(local_density_radius_m) => setK({ local_density_radius_m })} />
+      </Row>
       <Row label="Position σ at least (m)" hint="For sources that claim more precision than they have, or report none.">
         <Num label="Minimum sigma" value={k.min_sigma_m} onChange={(min_sigma_m) => setK({ min_sigma_m })} />
       </Row>
@@ -162,7 +168,7 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
         hint={
           scorers.length
             ? "A scorer plugin's evidence (its likelihood ratio and gate) in place of each kinematic comparison's. The test above, its thresholds and every decision stay OpenTrack's."
-            : 'Add a scorer plugin in Settings → Plugins to score pairs your own way.'
+            : 'Add a scorer plugin in Settings → General → Plugins to score pairs your own way.'
         }
       >
         <div className="num-row">
@@ -244,6 +250,12 @@ export function SettingsForm({ value, onChange }: { value: CorrelationSettings; 
           <span className="muted">outside</span>
           <Num width={70} label="Split gate probability" value={sp.gate_probability} onChange={(gate_probability) => setS({ gate_probability })} />
         </div>
+      </Row>
+      <Row
+        label="Split window (s)"
+        hint={`How far back the split's comparisons may reach. A slow feed (AIS every 10 s, a moored vessel every few minutes) gives one comparison per report, so this must hold the last ${sp.n} of them. Never shorter than the pairing window (${k.window_secs} s). Default 300 s.`}
+      >
+        <Num label="Split window seconds" value={sp.window_secs} onChange={(window_secs) => setS({ window_secs })} />
       </Row>
       <h4 className="subhead">
         Output filter

@@ -11,8 +11,10 @@ use clap::{Args, Parser, Subcommand};
 mod api;
 mod audit_api;
 mod auth;
+mod basemap;
 mod bridge;
 mod config;
+mod config_backup;
 mod control;
 mod correlate;
 mod correlation_api;
@@ -102,13 +104,18 @@ enum Command {
     /// Manage accounts (for a node without the UI).
     #[command(subcommand)]
     User(user_cli::UserCommand),
+    /// Export the whole configuration, or rebuild an empty node from one.
+    #[command(subcommand)]
+    Config(config_backup::ConfigCommand),
     /// Exit 0 when this node's control plane answers (the image's
     /// HEALTHCHECK): `/healthz` over plain HTTP, a TCP connection under TLS.
     Health {
         #[arg(long, env = "OT_BIND", default_value = "0.0.0.0:8090")]
         bind: SocketAddr,
+        // A String, not a PathBuf: docker compose passes an unset variable
+        // as empty, which a PathBuf refuses.
         #[arg(long, env = "OT_TLS_CERT")]
-        tls_cert: Option<PathBuf>,
+        tls_cert: Option<String>,
     },
     /// Retire a system track: record the decision, close its graph links and
     /// publish its delete.
@@ -214,14 +221,10 @@ struct EngineArgs {
     /// How tracks with no shared identifier pair until an operator saves
     /// correlation settings: identifiers (never), kinematics, or
     /// kinematics-metadata (kinematics, vetoed by conflicting identifiers or
-    /// domains).
-    #[arg(
-        long,
-        env = "OT_CORRELATION",
-        value_enum,
-        default_value = "kinematics-metadata"
-    )]
-    correlation: correlate::Approach,
+    /// domains; the default). Saved settings win; a start with a different
+    /// one saved logs a warning.
+    #[arg(long, env = "OT_CORRELATION", value_enum)]
+    correlation: Option<correlate::Approach>,
 }
 
 impl EngineArgs {
@@ -231,9 +234,10 @@ impl EngineArgs {
             confirm_after: self.confirm_after.max(1),
             drop_after: Duration::from_secs_f64(self.drop_after_hours.max(0.01) * 3600.0),
             correlation: correlate::CorrelationSettings {
-                approach: self.correlation,
+                approach: self.correlation.unwrap_or_default(),
                 ..Default::default()
             },
+            correlation_asked: self.correlation,
             ..Default::default()
         }
     }
@@ -297,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Synthetic(args) => synthetic::run(&common, args).await,
         Command::Plugin(cmd) => plugin_cli::run(&common, cmd),
         Command::User(cmd) => user_cli::run(&common, cmd),
+        Command::Config(cmd) => config_backup::run(&common, cmd),
         Command::Bench(args) => {
             engine::bench::run(
                 &common,
@@ -309,7 +314,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Health { bind, tls_cert } => health(bind, tls_cert.is_some()),
+        Command::Health { bind, tls_cert } => {
+            health(bind, tls_cert.is_some_and(|s| !s.trim().is_empty()))
+        }
         Command::Retire { uid, reason } => {
             let uid = ot_core::Uid::from_doc_id(&uid).or_else(|_| uid.parse())?;
             let decision = common.open_db()?.retire_system_track(
@@ -439,7 +446,11 @@ async fn run_writer(common: Common, args: WriterArgs) -> anyhow::Result<()> {
 async fn run_engine(common: Common, args: EngineArgs) -> anyhow::Result<()> {
     common.open_db()?;
     plugins::start(&common).await;
-    engine::Engine::new(common, args.settings())
+    let settings = engine::EngineSettings {
+        uid_check_nats: Some(Duration::from_secs(10)),
+        ..args.settings()
+    };
+    engine::Engine::new(common, settings)
         .await?
         .run(shutdown_signal())
         .await
@@ -505,5 +516,16 @@ mod tests {
         let _ = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())
             .with_no_client_auth();
+    }
+
+    #[test]
+    fn health_takes_an_empty_tls_cert_as_unset() {
+        // As docker compose passes OT_TLS_CERT when it isn't set.
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["opentrack", "health", "--tls-cert="]).unwrap();
+        let crate::Command::Health { tls_cert, .. } = cli.command else {
+            panic!("not the health command");
+        };
+        assert_eq!(tls_cert.as_deref(), Some(""));
     }
 }

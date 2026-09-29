@@ -98,9 +98,12 @@ pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' '
 /// Security headers on every response, the API's and the UI's: the
 /// content security policy, no MIME sniffing, no framing, no referrer, no
 /// powerful browser features, HSTS when served over TLS (here or at a
-/// proxy: `OT_PUBLIC_TLS`), and nothing from the API kept in a cache.
+/// proxy: `OT_PUBLIC_TLS`), and nothing from the API kept in a cache but
+/// basemap tiles.
 async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) -> Response {
-    let api = req.uri().path().starts_with("/api/");
+    let path = req.uri().path();
+    let api = path.starts_with("/api/");
+    let tile = path.starts_with("/api/v1/basemap/");
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     let set = |h: &mut axum::http::HeaderMap, k: &'static str, v: &'static str| {
@@ -126,7 +129,9 @@ async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) ->
             "max-age=31536000; includeSubDomains",
         );
     }
-    if api {
+    // A basemap tile is the one API answer a browser may keep (a day); its
+    // errors are not.
+    if api && !(tile && h.contains_key(CACHE_CONTROL)) {
         h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     }
@@ -154,7 +159,10 @@ fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<ServeFile>, HeaderV
     )
 }
 
-async fn status(State(s): State<AppState>) -> Json<Value> {
+/// Every dependency's state. 503 (with the same body) when SQLite, Redis or
+/// NATS is down, so a monitor that reads only the status code sees it;
+/// `/healthz` stays liveness only.
+async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let sqlite = match s.with_db(|db| db.schema_version()).await {
         Ok(v) => json!({ "ok": true, "schema_version": v, "path": s.common.sqlite }),
         Err(e) => json!({ "ok": false, "error": e.message }),
@@ -178,7 +186,13 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         }
         Err(_) => json!({ "ok": false, "error": "timed out" }),
     };
-    Json(json!({
+    let up = [&sqlite, &redis, &nats].iter().all(|d| d["ok"] == true);
+    let code = if up {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let body = json!({
         "service": "opentrack",
         "version": env!("CARGO_PKG_VERSION"),
         "algorithms": {
@@ -193,7 +207,8 @@ async fn status(State(s): State<AppState>) -> Json<Value> {
         "sqlite": sqlite,
         "redis": redis,
         "nats": nats,
-    }))
+    });
+    (code, Json(body))
 }
 
 async fn track(

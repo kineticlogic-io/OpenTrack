@@ -57,6 +57,14 @@ body {
 }
 
 /* A heading inside a panel body: the field-label style. */
+/* A section heading with its actions at the right (Settings → General → Plugins). */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
 .subhead {
   margin: 0;
   font-size: 11px;
@@ -722,6 +730,7 @@ body {
 .auth-field { display: flex; flex-direction: column; gap: var(--space-xs); }
 .auth-field > label:not([class]) { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
 .auth-error { font-size: 12px; color: var(--color-destructive); }
+.purge-warning { margin: 0; line-height: 1.5; }
 .auth-error-tag { font-weight: 600; }
 .warn-text { font-size: 13px; line-height: 1.6; color: var(--color-text-primary); white-space: pre-wrap; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .warn-actions { display: flex; gap: var(--space-md); flex-shrink: 0; }
@@ -729,3 +738,6 @@ body {
 .user-chip-name { font-weight: 600; color: var(--color-text-primary); }
 .token-once { font-family: var(--font-mono); font-size: 12px; word-break: break-all; padding: 8px; border: 1px solid var(--color-glass-border); border-radius: 4px; background: var(--surface-layer-2, transparent); user-select: all; }
 .map-rows { display: flex; flex-direction: column; gap: var(--space-xs); }
+/* Settings → Security labels: the classification order, dragged into place. */
+.label-order { display: flex; flex-direction: column; gap: var(--space-sm); max-width: 420px; }
+.label-rank { width: 1.5em; text-align: right; font-variant-numeric: tabular-nums; }

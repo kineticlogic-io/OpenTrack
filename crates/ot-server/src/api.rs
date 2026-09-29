@@ -52,11 +52,13 @@ pub fn routes() -> Router<AppState> {
         .route("/schema/draft/publish", post(publish_schema_draft))
         .merge(crate::registry_api::routes())
         .merge(crate::settings_api::routes())
+        .merge(crate::basemap::routes())
         .merge(crate::correlation_api::routes())
         .merge(crate::sync_api::routes())
         .merge(crate::manage_api::routes())
         .merge(crate::plugins_api::routes())
         .merge(crate::profiles::routes())
+        .merge(crate::config_backup::routes())
 }
 
 /// Who is making a request, as the decision log records it: the signed-in
@@ -277,7 +279,7 @@ struct RawOutput {
 }
 
 /// A concrete (wildcard-free) NATS subject outside the system tracks prefix.
-fn check_raw_subject(subject: &str, tracks_prefix: &str) -> Result<(), String> {
+pub(crate) fn check_raw_subject(subject: &str, tracks_prefix: &str) -> Result<(), String> {
     let valid = !subject.is_empty()
         && subject.split('.').all(|t| {
             !t.is_empty() && t != "*" && t != ">" && !t.chars().any(|c| c.is_whitespace())
@@ -683,7 +685,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Request, StatusCode, header};
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use tower::ServiceExt;
@@ -947,10 +949,17 @@ mod tests {
             (StatusCode::OK, Some("raw.adsb"))
         );
 
-        // Status reports NATS as down without blocking the API.
+        // Status reports NATS as down without blocking the API: 503, with
+        // the body saying which dependency.
         let (st, body) = call(&app, "GET", "/api/v1/status", None).await;
-        assert_eq!(st, StatusCode::OK);
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["nats"]["ok"], false);
+        assert_eq!(body["sqlite"]["ok"], true);
+        assert_eq!(body["redis"]["ok"], true);
+        assert_eq!(body["service"], "opentrack");
+        // Liveness is not readiness: the process answers.
+        let (st, _) = call(&app, "GET", "/healthz", None).await;
+        assert_eq!(st, StatusCode::OK);
         assert_eq!(body["nats"]["stream"], "TRACKS");
 
         let (st, _) = call(&app, "DELETE", "/api/v1/sources/adsb-lol", None).await;
@@ -1262,6 +1271,66 @@ mod tests {
             (outs[1]["state"].as_str(), outs[1]["encrypted"].as_bool()),
             (Some("off"), Some(true))
         );
+    }
+
+    #[tokio::test]
+    async fn the_full_configuration_exports_and_only_an_empty_node_imports() {
+        let Some((app, _redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, status) = call(&app, "GET", "/api/v1/import/config", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(status["empty"], true, "{status}");
+        let good = json!({"site_name": "Garden Island"});
+        let (st, _) = call(&app, "PUT", "/api/v1/settings", Some(good)).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, status) = call(&app, "GET", "/api/v1/import/config", None).await;
+        assert_eq!(status["empty"], false);
+
+        // A sensitive download: an attachment no cache keeps.
+        let req = Request::builder()
+            .uri("/api/v1/export/config")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let h = res.headers();
+        assert!(
+            h[header::CONTENT_DISPOSITION]
+                .to_str()
+                .unwrap()
+                .starts_with("attachment; filename=\"opentrack-config-TST-")
+        );
+        assert!(
+            h[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .contains("no-store")
+        );
+        let file: Value =
+            serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(file["format"], "opentrack-config");
+        assert_eq!(file["version"], 2);
+        assert_eq!(file["app_settings"]["site_name"], "Garden Island");
+        let (_, decisions) = call(&app, "GET", "/api/v1/decisions?op=export_config", None).await;
+        assert_eq!(
+            decisions["decisions"][0]["actor"], "anonymous",
+            "{decisions}"
+        );
+
+        // This node has settings now: an import is refused, saying so.
+        let (st, body) = call(&app, "POST", "/api/v1/import/config", Some(file)).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["present"][0]
+                .as_str()
+                .unwrap()
+                .contains("instance settings")
+        );
+        // Whatever the file: a configured node is never overwritten.
+        let (st, _) = call(&app, "POST", "/api/v1/import/config", Some(json!({"x": 1}))).await;
+        assert_eq!(st, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

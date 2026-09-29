@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { TbCopy, TbKey, TbLockOpen, TbLogout, TbPlus, TbRefresh, TbTrash } from 'react-icons/tb'
+import { TbCopy, TbKey, TbLockOpen, TbLogout, TbPlus, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { api, describePolicy, ROLES, type Account, type ApiTokenRow, type Role } from '../../api/client'
 import { useAuth } from '../../auth/context'
-import { SessionsTable } from '../../auth/SessionsTable'
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage, fmtTime } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
@@ -223,7 +222,10 @@ function NewToken({ accounts, onClose, onMade }: { accounts: Account[]; onClose:
   )
 }
 
-/** Settings → Users: accounts and API tokens (admins only). */
+/** Whether `email` is in the break-glass list (as the server compares: trimmed, any case). */
+const listed = (exempt: string[], email: string) => exempt.some((e) => e.trim().toLowerCase() === email.trim().toLowerCase())
+
+/** Settings → Users: accounts (with the break-glass accounts inactivity never turns off) and API tokens (admins only). */
 export function UsersPanel() {
   const { toast, confirm } = useToast()
   const { user: me } = useAuth()
@@ -233,7 +235,7 @@ export function UsersPanel() {
   const [resetting, setResetting] = useState<Account | null>(null)
   const [makingToken, setMakingToken] = useState(false)
   const [now, setNow] = useState(0)
-  const [sessionsKey, setSessionsKey] = useState(0)
+  const [exempt, setExempt] = useState<string[] | null>(null)
   const load = useCallback(() => {
     api.users().then(
       (us) => {
@@ -246,6 +248,10 @@ export function UsersPanel() {
       setTokens(ts)
       setNow(Date.now())
     }, (e) => toast({ variant: 'error', title: 'API tokens', message: errorMessage(e) }))
+    api.authSettings().then(
+      (s) => setExempt(s.inactivity.exempt),
+      (e) => toast({ variant: 'error', title: 'Never turn off', message: errorMessage(e) }),
+    )
   }, [toast])
   useEffect(load, [load])
 
@@ -265,6 +271,17 @@ export function UsersPanel() {
       load()
     } catch (e) {
       toast({ variant: 'error', title: 'Not signed out', message: errorMessage(e) })
+    }
+  }
+  // The list is part of the sign-in settings: read them just before, change only it, save.
+  const setNeverOff = async (a: Account, on: boolean) => {
+    try {
+      const { build: _build, ...settings } = await api.authSettings()
+      const others = settings.inactivity.exempt.filter((e) => !listed([e], a.email))
+      const r = await api.saveAuthSettings({ ...settings, inactivity: { exempt: on ? [...others, a.email] : others } })
+      setExempt(r.inactivity.exempt)
+    } catch (e) {
+      toast({ variant: 'error', title: 'Not changed', message: errorMessage(e) })
     }
   }
   const unlock = async (a: Account) => {
@@ -303,7 +320,19 @@ export function UsersPanel() {
       header: 'Role',
       width: 150,
       sortValue: (a) => ROLES.indexOf(a.role),
-      render: (a) => <FieldSelect ariaLabel={`Role of ${a.email}`} fields={ROLE_FIELDS} value={a.role} onChange={(v) => v !== a.role && change(a, { role: asRole(v) })} style={{ width: 130 }} />,
+      // The identity provider sets a SAML account's role at each sign-on: shown, not changed here.
+      render: (a) =>
+        a.origin === 'saml' ? (
+          <span className="num-row">
+            {a.role}
+            <InfoTip label={`Role of ${a.email}`}>
+              From the identity provider: its role mapping (Settings → Security → Single sign-on → SAML) sets a SAML account's role at every sign-on. To change it, change the
+              mapping or the user's role at the provider.
+            </InfoTip>
+          </span>
+        ) : (
+          <FieldSelect ariaLabel={`Role of ${a.email}`} fields={ROLE_FIELDS} value={a.role} onChange={(v) => v !== a.role && change(a, { role: asRole(v) })} style={{ width: 130 }} />
+        ),
     },
     {
       key: 'origin',
@@ -327,6 +356,15 @@ export function UsersPanel() {
       width: 70,
       sortValue: (a) => (a.active ? 1 : 0),
       render: (a) => <Toggle size="sm" aria-label={`${a.email} active`} value={a.active} disabled={a.id === me?.id} onChange={(active) => change(a, { active })} />,
+    },
+    {
+      key: 'never_off',
+      header: 'Never turn off',
+      width: 110,
+      sortValue: (a) => (exempt && listed(exempt, a.email) ? 1 : 0),
+      render: (a) => (
+        <Toggle size="sm" aria-label={`Never turn off ${a.email}`} value={exempt != null && listed(exempt, a.email)} disabled={exempt == null} onChange={(on) => setNeverOff(a, on)} />
+      ),
     },
     { key: 'state', header: 'State', width: 190, sortValue: (a) => (a.locked_until_ms ?? 0) + (a.must_change_password ? 1 : 0), render: (a) => <AccountState a={a} now={now} /> },
     { key: 'last', header: 'Last sign-in', width: 170, mono: true, sortValue: (a) => a.last_login_at_ms, render: (a) => fmtTime(a.last_login_at_ms) },
@@ -400,7 +438,8 @@ export function UsersPanel() {
           <InfoTip label="Users">
             {ROLES_INFO} Origin: local (made here or by the command line) or saml (made at the first single sign-on); SSO marks an account
             with no password, which can sign in only through single sign-on. Active off: the account cannot sign in and its sessions and
-            API tokens stop working until it is switched back on. At least one active admin must remain.
+            API tokens stop working until it is switched back on. At least one active admin must remain. An account not signed in for 35 days is turned
+            off, unless Never turn off is on: keep that for a few break-glass accounts with sealed passwords.
           </InfoTip>
         }
         actions={
@@ -415,21 +454,6 @@ export function UsersPanel() {
           ) : (
             <DataTable aria-label="Accounts" columns={columns} rows={accounts} rowKey={(a) => a.id} density="compact" empty="No accounts." defaultSort={{ key: 'email', direction: 'asc' }} />
           )}
-        </div>
-      </CollapsiblePanel>
-      <CollapsiblePanel
-        title="Sessions"
-        persistKey="ot.panel.settings.sessions"
-        titleActions={
-          <InfoTip label="Sessions">
-            Every browser signed in to this node now. A session ends at sign-out, after the idle timeout, at the session length, or when its account signs in
-            past the number allowed at once. End one to sign that browser out. Other nodes keep their own sessions.
-          </InfoTip>
-        }
-        actions={<Button size="sm" variant="ghost" icon={<TbRefresh />} aria-label="Reload sessions" onClick={() => setSessionsKey((k) => k + 1)} />}
-      >
-        <div className="panel-body">
-          <SessionsTable all reloadKey={sessionsKey} />
         </div>
       </CollapsiblePanel>
       <CollapsiblePanel

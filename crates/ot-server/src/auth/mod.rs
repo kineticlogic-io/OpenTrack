@@ -20,6 +20,7 @@ mod saml;
 pub use saml::openssl_fips;
 pub mod sessions;
 pub mod settings;
+pub mod stig;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -105,6 +106,9 @@ pub struct AuthUser {
     /// else (a temporary or expired password).
     #[serde(skip)]
     pub must_change: bool,
+    /// A session begun by single sign-on (SAML), not a password.
+    #[serde(skip)]
+    pub sso: bool,
 }
 
 /// A session or API token's payload.
@@ -118,6 +122,9 @@ struct Claims {
     exp: i64,
     /// `session` or `api`.
     kind: String,
+    /// A session begun by single sign-on (SAML). Absent from older tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    sso: bool,
 }
 
 /// A client certificate's subject, put in the request by the TLS listener.
@@ -145,8 +152,6 @@ pub struct Auth {
     saml: saml::State,
 }
 
-/// Session lifetime when the settings give none.
-const SESSION_HOURS: f64 = 24.0;
 /// Sign-in attempts per address: a burst of 5, then one a second.
 const ATTEMPT_BURST: f64 = 5.0;
 
@@ -196,8 +201,7 @@ impl Auth {
     }
 
     fn session_secs(&self) -> i64 {
-        let h = self.settings().session_hours.unwrap_or(SESSION_HOURS);
-        (h * 3600.0) as i64
+        stig::SESSION_HOURS * 3600
     }
 
     /// A signed token for an account; returns it with its id and expiry (ms).
@@ -206,6 +210,17 @@ impl Auth {
         user: &ot_store::User,
         kind: &str,
         ttl_secs: i64,
+    ) -> anyhow::Result<(String, String, i64)> {
+        self.issue_as(user, kind, ttl_secs, false)
+    }
+
+    /// [`Auth::issue`], saying whether a session was begun by single sign-on.
+    pub fn issue_as(
+        &self,
+        user: &ot_store::User,
+        kind: &str,
+        ttl_secs: i64,
+        sso: bool,
     ) -> anyhow::Result<(String, String, i64)> {
         let now = chrono::Utc::now().timestamp();
         let jti = crate::fips::uuid_v4();
@@ -216,6 +231,7 @@ impl Auth {
             iat: now,
             exp: now + ttl_secs,
             kind: kind.to_owned(),
+            sso,
         };
         let token = jsonwebtoken::encode(
             &Header::new(Algorithm::HS256),
@@ -368,9 +384,7 @@ pub fn bootstrap_admin(
     }
     let (email, password, file) = match (email, password) {
         (Some(e), Some(p)) if !e.trim().is_empty() => {
-            settings::PasswordPolicy::default()
-                .check(p)
-                .map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
+            password::check(p).map_err(|e| anyhow::anyhow!("OT_ADMIN_PASSWORD: {e}"))?;
             (e.trim().to_owned(), p.to_owned(), None)
         }
         _ => {
@@ -478,6 +492,7 @@ async fn from_token(s: &AppState, token: &str, via: Via, idle_ms: i64) -> Option
         email: user.email,
         name: user.name,
         via,
+        sso: session && claims.sso,
         jti: Some((claims.jti, claims.exp * 1000)),
     })
 }
@@ -504,6 +519,7 @@ async fn from_cert(s: &AppState, cert: &PeerCert) -> Option<AuthUser> {
         via: Via::ClientCert,
         jti: None,
         must_change: false,
+        sso: false,
     })
 }
 
@@ -523,6 +539,7 @@ pub async fn identify(
             via: Via::Disabled,
             jti: None,
             must_change: false,
+            sso: false,
         });
     }
     if let Some(cert) = cert
@@ -641,6 +658,9 @@ mod tests {
             (c.sub.as_str(), c.kind.as_str(), c.jti),
             ("u1", "session", jti)
         );
+        assert!(!c.sso, "a password session");
+        let (t, ..) = a.issue_as(&u, "session", 60, true).unwrap();
+        assert!(a.decode(&t).unwrap().sso, "a single sign-on session");
         let other = Auth::new(vec![8; 32], false, false, None, AuthSettings::default());
         assert!(other.decode(&t).is_none(), "another key's token");
         let (expired, _, _) = a.issue(&u, "session", -60).unwrap();

@@ -1,7 +1,7 @@
 # OpenTrack administrator guide
 
 For the people who install, configure, secure and keep OpenTrack running. The people who work on
-the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.3.4**.
+the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.1**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI and other documents can link to
 it (in the app: `#help/admin/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses:
@@ -103,6 +103,8 @@ also come from files:
 - tracker profiles as JSON files in `profiles/trackers/`;
 - plugins with `opentrack plugin add`;
 - accounts with `opentrack user` ([User commands](#user-commands)).
+- or everything at once, from another node's export: `opentrack config import <file>`
+  ([Rebuild a node](#rebuild-a-node-from-a-configuration-export)).
 
 A node that only collects and correlates needs `sources` and `engine`, plus `writer` to publish.
 It can start from a database prepared elsewhere (`OT_SQLITE_PATH`). Give every node its own
@@ -134,6 +136,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 |---|---|
 | `synthetic` | Pushes synthetic tracks through the pipeline: `--count`, `--lat`, `--lon`, `--move-secs`; `--verify` waits until each is in the NATS stream, `--retire` retires them afterwards. To test without touching operational subjects, give it and the writer their own `OT_NATS_STREAM`, `OT_NATS_TRACKS_SUBJECT` and `OT_REDIS_NAMESPACE`. |
 | `bench` | Runs a recorded scenario through the real pipelines and engine as fast as they go and writes the results (`opentrack bench <scenario dir> --out <dir>`). Publishes nothing. See `scripts/benchmark/README.md`. |
+| `config export [--out <file>]` / `config import <file>` / `config status` | Writes the whole configuration (secrets included) to standard output or a file; rebuilds an empty node from one; says whether this node is empty. See [Configuration export](#configuration-export). |
 | `retire <uid>` | Retires one system track: records the decision (`--reason`), closes its links in the track graph and queues its delete for the writer. Takes `OTK000000042` or `tms-OTK000000042`. |
 
 ### Plugin commands
@@ -142,7 +145,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
   kind it provides with its default options, and prints its manifest and what worked. It changes
   nothing and exits non-zero when something failed.
 - `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--replace]` adds it, as
-  Settings → Plugins does. `--replace` installs a new build of a plugin that is already added.
+  Settings → General → Plugins does. `--replace` installs a new build of a plugin that is already added.
 - `opentrack plugin list` lists the plugins added and whether each is enabled.
 
 An address is `host:port`, `tcp://host:port` or `unix:/path`. Grants are JSON, for example
@@ -246,7 +249,7 @@ pipelines").
 | `OT_ENGINE_CONSUMER` | `engine-1` | The engine's consumer name on the observation streams. |
 | `OT_CONFIRM_AFTER` | `3` | Reports a new system track needs before it is confirmed (at least 1). A source's own **Confirm after** (in its publish stage) overrides it for that source's tracks. |
 | `OT_DROP_AFTER_HOURS` | `6` | Hours without a report before a system track is dropped and deleted downstream. |
-| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones apply and this is ignored. |
+| `OT_CORRELATION` | `kinematics-metadata` | How tracks with no shared identifier pair, until someone saves correlation settings: `identifiers` (never), `kinematics`, or `kinematics-metadata` (kinematics, vetoed by conflicting identifiers or domains). Once correlation settings are saved in the Correlation tab, the saved ones win and this is ignored; the engine logs a warning at start when it is set and the saved approach differs. |
 | `OT_WRITER_CONSUMER` | `writer-1` | The writer's consumer name; unique per writer. |
 | `OT_WRITE_MIN_INTERVAL_SECS` | `5` | At most one publication of a track this often. Significant changes (identity, classification, state) go at once. |
 
@@ -313,8 +316,9 @@ Everything under `<namespace>:` (`tms:` by default):
 | `tms:sync:…`, `tms:contacts:out` | Messages for other nodes, and bearings no track took, for the writer. |
 
 Redis holds nothing a person decided; it is all rebuilt from the feeds. But the live picture and
-its track numbers are there. Lose Redis, and tracks form again under new numbers. See
-[Restore](#restore).
+its track numbers are there. Lose Redis, and tracks form again under new numbers (never ones
+already issued), and the engine publishes deletes for this node's tracks left in the NATS stream.
+See [Restore](#restore).
 
 ## Users
 
@@ -331,8 +335,8 @@ as it is now, so a role change or a deactivation takes effect at once.
 
 In the API: reading needs `viewer`; changes under `/tracks/`, `/groups`, `/registry`,
 `/correlation/suggestions/`, `/decisions/` and `/history/` need `track_manager`; every other
-change needs `admin`, as do reads under `/auth/` (other than your own profile), `/export/config`
-and `/probe`.
+change needs `admin`, as do reads under `/auth/` (other than your own profile), `/export/config`,
+`/import/config`, `/probe` and `/audit`.
 
 Every change records the account that made it in the decision log.
 
@@ -350,8 +354,8 @@ password.
 
 ### Adding accounts
 
-In **Settings → Users**, **Add account**: email, name, role, and a password of at least 8
-characters. Leave the password empty for an account that signs in only with single sign-on.
+In **Settings → Users**, **Add account**: email, name, role, and a password that meets the
+[password policy](#password-policy). Leave the password empty for an account that signs in only with single sign-on.
 Accounts that SAML makes appear here on their first sign-on, with the origin `saml`. From the
 command line: `opentrack user add`.
 
@@ -412,8 +416,10 @@ user passwd` also ends them (turning an account off and on again does not: its t
 ### Users panel
 
 **Settings → Users** (admins only) has two tables:
-- **Users**: email, name, role (change it in place), origin (`local` or `saml`; **SSO** means no
-  password), active, last sign-in, and the password, sign-out and delete buttons.
+- **Users**: email, name, role (change it in place; a `saml` account's comes from the identity
+  provider, see [SAML](#saml)), origin (`local` or `saml`; **SSO** means no password), active,
+  **Never turn off** (a break-glass account, which [inactivity](#inactive-accounts) never turns
+  off), state, last sign-in, and the password, sign-out and delete buttons.
 - **API tokens**: name, the account it acts as, who made it, when, when it expires, and its state
   (active, expired, revoked).
 
@@ -421,21 +427,21 @@ user passwd` also ends them (turning an account off and on again does not: its t
 
 OpenTrack accepts several ways of signing in at once. For each request it tries, in order: a client
 certificate, an API token, its own session cookie, then (when trusted) OpenStare's session or
-token. Settings → Security holds the sign-in settings; changes take effect at once and go in the
-decision log.
+token. The **Single sign-on** panel in Settings → Security holds the sign-in settings, in one form
+with one **Save**: the **Password sign-in** switch, then a section each for SAML, OpenStare sign-in
+and client certificates. Changes take effect at once and go in the decision log.
 
 ### Password sign-in
 
 Local accounts sign in with email and password at `/login`. The session is a signed `ot_session`
-cookie (HttpOnly, SameSite=Lax, and Secure over TLS).
+cookie (HttpOnly, SameSite=Strict, and Secure over TLS). It lasts at most 24 hours; see
+[Session limits](#session-limits).
 
-In the **Sign-in** panel:
-- **Session length (hours):** how long a sign-in lasts, 0.25 to 720. Empty means 24.
-- **Password sign-in:** off means accounts sign in only with SAML or OpenStare. You can turn it off
-  only when one of those is on, and not from a session that signed in with a password, so a working
-  way back is proven first. Note that a SAML sign-in also counts as a password-style session here:
-  turn it off while signed in through OpenStare, or with an admin's API token
-  (`PUT /api/v1/auth/settings`).
+**Password sign-in**, at the top of the Single sign-on panel: off means accounts sign in only with
+SAML or OpenStare. You can turn it off only when one of those is on, and not from a session that
+signed in with a password, so a working way back is proven first: turn it off while signed in by
+SAML (keeping SAML on in the same save), through OpenStare, or with an admin's API token
+(`PUT /api/v1/auth/settings`).
 
 ### SAML
 
@@ -445,7 +451,7 @@ signed response with the HTTP-POST binding. Sign-on started at the identity prov
 supported.
 
 1. **Set `OT_PUBLIC_URL`** to the address browsers use, such as `https://opentrack.example.org`,
-   and restart. The **Service provider** row in Settings → Security then shows the two addresses
+   and restart. The **Service provider** row in the Single sign-on panel's SAML section then shows the two addresses
    the identity provider needs:
    - entity ID and metadata: `<OT_PUBLIC_URL>/api/v1/auth/saml/metadata`
    - assertion consumer service (ACS): `<OT_PUBLIC_URL>/api/v1/auth/saml/acs`
@@ -458,9 +464,11 @@ supported.
    - send the user's role in an attribute (in Keycloak, a role list mapper; in Entra ID, app roles,
      sent as `http://schemas.microsoft.com/ws/2008/06/identity/claims/role`).
 3. **Paste the identity provider's metadata XML** into **IdP metadata** and choose **Read
-   metadata**. It fills the IdP entity ID, sign-in URL and signing certificate. The metadata is
-   what OpenTrack uses to check sign-ons: after a certificate rollover, paste the new metadata;
-   editing the three fields alone changes nothing.
+   metadata**. The IdP entity ID, sign-in URL and signing certificate below it then show what the
+   metadata says. They are read-only: the metadata alone is what OpenTrack checks sign-ons against,
+   and the three are read from it again at every save. To change them (after a certificate
+   rollover, say), paste the new metadata. Metadata that cannot be read is refused while SAML is
+   on.
 4. **Role attribute:** the attribute's name (or friendly name), exactly as the provider sends it.
    Default `Role`.
 5. **Role mapping:** rows of attribute value → OpenTrack role. Case does not matter. The rows are
@@ -476,7 +484,10 @@ supported.
 What happens at a sign-on:
 - The first time, OpenTrack makes an account (origin `saml`, no password) with the mapped role.
 - Next time, a `saml` account takes the role the provider gives it now. If its values map to no
-  role and there is no default, it is refused.
+  role and there is no default, it is refused. The identity provider is authoritative for the
+  role: Settings → Users shows a `saml` account's role read-only, and the API refuses to change
+  it (409). To change it, change the mapping here or the user's role at the provider.
+  (`opentrack user role` on the server still can, as a break-glass, until the next sign-on.)
 - If the account with that email was made another way (a local account), the sign-on is refused:
   an identity provider never takes over a local account or its role. Use a different email for
   the local account, or delete it so SAML makes a new one.
@@ -500,7 +511,7 @@ For each, OpenTrack asks OpenStare's `/api/auth/me` who it is, and keeps the ans
 seconds. So an OpenStare sign-out or revocation holds here within 30 seconds. No OpenTrack
 account is made; the decision log records the user's OpenStare email.
 
-In the **OpenStare sign-in** panel:
+In the Single sign-on panel's **OpenStare sign-in** section:
 - **API URL:** OpenStare's API as the OpenTrack server reaches it. Default `http://127.0.0.1:3001`.
 - **Sign-in page URL:** OpenStare's sign-in page as browsers reach it. It puts a "Sign in with
   OpenStare" button on OpenTrack's sign-in page. Empty: no button.
@@ -514,7 +525,7 @@ With mutual TLS, a machine can sign in with its certificate alone.
 
 1. Serve over TLS with a client CA: `OT_TLS_CERT`, `OT_TLS_KEY` and `OT_TLS_CLIENT_CA`.
 2. Make an account for the machine (with no password), with the role it needs.
-3. In **Client certificates**, add a row: the certificate subject's common name (CN), and the
+3. In the Single sign-on panel's **Client certificates** section, add a row: the certificate subject's common name (CN), and the
    account's email. Save.
 
 A certificate the CA signed whose CN is listed signs in as that account, while the account is
@@ -564,30 +575,67 @@ stage, **Security label** (Sources → a source → Pipeline):
 
 The label goes into each published track message as `security`
 ([docs/nats-output.md](../nats-output.md)). A track that several labelled sources report for
-carries the label of its **highest-priority** source, not the most restrictive one. Set source
-priorities with that in mind, or keep sources of different classification apart.
+carries:
+- the **highest classification** among them;
+- **every restriction** any of them has;
+- only the **releasability they all share** (`NONE` when they share none).
 
-The values are free text for now.
+Which classification is highest comes from the list in **Settings → Security → Security labels**.
+It runs lowest first, and by default reads `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`, `SECRET`.
+- **Reorder:** drag a row by its handle.
+- **Add or remove:** **Add classification** adds a row; the × removes one.
+- **Save** when you're done.
+
+Case does not matter, `U`, `C`, `S` and `TS` stand for their names, and caveats after `//` are
+ignored when ranking. A classification that isn't in the list ranks above all of them, so a track
+is never marked too low. Add `TOP SECRET` (or your own levels) if your sources carry them.
 
 ## Settings tab
 
-The **Settings** tab, panel by panel. Viewers and track managers see the instance and banner
-settings, plugins and exports, but can't change them.
+The **Settings** tab, panel by panel, in order. Viewers and track managers see General, Data and
+Banners, but can't change them.
 
 | Panel | What it holds | See |
 |---|---|---|
-| **Instance** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. | |
-| **Banners** | Classification banner and warning banner. | [Banners](#banners) |
-| **Users**, **API tokens** | Accounts and machine tokens (admins only). | [Users](#users) |
-| **Sign-in**, **SAML single sign-on**, **OpenStare sign-in**, **Client certificates** | The sign-in settings (admins only). | [Sign-in](#sign-in) |
+| **General** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. **Basemap tiles:** an XYZ tile URL for the maps' background (empty: the built-in country outlines; others see only whether it is on). **Plugins:** codec, tracker and scorer plugins. | [Basemap tiles](#basemap-tiles), [Plugins](#plugins) |
+| **Users**, **API tokens** | Accounts, with the break-glass ones marked **Never turn off**, and machine tokens (admins only). | [Users](#users) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
 | **TAK output** | Cursor-on-Target outputs to TAK: a TAK Server, multicast, or TAK clients connecting to this node (admins only). | [TAK output](#tak-output) |
-| **Plugins** | Codec, tracker and scorer plugins. | [Plugins](#plugins) |
-| **Data export** | Live tracks as GeoJSON or CSV, the configuration (admins only), the registry as XLSX. | [Configuration export](#configuration-export) |
-| **Purge** | Retire every live track. | [Purge](#purge) |
+| **Data** | Export: live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. **Purge:** retire every live track. | [Configuration export](#configuration-export), [Purge](#purge) |
+| **Banners** | Classification banner and warning banner. | [Banners](#banners) |
+| **Security labels** | The classification order a fused track's label is chosen by (admins only). | [Security labels](#security-labels) |
+| **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
 
-The Instance, Banners, Nodes and TAK output panels share one draft: **Save** on any of them saves
+The General, Nodes, TAK output and Banners panels share one draft: **Save** on any of them saves
 them all.
+
+### Basemap tiles
+
+The maps (Track Management and the source preview) draw the built-in country outlines, which need
+nothing from outside. For a full map instead, give **Settings → General → Basemap tiles** the URL
+of an XYZ raster tile server, such as `https://tiles.example/{z}/{x}/{y}.png`:
+- An absolute `http` or `https` URL of up to 2048 characters with `{z}`, `{x}` and `{y}` in it.
+  No other placeholders: `{s}` (a choice of subdomains) is refused, so give one host. No
+  `user:pass@`; a key the tile server takes can go in the query, e.g. `?key=...`.
+- The tiles are PNG, JPEG, WebP or AVIF, up to 4 MiB each. Empty turns tiles off.
+
+**OpenTrack fetches the tiles for the browser** (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in
+account), so:
+- browsers need no route to the tile server, and an internal one works;
+- the page's content security policy is unchanged (this origin only);
+- the URL, with any key in it, never reaches browsers. Only admins see it in the settings; everyone
+  else sees whether tiles are on, and the decision log records only that it was set.
+
+A tile the server doesn't have (open ocean, say) is left empty; a tile server that fails, is slow
+(10 s), redirects or sends anything but an image gives that tile a 502, logged with the server's
+host and status.
+
+**Tiles are not cached on the OpenTrack server.** Each browser keeps a tile for a day, so a room
+of operators still makes one request per tile per browser.
+
+The tile provider's terms are yours to meet, including any attribution it requires (OpenTrack
+shows none). OpenStreetMap's public tile servers forbid heavy use such as this; use a provider that
+allows it, or a tile server of your own.
 
 ## Sources and correlation
 
@@ -627,7 +675,7 @@ database.
 
 ## Plugins
 
-Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → Plugins**
+Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → General → Plugins**
 (admins change it; others see it):
 - **Add plugin:** a WebAssembly component (`.wasm`, run sandboxed inside OpenTrack), or an
   external plugin's address (a program of its own serving the plugin interface on a socket).
@@ -830,6 +878,7 @@ each also per output as `sent:<name>` and so on, and gauges `clients`, `clients:
 | `.env` or wherever the `OT_*` settings live | The deployment's settings. | Copy it; it holds secrets. |
 | Redis | The live picture and its track numbers. Optional, but see [Restore](#restore). | [Redis backup](#redis-backup). |
 | External plugins | Only their address is in the database. | Back up their programs. |
+| A [configuration export](#configuration-export) (optional) | The configuration in one file, to rebuild a node from. Not the track state or the audit record. | `opentrack config export --out <file>`; keep it as safe as the database. |
 
 ### SQLite backup
 
@@ -860,17 +909,85 @@ applications' keys included. Take it at the same time as the SQLite backup.
 
 ### Configuration export
 
-**Settings → Data export → Configuration** (admins; `GET /api/v1/export/config`) downloads one JSON
-file with:
-- every source's spec, whether it is enabled, and its priority;
-- every output schema version (drafts too);
-- the correlation settings;
-- the instance settings (site name, banners, position history, nodes).
+**Settings → Data → Full configuration** (admins; `GET /api/v1/export/config`, or
+`opentrack config export`) downloads the node's whole configuration as one JSON file, to back it
+up or to [rebuild the node](#rebuild-a-node-from-a-configuration-export) from. Every export is
+recorded (an `export_config` decision in the audit record, with who exported it and how much), and
+the download is an attachment no cache keeps (`Cache-Control: no-store`).
 
-It does **not** hold: the registry, accounts and API tokens, sign-in settings, plugins, tracker
-profiles, groups, the decision log, the track graph or any live track. It is a readable record of
-the configuration, useful to compare or rebuild by hand. There is no import: to restore, use a
-database backup.
+**It holds secrets.** Source credentials, password hashes, the SAML and OpenStare settings and
+plugin components are in it as stored. Keep it as safe as the database: an encrypted volume or a
+vault, readable by admins only, and delete copies you no longer need. `opentrack config export
+--out <file>` writes a file only its owner can read.
+
+What it holds (the file's sections):
+
+| Section | What |
+|---|---|
+| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`. |
+| `sources` | Every source as stored: `id`, `name`, `transport`, `codec`, `enabled`, `priority`, `revision`, `spec` (with its secrets), `raw_subject` (raw output, if consented). |
+| `schema_versions` | Every output schema version (`version`, `status`, `published_at_ms`, `notes`, `fields`), the draft too. |
+| `correlation_settings` | The saved correlation settings, security labels included (`null`: never saved). |
+| `app_settings` | The instance settings as saved (site name, banners, position history, nodes), `{}` if never saved. |
+| `auth_settings` | The sign-in settings as saved: password sign-in, SAML, OpenStare trust, client certificate mappings, and the accounts inactivity never turns off. A file from 0.4.0 may also have password, lockout, session, inactivity-period and audit-retention settings: they import, and are ignored (those values are fixed). |
+| `accounts` | Every account: `id`, `email`, `name`, `role`, `active`, `origin`, `password_hash`, `password_history`, `password_changed_at_ms`, `must_change_password`, `locked_until_ms`, `last_login_at_ms` and the other account dates. |
+| `api_tokens` | Every API token's record: `jti`, `name`, `user_id`, `created_by`, `expires_at_ms`, `revoked_at_ms`. Not the tokens themselves, which are never stored. |
+| `registry.entities` | Every entity as the registry API shapes it: identifiers, status, publish override, the OTH-GOLD minimum and attributes. |
+| `plugins` | Every added plugin: `name`, `runtime`, `version`, `manifest`, `wasm` (the component, base64) and `sha256`, or `address` (external), `grants`, `enabled`. |
+| `tracker_profiles` | The tracker profiles imported on this node (not the shipped ones), each as its file. |
+| `uid_sequences` | The next track number per site code (`site`, `next_sequence`). |
+
+What it never holds: the session signing key (`session.key` or `OT_SESSION_SECRET`), sessions,
+the audit record, the decision log, the track graph, groups, correlation suggestions, entity and
+source revision history, anything in Redis, and the `OT_*` deployment settings. API tokens are
+signed with the session key, so the tokens in the file work again only on a node with the same
+key. External plugins' programs are not in it (only their address).
+
+Files from 0.4.0 and earlier (no `format`, version 1) held only sources, schema versions and
+correlation and instance settings; they cannot be imported.
+
+### Rebuild a node from a configuration export
+
+An import rebuilds a node that has **no configuration yet**, and refuses any other, listing what is
+there. A node is empty when it has:
+- no sources, registry entities, plugins, API tokens or imported tracker profiles;
+- no output schema version but the built-in version 1;
+- no saved correlation, instance or sign-in settings (the defaults);
+- at most one account, an admin: the first admin made on first start.
+- never imported a configuration before.
+
+Track state (tracks, other decisions, the audit record) does not count. On a new node:
+
+```sh
+opentrack config status                     # empty?
+opentrack config import opentrack-config-OTK-20260929-1200.json
+opentrack serve                              # or all; restart a running server
+```
+
+The CLI is the usual way: an empty node's only account is its first admin. From the UI, an admin
+of an empty node (after changing the first admin's password) sees **Settings → Data →
+Import configuration**; `POST /api/v1/import/config` with the file as the body does the same, and
+`GET /api/v1/import/config` says whether the node is empty (`{"empty", "present"}`).
+
+The import checks every section first, as the API checks it when saved: sources against the file's
+output schema versions, each settings document by its own rules, accounts (unique emails, valid
+roles, at least one active admin), tokens against the accounts, entities and their identifiers,
+plugins (the component's SHA-256 must match), tracker profiles, track numbers. A malformed file,
+another format or version, or any invalid section is refused with every problem listed, and
+nothing is written. Then it writes everything in one SQLite transaction (tracker profile files
+included, removed again if the transaction fails), recorded as one `import_config` decision.
+
+- **Accounts:** the imported accounts replace the first admin (whatever its email), with their
+  password hashes, history and flags, so everyone signs in with their old password.
+  `initial-admin.txt` is deleted. A file with no accounts (from a node with sign-in off) keeps the
+  first admin.
+- **API tokens:** set the same `OT_SESSION_SECRET` (or copy `session.key`) for them to work;
+  otherwise revoke them and issue new ones.
+- **Raw output** of a source is consented again by the import decision.
+- **Track numbers** continue from the file's counter (or this node's, if higher), so no number is
+  issued twice. Keep the same `OT_SITE_CODE`; the import notes it if the file came from another
+  site.
+- Restart a server that was running during a CLI import, so it reads the new sign-in settings.
 
 ### Registry export
 
@@ -893,14 +1010,18 @@ The entities' revision history is not in the sheet.
    redis-cli --scan --pattern 'tms:*' | xargs -r -n 500 redis-cli del
    ```
    (use your `OT_REDIS_NAMESPACE`). Other applications' keys stay.
-4. **Mind the track numbers.** Track numbers come from a counter in the database. A backup
-   restores the counter to its value then, so numbers issued after the backup can be issued again
-   to other objects. Tracks published after the backup also stay in the NATS stream, as consumers
-   last saw them, until they age out (`OT_NATS_MAX_AGE_HOURS`). If that matters, raise the counter
-   above the highest number consumers have seen before starting, for example:
-   ```sh
-   sqlite3 data/opentrack.db "UPDATE uid_sequences SET next_sequence = 5000000 WHERE site = 'OTK'"
-   ```
+4. **Track numbers are checked on start.** Track numbers come from a counter in the database, so
+   a backup takes the counter back to its value then. Before issuing any number, the engine looks
+   for the highest number of its site code already in use: in the database (track graph, decision
+   log), in Redis (live tracks and their history) and in the NATS tracks stream (its subjects,
+   `<prefix>.tms-<UID>`). If the counter is not past it, the engine moves it on (never back), logs
+   a warning with the old and new values, and records a `uid_counter_advanced` decision saying
+   where the number was found. If NATS cannot be reached then, the engine logs that it could not
+   check the stream and relies on the database and Redis: start NATS first when restoring.
+   Tracks this node published that are no longer live (Redis lost or cleared) would otherwise stay
+   in the stream as consumers last saw them: the engine publishes a delete for each (and logs how
+   many). Subjects of other site codes, or last written by another publisher, are left
+   alone and age out (`OT_NATS_MAX_AGE_HOURS`).
 5. **Start OpenTrack.** Migrations run if the backup is from an older release. Check the Overview
    tab's **System status**.
 
@@ -926,9 +1047,9 @@ change between releases.
 
 ## Purge
 
-**Settings → Purge** (admins; `POST /api/v1/admin/purge`) clears the picture:
-1. Optionally turn on **Also delete history**.
-2. Type the site code in **Confirm**, then **Purge tracks**, and confirm.
+**Settings → Data → Purge** (admins; `POST /api/v1/admin/purge`) clears the picture:
+1. Select **Purge tracks**.
+2. In the window that opens, optionally turn on **Also delete history**, then select **Purge**.
 
 It then:
 - dissolves every group;
@@ -940,8 +1061,8 @@ It keeps sources, the output schema, the registry and its entities, settings, ac
 and the decision log (a purge is itself a decision). Sources keep reporting, so new tracks appear
 at once, with new numbers. It cannot be undone.
 
-The API call is `{"confirm": "<site code>", "history": true|false}`. It waits up to 5 minutes for
-the engine.
+The API call is `{"confirm": "<site code>", "history": true|false}`: the API still asks for the
+site code, so a stray request can't purge. It waits up to 5 minutes for the engine.
 
 ## Monitoring
 
@@ -951,8 +1072,9 @@ the engine.
   answers. Use it for a container or load-balancer liveness check.
 - **`GET /api/v1/status`** (any role; use a `viewer` API token) reports each dependency with an
   `ok` flag: `sqlite` (with its schema version), `redis`, and `nats` (connected, and the stream
-  usable), plus the version, algorithm versions, site code and node id. It answers 200 even when a
-  dependency is down: check the flags.
+  usable), plus the version, algorithm versions, site code and node id. It answers 200 when all
+  three are up and 503, with the same body, when any is down, so a readiness check or monitor
+  that reads only the status code sees it; the flags say which.
 - **`GET /api/v1/sync/status`**: the link to other nodes.
 
 ### Metrics
@@ -979,6 +1101,7 @@ error.
 
 OpenTrack logs to standard output (`docker compose logs -f opentrack`). Set `OT_LOG_FORMAT=json`
 for a log collector, and `OT_LOG` for more or less detail ([Logging](#logging)). Worth watching:
+- `audit record` (target `audit`): every audit row, see [Audit record](#audit-record);
 - `SAML sign-on refused` and `sign-in refused`;
 - `OpenStare sign-in check failed`;
 - a source's connection errors;
@@ -1005,7 +1128,7 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 | Tracks are live but consumers don't get them. | See why each is not published on its track card (operator guide, "Not published"): not confirmed, only sensors that may not stand alone report for it, the output filter holds it, or an entity says never. |
 | `docker compose up` refuses to start. | `.env` is missing next to `docker-compose.yml`. |
 | The container exits at once. | The data directory isn't writable by uid 1000 (see its log). |
-| Redis memory keeps growing. | Position history (Settings → Instance), `OT_OBS_WINDOW_SECS`, and the number of tracks. See [Redis](#redis). |
+| Redis memory keeps growing. | Position history (Settings → General), `OT_OBS_WINDOW_SECS`, and the number of tracks. See [Redis](#redis). |
 
 ## Security
 
@@ -1030,8 +1153,10 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 ### Security hardening (0.4.0)
 
 0.4.0 is the accreditation release, aimed at DoD RMF with the ASD STIG and NIST 800-53 Moderate.
-Each control below is on by default, with the STIG value. You can change them in **Settings →
-Security**. How each one maps to a control is in
+Each control below is always on, at the STIG value: the password policy, lockout, session limits,
+inactivity and audit retention are fixed, not settings. What an admin sets is the break-glass
+accounts (**Never turn off** in Settings → Users) and sign-in itself (the **Single sign-on**
+panel). How each one maps to a control is in
 [docs/security/stig-mapping.md](../security/stig-mapping.md). Deployment steps are in
 [docs/security/hardening.md](../security/hardening.md).
 
@@ -1047,7 +1172,7 @@ the image. Details: [docs/security/fips.md](../security/fips.md).
 
 For local accounts:
 
-| Setting | Default |
+| Rule | Value |
 |---|---|
 | Minimum length | 15 |
 | Upper case, lower case, digit, special character | all required |
@@ -1062,10 +1187,9 @@ includes the one in `initial-admin.txt`, and `OT_ADMIN_PASSWORD` must already me
 
 ### Account lockout
 
-Three failed sign-ins within 15 minutes lock an account for 15 minutes. Set the lock time to 0 to
-keep it locked until an admin unlocks it. Every refusal gives the same answer, "wrong email or
+Three failed sign-ins within 15 minutes lock an account for 15 minutes. Every refusal gives the same answer, "wrong email or
 password", whether the account is unknown, turned off, locked or the password is wrong. The
-audit record keeps the real reason. To unlock an account:
+audit record keeps the real reason. To unlock an account sooner:
 - **Settings → Users:** the open-lock button on its row;
 - **command line:** `opentrack user unlock <email>`;
 - **API:** `POST /api/v1/auth/users/{id}/unlock`.
@@ -1074,18 +1198,20 @@ audit record keeps the real reason. To unlock an account:
 
 - **Idle timeout:** 15 minutes, or 10 for admins. The page's own refreshing doesn't count as use;
   only what the user does.
-- **Absolute lifetime:** the session length (24 hours by default).
+- **Absolute lifetime:** 24 hours, used or not.
 - **Sessions per account:** 3. A fourth sign-in ends the oldest.
 
-Users see and end their own sessions from the account menu, under **Sessions**. Admins see
-everyone's in **Settings → Users → Sessions**. Sessions are kept per node. API tokens aren't
+Users see and end their own sessions from the account menu, under **Sessions**. An admin ends all
+of an account's sessions with **Sign out everywhere** on its row in Settings → Users
+([Revoking sessions](#revoking-sessions)). Sessions are kept per node. API tokens aren't
 sessions: they have no idle timeout, only their expiry.
 
 ### Inactive accounts
 
 Accounts that haven't signed in for 35 days are turned off. The check runs at sign-in and every
-10 minutes. Re-enabling an account restarts its clock. List break-glass accounts under
-**Never turn off**. Otherwise a sole admin who doesn't sign in for 35 days is turned off too, and only
+10 minutes. Re-enabling an account restarts its clock. Mark break-glass accounts with **Never
+turn off** on their row in Settings → Users (keep them few, with sealed passwords). Otherwise a
+sole admin who doesn't sign in for 35 days is turned off too, and only
 `opentrack user enable <email>` on the server brings the account back.
 
 After each sign-in, users see when they last signed in and how many failed attempts there were
@@ -1101,12 +1227,20 @@ decision log records:
 
 Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
 the chain. The database refuses updates to the table.
-- **Review:** **Settings → Audit**. Filter by time, account, event and outcome, export as CSV, or
-  choose **Verify chain**. The API is `GET /api/v1/audit` (with `format=csv`) and
-  `GET /api/v1/audit/verify`.
+- **Review in the server logs:** every row is also logged, once written, as an `audit record`
+  event (target `audit`) with its `seq`, `actor`, `op`, `outcome`, `ip`, `detail`, `decision_id`
+  and `hash`. Set `OT_LOG_FORMAT=json` and ship the log to your SIEM. A decision's `before` and
+  `after` (the configuration it changed, which can hold source credentials) are left out of the
+  log; its `decision_id` finds them in the API. For example:
+
+  ```json
+  {"timestamp":"2026-09-29T14:02:11.418220Z","level":"INFO","fields":{"message":"audit record","seq":4182,"actor":"ann@example.org","op":"login","outcome":"failure","ip":"10.1.2.3","detail":"{\"consecutive\":2,\"reason\":\"bad_password\",\"via\":\"password\"}","hash":"55e122e2f66b7312482b6dd6624afe22e3c4f0d6f1b44c29cb1333c1a32c5d84"},"target":"audit"}
+  ```
+- **Review through the API** (admins): `GET /api/v1/audit` filters by time (`from_ms`, `to_ms`),
+  account (`actor`), event (`op`, comma-separated) and `outcome`, pages back with `before_seq`,
+  and gives CSV with `format=csv`. `GET /api/v1/audit/verify` checks the chain.
 - **Fail closed:** if a sign-in can't be recorded, it is refused.
-- **Retention:** kept forever by default. With a retention period set, older rows are purged and
-  the purge itself is recorded, so the chain still verifies.
+- **Retention:** kept forever. Nothing deletes rows.
 - **Chain head:** written to the log every hour. Keep the logs apart from the database, so that a
   truncated tail can be spotted.
 

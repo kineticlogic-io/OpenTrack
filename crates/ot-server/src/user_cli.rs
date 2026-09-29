@@ -67,13 +67,12 @@ fn parse_role(s: &str) -> Result<Role, String> {
     Role::parse(s).ok_or_else(|| format!("{s}: viewer, track_manager or admin"))
 }
 
-/// A password from standard input, checked against the saved policy.
-fn stdin_password(db: &ot_store::Db) -> anyhow::Result<String> {
-    let settings: auth::AuthSettings = serde_json::from_value(db.auth_settings()?)?;
+/// A password from standard input, checked against the password rules.
+fn stdin_password() -> anyhow::Result<String> {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
     let p = line.trim_end_matches(['\r', '\n']).to_owned();
-    settings.password.check(&p).map_err(anyhow::Error::msg)?;
+    auth::password::check(&p).map_err(anyhow::Error::msg)?;
     Ok(p)
 }
 
@@ -111,7 +110,7 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
             password_stdin,
         } => {
             let hash = if password_stdin {
-                Some(auth::hash_password(&stdin_password(&db)?)?)
+                Some(auth::hash_password(&stdin_password()?)?)
             } else {
                 None
             };
@@ -142,10 +141,15 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
                 ..ot_store::Decision::new(ACTOR, "update_user")
             })?;
             println!("{email} is now {}", after.role);
+            if after.origin == "saml" {
+                println!(
+                    "(a saml account: its next sign-on sets the identity provider's role again)"
+                );
+            }
         }
         UserCommand::Passwd { email } => {
             let u = find(&db, &email)?;
-            let hash = auth::hash_password(&stdin_password(&db)?)?;
+            let hash = auth::hash_password(&stdin_password()?)?;
             db.set_password(&u.id, Some(&hash), true, 24)?;
             db.revoke_user_tokens(&u.id)?;
             db.record(&ot_store::Decision {

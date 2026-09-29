@@ -5,9 +5,10 @@
 //! canonical row is the JSON array `[seq, at_ms, actor, op, outcome, ip,
 //! detail, decision_id]` with `detail` as the exact text stored. Changing,
 //! removing or inserting a row breaks the chain from there on, which
-//! [`Db::verify_audit`] finds. Rows are never updated (a trigger refuses it)
-//! and only a retention purge deletes them: it keeps the last purged row's
-//! hash as the anchor the chain continues from, and records itself.
+//! [`Db::verify_audit`] finds. Rows are never updated or deleted (triggers
+//! refuse it): the record is kept forever. A database purged by 0.4.0
+//! (alpha)'s retention setting keeps the last purged row's hash as the
+//! anchor the chain continues from, and the purge's own row.
 
 use aws_lc_rs::digest;
 use rusqlite::types::ToSql;
@@ -102,7 +103,7 @@ pub struct AuditVerify {
     pub last_seq: Option<i64>,
     /// The newest row's hash: note it elsewhere to detect a cut-off tail.
     pub head_hash: String,
-    /// Where the chain starts after a retention purge.
+    /// Where the chain starts after a retention purge (0.4.0 alpha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
     /// The first problems found (at most 20), by sequence number.
@@ -220,7 +221,77 @@ pub(crate) fn append(
             hash
         ],
     )?;
+    PENDING.with(|p| {
+        p.borrow_mut().push(Logged {
+            seq,
+            actor: actor.to_owned(),
+            op: op.to_owned(),
+            outcome,
+            ip: ip.map(str::to_owned),
+            detail: log_detail(detail, decision_id),
+            decision_id,
+            hash,
+        })
+    });
     Ok(seq)
+}
+
+/// An audit row to write to the server log once its transaction commits.
+struct Logged {
+    seq: i64,
+    actor: String,
+    op: String,
+    outcome: &'static str,
+    ip: Option<String>,
+    detail: String,
+    decision_id: Option<i64>,
+    hash: String,
+}
+
+thread_local! {
+    /// Rows appended in the transaction running on this thread.
+    static PENDING: std::cell::RefCell<Vec<Logged>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A row's detail for the log. A decision's is without its `before` and
+/// `after` (the configuration it changed, which can hold source
+/// credentials): its decision id finds them in the audit API.
+fn log_detail(detail: &str, decision_id: Option<i64>) -> String {
+    if decision_id.is_none() {
+        return detail.to_owned();
+    }
+    match serde_json::from_str::<Value>(detail) {
+        Ok(Value::Object(mut o)) => {
+            o.remove("before");
+            o.remove("after");
+            Value::Object(o).to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// After a transaction: every audit row it appended goes to the server
+/// log (target `audit`) when it committed, and is forgotten when not. The
+/// log then carries the whole record for a SIEM (`OT_LOG_FORMAT=json`).
+pub(crate) fn log_pending(committed: bool) {
+    let rows = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if !committed {
+        return;
+    }
+    for r in rows {
+        tracing::info!(
+            target: "audit",
+            seq = r.seq,
+            actor = %r.actor,
+            op = %r.op,
+            outcome = r.outcome,
+            ip = r.ip.as_deref(),
+            detail = %r.detail,
+            decision_id = r.decision_id,
+            hash = %r.hash,
+            "audit record"
+        );
+    }
 }
 
 /// Append an event in `tx`.
@@ -444,40 +515,6 @@ impl Db {
     pub fn audit_head(&self) -> Result<(i64, String)> {
         head(self.connection())
     }
-
-    /// Delete rows older than `before_ms` (retention), keeping the chain
-    /// verifiable: the last deleted row's hash becomes the anchor, and the
-    /// purge is recorded as a row of its own. Returns the rows deleted.
-    pub fn purge_audit(&mut self, before_ms: i64, actor: &str) -> Result<usize> {
-        self.write(|tx| {
-            let last: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT seq, hash FROM audit WHERE at_ms < ?1 ORDER BY seq DESC LIMIT 1",
-                    [before_ms],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            let Some((through, hash)) = last else {
-                return Ok(0);
-            };
-            tx.execute("INSERT INTO audit_purge_gate (id) VALUES (1)", [])?;
-            let n = tx.execute("DELETE FROM audit WHERE seq <= ?1", [through])?;
-            tx.execute("DELETE FROM audit_purge_gate", [])?;
-            tx.execute(
-                "INSERT INTO audit_anchor (id, seq, hash) VALUES (1, ?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, hash = excluded.hash",
-                params![through, hash],
-            )?;
-            let e = AuditEvent::new(actor, "audit_purge").detail(json!({
-                "through_seq": through,
-                "rows": n,
-                "before_ms": before_ms,
-                "anchor_hash": hash,
-            }));
-            append_event(tx, &e, now_ms())?;
-            Ok(n)
-        })
-    }
 }
 
 #[cfg(test)]
@@ -487,6 +524,44 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().unwrap()
+    }
+
+    /// What a retention purge in 0.4.0 alpha did (the record is
+    /// now kept forever): a database purged then must still verify.
+    impl Db {
+        /// Delete rows older than `before_ms` (retention), keeping the chain
+        /// verifiable: the last deleted row's hash becomes the anchor, and the
+        /// purge is recorded as a row of its own. Returns the rows deleted.
+        fn purge_audit(&mut self, before_ms: i64, actor: &str) -> Result<usize> {
+            self.write(|tx| {
+                let last: Option<(i64, String)> = tx
+                    .query_row(
+                        "SELECT seq, hash FROM audit WHERE at_ms < ?1 ORDER BY seq DESC LIMIT 1",
+                        [before_ms],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                let Some((through, hash)) = last else {
+                    return Ok(0);
+                };
+                tx.execute("INSERT INTO audit_purge_gate (id) VALUES (1)", [])?;
+                let n = tx.execute("DELETE FROM audit WHERE seq <= ?1", [through])?;
+                tx.execute("DELETE FROM audit_purge_gate", [])?;
+                tx.execute(
+                    "INSERT INTO audit_anchor (id, seq, hash) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, hash = excluded.hash",
+                    params![through, hash],
+                )?;
+                let e = AuditEvent::new(actor, "audit_purge").detail(json!({
+                    "through_seq": through,
+                    "rows": n,
+                    "before_ms": before_ms,
+                    "anchor_hash": hash,
+                }));
+                append_event(tx, &e, now_ms())?;
+                Ok(n)
+            })
+        }
     }
 
     #[test]
@@ -637,6 +712,25 @@ mod tests {
             .execute("UPDATE audit_anchor SET hash = ?1", [GENESIS])
             .unwrap();
         assert!(!db.verify_audit().unwrap().ok);
+    }
+
+    #[test]
+    fn rows_reach_the_log_only_when_committed_and_without_configuration() {
+        let d = r#"{"reason":"r","evidence":{"x":1},"before":{"k":"secret"},"after":null}"#;
+        let logged: Value = serde_json::from_str(&log_detail(d, Some(3))).unwrap();
+        assert_eq!(logged, json!({"reason": "r", "evidence": {"x": 1}}));
+        assert_eq!(
+            log_detail(r#"{"via":"password"}"#, None),
+            r#"{"via":"password"}"#
+        );
+        // A transaction that fails logs none of the rows it appended.
+        let mut db = db();
+        let r: Result<()> = db.write(|tx| {
+            append_event(tx, &AuditEvent::new("a@x", "login"), now_ms())?;
+            Err(crate::StoreError::Conflict("no".into()))
+        });
+        assert!(r.is_err());
+        assert!(PENDING.with(|p| p.borrow().is_empty()));
     }
 
     #[test]

@@ -15,11 +15,11 @@ A plugin runs one of two ways, and the engine cannot tell them apart:
 - **WebAssembly**: a component that OpenTrack runs inside its own process with wasmtime. It is
   compiled to machine code on load and runs at close to native speed. It is sandboxed: it has no
   files, network or environment unless an operator grants them, and has a memory ceiling and a time
-  limit per call. It is uploaded in Settings → Plugins and loaded without a restart. Write it in
+  limit per call. It is uploaded in Settings → General → Plugins and loaded without a restart. Write it in
   Rust ([sdk/rust](../sdk/rust)) or plain Python ([sdk/python](../sdk/python)).
 - **External**: a program of its own that serves the same interface over a socket. It runs where
   you start it, with whatever it needs: numpy, scipy, Stone Soup, a GPU, a licensed library.
-  Settings → Plugins registers its address. The Python SDK serves any plugin this way.
+  Settings → General → Plugins registers its address. The Python SDK serves any plugin this way.
 
 ## What a plugin sees
 
@@ -101,7 +101,7 @@ stand, and the failure is logged once.
 
 ## Grants
 
-WebAssembly plugins only; set per plugin in Settings → Plugins or `PUT /api/v1/plugins/{name}`:
+WebAssembly plugins only; set per plugin in Settings → General → Plugins or `PUT /api/v1/plugins/{name}`:
 
 | Grant | Default | |
 |---|---|---|
@@ -157,9 +157,9 @@ GNN tracker (external).
 ## Adding, checking and benchmarking
 
 - **Check before adding**: `opentrack plugin check mine.wasm` (or an address) loads the plugin,
-  opens each kind it provides with its default options, and prints what worked. Settings → Plugins
+  opens each kind it provides with its default options, and prints what worked. Settings → General → Plugins
   has the same check.
-- **Add**: Settings → Plugins → Add plugin, `POST /api/v1/plugins` (the component with
+- **Add**: Settings → General → Plugins → Add plugin, `POST /api/v1/plugins` (the component with
   `Content-Type: application/wasm`, or `{"address"}`), or `opentrack plugin add`.
   - A plugin is loaded before it is stored.
   - A new build replaces an old one only when asked (`?replace=true`). It keeps its grants and

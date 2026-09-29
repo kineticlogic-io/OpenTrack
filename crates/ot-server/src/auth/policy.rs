@@ -1,4 +1,5 @@
-//! The role each API path needs, in one table: reading needs a viewer,
+//! The role each API path needs, in one table: reading needs a viewer (the
+//! maps' basemap tiles, `/basemap/{z}/{x}/{y}`, too),
 //! managing tracks a track manager, and every other change an admin (a
 //! new route that writes is an admin's until it is listed here).
 
@@ -35,8 +36,15 @@ const SIGNED_IN: &[&str] = &["/auth/me", "/auth/password", "/auth/sessions"];
 const SIGNED_IN_UNDER: &[&str] = &["/auth/sessions/"];
 
 /// Reads that are an admin's: they show secrets (source credentials),
-/// accounts or the audit record.
-const ADMIN_READS: &[&str] = &["/auth/", "/export/config", "/probe", "/audit"];
+/// accounts or the audit record, or what a configuration import would
+/// replace.
+const ADMIN_READS: &[&str] = &[
+    "/auth/",
+    "/export/config",
+    "/import/config",
+    "/probe",
+    "/audit",
+];
 
 /// What a session that must change its password may still call.
 const BEFORE_PASSWORD_CHANGE: &[&str] = &[
@@ -119,8 +127,13 @@ mod tests {
         assert!(!allowed_before_password_change("/tracks"));
         assert_eq!(n(Method::GET, "/auth/users"), admin);
         assert_eq!(n(Method::GET, "/export/config"), admin);
+        assert_eq!(n(Method::GET, "/import/config"), admin);
+        assert_eq!(n(Method::POST, "/import/config"), admin);
         assert_eq!(n(Method::GET, "/tracks"), viewer);
         assert_eq!(n(Method::GET, "/sources/ais"), viewer);
+        // The maps' tiles: every signed-in role, as the maps themselves.
+        assert_eq!(n(Method::GET, "/basemap/3/2/1"), viewer);
+        assert!(!allowed_before_password_change("/basemap/3/2/1"));
         assert_eq!(n(Method::POST, "/tracks/pair"), track_manager);
         assert_eq!(n(Method::POST, "/tracks/OTK1/split"), track_manager);
         assert_eq!(n(Method::PUT, "/groups/3"), track_manager);
