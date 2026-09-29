@@ -144,6 +144,19 @@ export default function MetricsPanels() {
                 { label: 'errors', values: count(pts, (p) => sum(p.writer, ['write_error']) + (p.ingest.raw_error ?? 0)), tone: 'danger' },
               ]}
             />
+            {pts.some((p) => p.cot && Object.keys(p.cot).length > 0) && (
+              <Chart
+                title="TAK output"
+                hint="Events: Cursor-on-Target events sent to TAK over every output (each client of a listening output counts), refreshes included. Clients: connections at the end of the minute (TAK Servers, clients of listening outputs, multicast sockets). Dropped: connections cut for falling behind. Errors: failed connections, handshakes and writes. Settings → TAK output shows each output."
+                times={times}
+                series={[
+                  { label: 'events', values: count(pts, (p) => p.cot?.sent) },
+                  { label: 'clients', values: gauge(pts, (p) => p.cot?.clients), tone: 'info' },
+                  { label: 'dropped', values: count(pts, (p) => p.cot?.dropped), tone: 'warning' },
+                  { label: 'errors', values: count(pts, (p) => p.cot?.errors), tone: 'danger' },
+                ]}
+              />
+            )}
           </div>
         </div>
       </CollapsiblePanel>

@@ -1378,6 +1378,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tak_outputs_are_saved_checked_and_reported() {
+        let Some((app, _redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let bad =
+            json!({"tak": {"outputs": [{"id": "x", "delivery": {"kind": "multicast", "ttl": 0}}]}});
+        let (st, body) = call(&app, "PUT", "/api/v1/settings", Some(bad)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let good = json!({"tak": {"outputs": [
+            {"id": "sa", "delivery": {"kind": "multicast"}},
+            {"id": "eud", "enabled": false, "delivery": {"kind": "listen", "bind": "0.0.0.0:8089",
+                "tls": {"cert_file": "/etc/ot/tak.pem", "key_file": "/etc/ot/tak.key"}}},
+        ]}});
+        let (st, body) = call(&app, "PUT", "/api/v1/settings", Some(good)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["settings"]["tak"]["outputs"][0]["delivery"]["group"],
+            "239.2.3.1"
+        );
+        let (st, body) = call(&app, "GET", "/api/v1/tak/status", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["running"], false);
+        let outs = body["outputs"].as_array().unwrap();
+        assert_eq!(
+            (
+                outs[0]["id"].as_str(),
+                outs[0]["state"].as_str(),
+                outs[0]["encrypted"].as_bool()
+            ),
+            (Some("sa"), Some("not started"), Some(false))
+        );
+        assert_eq!(
+            (outs[1]["state"].as_str(), outs[1]["encrypted"].as_bool()),
+            (Some("off"), Some(true))
+        );
+    }
+
+    #[tokio::test]
     async fn the_full_configuration_exports_and_only_an_empty_node_imports() {
         let Some((app, _redis)) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");

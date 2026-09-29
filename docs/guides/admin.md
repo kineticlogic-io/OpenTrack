@@ -125,9 +125,10 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 | `sources` | Every enabled source. |
 | `engine` | The engine. Run exactly one per Redis namespace: it owns the live picture. |
 | `writer` | The writer. Several may run; give each its own `OT_WRITER_CONSUMER`. |
+| `cot` | The TAK output: the published tracks as Cursor-on-Target to the outputs Settings → TAK output configures ([TAK output](#tak-output)). Idle until one is on. Run one per Redis namespace. |
 | `link` | This node's side of the link to other nodes ([Multi-node](#multi-node)). |
 | `bridge` | Carries sync messages between nodes' NATS servers, for server sites with no networking package of their own: `opentrack bridge --node nats://a:4222 --node nats://b:4222`. It can also drop, delay, duplicate, cap and partition messages, for tests (`--loss`, `--delay-ms`, `--jitter-ms`, `--duplicate`, `--rate-kbps`, `--partition`). |
-| `all` | `serve`, `sources`, `engine`, `writer` and `link` in one process. It migrates the database once before they start. |
+| `all` | `serve`, `sources`, `engine`, `writer`, `cot` and `link` in one process. It migrates the database once before they start. |
 
 ### Other commands
 
@@ -254,6 +255,15 @@ pipelines").
 
 A track is marked lost when its sources stop reporting: after 60 s for air and space tracks,
 30 minutes for subsurface, 15 minutes for the rest. It is dropped after `OT_DROP_AFTER_HOURS`.
+
+### TAK output role
+
+For `cot` (and `all`). The outputs themselves are set in Settings → TAK output ([TAK output](#tak-output)).
+
+| Variable | Default | |
+|---|---|---|
+| `OT_COT_CONSUMER` | `cot-1` | The `cot` role's consumer name in its group (`track-cot`) on the outbox. Run one `cot` role per Redis namespace: two would split the tracks between them. |
+| `OT_COT_MIN_INTERVAL_SECS` | `2` | At most one event of a track this often. Identity and classification changes go at once. |
 
 ### Multi-node sync
 
@@ -590,12 +600,14 @@ Banners, but can't change them.
 | **General** | **Site name** (shown in the header and the browser title; up to 64 characters). The **site code** beside it is `OT_SITE_CODE`, read only. **Position history:** how long each track's positions are kept (hours, 0 to 720; empty 12) and at most one point per track how often (seconds, 0 to 3600; empty 10). Memory is about 130 bytes a point: 2,000 tracks for 12 h every 10 s take about 1.1 GB of Redis. **Basemap tiles:** an XYZ tile URL for the maps' background (empty: the built-in country outlines; others see only whether it is on). **Plugins:** codec, tracker and scorer plugins. | [Basemap tiles](#basemap-tiles), [Plugins](#plugins) |
 | **Users**, **API tokens** | Accounts, with the break-glass ones marked **Never turn off**, and machine tokens (admins only). | [Users](#users) |
 | **Nodes** | Sharing the picture with other OpenTrack nodes (admins only). | [Multi-node](#multi-node) |
+| **TAK output** | Cursor-on-Target outputs to TAK: a TAK Server, multicast, or TAK clients connecting to this node (admins only). | [TAK output](#tak-output) |
 | **Data** | Export: live tracks as GeoJSON or CSV, the registry as XLSX, and the full configuration (admins only; it holds secrets), with its import while the node is empty. **Purge:** retire every live track. | [Configuration export](#configuration-export), [Purge](#purge) |
 | **Banners** | Classification banner and warning banner. | [Banners](#banners) |
 | **Security labels** | The classification order a fused track's label is chosen by (admins only). | [Security labels](#security-labels) |
 | **Single sign-on** | The sign-in settings, with one Save: password sign-in on or off, SAML, OpenStare sign-in and client certificates (admins only). | [Sign-in](#sign-in) |
 
-The General, Nodes and Banners panels share one draft: **Save** on any of them saves all three.
+The General, Nodes, TAK output and Banners panels share one draft: **Save** on any of them saves
+them all.
 
 ### Basemap tiles
 
@@ -733,6 +745,150 @@ To turn it on:
    only from others, and the decisions applied, waiting for their tracks, superseded or failed.
 
 The registry, sources and plugins are not shared between nodes.
+
+<a id="tak-output"></a>
+## TAK output
+
+OpenTrack streams its published tracks to TAK (ATAK, WinTAK, iTAK, TAK Server) as
+Cursor-on-Target (CoT) XML, beside NATS. The `cot` role sends them (`opentrack all` runs it); it
+reads the same outbox as the NATS writer in a consumer group of its own (`track-cot`), so a slow or
+broken TAK link never holds up NATS, and it sends exactly the tracks NATS gets: those the publish
+rule and the output filter let out. A track that is withdrawn, merged away, deleted or dropped is
+deleted in TAK too.
+
+Only tracks and their deletes are sent: no bearings, areas, groups' drawings or history, and no
+security label handling (events go out as the tracks are; mark the network, not the events). TAK
+Protocol (protobuf) is not supported: TAK Server and every TAK client accept CoT XML.
+
+### Outputs
+
+**Settings → TAK output** (admins) holds any number of outputs. **Add output**, fill it in,
+**Apply**, then **Save** (the panel shares the page's draft). The role picks up a saved change
+within 5 seconds: a new or changed output starts (or restarts), one turned off or deleted stops.
+There is no restart.
+
+Every output has:
+
+| Field | |
+|---|---|
+| **Name** | 1 to 32 letters, digits, `-` or `_`, unique. It names the output in logs, the status and the metrics. |
+| **On** | Send to it, or keep it without sending. |
+| **Stale after** | Seconds after a track's **last report** that TAK lets it go (10 to 86400, default 60). OpenTrack re-sends a track every half of this until then, then stops: a track that stops reporting greys out and leaves TAK this long after its last report, even while OpenTrack still holds it (OpenTrack keeps a silent track for up to 6 hours). A new report brings it back. If OpenTrack itself stops sending, tracks leave TAK the same way. |
+| **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. |
+
+and one of three deliveries:
+
+- **TAK Server**: OpenTrack connects to a TAK Server's streaming input, as a TAK client does, and
+  TAK Server shares the tracks with its users. **Host**, **Port** (8089 with TLS, the usual; 8087
+  plain TCP) and **TLS**: the **CA file** that signed the server's certificate (empty: the system
+  roots), the **client certificate** and **client key** TAK Server's 8089 input requires (PEM,
+  converted from TAK's `.p12`: see [TAK certificates](#tak-certificates)), and an optional **server name** to check the certificate against. OpenTrack reconnects after a
+  failure, waiting 1 s and doubling up to a minute, and sends the whole picture on every connect.
+- **Multicast**: UDP datagrams, one event each, to a **group** and **port** (TAK's SA multicast,
+  `239.2.3.1:6969`, by default), with a **TTL** (1: this network only) and an optional
+  **interface** address to send from. ATAK and WinTAK on the network hear it with no setup. A
+  unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
+  when the output starts; after that each track at least every half of its stale time, while it is still reporting.
+- **Listen for clients**: OpenTrack is the server. It listens on **Listen on** (such as
+  `0.0.0.0:8089`) and ATAK or WinTAK connect to it as to a TAK Server (a server connection to this
+  node and port; SSL when TLS is on). Each client gets the whole picture, then every change. With
+  **TLS**: the server **certificate** and **key** (PEM; clients must trust its CA), and optionally a
+  **client CA** (clients must present a certificate it signed: mutual TLS, as TAK Server's 8089
+  does), **certificate optional**, and **revocation lists** (PEM or DER files or directories;
+  reloaded within a minute of a change). Many clients can connect. Each has a queue of 8,192
+  events; a client that falls that far behind is dropped (logged, counted as an error and under
+  `dropped`) so it never holds up the others; it gets the picture again when it reconnects.
+
+Certificate, key and CA fields are paths on the node running the `cot` role (`${env:NAME}`
+references work, as in sources). Keys must be unencrypted PEM; keep them readable only by
+OpenTrack. All TLS runs through the node's FIPS 140-3 module, as every other link does.
+
+### TAK certificates
+
+OpenTrack reads certificates and keys as **PEM** only. TAK Server's certificate scripts
+(`makeRootCa.sh`, `makeCert.sh`) and ATAK use **PKCS#12** (`.p12`) bundles, so convert them with
+OpenSSL. OpenTrack doesn't read `.p12` files itself: the ciphers that protect most `.p12` bundles
+(RC2, 3DES, SHA-1 key derivation) are outside the FIPS module. TAK's scripts protect their
+bundles with the password `atakatak` unless you changed it.
+
+**Pushing to a TAK Server (8089).** Make a client certificate for OpenTrack on the TAK Server
+(`./makeCert.sh client opentrack`, in TAK Server's `certs` directory). If TAK Server checks
+users, authorise that certificate there. Then, on the TAK Server:
+
+```sh
+cd /opt/tak/certs/files
+openssl pkcs12 -in opentrack.p12 -clcerts -nokeys -out opentrack.pem          # client certificate
+openssl pkcs12 -in opentrack.p12 -nocerts -nodes -out opentrack.key           # its key, unencrypted
+openssl pkcs12 -in truststore-root.p12 -nokeys -out tak-ca.pem                # TAK Server's CA
+```
+
+Copy the three files to the node running the `cot` role, readable only by OpenTrack
+(`chmod 600 opentrack.key`). Set them as the output's **Client certificate**, **Client key** and
+**CA file**. OpenSSL 3 may refuse old bundles with "unsupported algorithm"; add `-legacy` to
+those commands.
+
+**ATAK and WinTAK connecting to OpenTrack (Listen for clients, with TLS).** Clients need
+OpenTrack's CA as their trust store. With a client CA set, they also need their own certificate
+from that CA. Both go to the devices as `.p12`:
+
+```sh
+# The trust store: OpenTrack's server CA, for the device's "CA certificate" / truststore.
+openssl pkcs12 -export -nokeys -in opentrack-ca.pem -out opentrack-truststore.p12 -passout pass:atakatak
+# A device's own client certificate and key (signed by the output's client CA).
+openssl pkcs12 -export -in device.pem -inkey device.key -certfile client-ca.pem \
+  -out device.p12 -passout pass:atakatak
+```
+
+A TAK Server CA works as the client CA: devices already enrolled with that TAK Server can then
+connect to OpenTrack with the certificates they have. Use `tak-ca.pem` from above as the
+output's **Client CA**.
+
+> **Plain TCP and multicast send the picture in the clear.** Anyone on the network path can read
+> every track, and anyone who can reach a plain listening output can connect. Use TLS (with client
+> certificates for a listening output) wherever the network is not itself protected. Multicast is
+> always plaintext. The status table marks each output TLS or plaintext, and the role logs a
+> warning when a plaintext output starts.
+
+### What TAK receives
+
+Each published track is one CoT event:
+
+| CoT | From |
+|---|---|
+| `uid` | `tms-<UID>`, the track's id on NATS too. |
+| `type` | The track's symbol: a 2525C SIDC as `a-<affiliation>-<dimension>-<function…>` (`SFSPCLDD---` is `a-f-S-C-L-D-D`; exercise identities as their real ones); a 2525D SIDC as its identity and symbol set (`a-h-G-U` for a hostile land unit, `a-f-G-E`, `a-n-G-I`, `a-f-S`; the entity code is not translated); a CoT type as it is. Without one (or for a tactical graphic or weather symbol), affiliation and domain: `a-h-A`, `a-f-S`, `a-u-G` (ground when the domain is unknown). An explicit affiliation (an entity, a track manager) overrides the symbol's. |
+| `how` | `m-f` (machine, fused). |
+| `time`, `start` | The track's last report (its observation time; never later than now, for a source whose clock runs ahead). Re-sending a track does not make it look newer. |
+| `stale` | `time` plus the output's stale time. A track past it is not sent (not re-sent, not in the picture a client gets on connecting) until it reports again. |
+| `point` | Latitude, longitude, `hae` (height above the ellipsoid) and the error: `ce` the circular 1-sigma horizontal error (from the ellipse, covariance or circular error), `le` the vertical error. `9999999` when unknown. |
+| `detail/track` | `course` (degrees true) and `speed` (m/s), when known. |
+| `detail/contact` | `callsign`: the track's callsign, a `callsign` identifier, its name, its platform's name, or its track number (`OTK000000042`). |
+| `detail/remarks` | With **Remarks**: `OpenTrack <UID>; sources: <source ids>`. |
+
+A track that ends gets a delete, in the form ATAK sends:
+`<event uid="tms-<UID>" type="t-x-d-d" how="m-g" …>` with `stale` equal to `time`, and
+`<detail><link uid="tms-<UID>" relation="none" type="<its last type>"/><__forcedelete/></detail>`.
+TAK removes the track at once. A client that missed it (disconnected at the time) drops the track
+when it goes stale.
+
+Updates of one track are sent at most every `OT_COT_MIN_INTERVAL_SECS` (2 s), identity and
+classification changes at once. When the role starts it reads the live published tracks and sends
+them to each output as it connects; a delete that happened while it was stopped is not sent, and
+TAK drops that track when it goes stale.
+
+### Status and metrics
+
+The TAK output panel shows each output's state (connected, connecting or disconnected for a TAK
+Server; listening, with the clients connected; sending for multicast; error when it cannot start,
+such as a port in use or a missing certificate), the events sent (each client counts), errors (the
+last one under the list and in the count's tooltip) and whether it is encrypted. The same comes from
+`GET /api/v1/tak/status`. The role reports every 2 s; "No cot role is running" means none has for
+15 s.
+
+The Overview's throughput panel charts TAK events sent, connected clients, dropped clients and
+errors. They are in `GET /api/v1/metrics` under `cot`: counters `sent`, `errors` and `dropped`,
+each also per output as `sent:<name>` and so on, and gauges `clients`, `clients:<name>` and
+`tracks`.
 
 ## Backup and restore
 
@@ -951,8 +1107,9 @@ The **Overview** tab:
 - **System status:** control plane, algorithms, SQLite, Redis and NATS, each green or red with
   its error.
 - **Throughput** (per minute, last hour): ingest (frames, observations, dropped, errors),
-  observations by source, correlation (applied, new tracks, paired, proposed or split, ended), and
-  output (tracks written, deletes, raw feed, errors).
+  observations by source, correlation (applied, new tracks, paired, proposed or split, ended),
+  output (tracks written, deletes, raw feed, errors), and, once the `cot` role has sent anything,
+  TAK output (events, clients, dropped, errors; [TAK output](#tak-output)).
 - **Tracks:** live, confirmed, tentative, lost, with an entity, entity differs, and per domain.
 - **Backlog and resources:** CPU, memory, threads, Redis, SQLite and NATS stream size, the
   engine's and writer's backlogs, uptime.
@@ -1131,6 +1288,7 @@ including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_UR
 | NATS | a `tls://` URL, `OT_NATS_CA`, and mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY` |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, and mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY` |
 | Feeds | per source, in its transport's TLS settings |
+| TAK | per output in Settings → TAK output: TLS to a TAK Server with a client certificate, TLS for a listening output with optional client certificates and revocation lists. Multicast is always plaintext ([TAK output](#tak-output)) |
 
 ### Container hardening
 
