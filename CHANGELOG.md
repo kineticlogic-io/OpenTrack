@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- **Registry and Correlation panels fill the page.** The registry table, Correlation's Decisions
+  and Suggestions take the height the window has instead of stopping at a fixed height; their
+  tables scroll inside. Suggestions stretch beside the settings, so no gap is left above
+  Decisions. A closed panel keeps its title's height.
+
 ## 0.4.5 (alpha), 2026-09-30
 
 The rest of the accreditation POA&M (#64): the ASD STIG is down to one open item (P-32,
