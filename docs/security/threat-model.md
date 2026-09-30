@@ -164,7 +164,7 @@ flowchart LR
 |---|---|---|---|---|
 | S | A rogue node sends reports or decisions (merges, deletes) | Messages from site codes not in **Trusted nodes** are dropped and counted; the networking package must prove the sender (keys, certificates, radio crypto) | OpenTrack trusts the site code the package gives it; anyone who can publish on `<prefix>.in.*` on the local NATS can claim a trusted site. Restrict those subjects to the package | |
 | T | Replayed or reordered decisions | HLC ordering, global decision ids (duplicates harmless), anti-entropy repair | | |
-| I | The picture read on the link | The package's encryption | `opentrack bridge` takes only NATS URLs: no CA, client certificate or `.creds` options | |
+| I | The picture read on the link | The package's encryption; `opentrack bridge` connects to each node's NATS over TLS (FIPS provider) with a CA, a client certificate (mutual TLS) and `.creds`, user and password or token, per node if they differ; secrets from files or the environment, never logged | Beyond the NATS servers, the link is only as private as the package or the bridge's TLS; a bridge run without `tls://` or a CA sends in the clear | |
 | E | Users of an unattended node (a drone) change the shared picture | **Receive only** accepts no track management from the node's own users | | |
 
 ## TAK output

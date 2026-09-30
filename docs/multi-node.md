@@ -167,7 +167,7 @@ Decision logs converge by anti-entropy. A node reads its peers' `summary` and as
 - `ot.sync.out.<kind>` for messages leaving the node, marked broadcast or addressed to one peer (for `want` replies);
 - `ot.sync.in.<kind>` for messages arriving, with the sender's site.
 
-In 0.3.2 these are subjects on the node's local NATS. A package bridges them to the network, and so does a small built-in bridge for server sites that links two NATS servers directly. Messages have a versioned binary encoding documented as an ICD (`docs/sync-icd.md`), so the package needs nothing from OpenTrack but that document.
+In 0.3.2 these are subjects on the node's local NATS. A package bridges them to the network, and so does a small built-in bridge for server sites that links two NATS servers directly. The bridge signs in to each NATS server as OpenTrack's own NATS connection does: TLS with a CA and a client certificate, `.creds`, a user and password or a token, the same for every node or set per node (see the admin guide, [The bridge's NATS credentials and TLS](guides/admin.md#the-bridges-nats-credentials-and-tls)). Messages have a versioned binary encoding documented as an ICD (`docs/sync-icd.md`), so the package needs nothing from OpenTrack but that document.
 
 The site code is the sender's identity. Proving it belongs to the package or the link (NKeys, mTLS, radio crypto), and OpenTrack drops and counts messages whose sender is not in its trusted peer list.
 
