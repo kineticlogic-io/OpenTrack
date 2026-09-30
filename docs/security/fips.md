@@ -42,7 +42,8 @@ apply.
 | Passwords | PBKDF2-HMAC-SHA256 (SP 800-132), 600,000 iterations, 128-bit salt, 256-bit output, stored as `$pbkdf2-sha256$i=…$salt$hash` |
 | Session and API tokens | HMAC-SHA256 (JWT HS256) keyed with `OT_SESSION_SECRET` or `session.key` (256 random bits) |
 | SAML relay state | HMAC-SHA256 |
-| Random values | AWS-LC CTR-DRBG: token ids, the session key, generated passwords, SAML request ids (128 bits) |
+| External plugin handshake | HMAC-SHA256 challenge and response each way over two 256-bit DRBG nonces, keyed with the shared secret; verified in constant time |
+| Random values | AWS-LC CTR-DRBG: token ids, the session key, generated passwords, SAML request ids (128 bits), plugin secrets and handshake nonces (256 bits) |
 | NATS `.creds` | Ed25519 (FIPS 186-5) over the server nonce |
 | Plugin identity | SHA-256 |
 

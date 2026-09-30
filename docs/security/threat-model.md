@@ -136,7 +136,7 @@ flowchart LR
 |---|---|---|---|---|
 | T | A malicious or buggy WebAssembly plugin reads files, calls out or exhausts the host | wasmtime sandbox; WASI grants: no directories, network or environment unless granted; memory ceiling (256 MB default); call timeout by epoch interruption (5 s default), the instance discarded after; one instance per stream | wasmtime is a large dependency; a sandbox escape there would be a host compromise | |
 | T | A replaced plugin file | Only admins add or replace; each change is in the decision log with the component's SHA-256; loaded before it is stored | | |
-| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout | JSON lines with no TLS or authentication; the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | |
+| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout; on every connection OpenTrack and the plugin prove they hold a shared secret (HMAC-SHA256 challenge and response each way, role-labelled so a reflected challenge fails); one that fails is refused, logged and audited; without a secret only a Unix socket under the data directory is reached | JSON lines with no TLS: after the handshake traffic can be read or changed on the way; the secret is stored in the database (OpenTrack must answer with it); the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | P-28 |
 
 ## Redis
 

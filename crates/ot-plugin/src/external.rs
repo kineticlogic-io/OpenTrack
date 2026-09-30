@@ -9,8 +9,15 @@
 //! `open` (`{"kind": "codec" | "tracker" | "scorer", "options"}`), and its
 //! state lives with that connection on the plugin's side.
 //!
+//! Every connection first authenticates both ends ([`crate::handshake`]:
+//! `hello`, then `verify`) with the secret the operator shared with the
+//! plugin. Only a unix socket under OpenTrack's data directory may go
+//! without one: filesystem permissions decide who can listen there.
+//!
 //! | method | params | result |
 //! |---|---|---|
+//! | `hello` | `protocol`, `challenge` | `proof`, `challenge` |
+//! | `verify` | `proof` | null |
 //! | `describe` | | the manifest |
 //! | `open` | `kind`, `options` | null |
 //! | `decode` | `frame` (base64), `received_at_ms` | records |
@@ -22,6 +29,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -34,34 +42,65 @@ use ot_source::plugin::{
 };
 use serde_json::{Value, json};
 
-use crate::Grants;
+use crate::handshake::{self, NONCE_LEN, PROTOCOL, Role};
+use crate::{External, Grants};
 
 /// Time allowed to connect.
 const CONNECT: Duration = Duration::from_secs(5);
 
+/// The plugin failed the handshake (a wrong secret, a wrong proof of
+/// OpenTrack's, or no answer): it is refused.
+#[derive(Debug)]
+pub struct AuthFailed(pub String);
+
+impl std::fmt::Display for AuthFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "authentication failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for AuthFailed {}
+
+/// The plugin has no secret, and is not on a unix socket under the data
+/// directory: it is not connected to at all.
+#[derive(Debug)]
+pub struct NoSecret;
+
+impl std::fmt::Display for NoSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "no secret: an external plugin must share a secret with OpenTrack (set one in \
+             Settings → Plugins, and start the plugin with it); only a unix socket under the \
+             data directory may go without",
+        )
+    }
+}
+
+impl std::error::Error for NoSecret {}
+
 pub struct ExternalPlugin {
-    address: String,
+    ext: External,
     manifest: Manifest,
     timeout: Duration,
 }
 
 impl ExternalPlugin {
-    /// Connect, and read the plugin's manifest.
-    pub fn connect(address: &str, grants: &Grants) -> anyhow::Result<Self> {
+    /// Connect, authenticate, and read the plugin's manifest.
+    pub fn connect(ext: &External, grants: &Grants) -> anyhow::Result<Self> {
         let timeout = Duration::from_millis(grants.call_timeout_ms.max(1));
-        let mut c = Conn::open(address, timeout)?;
+        let mut c = open(ext, timeout)?;
         let manifest = c
             .call("describe", Value::Null)
             .map_err(anyhow::Error::msg)?;
         Ok(Self {
-            address: address.to_owned(),
+            ext: ext.clone(),
             manifest: serde_json::from_value(manifest).context("the plugin's manifest")?,
             timeout,
         })
     }
 
     fn session(&self, kind: &str, options: &Value) -> Result<Conn, String> {
-        let mut c = Conn::open(&self.address, self.timeout).map_err(|e| format!("{e:#}"))?;
+        let mut c = open(&self.ext, self.timeout).map_err(|e| format!("{e:#}"))?;
         let options = if options.is_null() {
             json!({})
         } else {
@@ -70,6 +109,49 @@ impl ExternalPlugin {
         c.call("open", json!({ "kind": kind, "options": options }))?;
         Ok(c)
     }
+}
+
+/// The secret to authenticate with: None only for a unix socket under the
+/// data directory.
+fn secret_for(ext: &External) -> anyhow::Result<Option<String>> {
+    match ext
+        .secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => {
+            let s = ot_source::transport::resolve_env(s).context("the plugin's secret")?;
+            handshake::check_secret(&s).map_err(anyhow::Error::msg)?;
+            Ok(Some(s))
+        }
+        None if trusted_socket(&ext.address, ext.data_dir.as_deref()) => Ok(None),
+        None => Err(NoSecret.into()),
+    }
+}
+
+/// Whether an address is a unix socket under the data directory (both
+/// resolved, so a link out of it does not count).
+pub fn trusted_socket(address: &str, data_dir: Option<&Path>) -> bool {
+    let (Some(path), Some(dir)) = (address.strip_prefix("unix:"), data_dir) else {
+        return false;
+    };
+    match (std::fs::canonicalize(path), std::fs::canonicalize(dir)) {
+        (Ok(p), Ok(d)) => p.starts_with(d),
+        _ => false,
+    }
+}
+
+/// A connection that has passed the handshake (or needs none).
+fn open(ext: &External, timeout: Duration) -> anyhow::Result<Conn> {
+    let secret = secret_for(ext)?;
+    let mut c = Conn::open(&ext.address, timeout)?;
+    if let Some(secret) = secret {
+        c.authenticate(&secret).inspect_err(|e| {
+            tracing::error!(address = %ext.address, error = %e, "external plugin refused");
+        })?;
+    }
+    Ok(c)
 }
 
 struct Conn {
@@ -105,6 +187,52 @@ impl Conn {
             next: 1,
             broken: None,
         })
+    }
+
+    /// Prove each end to the other ([`crate::handshake`]).
+    fn authenticate(&mut self, secret: &str) -> Result<(), AuthFailed> {
+        let b64 = &base64::engine::general_purpose::STANDARD;
+        let ours = handshake::nonce();
+        let reply = self
+            .call(
+                "hello",
+                json!({ "protocol": PROTOCOL, "challenge": b64.encode(ours) }),
+            )
+            .map_err(|e| {
+                AuthFailed(format!(
+                    "no answer to hello ({e}): is the plugin built with an SDK that \
+                     authenticates, and started with its secret?"
+                ))
+            })?;
+        let field = |k: &str| {
+            reply
+                .get(k)
+                .and_then(Value::as_str)
+                .and_then(|s| b64.decode(s).ok())
+        };
+        let (Some(tag), Some(theirs)) = (field("proof"), field("challenge")) else {
+            return Err(AuthFailed(
+                "the answer to hello has no proof and challenge".into(),
+            ));
+        };
+        if theirs.len() != NONCE_LEN || theirs == ours {
+            return Err(AuthFailed(format!(
+                "the plugin's challenge must be {NONCE_LEN} fresh random bytes"
+            )));
+        }
+        if !handshake::verify(secret, Role::Plugin, &ours, &theirs, &tag) {
+            return Err(AuthFailed(
+                "the plugin's proof is wrong: it does not have this secret".into(),
+            ));
+        }
+        let mine = handshake::proof(secret, Role::OpenTrack, &ours, &theirs);
+        self.call("verify", json!({ "proof": b64.encode(mine) }))
+            .map_err(|e| {
+                AuthFailed(format!(
+                    "the plugin did not accept OpenTrack's proof ({e}): it has another secret"
+                ))
+            })?;
+        Ok(())
     }
 
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {

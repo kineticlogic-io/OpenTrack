@@ -1,8 +1,9 @@
 //! Plugins an operator added, in SQLite: a WebAssembly component (its
 //! bytes and SHA-256) or an external plugin's address, its manifest as last
-//! read, the grants it runs with and whether it is enabled. The server
-//! checks a plugin loads before it gets here. Every change records a
-//! decision (the component's hash, not its bytes).
+//! read, the grants it runs with and whether it is enabled; an external
+//! plugin's shared secret too. The server checks a plugin loads before it
+//! gets here. Every change records a decision (the component's hash, not
+//! its bytes; whether a secret is set, never the secret).
 
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -25,6 +26,11 @@ pub struct PluginRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     pub grants: Value,
+    /// The secret shared with an external plugin, or a `${env:NAME}`
+    /// reference to it. Never serialised: the API says only whether one
+    /// is set.
+    #[serde(skip)]
+    pub secret: Option<String>,
     pub enabled: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -41,10 +47,12 @@ pub struct PluginWrite<'a> {
     /// The address (an external plugin).
     pub address: Option<&'a str>,
     pub grants: &'a Value,
+    /// An external plugin's secret. None keeps the one a replaced plugin has.
+    pub secret: Option<&'a str>,
 }
 
 const COLUMNS: &str = "name, runtime, version, manifest, sha256, length(wasm), address, grants, \
-                       enabled, created_at_ms, updated_at_ms";
+                       enabled, created_at_ms, updated_at_ms, secret";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PluginRow> {
     let manifest: String = r.get(3)?;
@@ -61,6 +69,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PluginRow> {
         enabled: r.get(8)?,
         created_at_ms: r.get(9)?,
         updated_at_ms: r.get(10)?,
+        secret: r.get(11)?,
     })
 }
 
@@ -68,6 +77,7 @@ fn summary(p: &PluginRow) -> Value {
     json!({
         "name": p.name, "runtime": p.runtime, "version": p.version, "sha256": p.sha256,
         "address": p.address, "grants": p.grants, "enabled": p.enabled,
+        "secret": p.secret.is_some(),
     })
 }
 
@@ -125,20 +135,24 @@ impl Db {
                 None => {
                     tx.execute(
                         "INSERT INTO plugins (name, runtime, version, manifest, wasm, sha256, address,
-                                              grants, enabled, created_at_ms, updated_at_ms)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9)",
+                                              grants, enabled, created_at_ms, updated_at_ms, secret)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9, ?10)",
                         params![
                             w.name, runtime, w.version, manifest, wasm, sha, w.address,
-                            w.grants.to_string(), now
+                            w.grants.to_string(), now, w.secret
                         ],
                     )?;
                 }
                 Some(_) => {
                     tx.execute(
                         "UPDATE plugins SET runtime = ?2, version = ?3, manifest = ?4, wasm = ?5,
-                                sha256 = ?6, address = ?7, updated_at_ms = ?8
+                                sha256 = ?6, address = ?7, updated_at_ms = ?8,
+                                secret = coalesce(?9, secret)
                          WHERE name = ?1",
-                        params![w.name, runtime, w.version, manifest, wasm, sha, w.address, now],
+                        params![
+                            w.name, runtime, w.version, manifest, wasm, sha, w.address, now,
+                            w.secret
+                        ],
                     )?;
                 }
             }
@@ -146,6 +160,7 @@ impl Db {
             let after = json!({
                 "name": w.name, "runtime": runtime, "version": w.version, "sha256": sha,
                 "address": w.address,
+                "secret": w.secret.is_some() || before.as_ref().is_some_and(|b| b.secret.is_some()),
             });
             record_decision(
                 tx,
@@ -201,6 +216,40 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("plugin {name}")))
     }
 
+    /// Set (or, with None, clear) the secret an external plugin shares.
+    pub fn set_plugin_secret(
+        &mut self,
+        name: &str,
+        secret: Option<&str>,
+        actor: &str,
+    ) -> Result<PluginRow> {
+        let before = self
+            .get_plugin(name)?
+            .ok_or_else(|| StoreError::NotFound(format!("plugin {name}")))?;
+        self.write(|tx| {
+            let now = now_ms();
+            tx.execute(
+                "UPDATE plugins SET secret = ?2, updated_at_ms = ?3 WHERE name = ?1",
+                params![name, secret, now],
+            )?;
+            let mut after = summary(&before);
+            after["secret"] = json!(secret.is_some());
+            record_decision(
+                tx,
+                &Decision {
+                    before: Some(summary(&before)),
+                    after: Some(after),
+                    evidence: json!({ "plugin": name }),
+                    ..Decision::new(actor, "set_plugin_secret")
+                },
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_plugin(name)?
+            .ok_or_else(|| StoreError::NotFound(format!("plugin {name}")))
+    }
+
     pub fn delete_plugin(&mut self, name: &str, actor: &str) -> Result<()> {
         let before = self
             .get_plugin(name)?
@@ -241,6 +290,7 @@ mod tests {
                     wasm: Some((b"\0asm", "abc")),
                     address: None,
                     grants: &json!({}),
+                    secret: None,
                 },
                 "op:test",
             )
@@ -271,12 +321,34 @@ mod tests {
                     wasm: Some((b"\0asm2", "def")),
                     address: None,
                     grants: &json!({}),
+                    secret: None,
                 },
                 "op:test",
             )
             .unwrap();
         assert_eq!((p.version.as_str(), p.enabled), ("2", false));
         assert_eq!(p.grants["memory_mb"], 512);
+        // A secret is kept, and its decision says only that one is set.
+        let p = db
+            .set_plugin_secret("ab", Some("0123456789abcdef0123456789abcdef"), "op:test")
+            .unwrap();
+        assert_eq!(
+            p.secret.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert!(!serde_json::to_string(&p).unwrap().contains("0123456789"));
+        let d: String = db
+            .connection()
+            .query_row(
+                "SELECT after FROM decisions WHERE op = 'set_plugin_secret'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            d.contains(r#""secret":true"#) && !d.contains("0123456789"),
+            "{d}"
+        );
         db.delete_plugin("ab", "op:test").unwrap();
         assert!(db.list_plugins().unwrap().is_empty());
         let ops: Vec<String> = db
@@ -293,6 +365,7 @@ mod tests {
                 "add_plugin",
                 "configure_plugin",
                 "update_plugin",
+                "set_plugin_secret",
                 "delete_plugin"
             ]
         );

@@ -5,6 +5,9 @@ courses disagree by more than `max_course_diff_deg` while both move.
 
     python domain_scorer.py build -o domain_scorer.wasm     # a component
     python domain_scorer.py serve --address 127.0.0.1:47301 # or served
+
+Served, it needs the secret it shares with OpenTrack: in OT_PLUGIN_SECRET, or
+a file given with --secret-file (Settings -> Plugins makes one).
 """
 
 from opentrack_plugin import Plugin, Scorer, main

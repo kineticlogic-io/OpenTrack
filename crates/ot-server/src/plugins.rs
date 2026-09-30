@@ -2,14 +2,17 @@
 //! runs plugins (serve, sources, engine) loads the enabled ones at start and
 //! again whenever one is added, changed or removed, and installs them where
 //! sources and the engine look plugins up. What failed to load, and why, is
-//! kept for the API.
+//! kept for the API; an external plugin that fails authentication is also
+//! logged as an error and audited.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
-use ot_plugin::{Grants, Source};
-use ot_store::PluginRow;
+use ot_plugin::{External, Grants, Source};
+use ot_store::{AuditEvent, PluginRow};
+use serde_json::json;
 
 use crate::config::Common;
 
@@ -40,16 +43,53 @@ pub fn is_loaded(name: &str) -> bool {
         .is_ok_and(|l| l.tried.contains_key(name) && !l.errors.contains_key(name))
 }
 
-/// A stored plugin as it would run: its component or address, and grants.
-pub fn source_of(row: &PluginRow, wasm: Option<Vec<u8>>) -> anyhow::Result<(Source, Grants)> {
+/// The data directory (beside the database): a unix socket under it needs
+/// no plugin secret.
+pub fn data_dir(common: &Common) -> PathBuf {
+    common
+        .sqlite
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf()
+}
+
+/// An external plugin at `address`, as this node connects to it.
+pub fn external(common: &Common, address: &str, secret: Option<String>) -> Source {
+    Source::External(External {
+        address: address.to_owned(),
+        secret,
+        data_dir: Some(data_dir(common)),
+    })
+}
+
+/// A stored plugin as it would run: its component or address (and secret),
+/// and grants.
+pub fn source_of(
+    common: &Common,
+    row: &PluginRow,
+    wasm: Option<Vec<u8>>,
+) -> anyhow::Result<(Source, Grants)> {
     let grants: Grants = serde_json::from_value(row.grants.clone())
         .map_err(|e| anyhow::anyhow!("plugin {}: grants: {e}", row.name))?;
     let source = match (row.runtime.as_str(), wasm, &row.address) {
         ("wasm", Some(bytes), _) => Source::Wasm(bytes),
-        ("external", _, Some(a)) => Source::External(a.clone()),
+        ("external", _, Some(a)) => external(common, a, row.secret.clone()),
         _ => anyhow::bail!("plugin {}: nothing to load", row.name),
     };
     Ok((source, grants))
+}
+
+/// Whether a load failed because the plugin failed authentication.
+pub fn auth_failed(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<ot_plugin::AuthFailed>())
+}
+
+/// The audit event for a plugin that failed authentication.
+pub fn auth_failed_event(actor: &str, name: &str, address: &str, e: &anyhow::Error) -> AuditEvent {
+    AuditEvent::new(actor, "plugin_auth_failed")
+        .failure()
+        .detail(json!({ "plugin": name, "address": address, "error": format!("{e:#}") }))
 }
 
 /// Load what changed since the last look. Compiling a component takes a
@@ -60,7 +100,7 @@ pub async fn sync(common: &Common) -> anyhow::Result<()> {
 }
 
 fn sync_blocking(common: &Common) -> anyhow::Result<()> {
-    let db = common.open_db()?;
+    let mut db = common.open_db()?;
     let version = db.plugins_version()?;
     if LOADER.lock().is_ok_and(|l| l.version == version) {
         return Ok(());
@@ -96,7 +136,7 @@ fn sync_blocking(common: &Common) -> anyhow::Result<()> {
         } else {
             None
         };
-        let loaded = source_of(row, wasm).and_then(|(source, grants)| {
+        let loaded = source_of(common, row, wasm).and_then(|(source, grants)| {
             let p = ot_plugin::load(&source, &grants)?;
             if p.manifest().name != *name {
                 anyhow::bail!(
@@ -112,7 +152,15 @@ fn sync_blocking(common: &Common) -> anyhow::Result<()> {
                 loader.errors.remove(name);
             }
             Err(e) => {
-                tracing::warn!(plugin = %name, error = %format!("{e:#}"), "plugin failed to load");
+                if auth_failed(&e) {
+                    tracing::error!(plugin = %name, error = %format!("{e:#}"), "plugin failed authentication: refused");
+                    let address = row.address.as_deref().unwrap_or_default();
+                    if let Err(err) = db.audit(&auth_failed_event("system", name, address, &e)) {
+                        tracing::warn!(error = %err, "audit event not recorded");
+                    }
+                } else {
+                    tracing::warn!(plugin = %name, error = %format!("{e:#}"), "plugin failed to load");
+                }
                 ot_source::plugin::uninstall(name);
                 loader.errors.insert(name.to_owned(), format!("{e:#}"));
             }

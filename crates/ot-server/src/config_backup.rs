@@ -869,6 +869,7 @@ pub(crate) mod tests {
                 wasm: Some((&wasm, &sha)),
                 address: None,
                 grants: &json!({}),
+                secret: None,
             },
             "op:test",
         )

@@ -219,15 +219,16 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 
 ### Plugin commands
 
-- `opentrack plugin check <file.wasm | address> [--grants '<json>']` loads a plugin, opens each
+- `opentrack plugin check <file.wasm | address> [--grants '<json>'] [--secret-file <path>]` loads a plugin, opens each
   kind it provides with its default options, and prints its manifest and what worked. It changes
   nothing and exits non-zero when something failed.
-- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--replace]` adds it, as
+- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--secret-file <path>] [--replace]` adds it, as
   Settings → General → Plugins does. `--replace` installs a new build of a plugin that is already added.
 - `opentrack plugin list` lists the plugins added and whether each is enabled.
 
 An address is `host:port`, `tcp://host:port` or `unix:/path`. Grants are JSON, for example
-`'{"memory_mb": 512}'`. See [Plugins](#plugins).
+`'{"memory_mb": 512}'`. An external plugin's secret comes from `--secret-file` or
+`OT_PLUGIN_SECRET`, never the command line. See [Plugins](#plugins).
 
 ### User commands
 
@@ -468,7 +469,7 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | SAML identity provider | HTTPS, through the browser | None from the server: browsers go to the identity provider and post back to the control plane | Off | Single sign-on ([SAML](#saml)) | The identity provider's signature on the response |
 | OpenStare sign-in check | TCP, HTTP or HTTPS | Outbound | Off (API URL `http://127.0.0.1:3001`) | Asks OpenStare's `/api/auth/me` who a session or token is ([OpenStare sign-in](#openstare-sign-in)) | `https://` when the API URL is; the user's own OpenStare cookie or token |
 | Basemap tiles | TCP, HTTP or HTTPS | Outbound | Off | Map tiles, fetched for the browsers ([Basemap tiles](#basemap-tiles)) | An `https://` URL; a key in the query if the tile server takes one |
-| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | None: keep them on the same host (loopback or a Unix socket) |
+| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | Mutual HMAC-SHA256 challenge and response with a shared secret on every connection (none needed on a Unix socket under the data directory); no TLS: keep them on the same host or a trusted network |
 | WebAssembly plugins | Whatever the plugin opens | Outbound | No network | Only the `host:port` addresses in the plugin's **network** grant | The plugin's own |
 | Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | NATS's; the networking package proves the sender ([docs/sync-icd.md](../sync-icd.md)) |
 | `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | Only what the NATS URL carries (`tls://`, credentials in the URL); no CA, client certificate or `.creds` options |
@@ -918,17 +919,31 @@ database.
 Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → General → Plugins**
 (admins change it; others see it):
 - **Add plugin:** a WebAssembly component (`.wasm`, run sandboxed inside OpenTrack), or an
-  external plugin's address (a program of its own serving the plugin interface on a socket).
-  **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
+  external plugin's address (a program of its own serving the plugin interface on a socket) and
+  its **secret**. **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
   it is enabled.
-- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Grants**, **Delete**.
+- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Secret** (external
+  plugins), **Grants**, **Delete**.
+- **Secret** (external plugins): OpenTrack and the plugin prove to each other that they hold it
+  (HMAC-SHA256 challenge and response each way) on every connection; a plugin that fails is
+  refused, logged as an error and audited (`plugin_auth_failed`), and its status says why.
+  **Generate** makes one with the FIPS DRBG and shows it once: start the plugin with it
+  (`OT_PLUGIN_SECRET` or `--secret-file`), then add or save. You can paste your own (32 characters
+  or more) or `${env:NAME}`. The API never returns it, only whether one is set. Only a plugin on a
+  unix socket under the data directory may have none: filesystem permissions decide who can
+  listen there. Details: [docs/plugins.md](../plugins.md#authentication).
 - **Grants** (WebAssembly only): memory ceiling (MB), time per call (ms; a call that runs longer is
   stopped), network addresses it may connect to, server directories it may see (read only unless
   `rw`), and environment variables.
 - **Used by** shows the sources and correlation settings that use it.
 
 A WebAssembly plugin is stored in the database, so it is backed up with it. An external plugin is
-only an address: run and back up its program yourself.
+only an address and its secret: run and back up its program yourself.
+
+**Upgrading from 0.4.4 or earlier:** external plugins had no secret, and after the upgrade one
+without a secret does not load (its status says *no secret*) unless it is on a unix socket under
+the data directory. For each: update it to the current SDK, **Generate** a secret in its
+**Secret** dialog, restart the plugin with that secret, then **Save**.
 
 Plugins are loaded without a restart. From the command line: [Plugin commands](#plugin-commands).
 Writing plugins: [docs/plugins.md](../plugins.md).

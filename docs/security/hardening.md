@@ -78,7 +78,10 @@ TLS runs only FIPS-approved suites (docs/security/fips.md).
 to, with its default and its TLS and authentication options, is in the admin guide's
 [Ports, protocols and services](../guides/admin.md#ports-protocols-and-services) table. Register
 the ones you enable in PPSM, and let only those through the firewall. Keep external plugins on
-the same host (loopback or a Unix socket): their protocol has no TLS or authentication.
+the same host (loopback or a Unix socket): their protocol has no TLS. Give each a secret
+(Settings → General → Plugins → Secret; [plugins.md](../plugins.md#authentication)): OpenTrack
+and the plugin then authenticate each other on every connection, and one without a secret loads
+only from a Unix socket under the data directory.
 
 ## Sign-in
 
