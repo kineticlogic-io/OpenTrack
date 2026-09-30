@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/public", get(public))
         .route("/auth/me", get(me))
+        .route("/auth/consent", post(consent))
         .route("/auth/password", post(change_password))
         .route("/auth/users", get(list_users).post(create_user))
         .route("/auth/users/{id}", put(update_user).delete(delete_user))
@@ -128,6 +129,28 @@ fn failed_login(email: &str, client: &Client, reason: &str, via: How) -> AuditEv
 /// The account as the UI shows it: how it signed in, whether it must
 /// change its password, and (for a session) the previous sign-in and the
 /// failed ones since.
+/// Accept the notice-and-consent banner (AC-8), for this session (or, for
+/// certificate and OpenStare access, this account for a while); audited.
+async fn consent(
+    State(s): State<AppState>,
+    Extension(u): Extension<AuthUser>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    s.auth.consent.accept(&u);
+    let c = Client::new(peer.as_deref(), &headers);
+    let (email, ip, via) = (u.email.clone(), c.ip, u.via);
+    s.with_db(move |db| {
+        db.audit(
+            &AuditEvent::new(&email, "consent_accepted")
+                .ip(&ip)
+                .detail(json!({ "via": via })),
+        )
+    })
+    .await?;
+    Ok(Json(json!({ "consent_required": false })))
+}
+
 pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiError> {
     let session = u.via == Via::Session;
     let (id, jti) = (u.id.clone(), u.jti.as_ref().map(|j| j.0.clone()));
@@ -148,6 +171,7 @@ pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiErr
         "id": u.id, "email": u.email, "name": u.name, "role": u.role, "via": u.via,
         "can_change_password": session && has_password,
         "must_change_password": false,
+        "consent_required": s.auth.consent.required(s, u).await,
     });
     if let Some(user) = &user {
         v["must_change_password"] = json!(has_password && user.must_change_password);
@@ -256,7 +280,7 @@ pub(super) async fn start_session(
     }
     tracing::info!(email = %user.email, via = how.as_str(), "signed in");
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, s.auth.session_cookie(&token, ttl));
+    headers.insert(header::SET_COOKIE, s.auth.session_cookie(&token));
     let role = Role::parse(&user.role).unwrap_or(Role::Viewer);
     let au = AuthUser {
         id: user.id,
@@ -358,7 +382,7 @@ async fn login(
                         .detail(json!({
                             "user": id,
                             "failures": f.count,
-                            "minutes": stig::LOCK_MINUTES,
+                            "until": "an admin unlocks it",
                         })),
                 )?;
             }
@@ -1365,6 +1389,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_warning_must_be_accepted_on_the_server_before_the_api_answers() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let (st, token, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "script" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{token}");
+        let bearer = format!("Bearer {}", token["token"].as_str().unwrap());
+        let warning = json!({ "warning": { "enabled": true, "text": "You are accessing a U.S. Government information system." } });
+        let (st, body, _) =
+            call(&app, "PUT", "/api/v1/settings", Some(&admin), Some(warning)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+
+        // The session that turned it on must accept it too; until then only
+        // its own sign-in calls answer.
+        let (st, body, _) = call(&app, "GET", "/api/v1/sources", Some(&admin), None).await;
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("consent_required"))
+        );
+        let (st, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(
+            (st, me["consent_required"].as_bool()),
+            (StatusCode::OK, Some(true))
+        );
+        // A program's API token is not asked.
+        let (st, ..) = call(&app, "GET", "/api/v1/sources", Some(&bearer), None).await;
+        assert_eq!(st, StatusCode::OK);
+
+        let (st, ..) = call(&app, "POST", "/api/v1/auth/consent", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, ..) = call(&app, "GET", "/api/v1/sources", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, me, _) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+        assert_eq!(me["consent_required"], false);
+        let (_, audit, _) = call(
+            &app,
+            "GET",
+            "/api/v1/audit?op=consent_accepted",
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert!(audit.to_string().contains("consent_accepted"), "{audit}");
+
+        // Each sign-in is asked again.
+        let (_, again) = sign_in(&app, "root@x.org", ROOT).await;
+        let (st, ..) = call(&app, "GET", "/api/v1/sources", again.as_deref(), None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn viewers_list_track_decisions_but_not_account_ones() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let (st, v, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "dv@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+        let (_, viewer) = sign_in(&app, "dv@x.org", VIEW).await;
+        let viewer = viewer.unwrap();
+        let (st, ..) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            Some(&viewer),
+            Some(json!({ "current": VIEW, "new": VIEW2 })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, viewer) = sign_in(&app, "dv@x.org", VIEW2).await;
+        let viewer = viewer.unwrap();
+        let (st, ..) = call(
+            &app,
+            "GET",
+            "/api/v1/decisions?op=merge,split,update_source",
+            Some(&viewer),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        for ops in [
+            "create_user",
+            "create_api_token",
+            "merge,unlock_user",
+            "auth_settings",
+        ] {
+            let uri = format!("/api/v1/decisions?op={ops}");
+            let (st, ..) = call(&app, "GET", &uri, Some(&viewer), None).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{ops}");
+        }
+        let (st, body, _) = call(
+            &app,
+            "GET",
+            "/api/v1/decisions?op=create_user",
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
     async fn lockout_sessions_idle_timeout_and_the_audit_record() {
         let Some(app) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
@@ -1422,7 +1567,11 @@ mod tests {
             .iter()
             .find(|u| u["email"] == "l@x.org")
             .unwrap();
-        assert!(locked["locked_until_ms"].as_i64().is_some());
+        // Locked until an admin unlocks it, not for a while (CP SRG V-233165).
+        assert_eq!(
+            locked["locked_until_ms"].as_i64(),
+            Some(ot_store::auth::LOCKED_UNTIL_UNLOCKED)
+        );
         let uri = format!("/api/v1/auth/users/{}/unlock", v["id"].as_str().unwrap());
         let (st, ..) = call(&app, "POST", &uri, Some(&admin), None).await;
         assert_eq!(st, StatusCode::OK);

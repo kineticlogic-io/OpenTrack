@@ -2,7 +2,7 @@
 
 For track managers and viewers: the people who watch the picture and keep it right. Installing,
 configuring and securing OpenTrack is in the [administrator guide](admin.md). Written for
-OpenTrack **0.4.2**.
+OpenTrack **0.4.3**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI can link to it (in the app:
 `#help/operator/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses: lowercase,

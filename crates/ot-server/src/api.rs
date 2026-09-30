@@ -82,6 +82,7 @@ async fn parse_spec(
 ) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
     let spec: SourceSpec = serde_json::from_value(body)
         .map_err(|e| ApiError::unprocessable(format!("invalid source spec: {e}")))?;
+    crate::probe::file_allowed(&s.common, &spec.transport).map_err(ApiError::unprocessable)?;
     let schema = published_schema(s, spec.pipeline.mapping.schema_version).await?;
     spec.validate_against(schema.as_ref())
         .map_err(|e| ApiError::unprocessable(e.to_string()))?;

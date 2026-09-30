@@ -283,6 +283,12 @@ impl AppSettings {
     }
 }
 
+/// Whether the notice-and-consent warning is on (and has text).
+pub(crate) async fn warning_enabled(s: &AppState) -> Result<bool, ApiError> {
+    let w = load(s).await?.warning;
+    Ok(w.enabled && !w.text.trim().is_empty())
+}
+
 async fn load(s: &AppState) -> Result<AppSettings, ApiError> {
     let v = s.with_db(|db| db.app_settings()).await?;
     let mut settings: AppSettings = serde_json::from_value(v)
@@ -333,6 +339,7 @@ async fn put_settings(
         actor(&headers),
     );
     s.with_db(move |db| db.put_app_settings(&v, &who)).await?;
+    s.auth.consent.setting_changed();
     get_settings(State(s), u).await
 }
 

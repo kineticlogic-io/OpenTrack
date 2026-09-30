@@ -10,6 +10,7 @@
 //! now, so a role change or a deactivation takes effect at once.
 
 pub mod api;
+pub mod consent;
 pub mod maintenance;
 mod openstare;
 pub mod password;
@@ -148,6 +149,8 @@ pub struct Auth {
     attempts: Mutex<HashMap<IpAddr, (f64, Instant)>>,
     /// When each session was last used, saved in batches.
     pub activity: sessions::Activity,
+    /// Who has accepted the notice-and-consent banner (AC-8).
+    pub consent: consent::Consent,
     #[cfg(feature = "saml")]
     saml: saml::State,
 }
@@ -176,6 +179,7 @@ impl Auth {
             openstare_cache: Mutex::new(HashMap::new()),
             attempts: Mutex::new(HashMap::new()),
             activity: sessions::Activity::default(),
+            consent: consent::Consent::default(),
             #[cfg(feature = "saml")]
             saml: saml::State::default(),
         }
@@ -274,10 +278,13 @@ impl Auth {
     /// SAML POST binding still works, as the cookie is set on the
     /// cross-site POST's response and only the page load it redirects to
     /// goes without it; the page's own API calls are same-site.
-    pub fn session_cookie(&self, token: &str, max_age_secs: i64) -> HeaderValue {
+    /// The session cookie: a browser-session cookie (no `Max-Age` or
+    /// `Expires`), so closing the browser drops it (ASD V-222578); the
+    /// session's idle and absolute limits are kept on the server.
+    pub fn session_cookie(&self, token: &str) -> HeaderValue {
         let secure = if self.secure_cookies { "; Secure" } else { "" };
         HeaderValue::from_str(&format!(
-            "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age_secs}{secure}"
+            "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{secure}"
         ))
         .unwrap_or_else(|_| HeaderValue::from_static(""))
     }
@@ -584,6 +591,18 @@ pub async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> R
     let Some(user) = identify(&s, req.headers(), cert.as_ref()).await else {
         return deny(StatusCode::UNAUTHORIZED, "sign in first");
     };
+    // The notice-and-consent banner first, as the page shows it (AC-8).
+    if !policy::allowed_before_consent(req.uri().path()) && s.auth.consent.required(&s, &user).await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "accept the notice first",
+                "code": "consent_required",
+            })),
+        )
+            .into_response();
+    }
     if user.must_change && !policy::allowed_before_password_change(req.uri().path()) {
         return (
             StatusCode::FORBIDDEN,
@@ -619,6 +638,18 @@ pub type SharedAuth = Arc<Auth>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_cookie_ends_with_the_browser() {
+        let c = Auth::off().session_cookie("tok");
+        let c = c.to_str().unwrap();
+        assert!(
+            c.starts_with("ot_session=tok;")
+                && c.contains("HttpOnly")
+                && c.contains("SameSite=Strict")
+        );
+        assert!(!c.contains("Max-Age") && !c.contains("Expires"), "{c}");
+    }
 
     #[test]
     fn passwords_hash_and_verify() {

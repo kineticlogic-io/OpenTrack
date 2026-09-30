@@ -1,6 +1,6 @@
 # Deployment hardening
 
-This is the checklist for deploying OpenTrack 0.4.2 to an accredited environment. The controls
+This is the checklist for deploying OpenTrack 0.4.3 to an accredited environment. The controls
 themselves are described in the administrator guide, under
 [Security hardening](../guides/admin.md#security-hardening). How they map to NIST 800-53 is in
 [stig-mapping.md](stig-mapping.md).
@@ -67,7 +67,7 @@ TLS runs only FIPS-approved suites (docs/security/fips.md).
 The account policy is fixed at the STIG values; there is nothing to set:
 - **Passwords:** 15 characters or more, all four character classes, 8 characters changed, 5
   remembered, a minimum age of 24 h and a maximum of 60 days.
-- **Lockout:** 3 failures in 15 minutes lock the account for 15 minutes.
+- **Lockout:** 3 failures in 15 minutes lock the account until an admin unlocks it.
 - **Sessions:** idle timeout 15 minutes (admins 10), 3 per account, 24 hours at most.
 - **Inactivity:** accounts are turned off after 35 days, except those marked **Never turn off**.
 - **Audit record:** kept forever.

@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+## 0.4.3 (alpha), 2026-09-30
+
+A security release: the fixes from the accreditation review, OpenTelemetry export, and the
+accreditation package.
+
+### Upgrade notes
+
+- **Lockout holds until an admin unlocks the account** (was 15 minutes). If every admin is locked
+  out, run `opentrack user unlock <email>` on the server.
+- **The notice-and-consent warning is enforced by the server**: while it is on, every sign-in
+  must accept it before the API answers (API tokens are not asked). Scripts that sign in with a
+  password should use an API token.
+- **File sources read only under the data directory** (`/data` in the image). A file source that
+  points elsewhere is refused when saved or probed, and doesn't start: move its files under the
+  data directory and edit its path.
+- **Signing out, or closing the browser, ends the session**: the session cookie no longer outlives
+  the browser.
+
+### Security fixes
+
+- Viewers and track managers could list account, API token and sign-in decisions through
+  `/api/v1/decisions`; those are an admin's now (#57).
+- The SAML assertion consumer refuses responses with a DTD or over 256 KB before parsing, and
+  libxml2 parses strictly: no recovery from malformed XML, no network (#58).
+- The session cookie is a browser-session cookie: no `Max-Age` (#59).
+- The notice-and-consent banner: acceptance is kept and enforced on the server and audited
+  (`consent_accepted`); the admins' **Go to Settings** way round it is gone (#60).
+- Server errors answer with a reference and log their detail, instead of returning database and
+  file-system text; `/api/v1/status` gives non-admins up or down only (#61).
+- Source changes are recorded in the decision log and audit record with their credentials masked
+  (the source's revisions keep them) (#62).
+- File transports read only under the data directory, when saved, probed, imported or started;
+  every probe is audited (`probe_source`) (#63).
+- A locked account stays locked until an admin unlocks it (Container Platform SRG AC-7).
+- Signing out says so on the sign-in page.
+- The secret-masking rules moved to `ot-core` (`ot_source::secrets` re-exports them).
+
+The accreditation package is re-evaluated: ASD STIG 165 not a finding, 27 open; Container
+Platform SRG 100 and 21; POA&M 18 items (#64).
+
 ### Accreditation package
 
 A generic DoD RMF package for sites taking OpenTrack to an ATO (#20), in `docs/security/ato/`:

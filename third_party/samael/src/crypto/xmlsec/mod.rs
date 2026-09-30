@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::schema::CipherValue;
 use libxml::parser::Parser as XmlParser;
+use libxml::parser::ParserOptions;
 use libxml::parser::XmlParseError;
 use libxml::tree::NodeType;
 use openssl::error::ErrorStack;
@@ -123,6 +124,22 @@ struct ParsedSelection {
 
 pub struct XmlSec;
 
+/// Parse XML strictly (OpenStare fork): no recovery from malformed input
+/// (two parsers reading one document two ways is how signature wrapping
+/// starts), no network access and no default DTD. SAML responses are
+/// untrusted input.
+fn parse_strict<Bytes: AsRef<[u8]>>(xml: Bytes) -> Result<libxml::tree::Document, XmlParseError> {
+    XmlParser::default().parse_string_with_options(
+        xml,
+        ParserOptions {
+            recover: false,
+            no_net: true,
+            no_def_dtd: true,
+            ..ParserOptions::default()
+        },
+    )
+}
+
 impl super::CryptoProvider for XmlSec {
     type PrivateKey = PKey<Private>;
     fn verify_signed_xml<Bytes: AsRef<[u8]>>(
@@ -130,8 +147,7 @@ impl super::CryptoProvider for XmlSec {
         x509_cert_der: &CertificateDer,
         id_attribute: Option<&str>,
     ) -> Result<(), CryptoError> {
-        let parser = XmlParser::default();
-        let document = parser.parse_string(xml)?;
+        let document = parse_strict(xml)?;
 
         let key = XmlSecKey::from_memory(x509_cert_der.der_data(), XmlSecKeyFormat::CertDer)?;
         let mut context = XmlSecSignatureContext::new()?;
@@ -154,7 +170,7 @@ impl super::CryptoProvider for XmlSec {
         certs_der: &[CertificateDer],
         reduce_mode: ReduceMode,
     ) -> Result<String, CryptoError> {
-        let mut xml = XmlParser::default().parse_string(xml_str)?;
+        let mut xml = parse_strict(xml_str)?;
 
         // collect ID attribute values and tell libxml about them
         collect_id_attributes(&mut xml)?;
@@ -474,7 +490,7 @@ fn parse_selection(
     predigest_xml: &str,
 ) -> Result<ParsedSelection, CryptoError> {
     let wrapped_fragment = format!("<samael-fragment>{predigest_xml}</samael-fragment>");
-    let fragment_doc = XmlParser::default().parse_string(&wrapped_fragment)?;
+    let fragment_doc = parse_strict(&wrapped_fragment)?;
     let fragment_root = fragment_doc
         .get_root_element()
         .ok_or(XmlSecProviderError::XmlMissingRootElement)?;

@@ -106,6 +106,27 @@ fn mint_relay(rid: &str, secret: &[u8]) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
+/// The largest SAMLResponse taken (base64); real ones are a few KB.
+const MAX_RESPONSE_B64: usize = 256 * 1024;
+
+/// Refuse a SAMLResponse before any XML parser sees it: too large, not
+/// base64, or carrying a DTD (`<!DOCTYPE`, `<!ENTITY`), which no IdP sends
+/// and which entity and parser attacks need (ASD V-222608).
+fn check_response(b64_response: &str) -> Result<(), String> {
+    use base64::Engine;
+    if b64_response.len() > MAX_RESPONSE_B64 {
+        return Err("the SAMLResponse is too large".into());
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64_response.trim())
+        .map_err(|_| "the SAMLResponse is not base64".to_owned())?;
+    let upper = String::from_utf8_lossy(&raw).to_ascii_uppercase();
+    if upper.contains("<!DOCTYPE") || upper.contains("<!ENTITY") {
+        return Err("the SAMLResponse carries a DTD".into());
+    }
+    Ok(())
+}
+
 fn verify_relay(token: &str, secret: &[u8]) -> Option<String> {
     let mut v = Validation::new(Algorithm::HS256);
     v.validate_exp = true;
@@ -292,6 +313,7 @@ async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Respon
     let Ok(base) = base_url(s) else {
         return Err("no OT_PUBLIC_URL".into());
     };
+    check_response(&response)?;
     let c = cfg.clone();
     let parsed = tokio::task::spawn_blocking(move || {
         let sp = service_provider(&c, &base)?;
@@ -429,6 +451,26 @@ async fn parse_metadata(Json(b): Json<Metadata>) -> Result<Json<Value>, ApiError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responses_with_a_dtd_or_too_large_are_refused_before_parsing() {
+        use base64::Engine;
+        let enc = |x: &str| base64::engine::general_purpose::STANDARD.encode(x);
+        assert!(check_response(&enc("<samlp:Response ID=\"r\"></samlp:Response>")).is_ok());
+        let dtd = "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><r>&x;</r>";
+        assert!(check_response(&enc(dtd)).unwrap_err().contains("DTD"));
+        assert!(
+            check_response(&enc("<!doctype r><r/>")).is_err(),
+            "case-insensitive"
+        );
+        assert!(check_response(&enc("<r><!ENTITY a 'b'></r>")).is_err());
+        assert!(check_response("not base64!").is_err());
+        assert!(
+            check_response(&"A".repeat(MAX_RESPONSE_B64 + 4))
+                .unwrap_err()
+                .contains("too large")
+        );
+    }
 
     const K1: &[u8] = b"k1k1k1k1k1k1k1k1k1k1k1k1k1k1k1k1";
     const K2: &[u8] = b"k2k2k2k2k2k2k2k2k2k2k2k2k2k2k2k2";

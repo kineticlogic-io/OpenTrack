@@ -173,7 +173,7 @@ The UI's tabs:
 ## Sources and pipelines
 
 A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
-`mqtt`, `grpc_client`, `grpc_server`, `file`), framing, a codec and a pipeline. Transport metadata reaches the mapping under
+`mqtt`, `grpc_client`, `grpc_server`, `file`, which reads only under the data directory), framing, a codec and a pipeline. Transport metadata reaches the mapping under
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
 
@@ -271,7 +271,7 @@ Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
 - **Every change** names the account that made it in the decision log.
 - **Account policy** (fixed at the DoD application security STIG values, 800-53 Moderate; not configurable):
   - **Passwords** (local accounts): 15 characters with upper, lower, digit and special; not one of the last 5; 8 characters changed; at most one change a day; 60 days, then changed at the next sign-in. A password an admin sets is temporary: the account must choose its own before anything else. Existing passwords keep working until they change or expire (60 days from the upgrade).
-  - **Lockout:** 3 failed sign-ins within 15 minutes lock the account for 15 minutes (an admin can unlock it sooner, in Settings → Users or `opentrack user unlock`). Every refusal says the same thing.
+  - **Lockout:** 3 failed sign-ins within 15 minutes lock the account until an admin unlocks it (Settings → Users, or `opentrack user unlock` on the server). Every refusal says the same thing.
   - **Sessions** are kept on the server: 15 minutes idle ends one (10 for admins; the page's own refreshes do not count), as do 24 hours from sign-in; at most 3 per account, the oldest ends. Anyone sees and ends their own (account menu → Sessions); admins sign an account out everywhere (Settings → Users). API tokens are not sessions: they only expire. Sessions are per node.
   - **Inactivity:** accounts not signed in for 35 days are turned off; an admin turns them on again. Break-glass accounts are exempt (Settings → Users → Never turn off).
   - After signing in, a notice gives the previous sign-in and the failed attempts since.

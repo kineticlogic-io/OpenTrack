@@ -31,9 +31,9 @@
  },
  {
   "vid": "V-222392",
-  "status": "Open",
-  "finding_details": "A user-initiated sign-out lands on the plain sign-in page with no message: AuthProvider.logout (ui/src/auth/AuthProvider.tsx) does window.location.assign('/login') and LoginPage (ui/src/auth/LoginPage.tsx) shows a message only for ?ended=1 (session ended by the server) or ?sso=failed. There is no explicit message confirming the session was terminated.",
-  "comments": "Redirect sign-out to /login?signed_out=1 and show 'You have signed out; your session has ended.' on the sign-in page."
+  "status": "NotAFinding",
+  "finding_details": "Signing out lands on /login?signed_out=1, which says 'You have signed out. Your session has ended; close the browser to finish.' (ui/src/auth/AuthProvider.tsx logout, ui/src/auth/LoginPage.tsx); a session ended by the server shows its own message (?ended=1).",
+  "comments": ""
  },
  {
   "vid": "V-222393",
@@ -272,7 +272,7 @@
  {
   "vid": "V-222432",
   "status": "NotAFinding",
-  "finding_details": "Three failed password sign-ins within 15 minutes lock the account for 15 minutes (stig::LOCKOUT_FAILURES/LOCKOUT_WINDOW_MINUTES/LOCK_MINUTES, fixed): login in crates/ot-server/src/auth/api.rs calls note_login_failure (crates/ot-store/src/auth.rs) and refuses a locked account even with the right password, auditing login failure and account_locked; tested in auth/api.rs lockout_sessions_idle_timeout_and_the_audit_record. SAML and PKI lockout belong to the IdP/CA.",
+  "finding_details": "Three failed password sign-ins within 15 minutes lock the account until an admin unlocks it (stig::LOCKOUT_FAILURES, LOCKOUT_WINDOW_MINUTES, LOCK_UNTIL_UNLOCKED, fixed): login in crates/ot-server/src/auth/api.rs calls note_login_failure (crates/ot-store/src/auth.rs) and refuses a locked account even with the right password, auditing the failure and account_locked; tested in auth/api.rs lockout_sessions_idle_timeout_and_the_audit_record. SAML and PKI lockout belong to the IdP/CA.",
   "comments": ""
  },
  {
@@ -337,9 +337,9 @@
  },
  {
   "vid": "V-222444",
-  "status": "Open",
-  "finding_details": "The exported and stdout logs omit sensitive fields (a decision's before/after is stripped, crates/ot-store/src/audit.rs log detail; no passwords or tokens are logged), but the audit table itself stores each source decision's full before/after spec (put_source in crates/ot-store/src/sources.rs -> record_decision in sqlite.rs), including any inline feed credentials, unmasked, kept forever and returned by GET /api/v1/audit and its CSV export (crates/ot-server/src/audit_api.rs). The admin guide only advises ${env:...} references.",
-  "comments": "Mask secret fields (ot_source::secrets rules) in decision before/after before recording them in the decisions and audit tables."
+  "status": "NotAFinding",
+  "finding_details": "No passwords, tokens or keys are written to the logs, and source changes are recorded in the decision log and audit record with their secrets masked (ot_core::secrets::redact_spec in crates/ot-store/src/sources.rs; test decisions_hide_a_sources_secrets_and_the_revision_keeps_them); exported log copies also drop before/after.",
+  "comments": ""
  },
  {
   "vid": "V-222445",
@@ -469,9 +469,9 @@
  },
  {
   "vid": "V-222466",
-  "status": "Open",
-  "finding_details": "OpenTrack gives admins one direct OS access path: POST /api/v1/probe with a file transport reads any path the process can read (crates/ot-source/src/transport.rs replay_files, no path restriction) and echoes up to 20 frames of 4 KB back (crates/ot-server/src/probe.rs). The probe handler records nothing in the audit table or decision log. File-replay sources themselves are audited as source decisions (crates/ot-store/src/sources.rs).",
-  "comments": "Record every probe (actor, transport incl. path/address, outcome) as an audit row, and consider restricting file transports to a configured directory."
+  "status": "NotAFinding",
+  "finding_details": "OpenTrack gives no direct OS access: file transports (sources and probes) read only under the data directory, with links resolved and '..' refused (probe.rs file_allowed, enforced on create, update, validate, probe and configuration import; test a_file_source_reads_only_under_the_data_directory), and every probe is audited (probe_source: actor, transport, target, frames, outcome). No shell or command is ever run.",
+  "comments": ""
  },
  {
   "vid": "V-222467",
@@ -673,9 +673,9 @@
  },
  {
   "vid": "V-222500",
-  "status": "Open",
-  "finding_details": "The audit record itself is admin-only (/audit in ADMIN_READS, crates/ot-server/src/auth/policy.rs). But the decision log, whose rows are the audit record's decision entries, is readable by any viewer for any operation: GET /api/v1/decisions?op=... (crates/ot-server/src/decisions_api.rs, policy.rs gives GETs the viewer role) returns actor, time, reason and evidence for account and sign-in decisions such as create_api_token (token id, user id), unlock_user (email), reset_password and auth_settings, contrary to 'Viewers cannot see accounts' (docs/guides/admin.md#roles).",
-  "comments": "Restrict /decisions for non-admins to track-management and correlation operations; account, token and sign-in decisions admin-only."
+  "status": "NotAFinding",
+  "finding_details": "The audit record (/api/v1/audit, /audit/verify) is admin-only (auth/policy.rs ADMIN_READS). The decision log answers non-admins only for track-management and configuration operations; account, API token, sign-in and configuration import/export decisions are refused (decisions_api.rs TRACK_OPS; test viewers_list_track_decisions_but_not_account_ones). Source changes are recorded with their credentials masked.",
+  "comments": ""
  },
  {
   "vid": "V-222501",
@@ -1135,9 +1135,9 @@
  },
  {
   "vid": "V-222578",
-  "status": "Open",
-  "finding_details": "Sign-out ends the server session, revokes the token and clears the cookie (crates/ot-server/src/auth/api.rs logout). But the session cookie is persistent: it is set with Max-Age equal to the session lifetime (auth/mod.rs session_cookie, called with ttl in auth/api.rs start_session), so it survives browser close, and the server session stays valid until the 15/10-minute idle timeout; reopening the browser within that window resumes the session.",
-  "comments": "POA&M: issue the session cookie without Max-Age/Expires (browser-session cookie) so it is discarded on browser close; keep the server-side idle and absolute limits."
+  "status": "NotAFinding",
+  "finding_details": "The session cookie is a browser-session cookie (no Max-Age or Expires; auth/mod.rs session_cookie, test the_session_cookie_ends_with_the_browser), so closing the browser discards it; the server-side session also ends on sign-out, idle timeout (15 min, admins 10), 24 h lifetime and revocation.",
+  "comments": ""
  },
  {
   "vid": "V-222579",
@@ -1267,9 +1267,9 @@
  },
  {
   "vid": "V-222600",
-  "status": "Open",
-  "finding_details": "Non-privileged users can obtain technical details: GET /api/v1/status is available to any viewer (auth/policy.rs: GET needs Viewer) and returns the software and algorithm versions, the SQLite file path and schema version, the NATS URL (which may embed a token) and raw Redis/NATS error strings (crates/ot-server/src/control.rs status). Internal errors return the underlying error text to the caller (control.rs From<StoreError> for ApiError -> internal(other.to_string()), and ApiError::internal(e.to_string()) in handlers).",
-  "comments": "POA&M: restrict /status details (paths, URLs, versions, raw errors) to admins and return generic messages for 500 errors while logging the detail server side."
+  "status": "NotAFinding",
+  "finding_details": "/api/v1/status gives non-admins only up/down flags and versions; paths, URLs, endpoints and error text are for admins (control.rs status_for_non_admins; test non_admins_see_status_without_paths_urls_or_errors). Server errors answer with a reference, not their text.",
+  "comments": ""
  },
  {
   "vid": "V-222601",
@@ -1315,9 +1315,9 @@
  },
  {
   "vid": "V-222608",
-  "status": "Open",
-  "finding_details": "OpenTrack parses untrusted XML on the unauthenticated SAML ACS endpoint (/api/v1/auth/saml/acs, crates/ot-server/src/auth/saml.rs) through libxmlsec1/libxml2 using libxml's default ParserOptions (recover on, NONET off, DOCTYPE not refused; third_party/samael/src/crypto/xmlsec/mod.rs XmlParser::default().parse_string), and the image's libxml2 2.9.14+dfsg-1.3~deb12u6 carries 1 Critical (CVE-2026-6653) and 7 High CVEs with no fix in the v0.4.2 image scan (docs/security/ato/scans/v0.4.2/scan.md, untracked working copy). Other XML (CoT output, quick-xml codecs) uses quick-xml, which does not process DTDs or external entities.",
-  "comments": "Refuse any DOCTYPE/DTD in SAMLResponse before parsing, parse with NONET and without recover, cap the ACS body size, and move to a base image whose libxml2 fixes the listed CVEs (or document risk acceptance)."
+  "status": "NotAFinding",
+  "finding_details": "The only XML parsed from untrusted input is the SAML response. check_response (crates/ot-server/src/auth/saml.rs) refuses it before any parser sees it when it carries a DTD (<!DOCTYPE, <!ENTITY) or exceeds 256 KB of base64; libxml2 then parses strictly (recover off, no network, no default DTD; parse_strict in third_party/samael/src/crypto/xmlsec/mod.rs), without entity substitution or DTD loading, and the assertion is taken only from the signature-verified XML. Tested in saml.rs responses_with_a_dtd_or_too_large_are_refused_before_parsing and a_signed_response_verifies_and_a_tampered_one_does_not.",
+  "comments": ""
  },
  {
   "vid": "V-222609",
@@ -1327,15 +1327,15 @@
  },
  {
   "vid": "V-222610",
-  "status": "Open",
-  "finding_details": "Internal errors are returned verbatim to the caller: ApiError::internal(e.to_string()) wraps rusqlite, Redis, serde and I/O errors (StoreError in crates/ot-store/src/sqlite.rs; From<StoreError> and IntoResponse in crates/ot-server/src/control.rs) and sends them as {\"error\": ...} to any role, e.g. a viewer's GET /api/v1/history/<uid> returns the raw Redis error (crates/ot-server/src/history_api.rs:37; GET is a viewer route per auth/policy.rs). Such text can carry table/column names (constraint failures), SQL (rusqlite SqlInputError), host/port and file paths. Sign-in failures themselves are generic (auth/api.rs GENERIC_FAILURE).",
-  "comments": "Map 500-class errors to a generic message with a correlation id for non-admins and log the detail server-side (and over OTLP) instead."
+  "status": "NotAFinding",
+  "finding_details": "Server-side failures (5xx) answer every caller with a generic message and a reference; the detail is logged under the reference (control.rs ApiError into_response; test a_server_error_answers_with_a_reference_not_its_text). 4xx messages say what the caller must correct.",
+  "comments": ""
  },
  {
   "vid": "V-222611",
-  "status": "Open",
-  "finding_details": "Detailed internal error text (database, Redis, I/O and parse errors) is sent to every authenticated role, not only administrators: ApiError::internal(e.to_string()) in crates/ot-server/src/control.rs (with_db, From<StoreError>) and handlers such as crates/ot-server/src/history_api.rs:37 (viewer-accessible GET). There is no role-dependent redaction of error detail.",
-  "comments": "Return detailed error text only to admins (or only in logs); give viewers and track managers a generic message plus a correlation id."
+  "status": "NotAFinding",
+  "finding_details": "Detailed error text goes only to the server log (and the site's collector over OpenTelemetry), which administrators read; users get a generic message with a reference (control.rs ApiError into_response). /status details are admin-only.",
+  "comments": ""
  },
  {
   "vid": "V-222612",
@@ -1603,9 +1603,9 @@
  },
  {
   "vid": "V-222656",
-  "status": "Open",
-  "finding_details": "Error handling leaks internal detail: ApiError::internal(e.to_string()) returns raw SQLite, Redis, serde and I/O error text to any caller, and the 500 path does not log the error server-side (crates/ot-server/src/control.rs ApiError, IntoResponse; e.g. history_api.rs:37). Otherwise errors are typed Results with no panics on input paths and sign-in fails closed. No error-handling test results ship with the package.",
-  "comments": "Same fix as V-222610: generic 500 message plus correlation id to clients, full error logged; add tests for it."
+  "status": "NotAFinding",
+  "finding_details": "Errors are handled without leaking internals: 5xx answers are generic with a reference and logged in full (control.rs), sign-in refusals are uniform, and Rust's typed errors mean no unhandled exception reaches the client; tested in control.rs.",
+  "comments": ""
  },
  {
   "vid": "V-222657",

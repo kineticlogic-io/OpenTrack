@@ -20,6 +20,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(() => {
     const q = new URLSearchParams(window.location.search)
     if (q.get('sso') === 'failed') return 'Single sign-on failed. Try again or ask an admin.'
+    if (q.get('signed_out') === '1') return 'You have signed out. Your session has ended; close the browser to finish.'
     if (q.get('ended') === '1') return 'Your session ended (signed out, idle too long, or ended elsewhere). Sign in again.'
     return null
   })

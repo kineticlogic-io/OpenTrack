@@ -36,9 +36,6 @@ export function useCan(min: Role): boolean {
   return useAuth().hasRole(min)
 }
 
-/** sessionStorage key for "accepted the warning" (per account, cleared on sign-out). */
-export const ackKey = (userId: string) => `ot.warn.ack.${userId}`
-
 /** A return path that stays on this site (no scheme, no protocol-relative URL, never /login). */
 export function safeReturnPath(raw: string | null): string {
   if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\') || raw.includes(':')) return '/'

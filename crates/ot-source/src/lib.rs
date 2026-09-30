@@ -16,7 +16,9 @@ pub mod probe;
 pub mod proto;
 pub mod registry;
 pub mod schema;
-pub mod secrets;
+/// The secret-hiding rules live in `ot-core` (the store masks recorded
+/// decisions with them too).
+pub use ot_core::secrets;
 pub mod source;
 pub mod tls;
 pub mod trace;

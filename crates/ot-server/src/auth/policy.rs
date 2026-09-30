@@ -29,7 +29,12 @@ const PUBLIC: &[&str] = &[
 ];
 
 /// Paths any signed-in account may call, whatever its role.
-const SIGNED_IN: &[&str] = &["/auth/me", "/auth/password", "/auth/sessions"];
+const SIGNED_IN: &[&str] = &[
+    "/auth/me",
+    "/auth/password",
+    "/auth/sessions",
+    "/auth/consent",
+];
 
 /// Paths under which any signed-in account may call (its own sessions; the
 /// handler lets only an admin touch another account's).
@@ -46,9 +51,19 @@ const ADMIN_READS: &[&str] = &[
     "/audit",
 ];
 
+/// What a person who hasn't accepted the notice-and-consent banner may
+/// call: who they are, accepting it, and signing out.
+const BEFORE_CONSENT: &[&str] = &["/auth/me", "/auth/consent", "/auth/logout", "/auth/public"];
+
+/// Whether `path` answers before the banner is accepted.
+pub fn allowed_before_consent(path: &str) -> bool {
+    BEFORE_CONSENT.contains(&path.trim_end_matches('/'))
+}
+
 /// What a session that must change its password may still call.
 const BEFORE_PASSWORD_CHANGE: &[&str] = &[
     "/auth/me",
+    "/auth/consent",
     "/auth/password",
     "/auth/logout",
     "/auth/public",

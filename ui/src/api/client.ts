@@ -558,6 +558,8 @@ export interface Me {
   /** Minutes without use that end this session, in ms. */
   idle_timeout_ms?: number
   password_policy?: PasswordPolicy
+  /** The notice-and-consent warning is on and this sign-in hasn't accepted it (the API refuses until it does). */
+  consent_required?: boolean
   /** This session's id. */
   session?: string
   /** The previous good sign-in and the failed ones since, as they stood at this sign-in. */
@@ -1169,6 +1171,8 @@ export const api = {
   me: () => get<Me>('/auth/me'),
   login: (email: string, password: string) => request<Me>('POST', '/auth/login', { email, password }),
   logout: () => request<unknown>('POST', '/auth/logout'),
+  /** Accept the notice-and-consent warning, for this sign-in (recorded and audited on the server). */
+  acceptConsent: () => request<{ consent_required: boolean }>('POST', '/auth/consent'),
   changePassword: (current: string, next: string) => request<Me>('POST', '/auth/password', { current, new: next }),
   users: () => get<{ users: Account[] }>('/auth/users').then((r) => r.users),
   createUser: (u: { email: string; name: string; role: Role; password?: string }) => request<Account>('POST', '/auth/users', u),

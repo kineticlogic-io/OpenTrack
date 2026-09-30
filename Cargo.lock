@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "ot-codec-stanag4607"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "serde",
@@ -2556,17 +2556,18 @@ dependencies = [
 
 [[package]]
 name = "ot-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]
 name = "ot-nats"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "async-nats",
  "aws-lc-rs",
@@ -2581,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "ot-plugin"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2599,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "ot-sapient"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "prost",
  "prost-reflect",
@@ -2612,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "ot-server"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2664,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "ot-source"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2704,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "ot-store"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2725,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "ot-sync"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "ot-core",
  "serde",
