@@ -219,7 +219,8 @@ Tick tracks to act on them ([Managing tracks](#managing-tracks)). **Select shown
 
 ### Track card
 
-The selected track's card. Its head shows the symbol, name and number, and badges:
+The selected track's card. Its head shows the symbol, name and number (after the track's marking,
+when it has one), and badges:
 - **FILTERED** or **NOT PUBLISHED** when consumers don't get it ([Not published](#not-published));
 - its state.
 
@@ -233,6 +234,7 @@ What the track publishes:
 
 | Field | |
 |---|---|
+| Marking | The track's security marking, when its sources carry a label ([Markings](#markings)). |
 | Class-name | The OTH-GOLD class and name, as published. |
 | Force code | The two-digit OTH-GOLD force code, with the domain and affiliation it comes from. |
 | Track type | tactical, live training, simulated training or demand entry. |
@@ -461,6 +463,23 @@ The **Track management log** lists track management decisions, newest first: num
 reason, and its status (**undone by #n**, or **undoes #n**). It refreshes every 15 seconds; the
 refresh button reloads it now.
 
+### Markings
+
+A source can carry a security label, and the tracks it reports carry it too. The track card and
+the track table's **Marking** column show it as a portion marking, such as `(U//FOUO)` or
+`(S//ORCON/REL TO USA, GBR)`:
+- the classification (`U`, `C`, `S`, `TS`, or as written, such as `CUI`);
+- after `//`, its restrictions (dissemination controls), separated by `/`;
+- `REL TO` and the countries and organisations it may be released to; `NOFORN` when none.
+
+A track reported by several labelled sources takes the highest classification, every
+restriction, and only the countries all of them release to. No marking means the track's sources
+carry no label: treat it as the system's classification, on the banner.
+
+OpenTrack does not hide tracks by clearance: everyone signed in sees every track. Handle each one
+as its marking says. TAK shows the same marking at the start of the track's remarks, and exported
+files carry it.
+
 ## Export
 
 Anyone can download the picture. **Settings → Data → Live tracks**:
@@ -468,7 +487,11 @@ Anyone can download the picture. **Settings → Data → Live tracks**:
   state, confidence and source tracks.
 - **CSV:** one row per track: track id, name, class, domain, affiliation, force code, track type,
   SIDC, time, latitude, longitude, state, confidence, whether it is published, sources, and the
-  attributes as JSON.
+  attributes as JSON, with each track's marking in a `classification` column first.
+
+Each file is marked: the CSV's first line, above the header, and the GeoJSON's `security.marking`.
+It is the highest marking of the tracks in it, or the banner's classification when none has a
+label. Keep the file as its marking says.
 
 Both include tracks that aren't published (see the `published` column). The registry exports from
 the Registry tab ([Spreadsheets](#spreadsheets)).
@@ -562,7 +585,8 @@ appear in TAK (ATAK, WinTAK, iTAK, and TAK Server's users), as the same tracks O
   symbol, an unknown track with no domain an unknown ground symbol. Designating a track here
   changes its symbol in TAK within a few seconds.
 - Its details show course and speed, the position error as its circular error, and (when the admin
-  turned remarks on) the track number and the sources reporting it.
+  turned remarks on) the track number and the sources reporting it. A track with a security label
+  always has its marking at the start of its remarks ([Markings](#markings)).
 - It moves as OpenTrack updates it (at most every few seconds). A track that ends, is deleted or
   merged away, or stops being published disappears from TAK at once. A track that stops
   reporting goes stale in TAK a minute (by default) after its last report and disappears, even

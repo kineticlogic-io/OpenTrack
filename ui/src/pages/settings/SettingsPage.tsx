@@ -214,7 +214,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
       <CollapsiblePanel title="Data" persistKey="ot.panel.settings.data">
         <div className="panel-body">
-          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
+          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources. Each file is marked with the highest security label in it (the banner's classification when none has one), and each labelled track with its own marking.">
             <div className="num-row">
               <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
                 GeoJSON

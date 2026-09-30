@@ -121,6 +121,8 @@ export interface SystemTrack {
 export interface TrackResponse {
   /** Probability that the track is a real object (its sources' existence and pairing confidences). */
   confidence?: number
+  /** The track's security label as a portion marking, e.g. `(S//REL TO USA, GBR)`; absent when it has none. */
+  marking?: string | null
   track: SystemTrack
   /** The `opentrack.track.v2` message as published. */
   message: TrackMessage
@@ -290,6 +292,8 @@ export interface TrackRow {
   state: SystemTrack['state']
   class: string
   gold_name: string
+  /** The track's security label as a portion marking; null when it has none. */
+  marking?: string | null
   domain: string
   affiliation: string
   force_code: number

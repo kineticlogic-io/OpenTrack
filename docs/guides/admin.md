@@ -746,7 +746,8 @@ page:
 
 Each OpenTrack sets its own banner, whatever the OpenStare it feeds shows. Browsers pick up a change
 within a minute. The banner marks the system; it does not mark the tracks (see
-[Security labels](#security-labels)).
+[Security labels](#security-labels)). Its text also marks exported files with no labelled content,
+whether or not the banner is shown, so keep it right (see [Markings](#markings)).
 
 ### Notice and consent
 
@@ -786,6 +787,48 @@ It runs lowest first, and by default reads `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`
 Case does not matter, `U`, `C`, `S` and `TS` stand for their names, and caveats after `//` are
 ignored when ranking. A classification that isn't in the list ranks above all of them, so a track
 is never marked too low. Add `TOP SECRET` (or your own levels) if your sources carry them.
+
+OpenTrack does not hide or withhold anything by label or by the user's clearance: everyone signed
+in sees every track, and every output sends every published track. Labels are marked, not enforced;
+enforcement is downstream.
+
+### Markings
+
+Every output shows a labelled track's label as one **portion marking**, in common US marking
+syntax:
+- the classification abbreviated: `U`, `C`, `S`, `TS` (others, such as `CUI` or `NATO SECRET`, in
+  capitals as written);
+- after `//`, the restrictions in their order, in capitals, each once, separated by `/`
+  (with any `//` caveats written in the classification first);
+- last, the releasability as `REL TO` with `USA` first, then other country codes, then
+  organisations (`FVEY`, `NATO`), each alphabetical. Releasable to nothing in common (`NONE`)
+  is `NOFORN`, and a `NOFORN` restriction drops the `REL TO` list.
+
+So `SECRET` with `ORCON` and sharing `GBR, USA` is `(S//ORCON/REL TO USA, GBR)`, and
+`UNCLASSIFIED` with `FOUO` is `(U//FOUO)`. A track without a label has no marking.
+
+Where the marking appears:
+- **TAK**: a `__security` element and the start of the remarks (see
+  [What TAK receives](#what-tak-receives)).
+- **NATS**: the label itself, as `security` ([docs/nats-output.md](../nats-output.md)).
+- **The UI**: the track card (**Marking**) and the track table's **Marking** column; the track
+  API (`GET /api/v1/tracks/<UID>`, `GET /api/v1/tracks`) returns it as `marking`.
+- **Exported files**, each with an overall marking:
+
+| File | Overall marking | Per item |
+|---|---|---|
+| Tracks, GeoJSON (Settings → Data) | top-level `security.marking` | each labelled feature's `security` (the label) and `marking` |
+| Tracks, CSV | the first line, above the header | the `classification` column (empty when unlabelled) |
+| Audit record CSV | the first line | none |
+| Registry XLSX / CSV | the first row, above the header (and each printed page's header and footer in XLSX) | none |
+| Configuration export | the `marking` member | the sources' labels, in their specifications |
+
+A file's overall marking is the banner's text (**Settings → Banners**, whether or not the banner
+is shown) when nothing in it has a label. Otherwise it is the marking of its items' labels combined
+as a fused track's are (highest classification, every restriction, shared releasability), with the
+banner's text standing for any item without a label, so a file is never marked below the system
+it came from. For the configuration export the items are the sources. A registry sheet imports
+with or without its marking row.
 
 ## Settings tab
 
@@ -971,7 +1014,7 @@ Every output has:
 | **Name** | 1 to 32 letters, digits, `-` or `_`, unique. It names the output in logs, the status and the metrics. |
 | **On** | Send to it, or keep it without sending. |
 | **Stale after** | Seconds after a track's **last report** that TAK lets it go (10 to 86400, default 60). OpenTrack re-sends a track every half of this until then, then stops: a track that stops reporting greys out and leaves TAK this long after its last report, even while OpenTrack still holds it (OpenTrack keeps a silent track for up to 6 hours). A new report brings it back. If OpenTrack itself stops sending, tracks leave TAK the same way. |
-| **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. |
+| **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. A labelled track's remarks carry its marking whether or not this is on (see [What TAK receives](#what-tak-receives)). |
 
 and one of three deliveries:
 
@@ -1060,12 +1103,14 @@ Each published track is one CoT event:
 | `point` | Latitude, longitude, `hae` (height above the ellipsoid) and the error: `ce` the circular 1-sigma horizontal error (from the ellipse, covariance or circular error), `le` the vertical error. `9999999` when unknown. |
 | `detail/track` | `course` (degrees true) and `speed` (m/s), when known. |
 | `detail/contact` | `callsign`: the track's callsign, a `callsign` identifier, its name, its platform's name, or its track number (`OTK000000042`). |
-| `detail/remarks` | With **Remarks**: `OpenTrack <UID>; sources: <source ids>`. |
+| `detail/__security` | A labelled track only: `classification` (as the label gives it), `caveats` (its restrictions, `/` separated), `releasability` (its sharing) and `marking` (the portion marking, see [Markings](#markings)). Absent attributes are empty in the label. |
+| `detail/remarks` | With **Remarks**: `OpenTrack <UID>; sources: <source ids>`. A labelled track's remarks start with its marking, `(S//REL TO USA, GBR) OpenTrack …`, and are the marking alone when **Remarks** is off, so every TAK client shows it. An unlabelled track has neither. |
 
 A track that ends gets a delete, in the form ATAK sends:
 `<event uid="tms-<UID>" type="t-x-d-d" how="m-g" …>` with `stale` equal to `time`, and
 `<detail><link uid="tms-<UID>" relation="none" type="<its last type>"/><__forcedelete/></detail>`.
-TAK removes the track at once. A client that missed it (disconnected at the time) drops the track
+TAK removes the track at once. A delete carries no marking: it holds nothing about the track but
+its uid. A client that missed it (disconnected at the time) drops the track
 when it goes stale.
 
 Updates of one track are sent at most every `OT_COT_MIN_INTERVAL_SECS` (2 s), identity and
@@ -1145,7 +1190,7 @@ What it holds (the file's sections):
 
 | Section | What |
 |---|---|
-| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`. |
+| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`, `marking` (see [Markings](#markings)). |
 | `sources` | Every source as stored: `id`, `name`, `transport`, `codec`, `enabled`, `priority`, `revision`, `spec` (with its secrets), `raw_subject` (raw output, if consented). |
 | `schema_versions` | Every output schema version (`version`, `status`, `published_at_ms`, `notes`, `fields`), the draft too. |
 | `correlation_settings` | The saved correlation settings, security labels included (`null`: never saved). |
@@ -1217,7 +1262,8 @@ downloads every entity: id, name, status, publish override, the OTH-GOLD minimum
 attributes. **Import sheet** (track managers) brings a sheet back: it plans every row first, and
 writes nothing while any row has an error. A row updates the entity its `entity_id` names (and
 creates it under that id if missing), else the one its identifiers belong to, else creates one.
-The entities' revision history is not in the sheet.
+The entities' revision history is not in the sheet. The sheet's first row is its marking (see
+[Markings](#markings)); an import reads a sheet with or without it.
 
 ### Restore
 
@@ -1491,7 +1537,8 @@ the chain. The database refuses updates to the table.
   ```
 - **Review through the API** (admins): `GET /api/v1/audit` filters by time (`from_ms`, `to_ms`),
   account (`actor`), event (`op`, comma-separated) and `outcome`, pages back with `before_seq`,
-  and gives CSV with `format=csv`. `GET /api/v1/audit/verify` checks the chain.
+  and gives CSV with `format=csv` (its first line the banner's text as the file's marking, see
+  [Markings](#markings)). `GET /api/v1/audit/verify` checks the chain.
 - **Fail closed:** if a sign-in can't be recorded in the table, it is refused. A collector outage
   does not refuse anything: the table has the record, and the Telemetry status shows the outage
   ([OpenTelemetry](#opentelemetry)).

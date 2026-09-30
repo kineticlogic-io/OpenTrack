@@ -59,8 +59,9 @@ output lets anyone who can reach its port take the whole picture. **Multicast is
 plaintext**: anyone on the network segment (or as far as its TTL reaches) can read it. Use them
 only on a network that is itself protected and accredited for the picture's classification, and
 document the risk acceptance; keep multicast TTL at 1. The TAK output panel marks each output TLS or
-plaintext, and the `cot` role logs a warning when a plaintext output starts. OpenTrack sends
-events as the tracks are, without adding classification markings to them.
+plaintext, and the `cot` role logs a warning when a plaintext output starts. A labelled track's
+events carry its marking (a `__security` element and the start of the remarks), but that marks
+them; it does not protect them.
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 
