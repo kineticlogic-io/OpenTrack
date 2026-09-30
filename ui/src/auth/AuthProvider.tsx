@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useToast } from 'staresdk'
 import { api, ApiError, type AuthPublic, type Me, type Role } from '../api/client'
 import { trackActivity, withIdle } from './activity'
-import { AuthCtx, here, roleAtLeast } from './context'
+import { AuthCtx, canHere, here } from './context'
 
 /** Calls whose 401 is an answer (wrong password, not signed in yet), not a lapsed session. */
 const QUIET_401 = ['/api/v1/auth/login', '/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/public']
@@ -93,7 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const authOn = config ? config.auth : user?.via !== 'disabled'
-  const hasRole = useCallback((min: Role) => roleAtLeast(user?.role, min), [user?.role])
+  // Admin areas are hidden where the admin routes aren't served (OT_ADMIN_BIND).
+  const hasRole = useCallback((min: Role) => canHere(user, min), [user])
 
   const value = useMemo(() => ({ user, config, authOn, loading, hasRole, login, logout, setUser }), [user, config, authOn, loading, hasRole, login, logout])
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>

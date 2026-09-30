@@ -415,6 +415,8 @@ Turning it on:
 | `OT_TLS_CLIENT_CA` | | with TLS, accept client certificates this CA signed, as the accounts Settings → Security maps them to |
 | `OT_TLS_CLIENT_CRL` | | revocation lists for those client certificates (PEM/DER files or directories, comma separated), used when OCSP gives no answer; revoked, uncovered or stale-listed certificates are refused; reloaded on change |
 | `OT_TLS_CLIENT_OCSP_URL` | | the OCSP responder to ask about client certificates instead of each one's own (AIA); with neither an OCSP answer nor a revocation list a certificate is refused |
+| `OT_ADMIN_BIND` | | also listen here, and serve the admin routes only here (the main address answers them 404); for a management network |
+| `OT_ADMIN_TLS_CERT`, `OT_ADMIN_TLS_KEY`, `OT_ADMIN_TLS_CLIENT_CA` | | the admin listener's own TLS; unset, the main listener's (the CRLs are shared) |
 | `OT_REDIS_CA`, `OT_REDIS_CERT`, `OT_REDIS_KEY` | | TLS to Redis with a `rediss://` URL: trust this CA; mutual TLS with this certificate and key |
 | `OT_PUBLIC_TLS` | off | `1`: a proxy in front ends TLS, so cookies are `Secure` and HSTS is sent (also implied by an `https://` `OT_PUBLIC_URL`) |
 | `OT_SYNC_PREFIX` | `ot.sync` | subject prefix of the sync boundary with other nodes (`<prefix>.out.*`, `<prefix>.in.*`) |

@@ -43,6 +43,15 @@ themselves are described in the administrator guide, under
 6. **Never set `OT_AUTH=off`** outside a laboratory. It makes every caller an admin; the server
    warns every minute and the UI shows a red banner.
 
+## Separate administration
+
+Set `OT_ADMIN_BIND` to an address on the management network (or `127.0.0.1:…` behind a jump
+host), so the admin interface is on its own listener and the users' address has none (SC-7,
+SC-2): the admin routes answer 404 there. Publish that port to the management network only,
+and allow only administrators' hosts to reach it with the host or network firewall. Give it its
+own certificate and client CA (`OT_ADMIN_TLS_*`) if administrators use different PKI.
+[Admin listener](../guides/admin.md#admin-listener).
+
 ## Encrypt every link
 
 | Link | Settings |
