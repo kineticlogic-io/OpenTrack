@@ -361,7 +361,7 @@ async fn sends_multicast_sa() {
     let receiver = tokio::net::UdpSocket::from_std(socket).unwrap();
     // A host with no multicast route cannot send to the group at all.
     let probe = output::udp_socket(
-        std::net::SocketAddrV4::new(group, receiver.local_addr().unwrap().port()),
+        SocketAddr::from((group, receiver.local_addr().unwrap().port())),
         1,
         None,
     )
@@ -379,6 +379,38 @@ async fn sends_multicast_sa() {
         .is_err()
     {
         eprintln!("skipped: multicast is not looped back here");
+        return;
+    }
+    udp_round_trip(&group.to_string(), receiver).await;
+}
+
+#[tokio::test]
+async fn sends_multicast_sa_over_ipv6() {
+    // Link-local scope, joined and sent on the system's default interface.
+    let group: std::net::Ipv6Addr = "ff02::6969:99".parse().unwrap();
+    let Ok(socket) = std::net::UdpSocket::bind("[::]:0") else {
+        eprintln!("skipped: no IPv6 here");
+        return;
+    };
+    if let Err(e) = socket.join_multicast_v6(&group, 0) {
+        eprintln!("skipped: no IPv6 multicast here ({e})");
+        return;
+    }
+    socket.set_nonblocking(true).unwrap();
+    let receiver = tokio::net::UdpSocket::from_std(socket).unwrap();
+    let port = receiver.local_addr().unwrap().port();
+    let dest = SocketAddr::from((group, port));
+    let probe = output::udp_socket(dest, 1, None).unwrap();
+    if let Err(e) = probe.send_to(b"probe", dest).await {
+        eprintln!("skipped: no IPv6 multicast route here ({e})");
+        return;
+    }
+    let mut buf = [0u8; 16];
+    if tokio::time::timeout(Duration::from_secs(1), receiver.recv(&mut buf))
+        .await
+        .is_err()
+    {
+        eprintln!("skipped: IPv6 multicast is not looped back here");
         return;
     }
     udp_round_trip(&group.to_string(), receiver).await;

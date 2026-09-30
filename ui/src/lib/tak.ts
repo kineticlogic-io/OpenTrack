@@ -36,7 +36,7 @@ export function outputWhere(o: TakOutput): string {
     case 'tak_server':
       return `${d.host || '?'}:${d.port}`
     case 'multicast':
-      return `${d.group}:${d.port}${d.interface ? ` via ${d.interface}` : ''}`
+      return `${isIpv6(d.group.trim()) ? `[${d.group.trim()}]` : d.group}:${d.port}${d.interface ? ` via ${d.interface}` : ''}`
     case 'listen':
       return d.bind
   }
@@ -45,6 +45,20 @@ export function outputWhere(o: TakOutput): string {
 export const isEncrypted = (d: TakDelivery): boolean => d.kind !== 'multicast' && d.tls != null
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
+
+/** An IPv6 address (no zone), as the URL parser reads one. */
+export function isIpv6(s: string): boolean {
+  if (!s.includes(':') || s.includes('%')) return false
+  try {
+    new URL(`http://[${s}]/`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** An interface name (eth0) or index (2), how an IPv6 group picks its interface. */
+const IFACE = /^[!-~]{1,15}$/
 
 /** What is wrong with an output, as the server would refuse it; null if nothing. */
 export function outputProblem(o: TakOutput, others: TakOutput[]): string | null {
@@ -60,11 +74,19 @@ export function outputProblem(o: TakOutput, others: TakOutput[]): string | null 
       if (d.tls && !!d.tls.cert_file?.trim() !== !!d.tls.key_file?.trim()) return 'A client certificate needs its key, and a key its certificate.'
       return null
     case 'multicast':
-      if (!IPV4.test(d.group.trim())) return 'The group is an IPv4 address, e.g. 239.2.3.1.'
+    {
+      const group = d.group.trim()
+      const v6 = isIpv6(group)
+      if (!v6 && !IPV4.test(group)) return 'The group is an IPv4 or IPv6 address, e.g. 239.2.3.1 or ff15::6969.'
       if (!port(d.port)) return 'The port is 1 to 65535.'
       if (!(Number.isInteger(d.ttl) && d.ttl >= 1 && d.ttl <= 255)) return 'TTL is 1 to 255.'
-      if (d.interface?.trim() && !IPV4.test(d.interface.trim())) return 'The interface is an IPv4 address of this host.'
+      const i = d.interface?.trim()
+      if (!i) return null
+      if (!v6) return IPV4.test(i) ? null : 'For an IPv4 group the interface is an IPv4 address of this host.'
+      if (!/^ff/i.test(group)) return 'An IPv6 unicast address takes no interface.'
+      if (IPV4.test(i) || i.includes(':') || i.includes('/') || !IFACE.test(i)) return 'For an IPv6 group the interface is a name (eth0) or index (2).'
       return null
+    }
     case 'listen': {
       const m = /^(.+):(\d+)$/.exec(d.bind.trim())
       if (!m || !port(Number(m[2]))) return 'Listen on address:port, e.g. 0.0.0.0:8089.'

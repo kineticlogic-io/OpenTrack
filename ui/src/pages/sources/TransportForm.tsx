@@ -628,14 +628,14 @@ export function TransportForm({
             value={transport.multicast_group}
             onChange={(v) => set('multicast_group', v)}
             placeholder="optional, e.g. 239.2.3.1"
-            help="An IPv4 multicast group to join. Blank: unicast only."
+            help="A multicast group to join, IPv4 or IPv6 (bind [::]:port for IPv6). Blank: unicast only."
           />
           <Text
             label="Multicast interface"
             value={transport.multicast_interface}
             onChange={(v) => set('multicast_interface', v)}
             placeholder="optional"
-            help="IPv4 address of the local interface to join the group on. Blank: any interface."
+            help="The local interface to join the group on: its IPv4 address for an IPv4 group, its name (eth0) or index for an IPv6 group. Blank: the system's choice."
           />
         </>
       )}
