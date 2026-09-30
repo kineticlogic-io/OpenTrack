@@ -451,6 +451,61 @@ scripts/benchmark/bench run all --label x   # run and score; compare two runs wi
 
 See [scripts/benchmark/README.md](scripts/benchmark/README.md).
 
+## Scale and hardware
+
+### A worldwide AIS test (0.4.2, 2026-09-30)
+
+One node (`opentrack all`, the image, with Redis and NATS beside it) on an Intel i7-10850H laptop
+(6 cores, 12 threads, 32 GB RAM, SSD). The aisstream.io source's filter was removed, so every AIS
+vessel in the world was published: about 40 to 70 messages a second came in, and the pipeline's
+throttle (30 s, 50 m) passed about 20 to 30 a second to the engine. Position history was the
+default (12 hours, at most a point every 10 s).
+
+| After | Live tracks | OpenTrack RSS | Redis | CPU (of one core) |
+|---|---|---|---|---|
+| Start | 1,393 | 0.8 GB | 149 MB | idle |
+| 5 min | 16,130 | 1.7 GB | 195 MB | 5 to 25% |
+| 10 min | 22,390 | 1.9 GB | 215 MB | 2 to 27% |
+| 13 min | 23,455 | 2.1 GB | 226 MB | 2 to 46% (peaks while new tracks correlate) |
+
+Throughout, the engine and the writer kept up: no observation backlog, no outbox lag, no errors,
+and no TAK client dropped. New tracks slowed from about 3,000 to 650 a minute as the world's fleet
+was discovered. This measures **how many tracks one node holds**, not the highest message rate:
+the free AIS feed is far below what the engine is built for (16,000 tracks updating every second).
+Test a higher rate with `opentrack synthetic` or `opentrack bench` before sizing for one.
+
+### Estimating what you need
+
+- **OpenTrack's memory** grows with live tracks: about **90 KB a track** in this test (tracks,
+  their links, correlation state), plus about 0.5 GB for the process itself.
+- **Redis** holds live tracks and their position history. History is about **130 bytes a point**;
+  a track keeps at most `history hours × 3600 ÷ interval` points, fewer when it reports less often
+  (AIS behind the throttle: a point every 30 s at most, every 10 minutes when anchored). So:
+  `Redis ≈ tracks × points kept × 130 B`, plus about 10 KB a live track. 20,000 moving vessels for
+  12 hours at a point a minute is about 2 GB; at the 10 s default, if they all moved, about 11 GB.
+  Shorten the history (Settings → General → Position history) before buying memory for it.
+- **CPU** follows the message rate and the number of new tracks, not the track count: correlation
+  of a new track is the expensive step. Budget a core for every few hundred messages a second until
+  you have measured your own feed.
+- **Disk:** SQLite (decisions, the track graph, the registry) was 74 MB here and grows with
+  decisions; JetStream keeps the published stream by its limits (`TRACKS`). An SSD matters more
+  than its size.
+- **TAK:** every published track goes to every TAK output. Tens of thousands of tracks are fine
+  for OpenTrack but heavy for ATAK clients; publish less (source filters) rather than more.
+
+### Suggested sizes
+
+These start from the test above; the larger tiers are **estimates** until someone runs them.
+
+| Picture | Example | vCPU | RAM (OpenTrack + Redis) | Disk |
+|---|---|---|---|---|
+| Up to 2,000 tracks, under 50 messages/s | a regional sensor site, one AIS or radar feed | 2 | 4 GB | 20 GB SSD |
+| Up to 25,000 tracks, under 100 messages/s | worldwide AIS, as tested | 4 | 8 GB with history of 2 h, 16 GB with 12 h | 50 GB SSD |
+| Up to 60,000 tracks, or several hundred messages/s | several worldwide feeds, radar clusters | 8 | 32 GB | 100 GB SSD |
+| Beyond that | | Split the picture over several nodes (see [Several nodes, one picture](#several-nodes-one-picture)) and measure with `opentrack bench` | | |
+
+Redis and NATS can share the host at the smaller sizes; give them their own at the larger ones.
+
 ## UI components
 
 The UI uses only components from OpenStare's **stareSDK** (Elite Command Design System), vendored
