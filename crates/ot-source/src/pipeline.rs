@@ -9,7 +9,7 @@
 //! The worker feeds frames in and ships observations out; everything here is
 //! deterministic given its inputs, so it can be replayed in tests and probes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -170,13 +170,15 @@ struct LastWrite {
 }
 
 impl ThrottleSpec {
-    fn due(&self, last: Option<&LastWrite>, obs: &Observation) -> bool {
+    /// `changed`: a static report changed the track's joined details since
+    /// the last write, so it ships as soon as the minimum interval allows.
+    fn due(&self, last: Option<&LastWrite>, obs: &Observation, changed: bool) -> bool {
         let Some(last) = last else { return true };
         let dt = (obs.observed_at - last.at).num_milliseconds() as f64 / 1000.0;
         if dt < self.min_interval_secs {
             return false;
         }
-        if dt >= self.heartbeat_secs {
+        if changed || dt >= self.heartbeat_secs {
             return true;
         }
         self.min_move_m > 0.0
@@ -306,6 +308,8 @@ pub struct Pipeline {
     codec: Codec,
     statics: HashMap<String, StaticEntry>,
     throttle: HashMap<String, LastWrite>,
+    /// Source tracks whose static details changed since their last write.
+    details_changed: HashSet<String>,
     /// Extension field types for the mapping's schema version.
     schema: Option<crate::schema::ExtensionSchema>,
     pub counts: Counts,
@@ -368,6 +372,7 @@ impl Pipeline {
             spec,
             statics: HashMap::new(),
             throttle: HashMap::new(),
+            details_changed: HashSet::new(),
             schema: None,
             counts: Counts::default(),
             default_registry: RegistryStage::default(),
@@ -636,16 +641,18 @@ impl Pipeline {
     fn emit(&mut self, obs: Observation, out: &mut Output, trace: Option<&mut SampleTrace>) {
         if obs.state == Some(ot_core::TrackState::Dropped) {
             self.throttle.remove(&obs.source_track_key);
+            self.details_changed.remove(&obs.source_track_key);
         } else if let Some(t) = &self.spec.throttle {
             let key = obs.source_track_key.clone();
             let last = self.throttle.get(&key);
-            if !t.due(last, &obs) {
+            if !t.due(last, &obs, self.details_changed.contains(&key)) {
                 self.counts.throttled += 1;
                 if let Some(f) = trace {
                     f.dropped("throttle", t.why_not(last, &obs));
                 }
                 return;
             }
+            self.details_changed.remove(&key);
             self.throttle.insert(
                 key,
                 LastWrite {
@@ -735,6 +742,8 @@ impl Pipeline {
                     identifiers: Vec::new(),
                     updated_at: received_at,
                 });
+            let before = entry.fields.clone();
+            let ids_before = entry.identifiers.len();
             merge_over(&mut entry.fields, &m.fields);
             for id in &m.identifiers {
                 if !entry.identifiers.contains(id) {
@@ -742,6 +751,9 @@ impl Pipeline {
                 }
             }
             entry.updated_at = received_at;
+            if entry.fields != before || entry.identifiers.len() != ids_before {
+                self.details_changed.insert(m.key.clone());
+            }
             out.statics.push((m.key.clone(), entry.clone()));
         }
         for m in mapped.into_iter().filter(|m| m.kind.reports()) {
@@ -1045,6 +1057,79 @@ mod tests {
         assert_eq!(c.statics, 1);
         assert_eq!(c.grades.get("exact"), Some(&5));
         assert_eq!(c.grades.get("none"), Some(&1));
+    }
+
+    #[test]
+    fn changed_static_details_ship_before_the_heartbeat() {
+        let reg = reg();
+        let mut p = Pipeline::new("ais", spec()).unwrap();
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:00:00Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        // The same static report again changes nothing: stationary, not due.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:02:00Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        // A new destination: the next report ships, once.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "OAKLAND"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:02:20Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:20Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        // Another change inside the 30 s floor waits for it.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "SEATTLE"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:40Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "OAKLAND"}),
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:50Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:04:10Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
     }
 
     #[test]
