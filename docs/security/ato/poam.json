@@ -109,9 +109,9 @@
  },
  {
   "id": "P-22",
-  "weakness": "The v0.4.2 image has 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base packages (perl-base, util-linux, libxml2, zlib, ncurses, ...), none with a fix at scan time (tzdata has one).",
+  "weakness": "The v0.4.2 and v0.4.3 images have 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base packages (perl-base, util-linux, libxml2, zlib, ncurses, ...), none with a fix at scan time (tzdata has one).",
   "controls": "RA-5, SI-2, SA-22",
-  "checks": "scans/v0.4.2/scan.md",
+  "checks": "scans/v0.4.2/scan.md, scans/v0.4.3/scan.md",
   "severity": "CAT I",
   "remediation": "Rebuild on the current base; move to a minimal runtime image carrying only what the binary, SAML (libxml2/xmlsec) and the OpenSSL FIPS provider need.",
   "target": "0.4.x"
