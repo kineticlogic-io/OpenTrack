@@ -42,6 +42,7 @@ use ot_core::{Contributor, Domain, Observation, PairingType, SystemTrack, TrackS
 use ot_source::schema::{ExtensionSchema, resolve_attributes};
 use ot_store::{Decision, RedisStore};
 use serde_json::{Map, Value, json};
+use tracing::Instrument;
 
 use crate::config::Common;
 
@@ -951,6 +952,16 @@ impl Engine {
         if batch.is_empty() {
             return Ok(0);
         }
+        let span = tracing::info_span!("engine.batch", observations = batch.len());
+        self.process_batch(batch).instrument(span).await
+    }
+
+    /// Correlate one batch read from the observation streams, write what
+    /// changed and acknowledge it.
+    async fn process_batch(
+        &mut self,
+        batch: Vec<(String, String, Result<Observation, String>)>,
+    ) -> anyhow::Result<usize> {
         let read = batch.len();
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();

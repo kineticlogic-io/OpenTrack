@@ -39,6 +39,13 @@ services:
       OT_TLS_KEY: ${OT_TLS_KEY:-}
       OT_TLS_CLIENT_CA: ${OT_TLS_CLIENT_CA:-}
       OT_LOG: ${OT_LOG:-info}
+      # OpenTelemetry (docs/guides/admin.md#opentelemetry): logs, the audit
+      # record, traces and metrics to your collector. Off while unset.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_EXPORTER_OTLP_CERTIFICATE: ${OTEL_EXPORTER_OTLP_CERTIFICATE:-}
+      OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE: ${OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE:-}
+      OTEL_EXPORTER_OTLP_CLIENT_KEY: ${OTEL_EXPORTER_OTLP_CLIENT_KEY:-}
     volumes:
       # SQLite: sources, schema, registry, cards, decisions and the track graph.
       - ${OT_DATA_DIR:-./data}:/data

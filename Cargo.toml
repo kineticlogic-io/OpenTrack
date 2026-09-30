@@ -63,6 +63,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 tower-http = { version = "0.7", features = ["fs", "trace", "compression-gzip", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Logs (audit included), traces and metrics over OTLP to the deployment's
+# collector. gRPC (tonic) and HTTP (reqwest); TLS through the process's rustls
+# provider, which is the AWS-LC FIPS one (no `ring`).
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "metrics", "logs", "grpc-tonic", "tls-provider-agnostic", "tls-roots", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-appender-tracing = { version = "0.33", default-features = false }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 # Plugins: WebAssembly components (wit/plugin.wit), sandboxed with WASI.
 wasmtime = { version = "49", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std", "parallel-compilation", "cache"] }
 wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }

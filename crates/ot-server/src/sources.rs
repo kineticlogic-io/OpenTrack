@@ -26,6 +26,7 @@ use ot_store::RedisStore;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use crate::config::Common;
 
@@ -410,7 +411,8 @@ async fn pipeline_loop(
         let out = tokio::select! {
             frame = rx.recv() => {
                 let Some(frame) = frame else { return Ok(()) };
-                pipeline.process(&frame, registry.as_ref())
+                tracing::info_span!("source.process", source = %id)
+                    .in_scope(|| pipeline.process(&frame, registry.as_ref()))
             }
             _ = hold.tick(), if spec.pipeline.tracker.is_some() => pipeline.flush(Utc::now(), false),
             _ = flush.tick() => {
@@ -447,7 +449,14 @@ async fn pipeline_loop(
                 o.security = Some(label.clone());
             }
         }
-        redis.append_observations(id, &out.observations).await?;
+        redis
+            .append_observations(id, &out.observations)
+            .instrument(tracing::info_span!(
+                "source.write",
+                source = %id,
+                observations = out.observations.len()
+            ))
+            .await?;
         if let Some(raw) = raw {
             for obs in &out.observations {
                 let body = serde_json::to_vec(obs)?;

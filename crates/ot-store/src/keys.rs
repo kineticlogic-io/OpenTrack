@@ -12,6 +12,7 @@
 //! | `<ns>:out`                        | stream of publish work for the writer (capped) |
 //! | `<ns>:out:ctl`                    | deletes for the writer (never trimmed)         |
 //! | `<ns>:cot:status`                 | the TAK outputs' status (expires)              |
+//! | `<ns>:telemetry`                  | each process's OTLP export status (hash)       |
 //! | `<ns>:metrics:<source>:<minute>`  | per-source, per-minute counters                |
 //! | `<ns>:cache:*`, `<ns>:throttle:*` | static-join cache and write throttles (TTL)    |
 
@@ -100,6 +101,12 @@ impl Keys {
     /// (JSON, expiring when the role stops writing it).
     pub fn cot_status(&self) -> String {
         format!("{}:cot:status", self.ns)
+    }
+
+    /// How each process's OpenTelemetry export is going: a hash, one field
+    /// per process (JSON, stamped with when it was written).
+    pub fn telemetry_status(&self) -> String {
+        format!("{}:telemetry", self.ns)
     }
 
     /// Cached static (identity) fields of a source track, for the static join.

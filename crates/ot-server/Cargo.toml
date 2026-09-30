@@ -22,7 +22,7 @@ argon2.workspace = true
 jsonwebtoken.workspace = true
 uuid.workspace = true
 aws-lc-rs.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 futures-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -48,6 +48,11 @@ tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
+tracing-opentelemetry.workspace = true
 
 [features]
 # SAML single sign-on; needs libxmlsec1. Leave it out for a lean node
