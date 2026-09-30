@@ -6,6 +6,7 @@ import { errorMessage, fmtTime, show } from '../../lib/format'
 import { InfoTip } from '../../components/InfoTip'
 import { EntityEditor } from './EntityEditor'
 import { useCan } from '../../auth/context'
+import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
 
 const PAGE = 200
 
@@ -59,6 +60,7 @@ export default function RegistryPage() {
   const [plan, setPlan] = useState<{ file: File; result: SheetImport } | null>(null)
   const [busy, setBusy] = useState(false)
   const picker = useRef<HTMLInputElement>(null)
+  const [listOpen, setListOpen] = usePanelOpen('ot.panel.registry')
 
   const load = useCallback(() => {
     api.registryEntities(query.trim(), PAGE).then(
@@ -106,11 +108,13 @@ export default function RegistryPage() {
 
   const planRows = plan?.result.rows.filter((r) => r.action !== 'unchanged') ?? []
   return (
-    <div className="stack">
+    <div className="stack fill-page">
       <CollapsiblePanel
         title="Registry"
         badge={rows ? (query.trim() ? `${rows.length.toLocaleString()} of ${total.toLocaleString()}` : total.toLocaleString()) : undefined}
-        persistKey="ot.panel.registry"
+        open={listOpen}
+        onOpenChange={setListOpen}
+        style={listOpen ? FILL_PANEL : undefined}
         titleActions={
           <div className="title-tools">
             <div className="search">
@@ -166,7 +170,7 @@ export default function RegistryPage() {
           </>
         }
       >
-        <div className="panel-body">
+        <div className="panel-body fill">
           <DataTable
             aria-label="Registry entities"
             columns={COLUMNS}
@@ -174,7 +178,7 @@ export default function RegistryPage() {
             rowKey={(e) => e.id}
             onRowClick={(e) => setEditing(e.id)}
             empty={rows ? 'No entity matches.' : 'Loading…'}
-            maxHeight={560}
+            maxHeight="none"
           />
           {rows && total > rows.length && <span className="muted">Showing the first {rows.length.toLocaleString()}; search to narrow.</span>}
         </div>
