@@ -46,6 +46,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["fips"]
 rustls-native-certs = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 socket2 = "0.6"
+# Interface name to index for IPv6 multicast joins (if_nametoindex), without unsafe code.
+nix = { version = "0.30", default-features = false, features = ["net"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

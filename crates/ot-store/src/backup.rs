@@ -5,8 +5,8 @@
 //! The document carries everything an admin configured here, secrets
 //! included: sources (as stored), output schema versions, correlation,
 //! instance and sign-in settings, accounts with their password hashes and
-//! history, API token records, the registry, plugins (components
-//! included), the track number counters, and (filled by the server, which
+//! history, API token records, the registry, plugins (components and
+//! external plugins' secrets included), the track number counters, and (filled by the server, which
 //! keeps them as files) the tracker profiles imported here. It never
 //! carries the session signing key, sessions, the audit record, the
 //! decision log, the track graph or anything in Redis.
@@ -208,6 +208,9 @@ pub struct PluginEntry {
     /// Where an external plugin listens.
     #[serde(default)]
     pub address: Option<String>,
+    /// The secret an external plugin shares (or a `${env:NAME}` reference).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
     pub grants: Value,
     pub enabled: bool,
     #[serde(default)]
@@ -455,7 +458,7 @@ impl Db {
         let plugins = conn
             .prepare(
                 "SELECT name, runtime, version, manifest, wasm, sha256, address, grants, enabled,
-                        created_at_ms, updated_at_ms
+                        created_at_ms, updated_at_ms, secret
                  FROM plugins ORDER BY name",
             )?
             .query_map([], |r| {
@@ -469,6 +472,7 @@ impl Db {
                     wasm: r.get(4)?,
                     sha256: r.get(5)?,
                     address: r.get(6)?,
+                    secret: r.get(11)?,
                     grants: serde_json::from_str(&grants).unwrap_or_else(|_| json!({})),
                     enabled: r.get(8)?,
                     created_at_ms: r.get(9)?,
@@ -701,8 +705,8 @@ impl Db {
             for p in &f.plugins {
                 tx.execute(
                     "INSERT INTO plugins (name, runtime, version, manifest, wasm, sha256, address,
-                         grants, enabled, created_at_ms, updated_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         grants, enabled, created_at_ms, updated_at_ms, secret)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         p.name,
                         p.runtime,
@@ -715,6 +719,7 @@ impl Db {
                         p.enabled,
                         if p.created_at_ms > 0 { p.created_at_ms } else { now },
                         now,
+                        p.secret,
                     ],
                 )?;
             }
@@ -802,6 +807,7 @@ mod tests {
                 wasm: Some((b"\0asm", "abc")),
                 address: None,
                 grants: &json!({"memory_mb": 64}),
+                secret: None,
             },
             "op:test",
         )

@@ -117,6 +117,9 @@ pub async fn run(
     let mut config_tick = tokio::time::interval(CONFIG_POLL);
     let mut registry_tick = tokio::time::interval(REGISTRY_POLL);
     let mut entity_tick = tokio::time::interval(ENTITY_WRITE_EVERY);
+    // Enabled sources refused a start, and why: their status says so.
+    let mut refused: BTreeMap<String, NotStarted> = BTreeMap::new();
+    let mut refused_tick = tokio::time::interval(FLUSH_EVERY);
     tokio::pin!(shutdown);
     tracing::info!("source workers started");
     loop {
@@ -139,6 +142,13 @@ pub async fn run(
                     }
                     Ok(None) => {}
                     Err(e) => tracing::warn!(error = %e, "registry refresh failed"),
+                }
+            }
+            _ = refused_tick.tick(), if !refused.is_empty() => {
+                for (id, n) in &refused {
+                    if let Err(e) = redis.put_source_status(id, &n.status(id).to_string(), STATUS_TTL).await {
+                        tracing::warn!(source = %id, error = %e, "source status write failed");
+                    }
                 }
             }
             _ = entity_tick.tick() => {
@@ -172,7 +182,8 @@ pub async fn run(
                 }).await?;
                 match res {
                     Ok(Some((v, rows, schemas))) => {
-                        reconcile(&common, &mut running, rows, &schemas, &redis, &nats, &registry);
+                        refused = reconcile(&common, &mut running, rows, &schemas, &redis, &nats, &registry);
+                        refused_tick.reset_immediately();
                         config_version = v;
                     }
                     Ok(None) => {}
@@ -213,6 +224,31 @@ pub(crate) fn load_schemas(db: &ot_store::Db) -> anyhow::Result<Schemas> {
     Ok(out)
 }
 
+/// An enabled source the worker will not start.
+struct NotStarted {
+    revision: i64,
+    transport: &'static str,
+    reason: String,
+}
+
+impl NotStarted {
+    /// A status the API shows like a running source's, saying why not.
+    fn status(&self, id: &str) -> serde_json::Value {
+        json!({
+            "source": id,
+            "revision": self.revision,
+            "transport": self.transport,
+            "link": transport::LinkStatus::default(),
+            "last_error": format!("not started: {}", self.reason),
+            "not_started": self.reason,
+            "totals_since_start": {},
+            "updated_at": Utc::now(),
+        })
+    }
+}
+
+/// Start and stop sources to match the configuration; returns the enabled
+/// sources it refused to start.
 fn reconcile(
     common: &Common,
     running: &mut BTreeMap<String, Running>,
@@ -221,7 +257,8 @@ fn reconcile(
     redis: &RedisStore,
     nats: &ot_nats::async_nats::Client,
     registry: &Arc<Registry>,
-) {
+) -> BTreeMap<String, NotStarted> {
+    let mut refused = BTreeMap::new();
     let wanted: BTreeMap<String, ot_store::SourceRow> = rows
         .into_iter()
         .filter(|r| r.enabled)
@@ -254,6 +291,21 @@ fn reconcile(
             tracing::error!(source = %id, error = %e, "not started");
             continue;
         }
+        // A listener saved before 0.4.5 that does not authenticate its
+        // senders doesn't run until it does, or until the risk is accepted
+        // on the source (ASD V-222533).
+        if let Some(reason) = spec.authentication_problem() {
+            tracing::error!(source = %id, error = %reason, "not started");
+            refused.insert(
+                id,
+                NotStarted {
+                    revision: row.revision,
+                    transport: spec.transport.kind(),
+                    reason,
+                },
+            );
+            continue;
+        }
         let Some(schema) = schemas.get(&spec.pipeline.mapping.schema_version).cloned() else {
             tracing::error!(source = %id, version = spec.pipeline.mapping.schema_version,
                 "mapping targets an unpublished schema version; not started");
@@ -281,6 +333,7 @@ fn reconcile(
             },
         );
     }
+    refused
 }
 
 /// Where a source's raw output goes.
@@ -502,4 +555,117 @@ fn rand_fraction() -> f64 {
             .as_nanos(),
     );
     (h.finish() >> 11) as f64 / (1u64 << 53) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A UDP listener saved before 0.4.5, without the risk acceptance, is
+    /// not started, and its status says why; with the acceptance it runs.
+    #[tokio::test]
+    async fn an_unauthenticated_listener_without_the_acceptance_is_not_started() {
+        let Ok(url) = std::env::var("OT_TEST_REDIS_URL") else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ns = format!(
+            "ot-sources-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_micros()
+        );
+        let common = Common {
+            sqlite: dir.path().join("ot.db"),
+            redis: url.clone(),
+            redis_ca: None,
+            redis_cert: None,
+            redis_key: None,
+            redis_namespace: ns.clone(),
+            site: ot_core::SiteCode::new("TST").unwrap(),
+            nats: crate::config::NatsArgs {
+                // Nothing listens here; only raw output would use it.
+                url: "nats://127.0.0.1:9".into(),
+                creds: None,
+                token: None,
+                user: None,
+                password: None,
+                ca: None,
+                cert: None,
+                key: None,
+                stream: "TRACKS".into(),
+                tracks_subject: "tracks".into(),
+                max_age_hours: 24.0,
+            },
+            profiles_dir: "profiles/trackers".into(),
+            obs_window_secs: 600,
+            shared_db: Default::default(),
+        };
+        let redis = RedisStore::connect(&url, ot_store::Keys::new(ns))
+            .await
+            .unwrap();
+        let nats = common.connect_nats().await.unwrap().client().clone();
+        let mut spec: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/examples/gps-udp.json")).unwrap();
+        spec["transport"]["bind"] = json!("127.0.0.1:0");
+        let accepted = spec.clone();
+        spec.as_object_mut().unwrap().remove("unauthenticated");
+        let row = |spec: serde_json::Value, revision| ot_store::SourceRow {
+            id: "gps".into(),
+            name: "GPS".into(),
+            transport: "udp".into(),
+            codec: "json".into(),
+            enabled: true,
+            priority: 100,
+            revision,
+            spec,
+            raw_subject: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let schema = ExtensionSchema {
+            version: accepted["pipeline"]["mapping"]["schema_version"]
+                .as_u64()
+                .unwrap_or(1) as u32,
+            fields: Vec::new(),
+        };
+        let schemas: Schemas = [(schema.version, schema)].into();
+        let registry = Arc::new(Registry::default());
+        let mut running = BTreeMap::new();
+
+        let refused = reconcile(
+            &common,
+            &mut running,
+            vec![row(spec, 1)],
+            &schemas,
+            &redis,
+            &nats,
+            &registry,
+        );
+        assert!(running.is_empty());
+        let status = refused["gps"].status("gps");
+        assert!(
+            status["last_error"]
+                .as_str()
+                .unwrap()
+                .starts_with("not started: a udp source listens"),
+            "{status}"
+        );
+        assert_eq!(status["link"]["connected"], false);
+
+        let refused = reconcile(
+            &common,
+            &mut running,
+            vec![row(accepted, 2)],
+            &schemas,
+            &redis,
+            &nats,
+            &registry,
+        );
+        assert!(refused.is_empty());
+        assert!(running.contains_key("gps"));
+        for (_, r) in running {
+            r.handle.abort();
+        }
+    }
 }

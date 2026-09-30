@@ -8,7 +8,11 @@ Subclass `Codec`, `Tracker` or `Scorer`, describe them in a `Plugin` and call `m
 module then runs two ways:
 
 - `python mine.py serve --address 127.0.0.1:47300` serves it as an **external plugin**, with any
-  packages it imports (numpy, Stone Soup, a GPU). Add the address in Settings → Plugins.
+  packages it imports (numpy, Stone Soup, a GPU). Add the address in Settings → Plugins with the
+  secret the plugin and OpenTrack share: *Generate* makes one there; start the plugin with it in
+  `OT_PLUGIN_SECRET` or a file given with `--secret-file`. Every connection proves both ends hold
+  it before anything else. Without a secret the plugin is reached only over a unix socket under
+  OpenTrack's data directory.
 - `python mine.py build -o mine.wasm` builds a **WebAssembly component** that runs sandboxed inside
   OpenTrack. This works for plain Python only (the standard library and pure-Python packages), and
   needs componentize-py.

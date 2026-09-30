@@ -219,15 +219,16 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 
 ### Plugin commands
 
-- `opentrack plugin check <file.wasm | address> [--grants '<json>']` loads a plugin, opens each
+- `opentrack plugin check <file.wasm | address> [--grants '<json>'] [--secret-file <path>]` loads a plugin, opens each
   kind it provides with its default options, and prints its manifest and what worked. It changes
   nothing and exits non-zero when something failed.
-- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--replace]` adds it, as
+- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--secret-file <path>] [--replace]` adds it, as
   Settings → General → Plugins does. `--replace` installs a new build of a plugin that is already added.
 - `opentrack plugin list` lists the plugins added and whether each is enabled.
 
 An address is `host:port`, `tcp://host:port` or `unix:/path`. Grants are JSON, for example
-`'{"memory_mb": 512}'`. See [Plugins](#plugins).
+`'{"memory_mb": 512}'`. An external plugin's secret comes from `--secret-file` or
+`OT_PLUGIN_SECRET`, never the command line. See [Plugins](#plugins).
 
 ### User commands
 
@@ -454,11 +455,11 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | NATS | TCP, NATS | Outbound | `nats://127.0.0.1:4222` | Tracks (`tracks.>`, JetStream), contacts (`contacts.>`) and raw output (`opentrack.raw.<source>`); the multi-node sync boundary (`<OT_SYNC_PREFIX>.out.*` and `.in.*`, prefix `ot.sync`) | `tls://`, `OT_NATS_CA`, mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY`; `.creds`, a token, or a user and password |
 | OpenTelemetry | TCP; OTLP over gRPC (4317) or HTTP (4318) | Outbound | Off | Logs (the audit record included), traces and metrics to the collector ([OpenTelemetry](#opentelemetry)) | `https://` endpoint, `OTEL_EXPORTER_OTLP_CERTIFICATE`, mutual TLS, headers |
 | TAK Server output | TCP, CoT XML | Outbound | None configured | Tracks to a TAK Server's streaming input ([TAK output](#tak-output)) | TLS (8089) with a client certificate; 8087 is plaintext |
-| TAK multicast output | UDP, CoT XML | Outbound | Group `239.2.3.1`, port `6969`, TTL 1 | Tracks to ATAK and WinTAK on the network | None: always plaintext |
+| TAK multicast output | UDP, CoT XML, IPv4 or IPv6 | Outbound | Group `239.2.3.1`, port `6969`, TTL 1 (IPv6: hop limit) | Tracks to ATAK and WinTAK on the network | None: always plaintext |
 | TAK listening output | TCP, CoT XML | Inbound | None configured (**Listen on**, such as `0.0.0.0:8089`) | ATAK and WinTAK connect as to a TAK Server | TLS, with an optional client CA and revocation lists |
-| Source `tcp_server` | TCP | Inbound | None: the source's `bind` | A feed that connects to OpenTrack | TLS; mutual TLS with `client_ca_file` and revocation lists |
-| Source `udp` | UDP, optionally joining an IPv4 multicast group | Inbound | None: the source's `bind` | A feed sent as datagrams | None |
-| Source `grpc_server` | TCP, gRPC over HTTP/2 | Inbound | None: the source's `bind` | Producers' gRPC calls ([docs/protobuf-grpc.md](../protobuf-grpc.md)) | TLS; mutual TLS with `client_ca_file`; a bearer `token` |
+| Source `tcp_server` | TCP | Inbound | None: the source's `bind` | A feed that connects to OpenTrack | TLS; mutual TLS with `client_ca_file` and revocation lists. Required, or the source's `unauthenticated: accepted` risk acceptance |
+| Source `udp` | UDP, optionally joining an IPv4 or IPv6 multicast group | Inbound | None: the source's `bind` | A feed sent as datagrams | None: runs only with the source's `unauthenticated: accepted` risk acceptance |
+| Source `grpc_server` | TCP, gRPC over HTTP/2 | Inbound | None: the source's `bind` | Producers' gRPC calls ([docs/protobuf-grpc.md](../protobuf-grpc.md)) | TLS; mutual TLS with `client_ca_file`; a bearer `token`. One of the two is required, or the source's `unauthenticated: accepted` risk acceptance |
 | Source `tcp_client` | TCP | Outbound | None: the source's `host` and `port` | A feed OpenTrack connects to | TLS, client certificate |
 | Source `http_poll` | TCP, HTTP or HTTPS | Outbound | None: the source's `url` | A polled feed | `https://`, CA, client certificate; headers (such as a token) |
 | Source `websocket` | TCP, WebSocket (`ws://`, `wss://`) | Outbound | None: the source's `url` | A streamed feed | `wss://`, CA, client certificate; headers |
@@ -468,7 +469,7 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | SAML identity provider | HTTPS, through the browser | None from the server: browsers go to the identity provider and post back to the control plane | Off | Single sign-on ([SAML](#saml)) | The identity provider's signature on the response |
 | OpenStare sign-in check | TCP, HTTP or HTTPS | Outbound | Off (API URL `http://127.0.0.1:3001`) | Asks OpenStare's `/api/auth/me` who a session or token is ([OpenStare sign-in](#openstare-sign-in)) | `https://` when the API URL is; the user's own OpenStare cookie or token |
 | Basemap tiles | TCP, HTTP or HTTPS | Outbound | Off | Map tiles, fetched for the browsers ([Basemap tiles](#basemap-tiles)) | An `https://` URL; a key in the query if the tile server takes one |
-| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | None: keep them on the same host (loopback or a Unix socket) |
+| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | Mutual HMAC-SHA256 challenge and response with a shared secret on every connection (none needed on a Unix socket under the data directory); no TLS: keep them on the same host or a trusted network |
 | WebAssembly plugins | Whatever the plugin opens | Outbound | No network | Only the `host:port` addresses in the plugin's **network** grant | The plugin's own |
 | Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | Every message signed with the sender's Ed25519 key and checked against the key pinned for it; stale and replayed messages refused ([Signed sync messages](#signed-sync-messages), [docs/sync-icd.md](../sync-icd.md)) |
 | `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | TLS (`tls://`, `OT_BRIDGE_NATS_CA`), mutual TLS (`OT_BRIDGE_NATS_CERT`/`OT_BRIDGE_NATS_KEY`), `.creds`, user and password or token, per node if they differ ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)) |
@@ -892,6 +893,25 @@ revision: the source's **History** tab lists them, with who saved each and the s
 track managers, passwords, tokens, header and metadata values, credentials in URLs and API keys in
 messages show as `••••••` (`${env:…}` references stay visible). See the README, "Sources and pipelines", and `docs/examples/`.
 
+**A listening source must authenticate its senders.** `tcp_server` needs TLS with a client CA
+(mutual TLS, a certificate required: not `client_cert_optional`); `grpc_server` needs that or a
+bearer `token`. Otherwise the source is saved and run only with the risk accepted on it,
+`"unauthenticated": "accepted"` (the red **Accept unauthenticated senders** toggle on its Transport
+tab; always needed for `udp`, which cannot carry TLS). The flag is refused where it is not needed
+(a client transport, or a listener that authenticates), so it only ever marks a real exception;
+each one needs the authorising official's acceptance ([hardening checklist](../security/hardening.md#encrypt-every-link)).
+The source list shows an UNAUTHENTICATED badge on such sources, and the decision log records the
+flag set or cleared. **Upgrading to 0.4.5:** an enabled listener saved before without sender
+authentication or the flag is not started; its state is *not started* and its Status tab says why.
+Add a client CA or token, or set the flag, and save. A configuration import is checked the same way.
+
+**UDP multicast.** A `udp` source joins `multicast_group` if one is set, IPv4 (`239.2.3.1`, with
+`bind` `0.0.0.0:port`) or IPv6 (`ff15::6969`, with `bind` `[::]:port`); the group and the bind must
+be the same IP version. `multicast_interface` picks the interface to join on: an IPv4 address of
+this node for an IPv4 group, an interface name (`eth0`) or index (`2`) for an IPv6 group. Blank:
+the system's choice. A name is looked up when the source starts, so a missing interface shows as
+the source's error.
+
 The pipeline designer's **Live preview** (right-hand pane) is a dry run of the pipeline as edited,
 not yet saved, over the source's stored samples; **Capture samples** replaces them with up to 20
 frames (or 15 s) of the live feed. Nothing is published. The pane shows the first 5 samples, each
@@ -943,17 +963,31 @@ database.
 Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → General → Plugins**
 (admins change it; others see it):
 - **Add plugin:** a WebAssembly component (`.wasm`, run sandboxed inside OpenTrack), or an
-  external plugin's address (a program of its own serving the plugin interface on a socket).
-  **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
+  external plugin's address (a program of its own serving the plugin interface on a socket) and
+  its **secret**. **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
   it is enabled.
-- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Grants**, **Delete**.
+- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Secret** (external
+  plugins), **Grants**, **Delete**.
+- **Secret** (external plugins): OpenTrack and the plugin prove to each other that they hold it
+  (HMAC-SHA256 challenge and response each way) on every connection; a plugin that fails is
+  refused, logged as an error and audited (`plugin_auth_failed`), and its status says why.
+  **Generate** makes one with the FIPS DRBG and shows it once: start the plugin with it
+  (`OT_PLUGIN_SECRET` or `--secret-file`), then add or save. You can paste your own (32 characters
+  or more) or `${env:NAME}`. The API never returns it, only whether one is set. Only a plugin on a
+  unix socket under the data directory may have none: filesystem permissions decide who can
+  listen there. Details: [docs/plugins.md](../plugins.md#authentication).
 - **Grants** (WebAssembly only): memory ceiling (MB), time per call (ms; a call that runs longer is
   stopped), network addresses it may connect to, server directories it may see (read only unless
   `rw`), and environment variables.
 - **Used by** shows the sources and correlation settings that use it.
 
 A WebAssembly plugin is stored in the database, so it is backed up with it. An external plugin is
-only an address: run and back up its program yourself.
+only an address and its secret: run and back up its program yourself.
+
+**Upgrading from 0.4.4 or earlier:** external plugins had no secret, and after the upgrade one
+without a secret does not load (its status says *no secret*) unless it is on a unix socket under
+the data directory. For each: update it to the current SDK, **Generate** a secret in its
+**Secret** dialog, restart the plugin with that secret, then **Save**.
 
 Plugins are loaded without a restart. From the command line: [Plugin commands](#plugin-commands).
 Writing plugins: [docs/plugins.md](../plugins.md).
@@ -1098,9 +1132,10 @@ and one of three deliveries:
   converted from TAK's `.p12`: see [TAK certificates](#tak-certificates)), and an optional **server name** to check the certificate against. OpenTrack reconnects after a
   failure, waiting 1 s and doubling up to a minute, and sends the whole picture on every connect.
 - **Multicast**: UDP datagrams, one event each, to a **group** and **port** (TAK's SA multicast,
-  `239.2.3.1:6969`, by default), with a **TTL** (1: this network only) and an optional
-  **interface** address to send from. ATAK and WinTAK on the network hear it with no setup. A
-  unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
+  `239.2.3.1:6969`, by default), with a **TTL** (1: this network only; the hop limit for IPv6) and
+  an optional **interface** to send from: an IPv4 address of this node for an IPv4 group, an
+  interface name (`eth0`) or index for an IPv6 group (such as `ff15::6969`). ATAK and WinTAK on the
+  network hear it with no setup. A unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
   when the output starts; after that each track at least every half of its stale time, while it is still reporting.
 - **Listen for clients**: OpenTrack is the server. It listens on **Listen on** (such as
   `0.0.0.0:8089`) and ATAK or WinTAK connect to it as to a TAK Server (a server connection to this

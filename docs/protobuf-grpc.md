@@ -83,6 +83,7 @@ OpenTrack listens, and producers call methods of their own `.proto`. Every messa
   - OpenTrack answers each call with the method's response message left at its defaults.
 - **`token`**, if set, must arrive as `authorization: Bearer <token>`. It is compared in constant time.
 - **`tls`**: a certificate and key give TLS. `client_ca_file` makes it mutual: only producers holding a certificate that CA signed get in. Each record carries the producer's certificate subject as `_frame.peer_subject`, and its address as the frame's origin.
+- A `grpc_server` source needs a `token` or mutual TLS (or both). Without either it is refused unless it carries `"unauthenticated": "accepted"`, a risk acceptance the decision log records ([hardening checklist](security/hardening.md#encrypt-every-link)).
 - **`max_connections`** (default 64) is how many producers may be connected at once; more are refused.
 - **`max_message_kib`** (default 4096) is the largest message accepted.
 

@@ -64,6 +64,16 @@ plaintext, and the `cot` role logs a warning when a plaintext output starts. A l
 events carry its marking (a `__security` element and the start of the remarks), but that marks
 them; it does not protect them.
 
+**Listening sources authenticate their senders.** A `tcp_server` source needs TLS with a
+`client_ca_file` (mutual TLS, certificates required); a `grpc_server` source needs that or a bearer
+`token`. A source that cannot (UDP, multicast included, has no TLS) or does not is refused unless it
+carries `"unauthenticated": "accepted"`: anyone who can reach its port can then feed it tracks.
+**Each such source is an exception needing the authorising official's acceptance**; record it
+with the source's name, port and the network that protects it. The flag is saved with the source,
+so setting or clearing it is in the decision log (before and after) and the source's history; the
+source list marks it with an UNAUTHENTICATED badge. A listener saved before 0.4.5 without it is not
+started until it authenticates its senders or the flag is set (its status says why).
+
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 
 **Pin every peer's key (multi-node).** Sync messages between nodes are signed with each node's
@@ -77,7 +87,10 @@ replays. See the admin guide, [Signed sync messages](../guides/admin.md#signed-s
 to, with its default and its TLS and authentication options, is in the admin guide's
 [Ports, protocols and services](../guides/admin.md#ports-protocols-and-services) table. Register
 the ones you enable in PPSM, and let only those through the firewall. Keep external plugins on
-the same host (loopback or a Unix socket): their protocol has no TLS or authentication.
+the same host (loopback or a Unix socket): their protocol has no TLS. Give each a secret
+(Settings → General → Plugins → Secret; [plugins.md](../plugins.md#authentication)): OpenTrack
+and the plugin then authenticate each other on every connection, and one without a secret loads
+only from a Unix socket under the data directory.
 
 ## Sign-in
 

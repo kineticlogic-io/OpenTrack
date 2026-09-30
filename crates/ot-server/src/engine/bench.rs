@@ -173,7 +173,9 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
     std::fs::create_dir_all(&opts.out)?;
     let mut plugins = Vec::new();
     for arg in &opts.plugins {
-        let source = crate::plugin_cli::source_arg(arg)?;
+        // An external plugin's secret comes from OT_PLUGIN_SECRET.
+        let secret = crate::plugin_cli::secret_arg(None)?;
+        let source = crate::plugin_cli::source_arg(common, arg, secret)?;
         let p = ot_plugin::load(&source, &ot_plugin::Grants::default())
             .with_context(|| format!("plugin {arg}"))?;
         plugins
@@ -188,8 +190,12 @@ pub async fn run(common: &Common, opts: BenchOptions) -> anyhow::Result<()> {
     for s in &scenario.sources {
         let spec: SourceSpec =
             serde_json::from_value(s.spec.clone()).context("a scenario source spec")?;
-        spec.validate()
-            .map_err(|e| anyhow::anyhow!("source {}: {e}", spec.id))?;
+        // A bench replays recorded frames and never opens the transport,
+        // so a listener's sender authentication is not its concern.
+        match spec.validate() {
+            Ok(()) | Err(ot_source::source::SourceError::Unauthenticated(_)) => {}
+            Err(e) => bail!("source {}: {e}", spec.id),
+        }
         let pipeline = Pipeline::new(spec.id.clone(), spec.pipeline.clone())
             .map_err(|e| anyhow::anyhow!("source {}: {e}", spec.id))?
             .keep_plots(true);

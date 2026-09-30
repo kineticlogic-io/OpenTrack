@@ -120,7 +120,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | An unauthorised device feeds false tracks to a listener | `tcp_server` and `grpc_server` take TLS with a client CA and CRLs; `grpc_server` a bearer token and a method allow-list | UDP and multicast have no authentication; TCP and gRPC listeners accept anyone unless configured | P-16 |
+| S | An unauthorised device feeds false tracks to a listener | A listener must authenticate its senders: `tcp_server` by TLS with a client CA (and CRLs), `grpc_server` by that or a bearer token (and a method allow-list). Otherwise it is refused, on save and at start, unless the source carries `"unauthenticated": "accepted"`, which the decision log records | UDP and multicast cannot authenticate; each such source, and any other accepted listener, is an exception the authorising official accepts | |
 | S | A client connects to an impostor feed | TLS with the system roots or a private CA, and an optional server name; client certificates | `insecure_skip_verify` exists (F-4, excluded by the hardening checklist) | |
 | T | Malformed or hostile input | Typed decoding; frame limit (4 MiB default); gRPC `max_message_kib`; malformed gRPC messages refused with INVALID_ARGUMENT; no `unsafe` in OpenTrack's code; pipeline reject stage | A feed that authenticates can still lie: correlation weighs it, a track manager can drop it | |
 | I | Feed credentials disclosed | Secrets masked for non-admins; `${env:NAME}` keeps them out of the database; source changes audited masked (#62) | Inline secrets are in the database and its backups | |
@@ -136,7 +136,7 @@ flowchart LR
 |---|---|---|---|---|
 | T | A malicious or buggy WebAssembly plugin reads files, calls out or exhausts the host | wasmtime sandbox; WASI grants: no directories, network or environment unless granted; memory ceiling (256 MB default); call timeout by epoch interruption (5 s default), the instance discarded after; one instance per stream | wasmtime is a large dependency; a sandbox escape there would be a host compromise | |
 | T | A replaced plugin file | Only admins add or replace; each change is in the decision log with the component's SHA-256; loaded before it is stored | | |
-| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout | JSON lines with no TLS or authentication; the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | |
+| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout; on every connection OpenTrack and the plugin prove they hold a shared secret (HMAC-SHA256 challenge and response each way, role-labelled so a reflected challenge fails); one that fails is refused, logged and audited; without a secret only a Unix socket under the data directory is reached | JSON lines with no TLS: after the handshake traffic can be read or changed on the way; the secret is stored in the database (OpenTrack must answer with it); the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | P-28 |
 
 ## Redis
 
@@ -178,7 +178,6 @@ flowchart LR
 | I | Events carry no classification marking | | CoT events are unmarked | P-10 |
 | S | A client impersonates the server | Clients verify OpenTrack's certificate | | |
 | D | A slow client holds up the others | Per-client queue of 8,192 events; a client that falls behind is dropped and counted | | |
-| — | IPv6 multicast | | IPv4 only | P-19 |
 
 ## OpenTelemetry export
 

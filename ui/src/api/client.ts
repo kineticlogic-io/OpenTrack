@@ -769,6 +769,8 @@ export interface PluginInfo {
   sha256?: string | null
   size?: number | null
   address?: string | null
+  /** An external plugin: whether it has a secret (the secret is never returned). */
+  secret_set?: boolean
   grants?: PluginGrants
   updated_at_ms?: number
   used_by: { source?: string; name?: string; as: PluginKind; enabled?: boolean; correlation?: boolean }[]
@@ -819,6 +821,8 @@ export interface SourceSpec {
   confirm_after?: number
   /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
   security?: SecurityLabel
+  /** A listener that does not authenticate its senders runs only with this risk acceptance recorded (UDP always needs it). */
+  unauthenticated?: 'accepted'
   /** For a source reporting lines of bearing: how the emitters it hears may move (unset: 0.1 m/s², 30 m/s). */
   emitter_motion?: EmitterMotion
 }
@@ -845,6 +849,8 @@ export interface SourceStatus {
   transport: string
   link: LinkStatus
   last_error: string | null
+  /** Set when the worker refuses to start the source, saying why (e.g. a listener without sender authentication). */
+  not_started?: string
   totals_since_start: Record<string, number>
   /** The windows a tracker with auto timing chose from the sensor's revisit rate. */
   tracker_timing?: {
@@ -1167,9 +1173,11 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText)
     return parsed as PluginInfo
   },
-  addPluginExternal: (address: string, replace = false) =>
-    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address }),
-  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants }) =>
+  addPluginExternal: (address: string, secret: string, replace = false) =>
+    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address, ...(secret ? { secret } : {}) }),
+  /** A new external-plugin secret from the server's FIPS DRBG; not stored, shown once. */
+  newPluginSecret: () => request<{ secret: string }>('POST', '/plugins/secret'),
+  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants; secret?: string }) =>
     request<PluginInfo>('PUT', `/plugins/${enc(name)}`, body),
   deletePlugin: (name: string, force = false) => request<unknown>('DELETE', `/plugins/${enc(name)}${force ? '?force=true' : ''}`),
   checkPlugin: (name: string) => request<PluginCheck>('POST', `/plugins/${enc(name)}/check`),

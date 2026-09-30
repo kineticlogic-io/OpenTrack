@@ -64,7 +64,8 @@ OTH-GOLD's track management sets do:
 **Plugins.** Codecs, trackers and pairing scorers of your own, beside the built-in ones. They are
 WebAssembly components run sandboxed inside OpenTrack, with only the memory, time, files and
 network an operator grants them. Or they are external programs serving the same interface over a
-socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → General → Plugins and
+socket, for Python with numpy or Stone Soup, or a GPU; OpenTrack and an external plugin
+authenticate each other with a shared secret on every connection. They are managed in Settings → General → Plugins and
 written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
 test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
 
@@ -172,7 +173,7 @@ The UI's tabs:
 
 ## Sources and pipelines
 
-A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
+A source is a transport (`tcp_client`, `tcp_server`, `udp` with IPv4 or IPv6 multicast, `http_poll`, `websocket`,
 `mqtt`, `grpc_client`, `grpc_server`, `file`, which reads only under the data directory), framing, a codec and a pipeline. Transport metadata reaches the mapping under
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
@@ -183,6 +184,10 @@ certificate for mutual TLS), `server_name` (verify against this name instead of 
 `insecure_skip_verify` (development only). `tcp_server` takes `tls: {cert_file, key_file,
 client_ca_file}`; with a client CA, only clients presenting a certificate it signed are accepted,
 and each client's certificate subject is logged. Files are PEM; paths may use `${env:NAME}`.
+A listening source must authenticate its senders (mutual TLS for `tcp_server`; mutual TLS or a
+bearer `token` for `grpc_server`); one that does not, and every `udp` source, runs only with
+`"unauthenticated": "accepted"` on the source, a recorded risk acceptance
+([hardening checklist](docs/security/hardening.md#encrypt-every-link)).
 
 A source reports either **tracks** (a key per object: AIS, ADS-B, TAK, a radar's own tracks) or
 **detections** (`"reports": "detections"`: anonymous plots). Detections update the nearest system
@@ -303,7 +308,7 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 | Decisions | `GET /decisions?op=…`, `POST /decisions/{id}/undo` |
 | History | `GET /tracks/{uid}/history`, `POST /history/{uid}/delete` |
 | Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics` |
-| Plugins | `GET/POST /plugins`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
+| Plugins | `GET/POST /plugins`, `POST /plugins/secret`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
 | Tracker profiles | `GET/POST /tracker-profiles`, `GET/DELETE /tracker-profiles/{name}` |
 | Status | `GET /status`, `/metrics`, `/healthz` |
 | Tracks | `GET /tracks`, `GET /tracks/{uid}`, `GET /tracks/{uid}/explain` |

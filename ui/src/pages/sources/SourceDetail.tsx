@@ -7,6 +7,7 @@ import { ago, errorMessage, fmtCount, fmtNum, fmtTime } from '../../lib/format'
 import { DetailDrawer } from '../../lib/DetailDrawer'
 import { PipelineView } from './PipelineView'
 import { PIPELINE_COUNTS_INFO, SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
+import { SenderAuth } from './SenderAuth'
 import { TransportForm } from './TransportForm'
 import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
@@ -214,12 +215,15 @@ export function SourceDetail({
         <TabPanel id={tab} idPrefix="src">
           {tab === 'status' && <StatusTab source={source} />}
           {tab === 'transport' && (
-            <TransportForm
-              transport={draft.transport}
-              codec={draft.pipeline.codec}
-              onTransport={(transport) => setDraft({ ...draft, transport })}
-              onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
-            />
+            <>
+              <TransportForm
+                transport={draft.transport}
+                codec={draft.pipeline.codec}
+                onTransport={(transport) => setDraft({ ...draft, transport })}
+                onCodec={(codec) => setDraft({ ...draft, pipeline: { ...draft.pipeline, codec } })}
+              />
+              <SenderAuth spec={draft} onChange={setDraft} />
+            </>
           )}
           {tab === 'pipeline' && (
             <PipelineView
