@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Security documentation
+
+The development-process documents the accreditation review found missing (POA&M P-20, P-24,
+P-27):
+- **`SECURITY.md`**: how to report a vulnerability, supported versions (the latest 0.4.x),
+  response targets, and how fixes and advisories are published.
+- **`docs/security/scm-plan.md`**: software configuration management plan: configuration items,
+  branches and branch protection (and the admin bypass while there is one maintainer and no
+  GitHub Actions minutes), versions, the release process, change control, deployed nodes, roles.
+- **`docs/security/threat-model.md`**: STRIDE per interface and trust boundary, with mitigations,
+  residual risk and POA&M items, a data-flow diagram, and a criticality analysis; reviewed each
+  minor release.
+- **`docs/security/coding-standards.md`**: the rules the tools enforce and those checked in review.
+- **Ports, protocols and services**: one table in the admin guide for PPSM registration, linked
+  from the hardening checklist.
+- **Test coverage**: `scripts/coverage.sh` (cargo-llvm-cov over the workspace); the summary is
+  attached to each release. The Rust workspace at 0.4.3: 83.2% of lines, 80.6% of functions.
+- Accreditation package: ASD STIG V-222632, V-222649, V-222653, V-222655, V-222657 and V-222670
+  are not a finding (171 not a finding, 21 open); SSP RA-5(11), SA-4(9), SA-15(3) and CM-9
+  implemented; the POA&M is down to 15 items.
+
 ## 0.4.3 (alpha), 2026-09-30
 
 A security release: the fixes from the accreditation review, OpenTelemetry export, and the
