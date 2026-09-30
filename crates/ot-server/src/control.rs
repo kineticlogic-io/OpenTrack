@@ -167,7 +167,11 @@ fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<ServeFile>, HeaderV
 /// Every dependency's state. 503 (with the same body) when SQLite, Redis or
 /// NATS is down, so a monitor that reads only the status code sees it;
 /// `/healthz` stays liveness only.
-async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
+async fn status(
+    State(s): State<AppState>,
+    user: Option<axum::Extension<crate::auth::AuthUser>>,
+) -> (StatusCode, Json<Value>) {
+    let admin = user.is_none_or(|u| u.role == crate::auth::Role::Admin);
     let sqlite = match s.with_db(|db| db.schema_version()).await {
         Ok(v) => json!({ "ok": true, "schema_version": v, "path": s.common.sqlite }),
         Err(e) => json!({ "ok": false, "error": e.message }),
@@ -218,7 +222,38 @@ async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
         "nats": nats,
         "telemetry": telemetry,
     });
-    (code, Json(body))
+    (
+        code,
+        Json(if admin {
+            body
+        } else {
+            status_for_non_admins(body)
+        }),
+    )
+}
+
+/// What `/status` shows a viewer or track manager: whether each part is up,
+/// and the versions; not paths, URLs, endpoints or error text (ASD V-222600).
+fn status_for_non_admins(mut body: Value) -> Value {
+    const KEEP: &[&str] = &[
+        "ok",
+        "configured",
+        "connected",
+        "stream",
+        "tracks_subject",
+        "namespace",
+        "schema_version",
+    ];
+    for part in ["sqlite", "redis", "nats", "telemetry"] {
+        if let Some(Value::Object(o)) = body.get_mut(part) {
+            let down = o.contains_key("error");
+            o.retain(|k, _| KEEP.contains(&k.as_str()));
+            if down {
+                o.insert("error".into(), json!("unavailable (an admin can see why)"));
+            }
+        }
+    }
+    body
 }
 
 async fn track(
@@ -324,6 +359,19 @@ impl From<ot_store::StoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // A server-side failure's text (SQLite, Redis, file paths) stays in
+        // the log; the caller gets a reference to find it (SI-11).
+        if self.status.is_server_error() {
+            let reference = crate::fips::random_hex::<6>();
+            tracing::error!(%reference, status = self.status.as_u16(), error = %self.message, "request failed");
+            let message =
+                format!("internal error (reference {reference}); the server log has the detail");
+            return (
+                self.status,
+                Json(json!({ "error": message, "reference": reference })),
+            )
+                .into_response();
+        }
         (self.status, Json(json!({ "error": self.message }))).into_response()
     }
 }
@@ -331,6 +379,40 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_admins_see_status_without_paths_urls_or_errors() {
+        let body = json!({
+            "version": "0.4.3",
+            "sqlite": { "ok": true, "schema_version": 20, "path": "/data/opentrack.db" },
+            "redis": { "ok": false, "error": "connection refused (os error 111)" },
+            "nats": { "ok": true, "url": "nats://token@nats:4222", "connected": true, "server_name": "n1", "stream": "TRACKS" },
+            "telemetry": { "configured": true, "ok": false, "error": "collector: refused", "endpoints": ["grpc https://c:4317"], "processes": [] },
+        });
+        let v = status_for_non_admins(body);
+        assert_eq!(v["version"], "0.4.3");
+        assert!(v["sqlite"].get("path").is_none());
+        assert_eq!(v["sqlite"]["schema_version"], 20);
+        assert_eq!(v["redis"]["ok"], false);
+        assert!(!v["redis"]["error"].as_str().unwrap().contains("111"));
+        assert!(v["nats"].get("url").is_none() && v["nats"].get("server_name").is_none());
+        assert!(
+            v["telemetry"].get("endpoints").is_none() && v["telemetry"].get("processes").is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_error_answers_with_a_reference_not_its_text() {
+        use http_body_util::BodyExt;
+        let res = ApiError::internal("disk I/O error at /data/opentrack.db").into_response();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(!v["error"].as_str().unwrap().contains("/data"), "{v}");
+        assert!(v["reference"].as_str().is_some_and(|r| r.len() == 12));
+        let res = ApiError::not_found("system track x").into_response();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn every_response_carries_the_security_headers() {

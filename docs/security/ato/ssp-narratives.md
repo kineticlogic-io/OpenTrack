@@ -26,9 +26,9 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 | RA Risk Assessment | 10 | 1 | 1 | 1 | 7 | 0 |
 | SA System and Services Acquisition | 17 | 9 | 3 | 0 | 5 | 0 |
 | SC System and Communications Protection | 25 | 10 | 1 | 0 | 13 | 1 |
-| SI System and Information Integrity | 18 | 7 | 3 | 0 | 6 | 2 |
+| SI System and Information Integrity | 18 | 8 | 2 | 0 | 6 | 2 |
 | SR Supply Chain Risk Management | 12 | 4 | 0 | 0 | 8 | 0 |
-| **All** | 287 | 109 | 14 | 1 | 160 | 3 |
+| **All** | 287 | 110 | 13 | 1 | 160 | 3 |
 
 Partially implemented and planned controls are on the POA&M (`poam.md`):
 
@@ -46,7 +46,6 @@ Partially implemented and planned controls are on the POA&M (`poam.md`):
 - **SC-18** Mobile Code: partially implemented.
 - **SI-2** Flaw Remediation: partially implemented.
 - **SI-2(2)** Automated Flaw Remediation Status: partially implemented.
-- **SI-11** Error Handling: partially implemented.
 
 ## AC: Access Control
 
@@ -222,7 +221,7 @@ The server refuses (403) any call whose path needs a higher role than the caller
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-Three failed password sign-ins within 15 minutes lock the account for 15 minutes (fixed values); an admin can unlock it sooner from Settings -> Users, opentrack user unlock or the API. Every refusal gives the same answer and takes as long as a wrong password, and the real reason (unknown account, locked, turned off, bad password) goes to the audit record with the client address. Sign-in attempts are also rate limited per client address (5 at once, then one a second). SAML and client-certificate sign-ins are limited by the identity provider and the PKI.
+Three failed password sign-ins within 15 minutes lock the account until an admin unlocks it (fixed values), from Settings -> Users, the API, or opentrack user unlock on the server when every admin is locked out. Every refusal gives the same answer and takes as long as a wrong password, and the real reason (unknown account, locked, turned off, bad password) goes to the audit record with the client address. Sign-in attempts are also rate limited per client address (5 at once, then one a second). SAML and client-certificate sign-ins are limited by the identity provider and the PKI.
 
 *Evidence:* crates/ot-server/src/auth/stig.rs (LOCKOUT_FAILURES, LOCKOUT_WINDOW_MINUTES, LOCK_MINUTES); crates/ot-server/src/auth/api.rs (login, unlock_user); docs/guides/admin.md#account-lockout
 
@@ -230,9 +229,9 @@ Three failed password sign-ins within 15 minutes lock the account for 15 minutes
 
 **Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack provides a notice-and-consent banner (Settings -> Banners, up to 20,000 characters) that every user must accept after signing in and before any access to the application; DECLINE signs the user out, and it is asked again for each tab and after every sign-out. The banner is off by default: the site turns it on with the Standard Mandatory DoD Notice and Consent Banner text.
+OpenTrack provides a notice-and-consent banner (Settings -> Banners, up to 20,000 characters) that every user must accept at each sign-in before any access. The server keeps the acceptance and refuses every API call except the sign-in calls until it has it, so no page or script gets round it; acceptance is audited (consent_accepted) and DECLINE signs the user out. Client-certificate and OpenStare access are asked once a day; API tokens (programs) are not asked. The banner is off by default: the site turns it on with the Standard Mandatory DoD Notice and Consent Banner text.
 
-*Evidence:* docs/guides/admin.md#notice-and-consent; ui/src/auth/Root.tsx; docs/security/hardening.md (Sign-in)
+*Evidence:* crates/ot-server/src/auth/consent.rs; crates/ot-server/src/auth/mod.rs (layer); ui/src/auth/WarnGate.tsx; docs/guides/admin.md#notice-and-consent
 
 *Site:* Turn on the warning banner with the DoD standard text [[SITE: banner text]].
 
@@ -260,7 +259,7 @@ When a session ends, the next call from the page (the pages poll the API) gets 4
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-Sessions are kept on the server and end automatically when idle (15 minutes, 10 for admins) and after 24 hours regardless of use; a fourth concurrent sign-in ends the oldest of the account's 3 sessions. Sessions also end at sign-out, password change, account disable and Sign out everywhere, and each end is audited with its reason.
+Sessions are kept on the server and end automatically when idle (15 minutes, 10 for admins) and after 24 hours regardless of use; a fourth concurrent sign-in ends the oldest of the account's 3 sessions. Sessions also end at sign-out, password change, account disable and Sign out everywhere, and each end is audited with its reason. The session cookie is a browser-session cookie, so closing the browser drops it; signing out shows an explicit signed-out message.
 
 *Evidence:* crates/ot-server/src/auth/stig.rs; crates/ot-server/src/auth/maintenance.rs; crates/ot-server/src/auth/sessions.rs; docs/guides/admin.md#session-limits
 
@@ -556,7 +555,7 @@ Audit rows are time-stamped in UTC with millisecond granularity from the host cl
 
 **Status:** Implemented · **Responsibility:** Shared
 
-The audit table is append-only: database triggers refuse UPDATE and DELETE, each row carries a SHA-256 hash over the previous row, GET /api/v1/audit/verify checks the chain, and the chain head is logged hourly so a cut tail shows. Reading the record needs the admin role, and the exported copy is sent over TLS to the site's collector. The site protects the /data volume, its backups and the SIEM.
+The audit table is append-only: database triggers refuse UPDATE and DELETE, each row carries a SHA-256 hash over the previous row, GET /api/v1/audit/verify checks the chain, and the chain head is logged hourly so a cut tail shows. Reading the record needs the admin role (non-admins may list only track-management and configuration decisions, not account, token or sign-in ones), source changes are recorded with their credentials masked, and the exported copy is sent over TLS to the site's collector. The site protects the /data volume, its backups and the SIEM.
 
 *Evidence:* crates/ot-store/src/audit.rs (append, verify_audit); crates/ot-server/src/auth/maintenance.rs; crates/ot-server/src/auth/policy.rs; docs/guides/admin.md#audit-record
 
@@ -2260,7 +2259,7 @@ The [[SITE: organization]] provides fault-tolerant, role-separated name resoluti
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-OpenTrack protects session authenticity with HMAC-SHA256-signed session tokens bound to a server-side session record, in cookies marked HttpOnly, SameSite=Strict and Secure over TLS (including TLS at a proxy); sessions end on sign-out, timeout or revocation, the page can never be framed, and requests arrive only over TLS when it is configured.
+OpenTrack protects session authenticity with HMAC-SHA256-signed session tokens bound to a server-side session record, in browser-session cookies (no expiry: closing the browser drops them) marked HttpOnly, SameSite=Strict and Secure over TLS (including TLS at a proxy); sessions end on sign-out, timeout or revocation, the page can never be framed, and requests arrive only over TLS when it is configured.
 
 *Evidence:* crates/ot-server/src/auth/sessions.rs; docs/guides/admin.md#web-protections; crates/ot-server/src/control.rs
 
@@ -2414,17 +2413,17 @@ OpenTrack has no spam protection mechanism to update because it handles no email
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-OpenTrack validates every input: each source is decoded by a typed codec and mapping, API bodies are typed JSON checked before they are saved, bodies and messages have size limits (plugin, import and sheet uploads have explicit maxima), configuration imports and sheets are validated in full before anything is written, and unsafe code is forbidden.
+OpenTrack validates every input: each source is decoded by a typed codec and mapping, API bodies are typed JSON checked before they are saved, bodies and messages have size limits (plugin, import and sheet uploads have explicit maxima), configuration imports and sheets are validated in full before anything is written, and unsafe code is forbidden. SAML responses are refused before parsing when they carry a DTD or exceed 256 KB, and are parsed strictly (no recovery from malformed XML, no network access); file sources read only under the data directory.
 
 *Evidence:* crates/ot-server/src/plugins_api.rs; crates/ot-server/src/config_backup.rs; crates/ot-server/src/registry_api.rs; Cargo.toml
 
 ### SI-11 Error Handling
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-Sign-in refusals return one generic answer whatever the reason (the real reason goes only to the audit record), API errors are JSON messages without stack traces, and detailed diagnostics go to the log. However, internal (HTTP 500) errors return the underlying error text to the caller, which can include database error messages or server file paths, so some internal detail reaches signed-in users.
+Sign-in refusals return one generic answer whatever the reason (the real reason goes only to the audit record), and API errors are JSON messages without stack traces. A server-side failure (HTTP 5xx) answers with a generic message and a reference, and its detail is logged under that reference (and exported over OpenTelemetry). /api/v1/status shows paths, URLs, endpoints and error text to admins only.
 
-*Evidence:* crates/ot-server/src/control.rs (ApiError); docs/guides/admin.md#account-lockout
+*Evidence:* crates/ot-server/src/control.rs (ApiError into_response, status_for_non_admins)
 
 ### SI-12 Information Management and Retention
 

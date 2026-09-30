@@ -23,8 +23,10 @@ pub const PASSWORD_MAX_AGE_DAYS: i64 = 60;
 pub const LOCKOUT_FAILURES: u32 = 3;
 /// ...within this many minutes...
 pub const LOCKOUT_WINDOW_MINUTES: i64 = 15;
-/// ...lock it for this many minutes (an admin can unlock it sooner).
-pub const LOCK_MINUTES: i64 = 15;
+/// ...lock it until an admin unlocks it (Settings -> Users, `opentrack user
+/// unlock`): the Container Platform SRG's AC-7 (V-233165), stricter than the
+/// ASD STIG's timed lock.
+pub const LOCK_UNTIL_UNLOCKED: bool = true;
 
 /// Minutes without use that end a browser session (AC-11, AC-12). API
 /// tokens are not sessions: they only expire.
@@ -48,7 +50,12 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 pub const PASSWORD_MIN_AGE_MS: i64 = PASSWORD_MIN_AGE_HOURS * HOUR_MS;
 pub const PASSWORD_MAX_AGE_MS: i64 = PASSWORD_MAX_AGE_DAYS * DAY_MS;
 pub const LOCKOUT_WINDOW_MS: i64 = LOCKOUT_WINDOW_MINUTES * MINUTE_MS;
-pub const LOCK_MS: i64 = LOCK_MINUTES * MINUTE_MS;
+/// How long a lock lasts, as the store takes it: 0 is until an admin unlocks.
+pub const LOCK_MS: i64 = if LOCK_UNTIL_UNLOCKED {
+    0
+} else {
+    15 * MINUTE_MS
+};
 pub const INACTIVE_MS: i64 = DISABLE_INACTIVE_AFTER_DAYS * DAY_MS;
 
 /// The idle timeout for an account of `role`, in ms.

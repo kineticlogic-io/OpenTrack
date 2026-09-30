@@ -99,9 +99,12 @@ impl Db {
                 None => ("create_source", 1),
                 Some(b) => ("update_source", b.revision + 1),
             };
+            // The decision (and its audit copy) records the change with
+            // the secrets hidden; the revision keeps the whole spec (ASD
+            // V-222444).
             let decision = Decision {
-                before: before.as_ref().map(|b| b.spec.clone()),
-                after: Some(w.spec.clone()),
+                before: before.as_ref().map(|b| masked(&b.spec)),
+                after: Some(masked(w.spec)),
                 evidence: json!({ "source": w.id, "revision": revision }),
                 ..Decision::new(actor, op)
             };
@@ -198,7 +201,7 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("source {id}")))?;
         self.write(|tx| {
             let d = Decision {
-                before: Some(before.spec.clone()),
+                before: Some(masked(&before.spec)),
                 evidence: json!({ "source": id }),
                 ..Decision::new(actor, "delete_source")
             };
@@ -241,6 +244,13 @@ impl Db {
     }
 }
 
+/// A source specification with its secrets hidden, for the decision log.
+fn masked(spec: &Value) -> Value {
+    let mut v = spec.clone();
+    ot_core::secrets::redact_spec(&mut v);
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +264,44 @@ mod tests {
             priority: 100,
             spec,
         }
+    }
+
+    #[test]
+    fn decisions_hide_a_sources_secrets_and_the_revision_keeps_them() {
+        let mut db = Db::open_in_memory().unwrap();
+        let spec = json!({"transport": {"kind": "mqtt", "url": "mqtts://broker:8883", "password": "hunter2hunter2", "username": "ot"}});
+        db.put_source(&write(&spec), "op:test").unwrap();
+        let spec2 = json!({"transport": {"kind": "mqtt", "url": "mqtts://broker:8883", "password": "n3w-s3cret-pw", "username": "ot"}});
+        db.put_source(&write(&spec2), "op:test").unwrap();
+        // What runs the source (its revision) is whole.
+        let revs = db.source_revisions("ais").unwrap();
+        assert!(
+            serde_json::to_string(&revs)
+                .unwrap()
+                .contains("n3w-s3cret-pw")
+        );
+        db.delete_source("ais", "op:test").unwrap();
+        let rows = db
+            .audit_rows(&crate::audit::AuditFilter {
+                ops: vec![
+                    "create_source".into(),
+                    "update_source".into(),
+                    "delete_source".into(),
+                ],
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        let all = serde_json::to_string(&rows).unwrap();
+        assert!(
+            !all.contains("hunter2") && !all.contains("n3w-s3cret"),
+            "{all}"
+        );
+        assert!(
+            all.contains("username") && all.contains("mqtts://broker:8883"),
+            "the rest is kept: {all}"
+        );
     }
 
     #[test]

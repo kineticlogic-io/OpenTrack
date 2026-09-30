@@ -172,7 +172,7 @@ pub async fn run(
                 }).await?;
                 match res {
                     Ok(Some((v, rows, schemas))) => {
-                        reconcile(&mut running, rows, &schemas, &redis, &nats, &registry);
+                        reconcile(&common, &mut running, rows, &schemas, &redis, &nats, &registry);
                         config_version = v;
                     }
                     Ok(None) => {}
@@ -214,6 +214,7 @@ pub(crate) fn load_schemas(db: &ot_store::Db) -> anyhow::Result<Schemas> {
 }
 
 fn reconcile(
+    common: &Common,
     running: &mut BTreeMap<String, Running>,
     rows: Vec<ot_store::SourceRow>,
     schemas: &Schemas,
@@ -247,6 +248,12 @@ fn reconcile(
                 continue;
             }
         };
+        // A file source saved before 0.4.3 may point outside the data
+        // directory; it doesn't run until it is moved (ASD V-222466).
+        if let Err(e) = crate::probe::file_allowed(common, &spec.transport) {
+            tracing::error!(source = %id, error = %e, "not started");
+            continue;
+        }
         let Some(schema) = schemas.get(&spec.pipeline.mapping.schema_version).cloned() else {
             tracing::error!(source = %id, version = spec.pipeline.mapping.schema_version,
                 "mapping targets an unpublished schema version; not started");

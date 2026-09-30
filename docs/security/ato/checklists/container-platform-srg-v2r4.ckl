@@ -545,7 +545,7 @@ If the Standard Mandatory DoD Notice and Consent Banner is not configured or is 
 <STIG_DATA><VULN_ATTRIBUTE>TargetKey</VULN_ATTRIBUTE><ATTRIBUTE_DATA>5239</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>STIG_UUID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>4bb4bb69-ac34-5cad-97bd-692cd86cae08</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-000048</ATTRIBUTE_DATA></STIG_DATA>
-<STATUS>Open</STATUS><FINDING_DETAILS>OpenTrack's notice-and-consent banner (Settings -&gt; Banners, ui/src/auth/WarnGate.tsx) is shown only after authentication, is enforced only in the browser (sessionStorage per tab, not server-side), and an admin can dismiss it with 'Go to Settings', which records it as acknowledged and grants access without agreeing. The banner is off until an admin enables it.</FINDING_DETAILS><COMMENTS>Show the banner on the sign-in page before credentials are entered and remove the admin 'Go to Settings' bypass (or require AGREE first)</COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+<STATUS>NotAFinding</STATUS><FINDING_DETAILS>The notice-and-consent banner is shown at every sign-in before any access, and the server refuses the API until it is accepted (auth/consent.rs, auth/mod.rs layer; test the_warning_must_be_accepted_on_the_server_before_the_api_answers); there is no bypass for any role. The site turns it on with the DoD banner text (hardening checklist).</FINDING_DETAILS><COMMENTS></COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
 </VULN>
 <VULN>
 <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-233033</ATTRIBUTE_DATA></STIG_DATA>
@@ -578,7 +578,7 @@ If the Standard Mandatory DoD Notice and Consent Banner does not stay on the scr
 <STIG_DATA><VULN_ATTRIBUTE>TargetKey</VULN_ATTRIBUTE><ATTRIBUTE_DATA>5239</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>STIG_UUID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>4bb4bb69-ac34-5cad-97bd-692cd86cae08</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-000050</ATTRIBUTE_DATA></STIG_DATA>
-<STATUS>Open</STATUS><FINDING_DETAILS>The warning in ui/src/auth/WarnGate.tsx stays on screen until AGREE or DECLINE for most users, but an admin's 'Go to Settings' button sets the acknowledgement and enters the application without accepting the terms, so the banner is not retained until acknowledged for admins; the gate is client-side only.</FINDING_DETAILS><COMMENTS>Remove the 'Go to Settings' bypass (or make it require AGREE) and record acknowledgement server-side</COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+<STATUS>NotAFinding</STATUS><FINDING_DETAILS>The banner stays until the user chooses AGREE (recorded and audited on the server as consent_accepted) or DECLINE (signs out); no role can skip it (ui/src/auth/WarnGate.tsx, crates/ot-server/src/auth/consent.rs).</FINDING_DETAILS><COMMENTS></COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
 </VULN>
 <VULN>
 <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-233038</ATTRIBUTE_DATA></STIG_DATA>
@@ -3190,7 +3190,7 @@ If the container platform does not display a logout message, this is a finding.<
 <STIG_DATA><VULN_ATTRIBUTE>TargetKey</VULN_ATTRIBUTE><ATTRIBUTE_DATA>5239</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>STIG_UUID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>4bb4bb69-ac34-5cad-97bd-692cd86cae08</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-002364</ATTRIBUTE_DATA></STIG_DATA>
-<STATUS>Open</STATUS><FINDING_DETAILS>A user-initiated sign-out (ui/src/auth/AuthProvider.tsx logout) goes to /login with no message; only a session ended by the server or by idle timeout shows 'Your session ended (signed out, idle too long, or ended elsewhere)' (ui/src/auth/LoginPage.tsx ?ended=1).</FINDING_DETAILS><COMMENTS>Show an explicit 'You have been signed out' message after sign-out (e.g. redirect to /login?ended=1 or a dedicated message)</COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+<STATUS>NotAFinding</STATUS><FINDING_DETAILS>Signing out shows an explicit message on the sign-in page ('You have signed out. Your session has ended; close the browser to finish.'; ui/src/auth/AuthProvider.tsx, LoginPage.tsx).</FINDING_DETAILS><COMMENTS></COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
 </VULN>
 <VULN>
 <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-233155</ATTRIBUTE_DATA></STIG_DATA>
@@ -3419,7 +3419,7 @@ If the container platform is not configured to lock the account, this is a findi
 <STIG_DATA><VULN_ATTRIBUTE>TargetKey</VULN_ATTRIBUTE><ATTRIBUTE_DATA>5239</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>STIG_UUID</VULN_ATTRIBUTE><ATTRIBUTE_DATA>4bb4bb69-ac34-5cad-97bd-692cd86cae08</ATTRIBUTE_DATA></STIG_DATA>
 <STIG_DATA><VULN_ATTRIBUTE>CCI_REF</VULN_ATTRIBUTE><ATTRIBUTE_DATA>CCI-002238</ATTRIBUTE_DATA></STIG_DATA>
-<STATUS>Open</STATUS><FINDING_DETAILS>OpenTrack locks an account after 3 failed sign-ins within 15 minutes, but the lock releases automatically after 15 minutes (LOCK_MINUTES in crates/ot-server/src/auth/stig.rs; docs/guides/admin.md#account-lockout); an admin can unlock sooner. This SRG requires the lock to hold until an administrator releases it.</FINDING_DETAILS><COMMENTS>Make the lock hold until an admin unlocks (fixed value), or record a risk acceptance citing the ASD STIG time-based lockout.</COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
+<STATUS>NotAFinding</STATUS><FINDING_DETAILS>Three failed sign-ins within 15 minutes lock the account until an administrator unlocks it (stig::LOCK_UNTIL_UNLOCKED, fixed; crates/ot-server/src/auth/stig.rs and api.rs login; audited as account_locked); unlock in Settings -&gt; Users, the API or opentrack user unlock on the server (docs/guides/admin.md#account-lockout).</FINDING_DETAILS><COMMENTS></COMMENTS><SEVERITY_OVERRIDE></SEVERITY_OVERRIDE><SEVERITY_JUSTIFICATION></SEVERITY_JUSTIFICATION>
 </VULN>
 <VULN>
 <STIG_DATA><VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE><ATTRIBUTE_DATA>V-233166</ATTRIBUTE_DATA></STIG_DATA>

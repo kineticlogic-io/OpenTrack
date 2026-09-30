@@ -1,7 +1,7 @@
 # OpenTrack administrator guide
 
 For the people who install, configure, secure and keep OpenTrack running. The people who work on
-the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.2**.
+the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.3**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI and other documents can link to
 it (in the app: `#help/admin/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses:
@@ -628,8 +628,11 @@ within a minute. The banner marks the system; it does not mark the tracks (see
 The **Warning banner** is a notice users must accept after signing in, such as consent to
 monitoring, as OpenStare's warning banner:
 - **AGREE** goes on; **DECLINE** signs the user out.
-- It is asked once per browser tab and account, and again after signing out.
-- An admin also sees **Go to Settings**, to fix a wrong text without accepting it.
+- It is asked at every sign-in. The server keeps the acceptance and refuses the API (except the
+  sign-in calls) until it has it, so no screen or script gets round it; accepting is audited
+  (`consent_accepted`). Client-certificate and OpenStare access, which have no sign-in, are asked
+  once a day. API tokens are programs, and are not asked.
+- Admins accept it too; to change a wrong text, accept it and edit it here.
 
 Turn it on and give the text (up to 20,000 characters). Save.
 
@@ -1163,7 +1166,8 @@ site code, so a stray request can't purge. It waits up to 5 minutes for the engi
 
 - **`GET /healthz`** answers `ok`, with no sign-in. It only says the control plane process
   answers. Use it for a container or load-balancer liveness check.
-- **`GET /api/v1/status`** (any role; use a `viewer` API token) reports each dependency with an
+- **`GET /api/v1/status`** (any role; use a `viewer` API token; paths, URLs, endpoints and error
+  text are for admins, other roles see only up or down) reports each dependency with an
   `ok` flag: `sqlite` (with its schema version), `redis`, and `nats` (connected, and the stream
   usable), plus the version, algorithm versions, site code and node id. It answers 200 when all
   three are up and 503, with the same body, when any is down, so a readiness check or monitor
@@ -1213,6 +1217,9 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 
 | Symptom | Likely cause and fix |
 |---|---|
+| A request fails with `internal error (reference 3fa1c2…)`. | The server log has the detail: search it (or the OpenTelemetry logs) for the reference. |
+| Every page answers `accept the notice first`. | The notice-and-consent warning is on and this sign-in hasn't accepted it: reload the page and choose AGREE. A script should use an API token. |
+| A file source is refused: `a file source reads only under the data directory`. | Put the files under the data directory (`/data` in the image) and give that path, or a path relative to it. |
 | The server doesn't start: `OT_ADMIN_PASSWORD: the password needs at least 15 characters, ...`. | Choose a password that meets the [password policy](#passwords), or leave both `OT_ADMIN_*` unset. |
 | No `initial-admin.txt`. | It is made only on the first start with no accounts and no `OT_ADMIN_*`. Use `opentrack user add <email> --role admin --password-stdin`. |
 | Every admin is locked out. | `opentrack user passwd <email>` (or `user enable`, or `user add … --role admin`) on the server. |
@@ -1286,11 +1293,14 @@ includes the one in `initial-admin.txt`, and `OT_ADMIN_PASSWORD` must already me
 
 ### Account lockout
 
-Three failed sign-ins within 15 minutes lock an account for 15 minutes. Every refusal gives the same answer, "wrong email or
-password", whether the account is unknown, turned off, locked or the password is wrong. The
-audit record keeps the real reason. To unlock an account sooner:
+Three failed sign-ins within 15 minutes lock an account until an admin unlocks it (fixed; the
+Container Platform SRG's rule, stricter than the ASD STIG's timed lock). Every refusal gives the
+same answer, "wrong email or password", whether the account is unknown, turned off, locked or
+the password is wrong. The audit record keeps the real reason (`account_locked`). To unlock an
+account:
 - **Settings → Users:** the open-lock button on its row;
-- **command line:** `opentrack user unlock <email>`;
+- **command line:** `opentrack user unlock <email>`, on the server, which works when every admin
+  is locked out;
 - **API:** `POST /api/v1/auth/users/{id}/unlock`.
 
 ### Session limits

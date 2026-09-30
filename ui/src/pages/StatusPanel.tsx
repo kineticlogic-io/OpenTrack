@@ -84,7 +84,7 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
       <Dependency
         name="SQLite"
         dep={status?.sqlite}
-        detail={status ? `schema v${status.sqlite.schema_version} · ${status.sqlite.path}` : ''}
+        detail={status ? [`schema v${status.sqlite.schema_version}`, status.sqlite.path].filter(Boolean).join(' · ') : ''}
       />
       <Dependency
         name="Redis"
@@ -96,7 +96,9 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
         dep={status?.nats}
         detail={
           status?.nats.ok
-            ? `${status.nats.server_name} · stream ${status.nats.stream} (${status.nats.stream_messages ?? 0} msgs) · ${status.nats.tracks_subject}.>`
+            ? [status.nats.server_name, `stream ${status.nats.stream}` + (status.nats.stream_messages != null ? ` (${status.nats.stream_messages} msgs)` : ''), `${status.nats.tracks_subject}.>`]
+                .filter(Boolean)
+                .join(' · ')
             : ''
         }
       />
@@ -106,7 +108,7 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
         off={status ? !status.telemetry?.configured : false}
         detail={
           status?.telemetry?.configured
-            ? `OTLP · ${(status.telemetry.endpoints ?? []).join(' · ')}`
+            ? ['OTLP', ...(status.telemetry.endpoints ?? [])].join(' · ')
             : 'not exported: logs on standard output only'
         }
         tip={

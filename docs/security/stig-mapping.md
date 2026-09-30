@@ -1,6 +1,6 @@
 # Control mapping (NIST 800-53 Moderate / ASD STIG)
 
-Status of OpenTrack 0.4.2 against the controls an application-level assessment covers. Controls
+Status of OpenTrack 0.4.3 against the controls an application-level assessment covers. Controls
 are cited by NIST 800-53 number. The ASD STIG requirements that implement them are named in
 words, because STIG V-IDs change between releases: check each against the STIG release your
 assessor uses. "Inherited" means the hosting environment provides the control.
@@ -14,11 +14,11 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | AC-2(3) | Turn off inactive accounts | Met | 35 days (fixed); checked at sign-in and every 10 minutes; break-glass accounts exempt (Settings → Users → Never turn off) |
 | AC-3 | Enforce approved authorisations | Met | Roles `viewer < track_manager < admin`, checked on the server for every `/api/v1` route (`auth/policy.rs`); a source's secrets are hidden from everyone but admins (`ot_source::secrets`) |
 | AC-6 | Least privilege | Met | Three roles; SAML can't grant admin unless **Allow admin** is on, and never signs in to a local account; the container drops every capability |
-| AC-7 | Limit failed sign-ins | Met | 3 in 15 minutes lock the account for 15 minutes (fixed; an admin can unlock sooner); plus a per-address rate limit |
-| AC-8 | System use notification | Met | Notice-and-consent banner (Settings → Banners); declining signs the user out |
+| AC-7 | Limit failed sign-ins | Met | 3 in 15 minutes lock the account until an admin unlocks it (fixed; `opentrack user unlock` on the server when every admin is locked out); plus a per-address rate limit |
+| AC-8 | System use notification | Met | Notice-and-consent banner (Settings → Banners), accepted at every sign-in and enforced by the server (the API refuses until it is accepted; `consent_accepted` audited); declining signs the user out |
 | AC-9 | Previous sign-in notification | Met | After sign-in: the last sign-in and the failed attempts since |
 | AC-10 | Concurrent session control | Met | 3 sessions per account (fixed); the oldest ends |
-| AC-11, AC-12 | Session lock and termination | Met | Idle timeout 15 minutes (admins 10), counted from the user's own activity; absolute lifetime 24 hours; all fixed; sessions kept on the server and revocable |
+| AC-11, AC-12 | Session lock and termination | Met | Idle timeout 15 minutes (admins 10), counted from the user's own activity; absolute lifetime 24 hours; all fixed; sessions kept on the server and revocable; the session cookie ends with the browser |
 | AC-16 | Security attributes | Partial | Labels per source are carried on every track. A fused track takes the highest classification, the union of the restrictions and the intersection of the releasability lists. OpenTrack does not filter by clearance (a deliberate decision; enforcement is downstream) |
 | AU-2, AU-3, AU-12 | Audit events and their content | Partial | Sign-in success and failure (reason, address), sign-out, lockout, unlock, session end and timeout, password change, account turned off, every decision; actor, time, outcome, detail. Not yet: refused requests and changes, reads of security objects, certificate/token/OpenStare sign-ins, the address on decisions (POA&M P-01 to P-03) |
 | AU-4 | Audit log storage capacity | Inherited | The collector and SIEM store the exported record ([admin guide, OpenTelemetry](../guides/admin.md#opentelemetry)); the local table is small (one row per event) and lives on the `/data` volume, sized by the host |
@@ -43,7 +43,8 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | SC-23 | Session authenticity | Met | Signed session tokens with a server-side session record; `HttpOnly`, `SameSite=Strict` and `Secure` cookies; no framing |
 | SC-28 | Protection of information at rest | Inherited | Encrypt the `/data` volume and backups (the platform's disk encryption) |
 | SI-2 | Flaw remediation | Met | Dependency advisories fail CI; rebuild on Debian security updates |
-| SI-10 | Input validation | Met | Typed decoding for every source, size limits on bodies and messages; `unsafe` forbidden in OpenTrack's code |
+| SI-10 | Input validation | Met | Typed decoding for every source, size limits on bodies and messages; `unsafe` forbidden in OpenTrack's code; SAML responses with a DTD are refused before parsing and parsed strictly (no recovery, no network); file sources read only under the data directory |
+| SI-11 | Error handling | Met | Server errors answer with a reference, their detail in the log; `/api/v1/status` details (paths, URLs, errors) for admins only |
 | SR-3, SR-4 | Supply chain controls, provenance | Met | Lockfiles, pinned toolchain and base images, actions pinned by commit, SBOMs (CycloneDX); release images signed (cosign key) with SLSA provenance and SBOM attestations |
 
 ## Findings

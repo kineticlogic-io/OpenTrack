@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useToast } from 'staresdk'
 import { api, ApiError, type AuthPublic, type Me, type Role } from '../api/client'
 import { trackActivity, withIdle } from './activity'
-import { AuthCtx, ackKey, here, roleAtLeast } from './context'
+import { AuthCtx, here, roleAtLeast } from './context'
 
 /** Calls whose 401 is an answer (wrong password, not signed in yet), not a lapsed session. */
 const QUIET_401 = ['/api/v1/auth/login', '/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/public']
@@ -47,7 +47,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           )
           .then((b) => {
             // A password to change first: the page shows the change screen.
-            if (b.code === 'password_change_required') window.location.reload()
+            // A password to change or the warning to accept first: the page shows that screen.
+            if (b.code === 'password_change_required' || b.code === 'consent_required') window.location.reload()
             else toastRef.current({ variant: 'error', title: 'Not allowed', message: b.error ?? 'Your role does not allow this.', dedupeKey: `403:${b.error}` })
           })
       }
@@ -80,24 +81,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const logout = useCallback(async () => {
-    const id = user?.id
     try {
       await api.logout()
     } catch {
       /* signed out here whatever the server says */
     } finally {
-      if (id) {
-        try {
-          sessionStorage.removeItem(ackKey(id))
-        } catch {
-          /* storage unavailable */
-        }
-      }
       // A full load of the sign-in page, rather than clearing `user` here: that would race the
       // guard's own redirect to /login?from=…
-      window.location.assign('/login')
+      window.location.assign('/login?signed_out=1')
     }
-  }, [user?.id])
+  }, [])
 
   const authOn = config ? config.auth : user?.via !== 'disabled'
   const hasRole = useCallback((min: Role) => roleAtLeast(user?.role, min), [user?.role])

@@ -273,6 +273,10 @@ fn check(common: &Common, f: &mut ConfigFile) -> Vec<String> {
             p.push(format!("{at}: its spec's id is {:?}", spec.id));
             continue;
         }
+        if let Err(e) = crate::probe::file_allowed(common, &spec.transport) {
+            p.push(format!("{at}: {e}"));
+            continue;
+        }
         let schema = schemas.get(&spec.pipeline.mapping.schema_version);
         if let Err(e) = spec.validate_against(schema) {
             p.push(format!("{at}: {e}"));
@@ -740,7 +744,7 @@ pub fn run(common: &Common, cmd: ConfigCommand) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ot_store::{Db, Decision, PluginWrite, SourceWrite};
 
@@ -748,7 +752,7 @@ mod tests {
     const SCHEMA: &str = include_str!("../../../docs/examples/schema.json");
     const PASSWORD: &str = "correct horse battery";
 
-    fn common(dir: &Path) -> Common {
+    pub(crate) fn common(dir: &Path) -> Common {
         Common {
             sqlite: dir.join("ot.db"),
             redis: "redis://127.0.0.1:9".into(),
