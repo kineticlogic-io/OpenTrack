@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.4.4 (alpha), 2026-09-30
+
+Closing the accreditation POA&M's 0.4 items (#64): the ASD STIG is down to 7 open items (all
+planned for 0.5.0), the Container Platform SRG to none, and the POA&M to 13 items, four of them
+new from the threat model (P-28 to P-31: external plugin channel, bridge TLS, sync site-code
+trust, CSRF token and API rate limit).
+
+### Upgrade notes
+
+- **`docker-compose.yml` changed** (bridge network, named volume, its own Redis). A node that
+  used host networking follows "Upgrading a host-network deployment" in the admin guide, or keeps
+  host networking with the override it gives.
+- **The image has no shell**: run tools as `docker compose exec opentrack opentrack ...`.
+- New passwords that are common, or built from a common one, are refused.
+
 ### Accounts and audit
 
 Closing the accreditation POA&M's account and audit items (#64):
