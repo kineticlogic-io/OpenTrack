@@ -39,6 +39,10 @@ pub const SESSIONS_PER_ACCOUNT: usize = 3;
 /// How long a session lasts at most, used or not (AC-12).
 pub const SESSION_HOURS: i64 = 24;
 
+/// A temporary or emergency account is turned off this many hours after it
+/// is made (AC-2(2)).
+pub const TEMPORARY_ACCOUNT_HOURS: i64 = 72;
+
 /// Accounts not signed in for this many days are turned off, except the
 /// break-glass accounts listed in the sign-in settings (AC-2(3)).
 pub const DISABLE_INACTIVE_AFTER_DAYS: i64 = 35;
@@ -78,5 +82,6 @@ pub fn password_policy() -> Value {
         "min_changed_chars": PASSWORD_MIN_CHANGED_CHARS,
         "min_age_hours": PASSWORD_MIN_AGE_HOURS,
         "max_age_days": PASSWORD_MAX_AGE_DAYS,
+        "refuse_common": true,
     })
 }

@@ -249,6 +249,25 @@ struct Logged {
 }
 
 thread_local! {
+    /// The client address of the request this thread works for, stamped on
+    /// the audit copy of each decision it records (AU-3).
+    static CLIENT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `ip` as the client address of the decisions it records.
+pub fn with_client<R>(ip: Option<String>, f: impl FnOnce() -> R) -> R {
+    let before = CLIENT.with(|c| c.replace(ip));
+    let r = f();
+    CLIENT.with(|c| *c.borrow_mut() = before);
+    r
+}
+
+/// The client address set by [`with_client`] on this thread.
+pub(crate) fn client() -> Option<String> {
+    CLIENT.with(|c| c.borrow().clone())
+}
+
+thread_local! {
     /// Rows appended in the transaction running on this thread.
     static PENDING: std::cell::RefCell<Vec<Logged>> = const { std::cell::RefCell::new(Vec::new()) };
 }

@@ -9,10 +9,23 @@ This covers what goes into an OpenTrack build and how that is checked.
 | Rust crates | `Cargo.lock`, built with `--locked` |
 | UI packages | `ui/package-lock.json`, installed with `npm ci`; the stareSDK tarball is vendored in `ui/vendor` |
 | Forked crates | `third_party/samael` (SAML) and `third_party/rumqttc` (MQTT; FIPS patch). Each has a note on what differs from upstream |
-| Base images | Pinned by digest in the `Dockerfile` |
+| Base images | Pinned by digest in the `Dockerfile` (below) and, for Redis and the development NATS, in `docker-compose.yml` |
 | Go (FIPS module build) | Version and SHA-256 checked in the `Dockerfile` |
 | OpenSSL FIPS provider | Release 3.0.9 source, SHA-256 checked in the `Dockerfile` |
 | CI actions | Pinned by commit SHA in `.github/workflows/*.yml` |
+
+**Base images** (`Dockerfile`):
+
+| Image | Stage | What it is for |
+|---|---|---|
+| `node:22-bookworm-slim` | `ui` | Builds the UI; nothing of it ships |
+| `debian:bookworm-slim` | `openssl-fips` | Builds the OpenSSL 3.0.9 FIPS provider; only `fips.so` and `fipsmodule.cnf` ship |
+| `rust:1-bookworm` | `server` | Builds the binary |
+| `debian:bookworm-slim` | `runtime-libs` | Supplies the shared libraries the binary needs that the runtime base lacks (found with `ldd`: libxmlsec1, libxmlsec1-openssl, libxml2, libxslt, ICU, zlib, liblzma), with their dpkg records and copyright files |
+| `gcr.io/distroless/cc-debian12:nonroot` | runtime | The image itself: glibc, libgcc, libstdc++, OpenSSL 3 (`libssl3`), CA certificates, tzdata. No shell, no package manager |
+
+The libraries copied in keep their Debian package records (`/var/lib/dpkg/status.d/`, as distroless
+records its own), so an image scanner and the SBOM still list them by package and version.
 
 **Moving a base image:** run
 `docker buildx imagetools inspect <image>:<tag>` and replace the digest after
@@ -72,7 +85,10 @@ docker buildx imagetools inspect ghcr.io/phornstein/opentrack@<digest> --format 
 - **Rotate it:** `cosign generate-key-pair`, replace both secrets, commit the new `cosign.pub`,
   and re-sign the images still supported.
 
-The operating-system packages in the image come from Debian bookworm. Scan each release image with
+The operating-system packages in the image come from Debian 12 (bookworm): the distroless base's
+own, and the libraries `runtime-libs` copies in. Rebuild to pick up Debian security updates: the
+`runtime-libs` stage installs the current packages, and moving the distroless digest updates the
+rest. Scan each release image with
 the scanner your accreditation uses (for example `grype` or `trivy`) and keep the report with the
 release.
 

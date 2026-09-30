@@ -41,11 +41,13 @@ impl AppState {
         f: impl FnOnce(&mut Db) -> ot_store::sqlite::Result<T> + Send + 'static,
     ) -> Result<T, ApiError> {
         let db = self.db.clone();
+        // Decisions recorded for a request carry its client address.
+        let ip = crate::auth::access::current_ip();
         tokio::task::spawn_blocking(move || {
             let mut db = db
                 .lock()
                 .map_err(|_| ApiError::internal("database lock poisoned"))?;
-            f(&mut db).map_err(ApiError::from)
+            ot_store::audit::with_client(ip, || f(&mut db)).map_err(ApiError::from)
         })
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?

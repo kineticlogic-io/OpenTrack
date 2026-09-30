@@ -25,6 +25,10 @@ pub enum UserCommand {
         /// it can only use single sign-on or an API token).
         #[arg(long)]
         password_stdin: bool,
+        /// A temporary or emergency account: turned off 72 hours after it is
+        /// made.
+        #[arg(long)]
+        temporary: bool,
     },
     /// Change an account's role.
     Role {
@@ -108,6 +112,7 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
             role,
             name,
             password_stdin,
+            temporary,
         } => {
             let hash = if password_stdin {
                 Some(auth::hash_password(&stdin_password()?)?)
@@ -126,11 +131,23 @@ pub fn run(common: &Common, cmd: UserCommand) -> anyhow::Result<()> {
             if hash.is_some() {
                 db.set_must_change_password(&id, true)?;
             }
+            let u = if temporary {
+                let hours = auth::stig::TEMPORARY_ACCOUNT_HOURS;
+                db.set_account_expiry(&id, Some(ot_store::sqlite::now_ms() + hours * 3_600_000))?
+            } else {
+                u
+            };
             db.record(&ot_store::Decision {
                 after: Some(json!(u)),
                 ..ot_store::Decision::new(ACTOR, "create_user")
             })?;
             println!("added {} ({})", u.email, u.role);
+            if temporary {
+                println!(
+                    "temporary: turned off {} hours from now",
+                    auth::stig::TEMPORARY_ACCOUNT_HOURS
+                );
+            }
         }
         UserCommand::Role { email, role } => {
             let u = find(&db, &email)?;

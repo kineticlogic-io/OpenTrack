@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_sync.sql"),
     include_str!("../migrations/0015_account_policy.sql"),
     include_str!("../migrations/0016_audit.sql"),
+    include_str!("../migrations/0017_account_expiry.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -534,13 +535,14 @@ pub fn record_decision(tx: &Transaction<'_>, d: &Decision, at_ms: i64) -> Result
         "before": d.before,
         "after": d.after,
     });
+    let ip = crate::audit::client();
     crate::audit::append(
         tx,
         at_ms,
         &d.actor,
         &d.op,
         true,
-        None,
+        ip.as_deref(),
         &detail.to_string(),
         Some(id),
     )?;
@@ -563,9 +565,9 @@ mod tests {
     fn migrates_once_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ot.db");
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 16);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 17);
         // Re-opening applies nothing and keeps the version.
-        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 16);
+        assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 17);
     }
 
     #[test]

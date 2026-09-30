@@ -10,38 +10,30 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 
 | Family | Controls | Implemented | Partially | Planned | Inherited | N/A |
 |---|---|---|---|---|---|---|
-| AC Access Control | 39 | 26 | 1 | 0 | 12 | 0 |
+| AC Access Control | 39 | 27 | 0 | 0 | 12 | 0 |
 | AT Awareness and Training | 6 | 0 | 0 | 0 | 6 | 0 |
-| AU Audit and Accountability | 16 | 10 | 3 | 0 | 3 | 0 |
+| AU Audit and Accountability | 16 | 13 | 0 | 0 | 3 | 0 |
 | CA Assessment, Authorization, and Monitoring | 10 | 2 | 0 | 0 | 8 | 0 |
-| CM Configuration Management | 24 | 16 | 0 | 0 | 8 | 0 |
+| CM Configuration Management | 24 | 17 | 0 | 0 | 7 | 0 |
 | CP Contingency Planning | 23 | 4 | 0 | 0 | 19 | 0 |
-| IA Identification and Authentication | 24 | 16 | 2 | 0 | 6 | 0 |
+| IA Identification and Authentication | 24 | 17 | 1 | 0 | 6 | 0 |
 | IR Incident Response | 13 | 2 | 0 | 0 | 11 | 0 |
 | MA Maintenance | 9 | 0 | 0 | 0 | 9 | 0 |
 | MP Media Protection | 7 | 0 | 0 | 0 | 7 | 0 |
 | PE Physical and Environmental Protection | 18 | 0 | 0 | 0 | 18 | 0 |
 | PL Planning | 7 | 2 | 0 | 0 | 5 | 0 |
 | PS Personnel Security | 9 | 0 | 0 | 0 | 9 | 0 |
-| RA Risk Assessment | 10 | 1 | 1 | 1 | 7 | 0 |
-| SA System and Services Acquisition | 17 | 9 | 3 | 0 | 5 | 0 |
+| RA Risk Assessment | 10 | 2 | 1 | 0 | 7 | 0 |
+| SA System and Services Acquisition | 17 | 11 | 1 | 0 | 5 | 0 |
 | SC System and Communications Protection | 25 | 10 | 1 | 0 | 13 | 1 |
 | SI System and Information Integrity | 18 | 8 | 2 | 0 | 6 | 2 |
 | SR Supply Chain Risk Management | 12 | 4 | 0 | 0 | 8 | 0 |
-| **All** | 287 | 110 | 13 | 1 | 160 | 3 |
+| **All** | 287 | 119 | 6 | 0 | 159 | 3 |
 
 Partially implemented and planned controls are on the POA&M (`poam.md`):
 
-- **AC-2(2)** Automated Temporary and Emergency Account Management: partially implemented.
-- **AU-2** Event Logging: partially implemented.
-- **AU-3** Content of Audit Records: partially implemented.
-- **AU-12** Audit Record Generation: partially implemented.
-- **IA-5(1)** Password-based Authentication: partially implemented.
 - **IA-5(2)** Public Key-based Authentication: partially implemented.
 - **RA-5** Vulnerability Monitoring and Scanning: partially implemented.
-- **RA-5(11)** Public Disclosure Program: planned.
-- **SA-4(9)** Functions, Ports, Protocols, and Services in Use: partially implemented.
-- **SA-15(3)** Criticality Analysis: partially implemented.
 - **SA-22** Unsupported System Components: partially implemented.
 - **SC-18** Mobile Code: partially implemented.
 - **SI-2** Flaw Remediation: partially implemented.
@@ -77,11 +69,11 @@ Account management is automated in the product: the Users panel, the /api/v1/aut
 
 ### AC-2(2) Automated Temporary and Emergency Account Management
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack has no expiry date for accounts, so temporary and emergency accounts are not removed or disabled automatically at the end of their authorised period. API tokens always expire (1 hour to 10 years, default 365 days), and any account not marked Never turn off is disabled automatically after 35 days without a sign-in; break-glass accounts marked Never turn off are exempt. The [[SITE: account manager]] turns off or deletes temporary and emergency accounts within [[SITE: time period]] by procedure.
+Temporary and emergency accounts are made with Temporary (Settings -> Users, or opentrack user add --temporary) and are turned off automatically 72 hours after they are made (fixed), with their sessions ended and API tokens revoked, audited as account_disabled reason expired; sign-in refuses them once expired. The site's process says when temporary and emergency accounts are used ([[SITE: temporary account procedure]]).
 
-*Evidence:* crates/ot-store/src/auth.rs (User, disable_inactive); crates/ot-server/src/auth/stig.rs; docs/guides/admin.md#api-tokens; docs/guides/admin.md#inactive-accounts
+*Evidence:* crates/ot-server/src/auth/maintenance.rs (disable_expired); crates/ot-server/src/auth/stig.rs (TEMPORARY_ACCOUNT_HOURS); docs/guides/admin.md#adding-accounts
 
 *Site:* Define the lifetime of temporary and emergency accounts and disable them manually (Settings -> Users, Active off, or opentrack user) until the product supports account expiry.
 
@@ -451,21 +443,21 @@ The [[SITE: organisation]] develops, documents and disseminates the audit and ac
 
 ### AU-2 Event Logging
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack records in its audit record: sign-in success and failure (reason, method, address), sign-out, lockout, unlock, session end and idle timeout, password change and expiry, account disable, every decision (account, token, sign-in, source, schema, settings, plugin and track management changes), audit export and chain verification. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record). The [[SITE: organisation]] selects the events to log, coordinates with other entities and reviews the selection [[SITE: frequency]].
+OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).
 
-*Evidence:* crates/ot-store/src/audit.rs; crates/ot-server/src/auth/api.rs; crates/ot-server/src/auth/sessions.rs; crates/ot-server/src/auth/maintenance.rs; crates/ot-server/src/audit_api.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record
+*Evidence:* crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record
 
 *Site:* Define the event types to be logged [[SITE: event types]] and review them [[SITE: frequency]]; POA&M: audit access denials and per-call token/certificate authentication.
 
 ### AU-3 Content of Audit Records
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-Each audit row holds a sequence number, UTC time in milliseconds, the actor (account email, or system), the operation, the outcome (success or failure), details (reason, method, session, the change's before and after) and the decision id, chained by SHA-256; the OpenTelemetry export adds the host, process, node id and role as resource attributes. Sign-in and session rows carry the client address, but decision rows (every configuration and track change) do not, so a change's source address is found only through the actor's sessions.
+Each audit record carries what happened (op), when (UTC ms), where (the client address, on decisions too), the source (actor, and via for tokens, certificates and OpenStare), the outcome and the detail (method, path, status, reason, before/after with secrets masked); the access log adds User-Agent, Referer and X-Forwarded-For. Records are hash-chained.
 
-*Evidence:* crates/ot-store/src/audit.rs (AuditRow, append); crates/ot-store/src/sqlite.rs (record_decision); crates/ot-server/src/telemetry.rs; docs/guides/admin.md#audit-record
+*Evidence:* crates/ot-store/src/audit.rs (with_client); crates/ot-server/src/auth/access.rs
 
 *Site:* POA&M: record the client address on decision rows.
 
@@ -583,11 +575,11 @@ OpenTrack keeps its local audit record forever (fixed; nothing deletes rows). Re
 
 ### AU-12 Audit Record Generation
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-Every OpenTrack role generates the audit records listed in AU-2 in the audit table and as audit.record events on standard output and over OpenTelemetry; the event set is fixed in the product, and the site selects what the SIEM keeps and alerts on. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record).
+OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).
 
-*Evidence:* crates/ot-store/src/audit.rs; crates/ot-server/src/telemetry.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record; docs/guides/admin.md#opentelemetry
+*Evidence:* crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record
 
 *Site:* Route audit.record to the SIEM; POA&M: generate audit records for access denials and per-call authentication.
 
@@ -859,11 +851,13 @@ The [[SITE: organization]] detects unauthorized components on its network and ho
 
 ### CM-9 Configuration Management Plan
 
-**Status:** Inherited · **Responsibility:** Site
+**Status:** Implemented · **Responsibility:** Shared
 
-The [[SITE: organization]] writes the configuration management plan for [[SITE: system name]]. OpenTrack's supply-chain, hardening and upgrade documentation describe the product's configuration items and how they change.
+The [[SITE: organization]] writes the configuration management plan for [[SITE: system name]]. OpenTrack's software configuration management plan (docs/security/scm-plan.md) covers the product: its configuration items and released artefacts, branch protection and change control through issues and pull requests, version identification, the release process and roles. Its Deployed nodes section names what the site controls: OT_* settings, the runtime configuration in SQLite (every change a recorded decision; configuration export and import for baselines) and the signed image digest.
 
-*Site:* Write the CM plan, naming OpenTrack's configuration items (image, OT_* settings, database configuration).
+*Evidence:* docs/security/scm-plan.md; docs/guides/admin.md#configuration-export
+
+*Site:* Write the CM plan, naming OpenTrack's configuration items (image digest, OT_* settings, runtime configuration and its export).
 
 ### CM-10 Software Usage Restrictions
 
@@ -1195,9 +1189,9 @@ OpenTrack enforces the password policy on every password it accepts, including t
 
 ### IA-5(1) Password-based Authentication
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. OpenTrack does not check new passwords against a list of commonly used, expected or compromised passwords, as IA-5(1)(a)-(b) requires.
+Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. New and changed passwords are refused when they are, or are built from, one of the 100,000 most common passwords or a password on the site's own list (common-passwords.txt in the data directory).
 
 *Evidence:* crates/ot-server/src/auth/password.rs (check, check_change); crates/ot-server/src/auth/stig.rs; crates/ot-server/src/fips.rs; crates/ot-server/src/auth/api.rs; docs/guides/admin.md#password-policy
 
@@ -1421,7 +1415,9 @@ Automated availability of incident response information and support is provided 
 
 **Status:** Inherited · **Responsibility:** Site
 
-The [[SITE: organisation]] incident response plan covers OpenTrack, is approved by [[SITE: official]] and reviewed [[SITE: frequency]]; the admin guide and docs/security/hardening.md (Operate) supply the OpenTrack-specific procedures (audit review in the SIEM, chain verification, session revocation, account turn-off).
+The [[SITE: organisation]] incident response plan covers OpenTrack, is approved by [[SITE: official]] and reviewed [[SITE: frequency]]; the admin guide and docs/security/hardening.md (Operate) supply the OpenTrack-specific procedures (audit review in the SIEM, chain verification, session revocation, account turn-off). For vulnerabilities in the product itself, SECURITY.md is OpenTrack's response process: reporting, triage, fix targets and how users are told.
+
+*Evidence:* SECURITY.md
 
 *Site:* Include OpenTrack in the incident response plan and distribute it.
 
@@ -1877,7 +1873,7 @@ The [[SITE: organization]] assesses supply chain risk for OpenTrack and its depe
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-OpenTrack scans its dependencies on every CI run (cargo deny against RustSec, npm audit at high) and each release image with Trivy and Grype (scripts/ato/scan), keeping the report with the release. The v0.4.2 scan reports 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base-image packages and, except one tzdata update of unknown severity, with no fixed version available, so they remain unremediated. The [[SITE: organization]] scans the deployed hosts and containers [[SITE: frequency]], analyzes the reports and remediates within [[SITE: response times]].
+OpenTrack scans its dependencies on every CI run (cargo deny against RustSec, npm audit at high) and each release image with Trivy and Grype (scripts/ato/scan), keeping the report with the release. The v0.4.2 scan reports 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base-image packages and, except one tzdata update of unknown severity, with no fixed version available, so they remain unremediated. The [[SITE: organization]] scans the deployed hosts and containers [[SITE: frequency]], analyzes the reports and remediates within [[SITE: response times]]. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* .github/workflows/ci.yml; deny.toml; scripts/ato/scan; docs/security/ato/scans/v0.4.2/scan.md
 
@@ -1903,11 +1899,13 @@ The [[SITE: organization]] grants its vulnerability scanners privileged (credent
 
 ### RA-5(11) Public Disclosure Program
 
-**Status:** Planned · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-The [[SITE: organization]] establishes its public reporting channel for vulnerabilities in [[SITE: system name]]. OpenTrack does not yet publish a vulnerability disclosure policy or reporting channel for the product (no SECURITY.md; the repository is private, so its issue tracker is not public).
+OpenTrack publishes its vulnerability disclosure policy in SECURITY.md: reporters contact the maintainer privately on GitHub (the repository is private, so GitHub's private vulnerability reporting is not yet available), with response targets (acknowledgement within 5 working days, confirmation within 10, Critical and High fixed or mitigated within 30 days), supported versions, and how fixes and advisories are published (release notes, CHANGELOG Security fixes, advisories for Medium and above). The [[SITE: organization]] provides its own reporting channel for [[SITE: system name]] and forwards product vulnerabilities to the maintainer.
 
-*Site:* Provide the site's reporting channel; forward product vulnerabilities to the OpenTrack maintainer.
+*Evidence:* SECURITY.md
+
+*Site:* Provide the site's reporting channel; forward product vulnerabilities to the OpenTrack maintainer as SECURITY.md describes.
 
 ### RA-7 Risk Response
 
@@ -1979,11 +1977,11 @@ OpenTrack provides design and implementation information for its controls: secur
 
 ### SA-4(9) Functions, Ports, Protocols, and Services in Use
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-The functions, ports, protocols and services OpenTrack uses are documented across the admin guide: HTTPS UI/API on OT_BIND (8090), outbound Redis (6379, rediss), NATS (4222, tls), OTLP to the collector (4317 gRPC / 4318 HTTP), TAK outputs (8089 TLS, 8087 TCP, UDP multicast 239.2.3.1:6969, listening ports), per-source feed transports, SAML and OpenStare sign-in, and external plugin sockets. There is no single consolidated ports, protocols and services list for PPSM registration. The [[SITE: organization]] registers the ports and protocols it enables.
+The admin guide lists every port, protocol and service OpenTrack listens on or connects to in one table for PPSM registration: direction, default, purpose, and TLS and authentication options. Only the control plane listens by default (OT_BIND, 8090); Redis (6379, rediss), NATS (4222, tls), OTLP (4317/4318), TAK outputs (8089 TLS, 8087 TCP, UDP multicast 239.2.3.1:6969, listening outputs), source listeners and clients, the OpenStare sign-in check, basemap tiles, external plugins and multi-node sync are each listed. The hardening checklist links it. The [[SITE: organization]] registers the ports and protocols it enables.
 
-*Evidence:* docs/guides/admin.md#configuration; docs/guides/admin.md#tak-output; docs/guides/admin.md#opentelemetry; Dockerfile
+*Evidence:* docs/guides/admin.md#ports-protocols-and-services; docs/security/hardening.md; Dockerfile
 
 *Site:* Register the enabled ports and protocols in PPSM.
 
@@ -2011,9 +2009,9 @@ OpenTrack ships administrator documentation (installation, configuration, users,
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-OpenTrack applies security engineering principles: memory-safe Rust with unsafe code forbidden workspace-wide; least privilege (three roles, server-side checks on every route, default admin for any unlisted change, no Linux capabilities, non-root); secure defaults (sign-in on, fixed STIG account policy); fail closed (CRL status, audit write on sign-in, FIPS self-test at start); defence in depth (sandboxed plugins, security headers, hash-chained audit).
+OpenTrack applies security engineering principles: memory-safe Rust with unsafe code forbidden workspace-wide; least privilege (three roles, server-side checks on every route, default admin for any unlisted change, no Linux capabilities, non-root); secure defaults (sign-in on, fixed STIG account policy); fail closed (CRL status, audit write on sign-in, FIPS self-test at start); defence in depth (sandboxed plugins, security headers, hash-chained audit). The threat model (docs/security/threat-model.md) applies them per interface and trust boundary, with STRIDE threats, mitigations and residual risk.
 
-*Evidence:* Cargo.toml; crates/ot-server/src/auth/policy.rs; crates/ot-server/src/fips.rs; docs/security/hardening.md
+*Evidence:* Cargo.toml; crates/ot-server/src/auth/policy.rs; crates/ot-server/src/fips.rs; docs/security/hardening.md; docs/security/threat-model.md
 
 ### SA-9 External System Services
 
@@ -2043,33 +2041,33 @@ OpenTrack's source is under git with lockfiles; changes to main land through pul
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-OpenTrack's developer testing runs on every push and pull request: unit and integration tests against Redis, NATS and MQTT (cargo test), clippy with warnings denied, rustfmt, UI lint, tests and build, cargo deny (RustSec, licences, banned crates) and npm audit. Each release image is scanned with Trivy and Grype, the ASD STIG and Container Platform SRG are evaluated, and flaws are fixed and recorded in the findings table and CHANGELOG.
+OpenTrack's developer testing runs on every push and pull request: unit and integration tests against Redis, NATS and MQTT (cargo test), clippy with warnings denied, rustfmt, UI lint, tests and build, cargo deny (RustSec, licences, banned crates) and npm audit. Test coverage is measured with scripts/coverage.sh (cargo llvm-cov) and its summary attached to each release; the threat model (docs/security/threat-model.md) is re-reviewed each minor release. Each release image is scanned with Trivy and Grype, the ASD STIG and Container Platform SRG are evaluated, and flaws are fixed and recorded in the findings table and CHANGELOG.
 
-*Evidence:* .github/workflows/ci.yml; scripts/ato/scan; docs/security/ato/; docs/security/stig-mapping.md#findings
+*Evidence:* .github/workflows/ci.yml; scripts/ato/scan; docs/security/ato/; docs/security/stig-mapping.md#findings; scripts/coverage.sh; docs/security/threat-model.md
 
 ### SA-15 Development Process, Standards, and Tools
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-OpenTrack uses a documented development process and tools: the Rust toolchain pinned to 1.98.1 (rust-toolchain.toml and CI), Node 22, locked dependency builds (--locked, npm ci), cargo-deny policy in deny.toml, rustfmt and clippy standards, and CI actions pinned by commit. Changes to tools are deliberate and tested.
+OpenTrack uses a documented development process and tools: the Rust toolchain pinned to 1.98.1 (rust-toolchain.toml and CI), Node 22, locked dependency builds (--locked, npm ci), cargo-deny policy in deny.toml, rustfmt and clippy standards, and CI actions pinned by commit. Changes to tools are deliberate and tested. The process is written down: the software configuration management plan (docs/security/scm-plan.md) and the coding standards (docs/security/coding-standards.md).
 
-*Evidence:* rust-toolchain.toml; deny.toml; .github/workflows/ci.yml; docs/security/supply-chain.md
+*Evidence:* rust-toolchain.toml; deny.toml; .github/workflows/ci.yml; docs/security/supply-chain.md; docs/security/scm-plan.md; docs/security/coding-standards.md
 
 ### SA-15(3) Criticality Analysis
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack identifies its security-critical parts (the FIPS cryptographic boundary and the code outside it in docs/security/fips.md, forked crates in third_party with notes, the auth policy module), but has not produced a formal developer criticality analysis. The [[SITE: organization]] performs its criticality analysis at [[SITE: SDLC decision points]].
+OpenTrack's threat model includes a criticality analysis naming the security-critical components and why: authentication and sessions, the authorisation policy, the FIPS cryptographic boundary (AWS-LC, the rustls FIPS provider, the OpenSSL FIPS provider), SAML (samael fork, libxmlsec1, libxml2), TLS configuration, audit, the plugin sandbox, secrets masking, configuration export, the forked crates, input parsing, security headers and errors, multi-node trust and release signing. Changes to them are named in the pull request, tested for the property and called out in the CHANGELOG; the analysis is re-reviewed each minor release. The [[SITE: organization]] performs its own criticality analysis at [[SITE: SDLC decision points]], using OpenTrack's.
 
-*Evidence:* docs/security/fips.md; docs/security/supply-chain.md
+*Evidence:* docs/security/threat-model.md#criticality-analysis; docs/security/fips.md; third_party/*/OPENTRACK.md
 
-*Site:* Request or perform the criticality analysis.
+*Site:* Perform the site's criticality analysis, drawing on OpenTrack's.
 
 ### SA-22 Unsupported System Components
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-The runtime image is based on Debian 12 (bookworm), whose v0.4.2 packages carry many CVEs with no fixed version, and it includes the OpenSSL 3.0.9 FIPS provider (the validated module) loaded by Debian's OpenSSL 3.0; one Rust crate is flagged unmaintained (rustls-pemfile, RUSTSEC-2025-0134, ignored as unused in third_party/rumqttc) and two crates are project-maintained forks (samael, rumqttc). cargo deny fails CI on any other unmaintained-crate advisory. Moving to a smaller, supported runtime image is the planned remediation. The [[SITE: organization]] replaces or justifies unsupported components.
+The runtime image is based on Debian 12 (bookworm), whose v0.4.2 packages carry many CVEs with no fixed version, and it includes the OpenSSL 3.0.9 FIPS provider (the validated module) loaded by Debian's OpenSSL 3.0; one Rust crate is flagged unmaintained (rustls-pemfile, RUSTSEC-2025-0134, ignored as unused in third_party/rumqttc) and two crates are project-maintained forks (samael, rumqttc). cargo deny fails CI on any other unmaintained-crate advisory. Moving to a smaller, supported runtime image is the planned remediation. The [[SITE: organization]] replaces or justifies unsupported components. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* Dockerfile; deny.toml; docs/security/ato/scans/v0.4.2/scan.md; docs/security/supply-chain.md#pinned-inputs
 
@@ -2301,7 +2299,7 @@ The [[SITE: organization]] develops, documents, disseminates and reviews the sys
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-OpenTrack fails CI on Rust and UI dependency advisories (cargo deny, npm audit), fixes product findings per release and publishes them in the CHANGELOG, and each release image is scanned. The Debian 12 base-image packages in v0.4.2 carry CVEs (5 Critical, 61 High) with no fixed version available, so they cannot be remediated by rebuilding; the planned remediation is a smaller runtime image. The [[SITE: organization]] installs OpenTrack releases and rebuilt images within [[SITE: time period]] of release and tests them first.
+OpenTrack fails CI on Rust and UI dependency advisories (cargo deny, npm audit), fixes product findings per release and publishes them in the CHANGELOG, and each release image is scanned. The Debian 12 base-image packages in v0.4.2 carry CVEs (5 Critical, 61 High) with no fixed version available, so they cannot be remediated by rebuilding; the planned remediation is a smaller runtime image. The [[SITE: organization]] installs OpenTrack releases and rebuilt images within [[SITE: time period]] of release and tests them first. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* .github/workflows/ci.yml; deny.toml; docs/security/ato/scans/v0.4.2/scan.md; docs/security/hardening.md#operate
 

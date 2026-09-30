@@ -48,22 +48,100 @@ the answer. So the roles can run in one process or in several.
 
 ### Docker compose
 
-The `docker-compose.yml` in the repository runs `opentrack all` with host networking, beside an
-existing Redis, publishing to an existing NATS (OpenStare's, as a rule).
+The `docker-compose.yml` in the repository runs `opentrack all` beside its own Redis, publishing
+to an existing NATS (OpenStare's, as a rule):
+- **A bridge network.** Only port 8090 is published (`OT_BIND_PORT` picks the host port, for
+  example `127.0.0.1:8090` to keep it behind a proxy on the same host). Redis sits on a second,
+  internal network that only OpenTrack reaches and that has no route out; it is never published.
+- **NATS on the host.** The container reaches the host as `host.docker.internal`
+  (`extra_hosts: host-gateway`), so `OT_NATS_URL` defaults to
+  `nats://host.docker.internal:4222`. NATS must listen on an address the Docker bridge reaches
+  (not only `127.0.0.1`). A NATS elsewhere needs only its URL.
+- **Named volumes:** `opentrack-data` at `/data` (the SQLite database and `session.key`) and
+  `redis-data` for Redis.
+- **Limits:** OpenTrack gets 2 GB of memory, 2 CPUs and 1,024 processes (`OT_MEM_LIMIT`,
+  `OT_CPUS`, `OT_PIDS_LIMIT`); 16,000 live tracks at 1 Hz use about one core and 300 MB. Redis
+  gets 16 GB and 2 CPUs (`OT_REDIS_MEM_LIMIT`, `OT_REDIS_CPUS`). Redis grows with history and
+  the observation window: a history point costs about 130 bytes (2,000 tracks for 12 h at 10 s
+  is about 1.1 GB), and `OT_OBS_WINDOW_SECS` at 600 s holds about 4.8 GB at 16,000 reports a
+  second. Size `OT_REDIS_MEM_LIMIT` from those, with headroom for Redis' snapshots.
+- **Hardening** on both containers: read-only root file system, every capability dropped,
+  `no-new-privileges` ([Container hardening](#container-hardening)).
 
 1. Create a `.env` file next to `docker-compose.yml`. Compose refuses to start without it. Put
    your `OT_*` settings and secrets in it (see [Configuration](#configuration)). At least set
-   `OT_SITE_CODE`, and `OT_ADMIN_EMAIL` with `OT_ADMIN_PASSWORD`.
-2. Make the data directory writable by uid 1000, the user the container runs as. By default it is
-   `./data`; set `OT_DATA_DIR` to put it elsewhere. It is mounted at `/data`.
-3. Start it: `docker compose up -d --build`.
-4. Open `http://<host>:8090` and sign in.
+   `OT_SITE_CODE`, and `OT_ADMIN_EMAIL` with `OT_ADMIN_PASSWORD`. Leave `OT_BIND` and
+   `OT_REDIS_URL` out: the defaults are right for this file.
+2. Start it: `docker compose up -d --build`.
+3. Open `http://<host>:8090` and sign in.
 
-For a local NATS with JetStream while testing: `docker compose --profile dev-nats up -d nats`.
+For a local NATS with JetStream while testing: `docker compose --profile dev-nats up -d`, with
+`OT_NATS_URL=nats://nats:4222` in `.env`.
 
 In the image, `OT_SQLITE_PATH` is `/data/opentrack.db`, `OT_UI_DIR` is `/opt/opentrack/ui` and
-`OT_PROFILES_DIR` is `/opt/opentrack/profiles/trackers`. Run the command-line tools inside the
-container, for example `docker compose exec opentrack opentrack user list`.
+`OT_PROFILES_DIR` is `/opt/opentrack/profiles/trackers`. The image has no shell: run the
+command-line tools as the binary itself, for example
+`docker compose exec opentrack opentrack user list`.
+
+#### Upgrading a host-network deployment
+
+Up to 0.4.3 the compose file ran OpenTrack with host networking, a `./data` bind mount and an
+external Redis. To move a node to the hardened file:
+
+1. **Back up** `./data` ([SQLite backup](#sqlite-backup)), then stop OpenTrack:
+   `docker compose down`.
+2. **Check `.env`.** Remove `OT_BIND` (or set it to `0.0.0.0:8090`) and `OT_DATA_DIR`. Remove
+   `OT_REDIS_URL` to use the Redis in the compose file. Change a `127.0.0.1` NATS URL to
+   `host.docker.internal` (for example `nats://host.docker.internal:4222`), and make sure that
+   NATS listens on an address the Docker bridge reaches. Feeds that OpenTrack reaches on
+   `127.0.0.1` need the same change.
+3. **Create the volumes** without starting anything: `docker compose create`. The data volume is
+   `<project>_opentrack-data`, where the project is this directory's name in lower case (or
+   `COMPOSE_PROJECT_NAME`); `docker volume ls` shows it.
+4. **Copy `./data` into it,** keeping uid 1000 as the owner (the image has no shell, so use
+   another image):
+
+   ```sh
+   docker run --rm -v "$PWD/data:/from:ro" -v <project>_opentrack-data:/to \
+     debian:bookworm-slim sh -c 'cp -a /from/. /to/ && chown -R 1000:1000 /to'
+   ```
+5. **Redis (optional).** The new Redis starts empty. OpenTrack rebuilds the picture from the
+   feeds, and tracks take new numbers (never ones already issued; [Restore](#restore)). To keep
+   the live picture instead, save the old Redis and copy the file in before starting:
+
+   ```sh
+   redis-cli -h 127.0.0.1 -p 6379 --rdb dump.rdb
+   docker run --rm -v "$PWD/dump.rdb:/dump.rdb:ro" -v <project>_redis-data:/to \
+     debian:bookworm-slim sh -c 'cp /dump.rdb /to/dump.rdb && chown 999:1000 /to/dump.rdb'
+   ```
+
+   Or keep the external Redis: set `OT_REDIS_URL=redis://host.docker.internal:6379` (Redis must
+   listen on an address the bridge reaches, with a password or TLS), and stop the bundled one
+   from starting as in the host-networking override below.
+6. **Start it:** `docker compose up -d --build`. Check **Overview → System status**, then move
+   `./data` somewhere safe; nothing reads it any more.
+
+**Keeping host networking.** A site that must stay on the host network (an accepted exception;
+[hardening](../security/hardening.md)) keeps the rest of the file with a
+`docker-compose.override.yml` next to it, which compose reads by itself:
+
+```yaml
+services:
+  opentrack:
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    extra_hosts: !reset []
+    depends_on: !reset {}
+    environment:
+      OT_REDIS_URL: ${OT_REDIS_URL:-redis://127.0.0.1:6379}
+      OT_NATS_URL: ${OT_NATS_URL:-nats://127.0.0.1:4222}
+  redis:
+    profiles: ["bundled-redis"]   # never started; the host's Redis is used
+```
+
+To keep the `./data` directory as well, add `volumes: !override ["./data:/data"]` under
+`opentrack`.
 
 ### From source
 
@@ -159,7 +237,7 @@ the actor `cli`. The commands open the database directly, so they work while the
 | Command | What it does |
 |---|---|
 | `opentrack user list` | Every account: email, role, origin (`local` or `saml`), active or off, and whether it has a password. |
-| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin]` | Adds an account. With `--password-stdin` the password is the first line of standard input (it must meet the [password policy](#passwords)). Without one, the account can only use single sign-on or an API token. |
+| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin] [--temporary]` | Adds an account (`--temporary`: turned off 72 hours after it is made). With `--password-stdin` the password is the first line of standard input (it must meet the [password policy](#passwords)). Without one, the account can only use single sign-on or an API token. |
 | `opentrack user role <email> <role>` | Changes the role: `viewer`, `track_manager` or `admin`. |
 | `opentrack user passwd <email>` | Sets the password from standard input. The account's sessions and API tokens end. |
 | `opentrack user disable <email>` / `enable <email>` | Turns the account off (its sessions and tokens stop working at once) or on. |
@@ -281,6 +359,11 @@ For `link`. See [Multi-node](#multi-node).
 | `OT_LOG` | `info` | Log filter, in `tracing` syntax: `warn`, `debug`, or per module, such as `info,opentrack=debug,ot_source=debug`. |
 | `OT_LOG_FORMAT` | text | `json` writes one JSON object a line, for log collectors. |
 
+Every API request is logged at `info` with target `access`: the account, method, path, status,
+client address, user agent, referrer, `X-Forwarded-For` and duration. It goes wherever the logs
+go (standard output and [OpenTelemetry](#opentelemetry)). `OT_LOG=info,access=warn` turns it
+off for both, which an accredited deployment shouldn't do: it is part of the audit trail.
+
 The server roles log to standard output. The one-off commands (`migrate`, `user`, `config`,
 `plugin`, `retire`, `bench`, `synthetic`) log to standard error, so their output on standard
 output can be piped or redirected on its own.
@@ -357,6 +440,42 @@ These are read only by the test suites and benchmark tools, never by a running s
 `OT_BENCH_GMTI`, `OT_BENCH_GPS`, `OT_REPLAY_TRACE` and `OT_ESM_NAIVE`. `OT_DATA_DIR` is read
 only by `docker-compose.yml` (the host directory mounted at `/data`).
 
+## Ports, protocols and services
+
+Every port and protocol OpenTrack listens on or connects to, for PPSM registration and firewall
+rules. Only the control plane listens by default; everything else is there only once it is
+configured. *Inbound* means OpenTrack listens; *outbound* means it connects. All TLS runs on the
+FIPS module ([FIPS cryptography](#fips-cryptography)).
+
+| Service | Protocol | Direction | Default | Purpose | TLS and authentication |
+|---|---|---|---|---|---|
+| Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA` and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| Redis | TCP, RESP | Outbound | `redis://127.0.0.1:6379` | Observation streams, the live picture, the outbox, commands between roles | `rediss://`, `OT_REDIS_CA`, mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY`; a password in the URL |
+| NATS | TCP, NATS | Outbound | `nats://127.0.0.1:4222` | Tracks (`tracks.>`, JetStream), contacts (`contacts.>`) and raw output (`opentrack.raw.<source>`); the multi-node sync boundary (`<OT_SYNC_PREFIX>.out.*` and `.in.*`, prefix `ot.sync`) | `tls://`, `OT_NATS_CA`, mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY`; `.creds`, a token, or a user and password |
+| OpenTelemetry | TCP; OTLP over gRPC (4317) or HTTP (4318) | Outbound | Off | Logs (the audit record included), traces and metrics to the collector ([OpenTelemetry](#opentelemetry)) | `https://` endpoint, `OTEL_EXPORTER_OTLP_CERTIFICATE`, mutual TLS, headers |
+| TAK Server output | TCP, CoT XML | Outbound | None configured | Tracks to a TAK Server's streaming input ([TAK output](#tak-output)) | TLS (8089) with a client certificate; 8087 is plaintext |
+| TAK multicast output | UDP, CoT XML | Outbound | Group `239.2.3.1`, port `6969`, TTL 1 | Tracks to ATAK and WinTAK on the network | None: always plaintext |
+| TAK listening output | TCP, CoT XML | Inbound | None configured (**Listen on**, such as `0.0.0.0:8089`) | ATAK and WinTAK connect as to a TAK Server | TLS, with an optional client CA and revocation lists |
+| Source `tcp_server` | TCP | Inbound | None: the source's `bind` | A feed that connects to OpenTrack | TLS; mutual TLS with `client_ca_file` and revocation lists |
+| Source `udp` | UDP, optionally joining an IPv4 multicast group | Inbound | None: the source's `bind` | A feed sent as datagrams | None |
+| Source `grpc_server` | TCP, gRPC over HTTP/2 | Inbound | None: the source's `bind` | Producers' gRPC calls ([docs/protobuf-grpc.md](../protobuf-grpc.md)) | TLS; mutual TLS with `client_ca_file`; a bearer `token` |
+| Source `tcp_client` | TCP | Outbound | None: the source's `host` and `port` | A feed OpenTrack connects to | TLS, client certificate |
+| Source `http_poll` | TCP, HTTP or HTTPS | Outbound | None: the source's `url` | A polled feed | `https://`, CA, client certificate; headers (such as a token) |
+| Source `websocket` | TCP, WebSocket (`ws://`, `wss://`) | Outbound | None: the source's `url` | A streamed feed | `wss://`, CA, client certificate; headers |
+| Source `mqtt` | TCP, MQTT 3.1.1 (1883; 8883 for `mqtts://`) | Outbound | None: the source's `url` | Subscribed topics | `mqtts://`, CA, client certificate; user and password |
+| Source `grpc_client` | TCP, gRPC over HTTP/2 | Outbound | None: the source's `url` | A producer's streaming method | `https://`, CA, client certificate; metadata (such as a bearer token) |
+| Source `file` | None | | | Recorded data, read only under the data directory | |
+| SAML identity provider | HTTPS, through the browser | None from the server: browsers go to the identity provider and post back to the control plane | Off | Single sign-on ([SAML](#saml)) | The identity provider's signature on the response |
+| OpenStare sign-in check | TCP, HTTP or HTTPS | Outbound | Off (API URL `http://127.0.0.1:3001`) | Asks OpenStare's `/api/auth/me` who a session or token is ([OpenStare sign-in](#openstare-sign-in)) | `https://` when the API URL is; the user's own OpenStare cookie or token |
+| Basemap tiles | TCP, HTTP or HTTPS | Outbound | Off | Map tiles, fetched for the browsers ([Basemap tiles](#basemap-tiles)) | An `https://` URL; a key in the query if the tile server takes one |
+| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | None: keep them on the same host (loopback or a Unix socket) |
+| WebAssembly plugins | Whatever the plugin opens | Outbound | No network | Only the `host:port` addresses in the plugin's **network** grant | The plugin's own |
+| Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | NATS's; the networking package proves the sender ([docs/sync-icd.md](../sync-icd.md)) |
+| `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | Only what the NATS URL carries (`tls://`, credentials in the URL); no CA, client certificate or `.creds` options |
+
+`opentrack health`, the image's health check, connects to `OT_BIND` on the same host. The
+command-line tools open the database directly and use no port.
+
 ## Data directory
 
 The directory that holds the database (`data/` from source, `/data` in Docker):
@@ -427,6 +546,12 @@ In **Settings → Users**, **Add account**: email, name, role, and a password th
 [password policy](#password-policy). Leave the password empty for an account that signs in only with single sign-on.
 Accounts that SAML makes appear here on their first sign-on, with the origin `saml`. From the
 command line: `opentrack user add`.
+
+**Temporary** (or `--temporary` on the command line) makes a temporary or emergency account: it
+is turned off 72 hours after it is made (fixed), with its sessions and API tokens, and the audit
+record says so (`account_disabled`, reason `expired`). Its row shows **temporary**, then
+**expired**. Turning it on again gives it another 72 hours; the infinity button makes it
+permanent.
 
 ### Disabling accounts
 
@@ -1134,6 +1259,10 @@ The entities' revision history is not in the sheet.
 
 With roles in separate processes, migrate once (or start one role) before starting the others.
 
+A node still on the host-network compose file (0.4.3 and before) moves its data directory into a
+volume and gets its own Redis when it takes the new `docker-compose.yml`: follow
+[Upgrading a host-network deployment](#upgrading-a-host-network-deployment) instead of step 3.
+
 To go back, restore the backup from step 2 and run the old release. An older release refuses a
 database a newer one has migrated: "database schema version N is newer than this build supports
 (M)".
@@ -1286,6 +1415,12 @@ For local accounts:
 | Earlier passwords that can't be reused | 5 |
 | Minimum age (between changes) | 24 hours (an admin's reset is exempt) |
 | Maximum age | 60 days |
+| Common passwords | refused: one of the 100,000 most common, or one whose letters spell one (`Password2026!!!`) |
+
+The common-password list is built in (SecLists, MIT licence). To add your own, such as
+passwords known to be compromised in your organisation, put one per line in
+`common-passwords.txt` in the data directory (beside `opentrack.db`; lines starting with `#` are
+skipped); it is read at the next start.
 
 An expired password, or a temporary one an admin set, must be changed at the next sign-in. Until
 it is, that session can do nothing else. The first admin's password is temporary as well. That
@@ -1330,9 +1465,17 @@ since then.
 
 Every sign-in event is written to an append-only `audit` table, along with every decision the
 decision log records:
-- sign-in succeeded or refused, with the reason and address;
-- sign-out, lockout, unlock, session ended or timed out;
-- password changed, account turned off.
+- sign-in succeeded or refused, with the reason and address, and the first use in an hour of each
+  API token, client certificate and OpenStare identity (`login`, `via`);
+- sign-out, lockout, unlock, session ended or timed out, the notice accepted
+  (`consent_accepted`);
+- password changed, account turned off (inactive or expired);
+- a credential that identifies no one (`access_refused`), a role that doesn't reach
+  (`access_denied`), a change the server refused (`change_refused`, with the status);
+- an admin reading accounts, API tokens, sign-in settings, the configuration export or the
+  audit record (`read_security_object`), and every source probe (`probe_source`).
+
+A decision's row carries the address of the request that made it.
 
 Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
 the chain. The database refuses updates to the table.
@@ -1380,11 +1523,20 @@ including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_UR
 
 ### Container hardening
 
-The image runs as an unprivileged user and has a health check (`opentrack health`). Its base
-images are pinned by digest. The compose file runs it with:
+The image runs as an unprivileged user (uid 1000) and has a health check (`opentrack health`).
+Its runtime base is distroless Debian 12 (`gcr.io/distroless/cc-debian12`): no shell, no package
+manager, only glibc, OpenSSL 3, CA certificates and the shared libraries the binary loads (SAML's
+libxmlsec1 and libxml2 and theirs). Its base images are pinned by digest. The compose file runs it
+with:
 - a read-only root file system (only `/data` and scratch space are writable);
 - every Linux capability dropped;
-- `no-new-privileges`.
+- `no-new-privileges`;
+- a bridge network with only port 8090 published, and Redis on an internal network;
+- a named volume for `/data`;
+- memory, CPU and process limits ([Docker compose](#docker-compose)).
+
+Redis in the compose file runs the same way: its own user, read-only, no capabilities,
+`no-new-privileges`, limits, and no published port.
 
 ### Signed images
 

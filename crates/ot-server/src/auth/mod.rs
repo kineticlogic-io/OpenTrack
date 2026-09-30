@@ -9,6 +9,7 @@
 //! decision log records. The role always comes from the account as it is
 //! now, so a role change or a deactivation takes effect at once.
 
+pub mod access;
 pub mod api;
 pub mod consent;
 pub mod maintenance;
@@ -151,6 +152,9 @@ pub struct Auth {
     pub activity: sessions::Activity,
     /// Who has accepted the notice-and-consent banner (AC-8).
     pub consent: consent::Consent,
+    /// When API tokens, certificates and OpenStare identities were last
+    /// audited as used.
+    pub uses: access::Uses,
     #[cfg(feature = "saml")]
     saml: saml::State,
 }
@@ -180,6 +184,7 @@ impl Auth {
             attempts: Mutex::new(HashMap::new()),
             activity: sessions::Activity::default(),
             consent: consent::Consent::default(),
+            uses: access::Uses::default(),
             #[cfg(feature = "saml")]
             saml: saml::State::default(),
         }
@@ -485,7 +490,12 @@ async fn from_token(s: &AppState, token: &str, via: Via, idle_ms: i64) -> Option
     // session started just after "sign out everywhere" stands; an API
     // token's row is revoked with it, so its issue time only needs to be
     // before that second.
-    if !user.active || revoked || (!session && claims.iat < user.tokens_valid_from_ms / 1000) {
+    let expired = user.expired(chrono::Utc::now().timestamp_millis());
+    if !user.active
+        || expired
+        || revoked
+        || (!session && claims.iat < user.tokens_valid_from_ms / 1000)
+    {
         return None;
     }
     let role = Role::parse(&user.role)?;
@@ -515,7 +525,7 @@ async fn from_cert(s: &AppState, cert: &PeerCert) -> Option<AuthUser> {
         .user
         .clone();
     let user = s.with_db(move |db| db.user_by_email(&email)).await.ok()??;
-    if !user.active {
+    if !user.active || user.expired(chrono::Utc::now().timestamp_millis()) {
         return None;
     }
     Some(AuthUser {
@@ -579,22 +589,62 @@ fn deny(status: StatusCode, message: &str) -> Response {
 }
 
 /// The API's gate: find the caller, check the role the path needs, and
-/// record the caller as the actor.
-pub async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
+/// record the caller as the actor. Every request is logged (`access`), and
+/// what the audit record needs is recorded ([`access`]).
+pub async fn layer(State(s): State<AppState>, req: Request, next: Next) -> Response {
+    let started = std::time::Instant::now();
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().cloned();
+    let ip = client_ip(peer.as_ref()).to_string();
+    let (method, path, headers) = (
+        req.method().clone(),
+        req.uri().path().to_owned(),
+        req.headers().clone(),
+    );
+    let (res, actor) = access::CLIENT_IP
+        .scope(ip.clone(), gate(&s, req, next, &method, &path, &ip))
+        .await;
+    access::log(
+        actor.as_deref(),
+        &method,
+        &path,
+        res.status(),
+        &ip,
+        &headers,
+        started.elapsed().as_millis(),
+    );
+    res
+}
+
+async fn gate(
+    s: &AppState,
+    mut req: Request,
+    next: Next,
+    method: &axum::http::Method,
+    path: &str,
+    ip: &str,
+) -> (Response, Option<String>) {
     // Only this layer says who the actor is.
     req.headers_mut().remove(ACTOR_HEADER);
-    let need = policy::need(req.method(), req.uri().path());
+    // Paths under /api/v1, as the policy names them.
+    let api_path = path.strip_prefix("/api/v1").unwrap_or(path);
+    let need = policy::need(method, api_path);
     if need == policy::Need::Public {
-        return next.run(req).await;
+        return (next.run(req).await, None);
     }
     let cert = req.extensions().get::<PeerCert>().cloned();
-    let Some(user) = identify(&s, req.headers(), cert.as_ref()).await else {
-        return deny(StatusCode::UNAUTHORIZED, "sign in first");
+    let Some(user) = identify(s, req.headers(), cert.as_ref()).await else {
+        if access::credential_presented(req.headers(), cert.is_some()) {
+            let actor = cert.as_ref().map_or("anonymous".to_owned(), |c| {
+                format!("cert:{}", c.common_name)
+            });
+            access::refused(s, &actor, "access_refused", method, api_path, ip, json!({ "reason": "the credential identifies no one (invalid, expired, revoked or unknown)" })).await;
+        }
+        return (deny(StatusCode::UNAUTHORIZED, "sign in first"), None);
     };
+    let email = Some(user.email.clone());
     // The notice-and-consent banner first, as the page shows it (AC-8).
-    if !policy::allowed_before_consent(req.uri().path()) && s.auth.consent.required(&s, &user).await
-    {
-        return (
+    if !policy::allowed_before_consent(api_path) && s.auth.consent.required(s, &user).await {
+        let r = (
             StatusCode::FORBIDDEN,
             axum::Json(json!({
                 "error": "accept the notice first",
@@ -602,9 +652,10 @@ pub async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> R
             })),
         )
             .into_response();
+        return (r, email);
     }
-    if user.must_change && !policy::allowed_before_password_change(req.uri().path()) {
-        return (
+    if user.must_change && !policy::allowed_before_password_change(api_path) {
+        let r = (
             StatusCode::FORBIDDEN,
             axum::Json(json!({
                 "error": "change your password first",
@@ -612,20 +663,34 @@ pub async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> R
             })),
         )
             .into_response();
+        return (r, email);
     }
     if let policy::Need::Role(role) = need
         && user.role < role
     {
-        return deny(
+        access::refused(
+            s,
+            &user.email,
+            "access_denied",
+            method,
+            api_path,
+            ip,
+            json!({ "role": user.role, "needs": role }),
+        )
+        .await;
+        let r = deny(
             StatusCode::FORBIDDEN,
             &format!("this needs the {} role", role.as_str()),
         );
+        return (r, email);
     }
     if let Ok(v) = HeaderValue::from_str(&user.email) {
         req.headers_mut().insert(ACTOR_HEADER, v);
     }
-    req.extensions_mut().insert(user);
-    next.run(req).await
+    req.extensions_mut().insert(user.clone());
+    let res = next.run(req).await;
+    access::after(s, &user, method, api_path, res.status(), ip).await;
+    (res, email)
 }
 
 /// The caller's address, when the server recorded it.
@@ -682,6 +747,7 @@ mod tests {
             locked_until_ms: None,
             active_since_ms: None,
             disabled_reason: None,
+            expires_at_ms: None,
         };
         let (t, jti, _) = a.issue(&u, "session", 60).unwrap();
         let c = a.decode(&t).unwrap();

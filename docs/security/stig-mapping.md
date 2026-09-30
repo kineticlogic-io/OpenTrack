@@ -35,7 +35,7 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA and CRL status, as IA-2(12) |
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |
 | IA-8 | Non-organisational users | Inherited | Through the identity provider |
-| SA-11, RA-5 | Developer testing, vulnerability scanning | Partial | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; each release image scanned with `scripts/ato/scan` (Trivy, Grype). The base image's OS packages carry unfixed findings (POA&M P-22); nothing scans on a schedule yet (P-23) |
+| SA-11, RA-5 | Developer testing, vulnerability scanning | Partial | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; coverage measured for each release (`scripts/coverage.sh`); a threat model reviewed each minor release ([threat-model.md](threat-model.md)); each release image scanned with `scripts/ato/scan` (Trivy, Grype). The base image's OS packages carry unfixed findings (POA&M P-22); nothing scans on a schedule yet (P-23) |
 | SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis, feeds and OpenTelemetry export, with mutual TLS available on each; HSTS |
 | SC-13 | Cryptographic protection | Met | AWS-LC FIPS 3.0 and the OpenSSL 3.0.9 FIPS provider; `ring` banned in CI |
 | SC-17 | PKI certificates | Inherited | Your CA issues the server and client certificates |

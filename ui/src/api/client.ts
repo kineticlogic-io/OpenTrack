@@ -596,6 +596,8 @@ export interface Account {
   active_since_ms: number | null
   /** Why it was turned off automatically (`inactivity`). */
   disabled_reason: string | null
+  /** A temporary account: turned off when this passes (72 hours after it was made). */
+  expires_at_ms?: number | null
 }
 
 /** A browser session (one sign-in). */
@@ -659,6 +661,8 @@ export interface PasswordPolicy {
   min_changed_chars: number
   min_age_hours: number
   max_age_days: number
+  /** Commonly used passwords, and ones built from them, are refused. */
+  refuse_common?: boolean
 }
 
 /** The password rules in words, for a password field's ⓘ. */
@@ -674,6 +678,7 @@ export function describePolicy(p: PasswordPolicy | undefined): string {
     `At least ${p.min_length} characters` +
     (classes.length ? `, with ${classes.join(', ')}` : '') +
     (p.history > 0 ? `; not one of the last ${p.history}` : '') +
+    (p.refuse_common ? '; not a commonly used password or one built from it' : '') +
     '.'
   )
 }
@@ -1175,8 +1180,8 @@ export const api = {
   acceptConsent: () => request<{ consent_required: boolean }>('POST', '/auth/consent'),
   changePassword: (current: string, next: string) => request<Me>('POST', '/auth/password', { current, new: next }),
   users: () => get<{ users: Account[] }>('/auth/users').then((r) => r.users),
-  createUser: (u: { email: string; name: string; role: Role; password?: string }) => request<Account>('POST', '/auth/users', u),
-  updateUser: (id: string, change: { name?: string; role?: Role; active?: boolean }) => request<Account>('PUT', `/auth/users/${enc(id)}`, change),
+  createUser: (u: { email: string; name: string; role: Role; password?: string; temporary?: boolean }) => request<Account>('POST', '/auth/users', u),
+  updateUser: (id: string, change: { name?: string; role?: Role; active?: boolean; temporary?: boolean }) => request<Account>('PUT', `/auth/users/${enc(id)}`, change),
   deleteUser: (id: string) => request<unknown>('DELETE', `/auth/users/${enc(id)}`),
   /** Set a new password, or with `null` remove it (single sign-on only). */
   resetPassword: (id: string, password: string | null) => request<unknown>('POST', `/auth/users/${enc(id)}/password`, { password }),
