@@ -491,6 +491,46 @@ impl RedisStore {
             .collect())
     }
 
+    /// Record how this process's OpenTelemetry export is going.
+    pub async fn put_telemetry_status(
+        &self,
+        process: &str,
+        status: &serde_json::Value,
+    ) -> Result<()> {
+        redis::cmd("HSET")
+            .arg(self.keys.telemetry_status())
+            .arg(process)
+            .arg(status.to_string())
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Every process's last OpenTelemetry export status.
+    pub async fn telemetry_status(&self) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let raw: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+            .arg(self.keys.telemetry_status())
+            .query_async(&mut self.conn.clone())
+            .await?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?)))
+            .collect())
+    }
+
+    /// Forget processes' export status (processes long gone).
+    pub async fn forget_telemetry_status(&self, processes: &[String]) -> Result<()> {
+        if processes.is_empty() {
+            return Ok(());
+        }
+        redis::cmd("HDEL")
+            .arg(self.keys.telemetry_status())
+            .arg(processes)
+            .query_async::<()>(&mut self.conn.clone())
+            .await?;
+        Ok(())
+    }
+
     /// Record how the TAK outputs are going, for `ttl`.
     pub async fn put_cot_status(&self, status: &serde_json::Value, ttl: Duration) -> Result<()> {
         redis::cmd("SET")
@@ -780,6 +820,9 @@ impl RedisStore {
 
     /// Add `n` to a per-source, per-minute counter (kept 7 days).
     pub async fn incr_metric(&self, source: &str, field: &str, n: i64) -> Result<()> {
+        if let Ok(n) = u64::try_from(n) {
+            crate::otel::count(source, &[(field.to_owned(), n)]);
+        }
         let minute = Utc::now().timestamp() / 60;
         let key = self.keys.metrics(source, minute);
         redis::pipe()
@@ -1050,6 +1093,7 @@ impl RedisStore {
         if counts.is_empty() {
             return Ok(());
         }
+        crate::otel::count(source, counts);
         let minute = Utc::now().timestamp() / 60;
         let key = self.keys.metrics(source, minute);
         let mut pipe = redis::pipe();
@@ -1085,6 +1129,7 @@ impl RedisStore {
         if gauges.is_empty() {
             return Ok(());
         }
+        crate::otel::gauge(source, gauges);
         let minute = Utc::now().timestamp() / 60;
         let key = self.keys.metrics(source, minute);
         let mut pipe = redis::pipe();

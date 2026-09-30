@@ -25,6 +25,13 @@ export interface ServerStatus {
     stream_messages?: number
     stream_bytes?: number
   }
+  /** OpenTelemetry export of logs, traces and metrics (not counted in the 503). */
+  telemetry?: DependencyStatus & {
+    /** Whether any running role exports (an OTEL_EXPORTER_OTLP_*ENDPOINT is set). */
+    configured: boolean
+    /** "<protocol> <endpoint>" of each exported signal. */
+    endpoints?: string[]
+  }
 }
 
 /** A line of bearing on a track (docs/non-point-contacts.md). */

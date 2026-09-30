@@ -14,6 +14,7 @@ pub mod correlation;
 pub mod graph;
 pub mod groups;
 pub mod keys;
+pub mod otel;
 pub mod plugins;
 pub mod probe;
 pub mod redis_store;

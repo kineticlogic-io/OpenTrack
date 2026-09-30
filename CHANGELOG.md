@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### OpenTelemetry
+
+OpenTrack hands its logs, the audit record included, its traces and its metrics to the
+deployment's OpenTelemetry collector (#50). It is a track management tool: storing, searching
+and alerting on logs belong to the collector and the SIEM behind it.
+
+- **OTLP export**, over gRPC or HTTP, configured with the standard `OTEL_*` variables (endpoint,
+  protocol, CA and client certificate, headers, sampler, export interval, per-signal switches).
+  Off until `OTEL_EXPORTER_OTLP_ENDPOINT` is set; TLS on the FIPS module.
+- **Logs:** every log line, with its fields as attributes. Audit records are log events named
+  `audit.record` (scope `audit`). The audit table, its hash chain, `/api/v1/audit` and
+  `/audit/verify` stay as they are.
+- **Traces:** API requests, source processing and writes, engine batches, writer publishes.
+- **Metrics:** every Overview counter and gauge as `opentrack.<name>`.
+- **Collector outages don't stop anything:** the role logs the failure once and the recovery,
+  `/api/v1/status` gains `telemetry` (not counted in its 503) and **Overview → System status**
+  a Telemetry row. A sign-in that can't be written to the audit table is still refused.
+- The one-off commands (`migrate`, `user`, `config`, `plugin`, `retire`, …) log to standard
+  error, so their output can be piped (#46).
+- Docs: admin guide (OpenTelemetry), `stig-mapping.md` (AU-4, AU-5, AU-6, AU-9(2), AU-11),
+  `hardening.md`.
+
+### Fixes
+
+- A static report that changes a vessel's details ships once `min_interval_secs` allows, not at
+  the next heartbeat (#53).
+
 ## 0.4.2 (alpha), 2026-09-29
 
 ### TAK output

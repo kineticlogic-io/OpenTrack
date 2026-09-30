@@ -21,10 +21,12 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | AC-11, AC-12 | Session lock and termination | Met | Idle timeout 15 minutes (admins 10), counted from the user's own activity; absolute lifetime 24 hours; all fixed; sessions kept on the server and revocable |
 | AC-16 | Security attributes | Partial | Labels per source are carried on every track. A fused track takes the highest classification, the union of the restrictions and the intersection of the releasability lists. OpenTrack does not filter by clearance (a deliberate decision; enforcement is downstream) |
 | AU-2, AU-3, AU-12 | Audit events and their content | Met | Sign-in success and failure (reason, address), sign-out, lockout, unlock, session end and timeout, password change, account turned off, every decision; actor, time, outcome, detail |
-| AU-5 | Response to audit failure | Met | A sign-in that can't be recorded is refused |
-| AU-6, AU-7 | Review, reduction and reports | Met | Every audit row is also logged (`audit record`, target `audit`: seq, actor, op, outcome, address, detail, hash); JSON logs (`OT_LOG_FORMAT=json`) for a SIEM; `GET /api/v1/audit` (filters, CSV; admins) |
+| AU-4 | Audit log storage capacity | Inherited | The collector and SIEM store the exported record ([admin guide, OpenTelemetry](../guides/admin.md#opentelemetry)); the local table is small (one row per event) and lives on the `/data` volume, sized by the host |
+| AU-5 | Response to audit failure | Met | A sign-in that can't be recorded in the audit table is refused. A collector outage does not stop OpenTrack: each role logs `OpenTelemetry export failing`, the Overview's Telemetry status turns red and `/api/v1/status` reports it; the table still holds every record. Alerting on the SIEM side is inherited |
+| AU-6, AU-7 | Review, reduction and reports | Met / Inherited | Every audit row is exported over OpenTelemetry (log event `audit.record`: seq, actor, op, outcome, address, detail, hash) and logged on standard output (JSON with `OT_LOG_FORMAT=json`); review, correlation and reports in the SIEM are inherited; `GET /api/v1/audit` (filters, CSV; admins) |
 | AU-9 | Protection of audit information | Met | Append-only table (triggers refuse UPDATE and DELETE), SHA-256 hash chain, `GET /api/v1/audit/verify`, chain head logged hourly |
-| AU-11 | Retention | Met | Kept forever (fixed); nothing deletes rows |
+| AU-9(2) | Audit backup on a separate system | Met / Inherited | Each record is sent to the collector as it is written (OTLP over TLS, mutual TLS available); the separate system's storage and protection are inherited |
+| AU-11 | Retention | Met / Inherited | The local table is kept forever (fixed; nothing deletes rows); retention in the SIEM is inherited |
 | CM-6 | Configuration settings | Met (accepted risk) | The account policy (passwords, lockout, sessions, inactivity, audit retention) is fixed at the STIG values, not configurable. `OT_AUTH=off` and per-feed `insecure_skip_verify` remain by the product owner's decision (F-4): the first warns every minute with a red banner; neither may be used in an accredited deployment (hardening checklist) |
 | CM-7 | Least functionality | Met | One binary, one role per command; plugins sandboxed (WebAssembly, WASI grants) |
 | IA-2 | Identification and authentication | Met | Local accounts, SAML, PKI client certificates, OpenStare trust, API tokens |
@@ -34,7 +36,7 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |
 | IA-8 | Non-organisational users | Inherited | Through the identity provider |
 | SA-11, RA-5 | Developer testing, vulnerability scanning | Met | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; image scanning at release |
-| SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis and feeds, with mutual TLS available on each; HSTS |
+| SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis, feeds and OpenTelemetry export, with mutual TLS available on each; HSTS |
 | SC-13 | Cryptographic protection | Met | AWS-LC FIPS 3.0 and the OpenSSL 3.0.9 FIPS provider; `ring` banned in CI |
 | SC-17 | PKI certificates | Inherited | Your CA issues the server and client certificates |
 | SC-18 | Mobile code | Met | Content-Security-Policy: this origin only, no inline script. Inline *styles* are allowed (F-5) |

@@ -38,6 +38,7 @@ mod settings_api;
 mod sources;
 mod sync_api;
 mod synthetic;
+mod telemetry;
 mod user_cli;
 mod writer;
 
@@ -243,16 +244,71 @@ impl EngineArgs {
     }
 }
 
+impl Command {
+    /// The role, as telemetry names it.
+    fn role(&self) -> &'static str {
+        match self {
+            Command::Migrate => "migrate",
+            Command::Serve(_) => "serve",
+            Command::Writer(_) => "writer",
+            Command::Cot(_) => "cot",
+            Command::Sources => "sources",
+            Command::Engine(_) => "engine",
+            Command::Link(_) => "link",
+            Command::Bridge(_) => "bridge",
+            Command::All { .. } => "all",
+            Command::Synthetic(_) => "synthetic",
+            Command::Bench(_) => "bench",
+            Command::Plugin(_) => "plugin",
+            Command::User(_) => "user",
+            Command::Config(_) => "config",
+            Command::Health { .. } => "health",
+            Command::Retire { .. } => "retire",
+        }
+    }
+
+    /// Whether it is a long-running server role (the rest are one-off
+    /// commands, which log to standard error: their output is on
+    /// standard output).
+    fn is_server(&self) -> bool {
+        matches!(
+            self,
+            Command::Serve(_)
+                | Command::Writer(_)
+                | Command::Cot(_)
+                | Command::Sources
+                | Command::Engine(_)
+                | Command::Link(_)
+                | Command::Bridge(_)
+                | Command::All { .. }
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::mark_start();
-    init_tracing();
-    // FIPS 140-3: the validated module, or nothing runs.
+    // FIPS 140-3: the validated module, or nothing runs. First, so every TLS
+    // connection (OTLP export included) uses it.
     fips::init()?;
+    let cli = Cli::parse();
+    let role = cli.command.role();
+    let telemetry = telemetry::init(role, !cli.command.is_server(), &cli.common);
     tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
     #[cfg(feature = "saml")]
     auth::openssl_fips();
-    let cli = Cli::parse();
+    if cli.command.is_server() {
+        telemetry.report(cli.common.clone());
+    }
+    let result = run(cli).await;
+    if let Err(e) = &result {
+        tracing::error!(role, error = format!("{e:#}"), "stopped");
+    }
+    telemetry.shutdown().await;
+    result
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let common = cli.common;
     match cli.command {
         Command::Migrate => {
@@ -494,17 +550,6 @@ fn health(bind: SocketAddr, tls: bool) -> anyhow::Result<()> {
     c.read_exact(&mut head)?;
     anyhow::ensure!(head.ends_with(b" 200"), "/healthz did not answer 200");
     Ok(())
-}
-
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_env("OT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if std::env::var("OT_LOG_FORMAT").as_deref() == Ok("json") {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
 }
 
 #[cfg(test)]

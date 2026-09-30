@@ -281,6 +281,75 @@ For `link`. See [Multi-node](#multi-node).
 | `OT_LOG` | `info` | Log filter, in `tracing` syntax: `warn`, `debug`, or per module, such as `info,opentrack=debug,ot_source=debug`. |
 | `OT_LOG_FORMAT` | text | `json` writes one JSON object a line, for log collectors. |
 
+The server roles log to standard output. The one-off commands (`migrate`, `user`, `config`,
+`plugin`, `retire`, `bench`, `synthetic`) log to standard error, so their output on standard
+output can be piped or redirected on its own.
+
+### OpenTelemetry
+
+OpenTrack sends its logs (the audit record included), traces and metrics over OpenTelemetry
+(OTLP) to the collector your deployment runs; the collector and the back end behind it (SIEM, log
+store, metrics and tracing systems) keep and search them. Export is off until an endpoint is set,
+and standard output keeps every log line either way. Set the standard `OTEL_*` variables on every
+role (with `opentrack all`, on the one process):
+
+| Variable | Default | |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | The collector, such as `https://otel-collector:4318` (HTTP) or `https://otel-collector:4317` (gRPC). Setting it turns export on. `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `..._TRACES_ENDPOINT` and `..._METRICS_ENDPOINT` set one signal's (an HTTP one is the full URL, with `/v1/logs` and so on). |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | `grpc` or `http/protobuf` (per signal too: `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` and so on). |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | system roots | PEM file of the CA that signed the collector's certificate. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY` | unset | PEM client certificate and key, for mutual TLS. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | unset | Headers on every export, such as `authorization=Bearer …`. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_COMPRESSION` | 10 s, none | Per export; `gzip` compresses. |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | `opentrack` | The resource. OpenTrack adds `service.version`, `service.instance.id` (host and process), `opentrack.node_id` and `opentrack.role`. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | one trace in ten | As the specification says; unset, `parentbased_traceidratio` at 0.1. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | 60000 | Milliseconds between metric exports. |
+| `OTEL_LOGS_EXPORTER`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` | `none` leaves that signal out. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns all export off. |
+
+TLS to the collector (`https://` endpoints) runs on the FIPS module, like every other connection.
+
+**What is sent:**
+- **Logs:** every log line at or above `OT_LOG`, with its fields as attributes and its target as
+  the instrumentation scope. Audit records have the event name **`audit.record`** and scope
+  `audit` ([Audit record](#audit-record)): route them to your SIEM on either. The exporters' own
+  transport logs, and OpenTrack's export warnings, are not sent (a failing collector would be fed
+  its own failures).
+- **Traces:** API requests (`request`), each source's frame processing and writes
+  (`source.process`, `source.write`), the engine's correlation batches (`engine.batch`) and the
+  writer's publishes (`writer.flush`).
+- **Metrics:** everything the Overview charts, as `opentrack.<name>`, with the source or role as
+  `opentrack.component` and a TAK output as `opentrack.output`: counters such as
+  `opentrack.frames`, `opentrack.observations`, `opentrack.sent`, and gauges such as
+  `opentrack.tracks`, `opentrack.outbox_lag`, `opentrack.rss_bytes`. The Overview keeps its own
+  history in Redis as before.
+
+**When the collector can't be reached**, OpenTrack keeps working. Each role logs `OpenTelemetry
+export failing` once, on standard output, and again when it recovers; the **Telemetry** row of
+**Overview → System status** turns red with the error (it goes green within about 10 seconds of
+the collector taking connections again). Records that can't be sent are dropped from the export,
+not held without bound: standard output still has every log line, and the audit table every
+audit record, so fill the SIEM's gap from `GET /api/v1/audit?from_ms=…&to_ms=…`.
+
+A minimal collector that takes both protocols and forwards to your back end:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+processors:
+  batch: {}
+exporters:
+  otlphttp: { endpoint: https://siem.example.mil:4318 }
+service:
+  pipelines:
+    logs: { receivers: [otlp], processors: [batch], exporters: [otlphttp] }
+    traces: { receivers: [otlp], processors: [batch], exporters: [otlphttp] }
+    metrics: { receivers: [otlp], processors: [batch], exporters: [otlphttp] }
+```
+
 ### Test-only variables
 
 These are read only by the test suites and benchmark tools, never by a running server:
@@ -1098,14 +1167,18 @@ site code, so a stray request can't purge. It waits up to 5 minutes for the engi
   `ok` flag: `sqlite` (with its schema version), `redis`, and `nats` (connected, and the stream
   usable), plus the version, algorithm versions, site code and node id. It answers 200 when all
   three are up and 503, with the same body, when any is down, so a readiness check or monitor
-  that reads only the status code sees it; the flags say which.
+  that reads only the status code sees it; the flags say which. It also reports `telemetry`
+  ([OpenTelemetry](#opentelemetry)): `configured`, `ok`, the endpoints and each exporting role's
+  last success and error. Telemetry is not counted in the 503, so a collector outage never makes
+  an orchestrator restart OpenTrack.
 - **`GET /api/v1/sync/status`**: the link to other nodes.
 
 ### Metrics
 
 The **Overview** tab:
 - **System status:** control plane, algorithms, SQLite, Redis and NATS, each green or red with
-  its error.
+  its error; and **Telemetry**, green or red when [OpenTelemetry](#opentelemetry) export is on,
+  grey (off) when it isn't.
 - **Throughput** (per minute, last hour): ingest (frames, observations, dropped, errors),
   observations by source, correlation (applied, new tracks, paired, proposed or split, ended),
   output (tracks written, deletes, raw feed, errors), and, once the `cot` role has sent anything,
@@ -1123,13 +1196,15 @@ error.
 
 ### Logs
 
-OpenTrack logs to standard output (`docker compose logs -f opentrack`). Set `OT_LOG_FORMAT=json`
-for a log collector, and `OT_LOG` for more or less detail ([Logging](#logging)). Worth watching:
+OpenTrack logs to standard output (`docker compose logs -f opentrack`) and, when an endpoint is
+set, over [OpenTelemetry](#opentelemetry). Set `OT_LOG_FORMAT=json` for a collector that reads
+standard output, and `OT_LOG` for more or less detail ([Logging](#logging)). Worth watching:
 - `audit record` (target `audit`): every audit row, see [Audit record](#audit-record);
 - `SAML sign-on refused` and `sign-in refused`;
 - `OpenStare sign-in check failed`;
 - a source's connection errors;
-- `the engine did not answer`.
+- `the engine did not answer`;
+- `OpenTelemetry export failing`.
 
 Every change a person makes is in the decision log, with who and when (the Track Management and
 Correlation tabs show it; `GET /api/v1/decisions`).
@@ -1251,9 +1326,10 @@ decision log records:
 
 Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
 the chain. The database refuses updates to the table.
-- **Review in the server logs:** every row is also logged, once written, as an `audit record`
+- **Review in your SIEM:** every row is also logged, once written, as an `audit record`
   event (target `audit`) with its `seq`, `actor`, `op`, `outcome`, `ip`, `detail`, `decision_id`
-  and `hash`. Set `OT_LOG_FORMAT=json` and ship the log to your SIEM. A decision's `before` and
+  and `hash`. Over [OpenTelemetry](#opentelemetry) it is a log record with event name
+  `audit.record` and those fields as attributes; on standard output, set `OT_LOG_FORMAT=json`. A decision's `before` and
   `after` (the configuration it changed, which can hold source credentials) are left out of the
   log; its `decision_id` finds them in the API. For example:
 
@@ -1263,7 +1339,9 @@ the chain. The database refuses updates to the table.
 - **Review through the API** (admins): `GET /api/v1/audit` filters by time (`from_ms`, `to_ms`),
   account (`actor`), event (`op`, comma-separated) and `outcome`, pages back with `before_seq`,
   and gives CSV with `format=csv`. `GET /api/v1/audit/verify` checks the chain.
-- **Fail closed:** if a sign-in can't be recorded, it is refused.
+- **Fail closed:** if a sign-in can't be recorded in the table, it is refused. A collector outage
+  does not refuse anything: the table has the record, and the Telemetry status shows the outage
+  ([OpenTelemetry](#opentelemetry)).
 - **Retention:** kept forever. Nothing deletes rows.
 - **Chain head:** written to the log every hour. Keep the logs apart from the database, so that a
   truncated tail can be spotted.

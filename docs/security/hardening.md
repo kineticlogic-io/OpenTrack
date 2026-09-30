@@ -72,17 +72,16 @@ The account policy is fixed at the STIG values; there is nothing to set:
 
 ## Operate
 
-- **Review the audit record** at the interval your plan sets, in your SIEM: ship the JSON logs
-  (`OT_LOG_FORMAT=json`). Every audit row is logged as an `audit record` event (target `audit`),
-  and the hourly chain head is logged too. The API gives the record itself to admins
-  (`GET /api/v1/audit`, CSV with `format=csv`); check the chain with `GET /api/v1/audit/verify`.
-- **Keep logs off the host.** A copy of the chain head outside the database is what shows that
-  the audit tail was cut.
-- **Back up** SQLite with `sqlite3 .backup` (online), and Redis. Protect backups like the data
-  directory: it holds password hashes and the session key. See the administrator guide.
-- **Least privilege:** viewers for monitoring and read-only services; few admins; one API token
-  per service, with an expiry.
-- **Keep secrets out of source specs** (`${env:NAME}`). Only admins see secret fields, but inline
-  secrets still sit in the database and its backups.
+- **Send the logs to your collector:** set `OTEL_EXPORTER_OTLP_ENDPOINT` (an `https://` URL,
+  with `OTEL_EXPORTER_OTLP_CERTIFICATE`, and a client certificate if the collector asks for one)
+  on every role ([admin guide, OpenTelemetry](../guides/admin.md#opentelemetry)). Route log
+  records with event name `audit.record` to the SIEM. Alert on the SIEM side when OpenTrack stops
+  sending, and watch **Overview → System status → Telemetry** (`telemetry` in
+  `GET /api/v1/status`).
+- **Review the audit record** at the interval your plan sets, in your SIEM. The API gives the
+  record itself to admins (`GET /api/v1/audit`, CSV with `format=csv`; use it to fill the SIEM
+  after a collector outage); check the chain with `GET /api/v1/audit/verify`.
+- **Keep logs off the host.** The hourly chain head in the exported logs is what shows that the
+  audit tail was cut.
 - **Patch:** CI runs `cargo deny` (RustSec) and `npm audit`. Rebuild the image when either reports
   something, and when Debian bookworm ships security updates.

@@ -17,6 +17,7 @@ use ot_core::wire::{self, Op, PublishContext};
 use ot_nats::{Outgoing, TrackSink};
 use ot_store::{OutboxOp, RedisStore};
 use tokio::time::Instant;
+use tracing::Instrument;
 
 /// Consumer group every writer instance joins.
 pub const GROUP: &str = "track-writer";
@@ -257,7 +258,9 @@ impl<S: TrackSink> Writer<S> {
                 }
             }
         }
-        self.flush().await
+        self.flush()
+            .instrument(tracing::info_span!("writer.flush"))
+            .await
     }
 
     /// Messages still waiting (coalesced updates and deletes).

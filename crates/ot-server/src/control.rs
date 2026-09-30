@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeader;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 
 use crate::config::Common;
 
@@ -82,7 +82,12 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     }
     app.layer(CompressionLayer::new())
         .layer(axum::middleware::from_fn_with_state(hsts, security_headers))
-        .layer(TraceLayer::new_for_http())
+        // Requests as INFO spans, so they are traced (OTLP) at the default
+        // log level.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
+        )
 }
 
 /// The page's content security policy: everything from this server (the
@@ -186,6 +191,10 @@ async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
         }
         Err(_) => json!({ "ok": false, "error": "timed out" }),
     };
+    // Not counted in `up`: a collector outage must not make an
+    // orchestrator restart OpenTrack (it keeps working, and logs stay on
+    // standard output).
+    let telemetry = crate::telemetry::status(&s.redis).await;
     let up = [&sqlite, &redis, &nats].iter().all(|d| d["ok"] == true);
     let code = if up {
         StatusCode::OK
@@ -207,6 +216,7 @@ async fn status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
         "sqlite": sqlite,
         "redis": redis,
         "nats": nats,
+        "telemetry": telemetry,
     });
     (code, Json(body))
 }
