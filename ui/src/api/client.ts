@@ -600,6 +600,8 @@ export interface Me {
   session?: string
   /** The previous good sign-in and the failed ones since, as they stood at this sign-in. */
   last_login?: { previous_at_ms: number | null; failed_attempts: number }
+  /** False when this address does not serve the admin routes: with OT_ADMIN_BIND they are only on the admin listener. */
+  admin_api?: boolean
 }
 
 /** What the sign-in page offers. */

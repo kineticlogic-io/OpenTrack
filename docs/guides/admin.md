@@ -299,6 +299,7 @@ For `serve` (and `all`).
 | Variable | Default | |
 |---|---|---|
 | `OT_BIND` | `0.0.0.0:8090` | Address the API and UI listen on. |
+| `OT_ADMIN_BIND` | | A second address, for administration only: the admin routes are served there and nowhere else ([Admin listener](#admin-listener)). |
 | `OT_UI_DIR` | `ui/dist` | The built UI, served at `/`. Skipped when it has no `index.html`. |
 | `OT_AUTH` | `on` | `off` turns sign-in off: every caller is an admin. Development only ([Sign-in turned off](#sign-in-turned-off)). |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | The first admin account, made only while there are no accounts ([First admin](#first-admin)). |
@@ -316,7 +317,27 @@ marked `Secure`.
 | `OT_TLS_CERT` | The server certificate (PEM, with its chain). Needs `OT_TLS_KEY`. |
 | `OT_TLS_KEY` | Its private key (PEM). |
 | `OT_TLS_CLIENT_CA` | Accept client certificates this CA (PEM) signed, as the accounts [Client certificates](#client-certificates) maps them to. A client certificate is optional: browsers without one still sign in with a password or single sign-on. |
-| `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. A revoked certificate, one no list covers, or one whose issuer's list is past its next update is refused. Reloaded within a minute of a change. |
+| `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. Used when OCSP gives no answer: a revoked certificate, one no list covers, or one whose issuer's list is past its next update is then refused. Reloaded within a minute of a change. |
+| `OT_TLS_CLIENT_OCSP_URL` | The OCSP responder (`http://` or `https://`) to ask about every client certificate, instead of the one each certificate names in its authority information access extension. Needs `OT_TLS_CLIENT_CA`. See [Client certificates](#client-certificates). |
+| `OT_ADMIN_TLS_CERT`, `OT_ADMIN_TLS_KEY` | The [admin listener](#admin-listener)'s own certificate and key, together. Unset: it uses `OT_TLS_CERT` and `OT_TLS_KEY`. |
+| `OT_ADMIN_TLS_CLIENT_CA` | The admin listener's own client CA. Unset: `OT_TLS_CLIENT_CA`. The revocation lists (`OT_TLS_CLIENT_CRL`) apply to both listeners. |
+
+#### Admin listener
+
+With `OT_ADMIN_BIND` (for example `10.20.0.5:8091`, an address on the management network, or
+`127.0.0.1:8091`), OpenTrack listens there as well as on `OT_BIND`. Every admin route (accounts,
+tokens, security and sign-in settings, sources, settings, plugins, configuration export and
+import, the audit record, and every other change that needs the admin role) is served **only** on
+the admin listener. On `OT_BIND` an admin asking for one gets `404` ("not served on this
+address"): that listener has no admin interface. Everyone else is refused there as anywhere
+(`401` without a sign-in, `403` without the role). The admin listener serves the whole UI and API
+with the same sign-in; on the main one the UI hides the admin areas (`/auth/me` says
+`admin_api: false`).
+
+It takes the main listener's TLS unless `OT_ADMIN_TLS_*` set its own. `OT_ADMIN_BIND` can't be
+`OT_BIND`, and `OT_ADMIN_TLS_*` need it; OpenTrack refuses to start otherwise. Publish the port
+only to the management network, and firewall it ([hardening](../security/hardening.md)). Unset,
+nothing changes. `opentrack health` still checks `OT_BIND`.
 
 TLS for feeds is set per source, in the source's transport (see the README, "Sources and
 pipelines").
@@ -450,7 +471,9 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 
 | Service | Protocol | Direction | Default | Purpose | TLS and authentication |
 |---|---|---|---|---|---|
-| Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA` and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA`, checked by OCSP and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| OCSP responder | TCP, HTTP (or HTTPS) | Outbound | The client certificate's authority information access URL, or `OT_TLS_CLIENT_OCSP_URL` | The revocation status of a client certificate presented to the control plane (with `OT_TLS_CLIENT_CA`) | OCSP requests and responses (RFC 6960); answers are signed by the CA or its delegated responder, so plain HTTP is usual. 5 s limit, no redirects |
+| Admin listener | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_ADMIN_BIND`, none | The admin API routes, and the web UI and the rest of the API ([Admin listener](#admin-listener)); only here while it is set | As the control plane, or `OT_ADMIN_TLS_CERT`/`OT_ADMIN_TLS_KEY` and `OT_ADMIN_TLS_CLIENT_CA`; the same sign-in |
 | Redis | TCP, RESP | Outbound | `redis://127.0.0.1:6379` | Observation streams, the live picture, the outbox, commands between roles | `rediss://`, `OT_REDIS_CA`, mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY`; a password in the URL |
 | NATS | TCP, NATS | Outbound | `nats://127.0.0.1:4222` | Tracks (`tracks.>`, JetStream), contacts (`contacts.>`) and raw output (`opentrack.raw.<source>`); the multi-node sync boundary (`<OT_SYNC_PREFIX>.out.*` and `.in.*`, prefix `ot.sync`) | `tls://`, `OT_NATS_CA`, mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY`; `.creds`, a token, or a user and password |
 | OpenTelemetry | TCP; OTLP over gRPC (4317) or HTTP (4318) | Outbound | Off | Logs (the audit record included), traces and metrics to the collector ([OpenTelemetry](#opentelemetry)) | `https://` endpoint, `OTEL_EXPORTER_OTLP_CERTIFICATE`, mutual TLS, headers |
@@ -725,9 +748,41 @@ With mutual TLS, a machine can sign in with its certificate alone.
    account's email. Save.
 
 A certificate the CA signed whose CN is listed signs in as that account, while the account is
-active. With `OT_TLS_CLIENT_CRL`, revoked certificates are refused; keep the lists current (a list
-past its next update refuses every certificate its CA issued), for example with a daily job that
-downloads your CA's CRLs into the directory. Refusals are logged as `client certificate refused`. Other callers can still use passwords and tokens.
+active. Other callers can still use passwords and tokens.
+
+**Revocation.** Every client certificate presented is checked for revocation right after the TLS
+handshake, before any request is served:
+
+1. **OCSP.** The server asks the certificate's OCSP responder: the URL in its authority
+   information access extension, or `OT_TLS_CLIENT_OCSP_URL` for every certificate (an internal
+   responder, or one reached through a firewall rule; see
+   [Ports, protocols and services](#ports-protocols-and-services)). The answer counts only if it
+   is signed by the issuing CA, or by a responder certificate that CA issued directly with the
+   OCSP Signing extended key usage (valid now); names this certificate; carries the request's
+   nonce, if it carries one; and is current (thisUpdate not in the future and nextUpdate not
+   past, allowing 5 minutes of clock skew; an answer without a nextUpdate must be under an hour
+   old). **Good** lets the certificate in; **revoked** refuses it. Both are remembered until the
+   answer's nextUpdate, at most an hour (5 minutes without one), for up to 10,000 certificates,
+   and a browser's parallel connections share one query.
+2. **Revocation lists.** With no usable OCSP answer, `OT_TLS_CLIENT_CRL` decides: the certificate
+   names no responder, the responder can't be reached within 5 seconds or answers with an HTTP
+   error (it is then left alone for 30 seconds), or its answer is unusable (unsigned, for another
+   certificate, stale, an error status) or **unknown**. Unknown isn't a revocation: it means the
+   responder doesn't vouch for the certificate, so the lists must. Keep them current (a list past
+   its next update refuses every certificate its CA issued), for example with a daily job that
+   downloads your CA's CRLs into the directory.
+3. **Neither.** With no OCSP answer and no revocation list, the certificate is refused (fail
+   closed).
+
+A refused certificate's connection is closed and logged as `client certificate refused`; the audit
+record gets `certificate_refused` (subject, serial, reason, `checked`: `ocsp`, `crl` or `none`, and
+the responder). An OCSP query that gave no usable answer is logged and audited as
+`ocsp_unavailable` (outcome, responder, and what the lists then decided).
+
+> **Upgrading to 0.4.5.** Client certificates are now checked after the handshake, OCSP first.
+> A site with `OT_TLS_CLIENT_CA` but no `OT_TLS_CLIENT_CRL`, whose certificates name no OCSP
+> responder, has its certificates **refused** from this release: set `OT_TLS_CLIENT_OCSP_URL`,
+> or give the lists with `OT_TLS_CLIENT_CRL`. Let the server reach the responder (outbound HTTP).
 
 ### Sign-in turned off
 
@@ -1642,6 +1697,8 @@ decision log records:
   (`access_denied`), a change from another site's page (`access_denied`, reason `csrf`), a
   change the server refused (`change_refused`, with the status);
 - a client over the request rate (`rate_limited`, once a minute per client);
+- a client certificate refused as revoked or of unknown status (`certificate_refused`), and an
+  OCSP query with no usable answer, so the revocation lists decided (`ocsp_unavailable`);
 - an admin reading accounts, API tokens, sign-in settings, the configuration export or the
   audit record (`read_security_object`), and every source probe (`probe_source`).
 

@@ -138,6 +138,12 @@ pub struct PeerCert {
     pub common_name: String,
 }
 
+/// In the requests of a listener that does not serve the admin routes:
+/// with `OT_ADMIN_BIND` they are served only on the admin listener (SC-7,
+/// SC-2), and the main listener answers them 404.
+#[derive(Debug, Clone, Copy)]
+pub struct AdminElsewhere;
+
 /// Sign-in state shared by every request.
 pub struct Auth {
     secret: Vec<u8>,
@@ -721,6 +727,17 @@ async fn gate(
         let r = deny(
             StatusCode::FORBIDDEN,
             &format!("this needs the {} role", role.as_str()),
+        );
+        return (r, email);
+    }
+    // After the role check, so a caller without the role is refused (403,
+    // audited) as anywhere. For an admin this listener has no admin
+    // interface at all: it is not here (404), not a permission decision.
+    if need == policy::Need::Role(Role::Admin) && req.extensions().get::<AdminElsewhere>().is_some()
+    {
+        let r = deny(
+            StatusCode::NOT_FOUND,
+            "not served on this address: admin reads and changes are on the admin listener",
         );
         return (r, email);
     }

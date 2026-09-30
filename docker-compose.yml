@@ -55,6 +55,15 @@ services:
       OT_TLS_CERT: ${OT_TLS_CERT:-}
       OT_TLS_KEY: ${OT_TLS_KEY:-}
       OT_TLS_CLIENT_CA: ${OT_TLS_CLIENT_CA:-}
+      OT_TLS_CLIENT_OCSP_URL: ${OT_TLS_CLIENT_OCSP_URL:-}
+      # An admin listener (docs/guides/admin.md#admin-listener): the admin
+      # routes are served only there, e.g. 0.0.0.0:8091. Off while unset.
+      # Publish its port yourself, to a management network only, and firewall
+      # it; nothing here publishes it.
+      OT_ADMIN_BIND: ${OT_ADMIN_BIND:-}
+      OT_ADMIN_TLS_CERT: ${OT_ADMIN_TLS_CERT:-}
+      OT_ADMIN_TLS_KEY: ${OT_ADMIN_TLS_KEY:-}
+      OT_ADMIN_TLS_CLIENT_CA: ${OT_ADMIN_TLS_CLIENT_CA:-}
       OT_LOG: ${OT_LOG:-info}
       # OpenTelemetry (docs/guides/admin.md#opentelemetry): logs, the audit
       # record, traces and metrics to your collector. Off while unset.

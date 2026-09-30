@@ -2669,6 +2669,7 @@ dependencies = [
  "rumqttc",
  "rust_xlsxwriter",
  "rustls",
+ "rustls-webpki",
  "samael",
  "serde",
  "serde_json",

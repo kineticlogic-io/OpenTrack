@@ -43,11 +43,20 @@ themselves are described in the administrator guide, under
 6. **Never set `OT_AUTH=off`** outside a laboratory. It makes every caller an admin; the server
    warns every minute and the UI shows a red banner.
 
+## Separate administration
+
+Set `OT_ADMIN_BIND` to an address on the management network (or `127.0.0.1:…` behind a jump
+host), so the admin interface is on its own listener and the users' address has none (SC-7,
+SC-2): the admin routes answer 404 there. Publish that port to the management network only,
+and allow only administrators' hosts to reach it with the host or network firewall. Give it its
+own certificate and client CA (`OT_ADMIN_TLS_*`) if administrators use different PKI.
+[Admin listener](../guides/admin.md#admin-listener).
+
 ## Encrypt every link
 
 | Link | Settings |
 |---|---|
-| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
+| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, checked by OCSP (each certificate's AIA responder, or `OT_TLS_CLIENT_OCSP_URL`; allow the outbound HTTP) with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily, as the fallback; with neither a certificate is refused), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
 | `opentrack bridge` | the same for each node's NATS: `tls://` URLs, `OT_BRIDGE_NATS_CA`, `OT_BRIDGE_NATS_CERT` / `OT_BRIDGE_NATS_KEY`, `OT_BRIDGE_NATS_CREDS`; per node after the URL (`;ca=`, `;cert=`, `;key=`, `;creds=`). Passwords and tokens from files (`OT_BRIDGE_NATS_PASSWORD_FILE`, `OT_BRIDGE_NATS_TOKEN_FILE`), not flags |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |

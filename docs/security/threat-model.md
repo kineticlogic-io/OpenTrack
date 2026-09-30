@@ -91,7 +91,7 @@ flowchart LR
 | R | A user denies a change | Every change is a decision with its actor; the audit record is append-only and hash-chained (`ot-store/src/audit.rs`), exported as `audit.record` to the SIEM | Refused requests, reads of security objects, sign-ins by certificate, token and OpenStare, and the client address on decisions are not audited | P-01, P-02, P-03 |
 | I | Data read beyond a user's role | Every `/api/v1` route has a role (`auth/policy.rs`, tested); unlisted changes need an admin; source secrets masked for non-admins (`ot_core::secrets`); server errors answer with a reference only (`ApiError`); status detail for admins only | Viewers see the whole picture: OpenTrack does not filter by clearance (AC-16, by design); outputs carry no classification markings | P-10 |
 | D | Request floods, large bodies | Body limits (axum default; explicit ones for imports, plugins, sheets); a rate limit per client on the whole API, 20 requests a second with bursts of 100, per account, API token or address, answered 429 with `Retry-After` and audited once a minute (`auth/rate.rs`); sign-in's own stricter limit | Volumetric floods and many addresses at once are the platform's (a proxy, the network) | P-31 |
-| E | A user raises their own role | Roles only changed by admins; SAML gives at most `track_manager` unless **Allow admin**; SAML never takes a local account; `OT_AUTH=off` makes everyone admin but is excluded by the hardening checklist (F-4) | Administration shares the user listener | P-18 |
+| E | A user raises their own role | Roles only changed by admins; SAML gives at most `track_manager` unless **Allow admin**; SAML never takes a local account; `OT_AUTH=off` makes everyone admin but is excluded by the hardening checklist (F-4) | Administration shares the user listener unless `OT_ADMIN_BIND` puts it on its own (the main one then answers admin routes 404) | P-18 |
 
 ## SAML assertion consumer
 
@@ -111,7 +111,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; CRLs (`OT_TLS_CLIENT_CRL`) fail closed on unknown status or a stale list, reloaded on change; only mapped CNs sign in, to active accounts | No OCSP; certificate sign-ins are not audited | P-26, P-02 |
+| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; OCSP (AIA or `OT_TLS_CLIENT_OCSP_URL`), answers signed by the CA or its delegated responder, then CRLs (`OT_TLS_CLIENT_CRL`, reloaded on change); refused with neither, on a stale list or unknown status; only mapped CNs sign in, to active accounts | OCSP usually travels over plain HTTP, so it relies on the response signature; the nonce is optional (a responder may omit it), so a replayed answer is bounded only by its nextUpdate (or an hour); certificate sign-ins are not audited | P-26, P-02 |
 | S | OpenStare's answer is spoofed | Off by default; OpenTrack asks OpenStare's `/api/auth/me` itself; roles only by the mapping (unlisted roles refused) | Default API URL is plain HTTP on loopback; over a network it must be HTTPS. A compromised OpenStare signs users in here up to the mapped role, for up to 30 s after a revocation | P-02 |
 
 ## Source transports
