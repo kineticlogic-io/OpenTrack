@@ -196,6 +196,81 @@ struct ServeArgs {
     /// server serves TLS itself.
     #[arg(long, env = "OT_PUBLIC_TLS", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
     public_tls: bool,
+    /// Also listen here, and serve the admin routes (accounts, settings,
+    /// sources and every other admin change or read) only here: the main
+    /// listener answers them 404. For a management network or loopback.
+    #[arg(long, env = "OT_ADMIN_BIND")]
+    admin_bind: Option<String>,
+    /// The admin listener's own TLS certificate and key (else the main
+    /// listener's).
+    #[arg(long, env = "OT_ADMIN_TLS_CERT")]
+    admin_tls_cert: Option<String>,
+    #[arg(long, env = "OT_ADMIN_TLS_KEY")]
+    admin_tls_key: Option<String>,
+    /// The admin listener's own client CA (else the main listener's). The
+    /// client CRLs are the same for both.
+    #[arg(long, env = "OT_ADMIN_TLS_CLIENT_CA")]
+    admin_tls_client_ca: Option<String>,
+}
+
+/// The admin listener's address and TLS, when `OT_ADMIN_BIND` is set:
+/// checked, with the main listener's certificate, key and client CA for
+/// what it does not set. Call with empty variables already made unset.
+fn admin_listener(
+    args: &ServeArgs,
+    crls: &[String],
+) -> anyhow::Result<Option<(SocketAddr, Option<ot_source::tls::ServerTls>)>> {
+    let Some(bind) = &args.admin_bind else {
+        anyhow::ensure!(
+            args.admin_tls_cert.is_none()
+                && args.admin_tls_key.is_none()
+                && args.admin_tls_client_ca.is_none(),
+            "OT_ADMIN_TLS_CERT, OT_ADMIN_TLS_KEY and OT_ADMIN_TLS_CLIENT_CA need OT_ADMIN_BIND"
+        );
+        return Ok(None);
+    };
+    let bind: SocketAddr = bind
+        .trim()
+        .parse()
+        .with_context(|| format!("OT_ADMIN_BIND {bind:?} is not an address and port"))?;
+    anyhow::ensure!(
+        bind != args.bind,
+        "OT_ADMIN_BIND is the same address as OT_BIND"
+    );
+    anyhow::ensure!(
+        args.admin_tls_cert.is_some() == args.admin_tls_key.is_some(),
+        "OT_ADMIN_TLS_CERT and OT_ADMIN_TLS_KEY go together"
+    );
+    let (cert, key) = match (&args.admin_tls_cert, &args.admin_tls_key) {
+        (Some(c), Some(k)) => (Some(c), Some(k)),
+        _ => (args.tls_cert.as_ref(), args.tls_key.as_ref()),
+    };
+    let client_ca = args
+        .admin_tls_client_ca
+        .clone()
+        .or_else(|| args.tls_client_ca.clone());
+    let tls = match (cert, key) {
+        (Some(cert), Some(key)) => Some(ot_source::tls::ServerTls {
+            cert_file: cert.clone(),
+            key_file: key.clone(),
+            client_ca_file: client_ca,
+            client_cert_optional: true,
+            client_crl_files: if args.tls_client_ca.is_some() || args.admin_tls_client_ca.is_some()
+            {
+                crls.to_vec()
+            } else {
+                Vec::new()
+            },
+        }),
+        _ => {
+            anyhow::ensure!(
+                args.admin_tls_client_ca.is_none(),
+                "OT_ADMIN_TLS_CLIENT_CA needs TLS (OT_ADMIN_TLS_CERT or OT_TLS_CERT)"
+            );
+            None
+        }
+    };
+    Ok(Some((bind, tls)))
 }
 
 #[derive(Debug, Clone, Args)]
@@ -411,11 +486,20 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         &mut args.admin_email,
         &mut args.admin_password,
         &mut args.session_secret,
+        &mut args.admin_bind,
+        &mut args.admin_tls_cert,
+        &mut args.admin_tls_key,
+        &mut args.admin_tls_client_ca,
     ] {
         if v.as_deref().is_some_and(|s| s.trim().is_empty()) {
             *v = None;
         }
     }
+    let crls: Vec<String> = std::mem::take(&mut args.tls_client_crl)
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
+    let admin = admin_listener(&args, &crls)?;
     let mut db = common.open_new_db()?;
     plugins::start(&common).await;
     let disabled = args.auth == "off";
@@ -452,32 +536,52 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         )),
         common,
     };
-    let listener = tokio::net::TcpListener::bind(args.bind)
-        .await
-        .with_context(|| format!("binding {}", args.bind))?;
     tokio::spawn(metrics::run_sampler(state.clone()));
     tokio::spawn(auth::maintenance::run(state.clone()));
     let app = control::router(state, Some(args.ui_dir));
-    if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
-        let tls = ot_source::tls::ServerTls {
+    let tls = match (args.tls_cert, args.tls_key) {
+        (Some(cert), Some(key)) => Some(ot_source::tls::ServerTls {
             cert_file: cert,
             key_file: key,
             client_ca_file: args.tls_client_ca,
             client_cert_optional: true,
-            client_crl_files: args
-                .tls_client_crl
-                .into_iter()
-                .filter(|p| !p.trim().is_empty())
-                .collect(),
-        };
+            client_crl_files: crls,
+        }),
+        _ => None,
+    };
+    let Some((admin_bind, admin_tls)) = admin else {
+        return listen(args.bind, app, tls, "control plane").await;
+    };
+    // The main listener answers the admin routes 404 (SC-7, SC-2); the
+    // admin listener serves everything.
+    let main = app.clone().layer(axum::Extension(auth::AdminElsewhere));
+    tokio::try_join!(
+        listen(args.bind, main, tls, "control plane"),
+        listen(admin_bind, app, admin_tls, "admin listener"),
+    )?;
+    Ok(())
+}
+
+/// Serve `app` on `bind`, over TLS when `tls` is given (its client CRLs
+/// reloaded when they change), until shutdown.
+async fn listen(
+    bind: SocketAddr,
+    app: axum::Router,
+    tls: Option<ot_source::tls::ServerTls>,
+    what: &'static str,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("binding {bind}"))?;
+    if let Some(tls) = tls {
         let acceptor = https::Acceptor::new(tls.acceptor()?);
         if !tls.client_crl_files.is_empty() {
             tokio::spawn(https::reload_on_crl_change(tls, acceptor.clone()));
         }
-        tracing::info!(addr = %args.bind, "control plane listening (TLS)");
+        tracing::info!(addr = %bind, "{what} listening (TLS)");
         return https::serve(listener, app, acceptor, shutdown_signal()).await;
     }
-    tracing::info!(addr = %args.bind, "control plane listening");
+    tracing::info!(addr = %bind, "{what} listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -580,5 +684,86 @@ mod tests {
             panic!("not the health command");
         };
         assert_eq!(tls_cert.as_deref(), Some(""));
+    }
+
+    fn serve_args(args: &[&str]) -> crate::ServeArgs {
+        use clap::Parser;
+        let cli =
+            crate::Cli::try_parse_from(["opentrack", "serve"].iter().chain(args).copied()).unwrap();
+        let crate::Command::Serve(mut a) = cli.command else {
+            panic!("not the serve command");
+        };
+        // As `serve` does: an empty variable is unset.
+        for v in [
+            &mut a.admin_bind,
+            &mut a.admin_tls_cert,
+            &mut a.admin_tls_key,
+            &mut a.admin_tls_client_ca,
+        ] {
+            if v.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                *v = None;
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn the_admin_listener_is_optional_and_checked() {
+        let crls = ["crl.pem".to_owned()];
+        // Empty, as docker compose passes unset variables: no admin listener.
+        let a = serve_args(&["--admin-bind=", "--admin-tls-cert=", "--admin-tls-key="]);
+        assert!(crate::admin_listener(&a, &crls).unwrap().is_none());
+        // Plain, like the main listener.
+        let a = serve_args(&["--admin-bind=127.0.0.1:8091"]);
+        let (bind, tls) = crate::admin_listener(&a, &crls).unwrap().unwrap();
+        assert_eq!(bind.to_string(), "127.0.0.1:8091");
+        assert!(tls.is_none());
+        // The main listener's TLS, CA and CRLs, unless it has its own.
+        let main_tls = [
+            "--tls-cert=m.crt",
+            "--tls-key=m.key",
+            "--tls-client-ca=m-ca.pem",
+            "--admin-bind=127.0.0.1:8091",
+        ];
+        let tls = crate::admin_listener(&serve_args(&main_tls), &crls)
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(tls.cert_file, "m.crt");
+        assert_eq!(tls.client_ca_file.as_deref(), Some("m-ca.pem"));
+        assert_eq!(tls.client_crl_files, crls);
+        let own: Vec<&str> = main_tls
+            .iter()
+            .copied()
+            .chain(["--admin-tls-cert=a.crt", "--admin-tls-key=a.key"])
+            .collect();
+        let tls = crate::admin_listener(&serve_args(&own), &crls)
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(
+            (tls.cert_file.as_str(), tls.key_file.as_str()),
+            ("a.crt", "a.key")
+        );
+        assert_eq!(tls.client_ca_file.as_deref(), Some("m-ca.pem"));
+        // Refused: the main listener's address, a lone certificate, TLS
+        // settings without the listener, a client CA without TLS.
+        for bad in [
+            &["--admin-bind=0.0.0.0:8090"][..],
+            &["--admin-bind=not an address"],
+            &["--admin-bind=127.0.0.1:8091", "--admin-tls-cert=a.crt"],
+            &["--admin-tls-cert=a.crt", "--admin-tls-key=a.key"],
+            &[
+                "--admin-bind=127.0.0.1:8091",
+                "--admin-tls-client-ca=ca.pem",
+            ],
+        ] {
+            assert!(
+                crate::admin_listener(&serve_args(bad), &crls).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 }

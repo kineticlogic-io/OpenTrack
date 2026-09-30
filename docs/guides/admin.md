@@ -298,6 +298,7 @@ For `serve` (and `all`).
 | Variable | Default | |
 |---|---|---|
 | `OT_BIND` | `0.0.0.0:8090` | Address the API and UI listen on. |
+| `OT_ADMIN_BIND` | | A second address, for administration only: the admin routes are served there and nowhere else ([Admin listener](#admin-listener)). |
 | `OT_UI_DIR` | `ui/dist` | The built UI, served at `/`. Skipped when it has no `index.html`. |
 | `OT_AUTH` | `on` | `off` turns sign-in off: every caller is an admin. Development only ([Sign-in turned off](#sign-in-turned-off)). |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | The first admin account, made only while there are no accounts ([First admin](#first-admin)). |
@@ -316,6 +317,25 @@ marked `Secure`.
 | `OT_TLS_KEY` | Its private key (PEM). |
 | `OT_TLS_CLIENT_CA` | Accept client certificates this CA (PEM) signed, as the accounts [Client certificates](#client-certificates) maps them to. A client certificate is optional: browsers without one still sign in with a password or single sign-on. |
 | `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. A revoked certificate, one no list covers, or one whose issuer's list is past its next update is refused. Reloaded within a minute of a change. |
+| `OT_ADMIN_TLS_CERT`, `OT_ADMIN_TLS_KEY` | The [admin listener](#admin-listener)'s own certificate and key, together. Unset: it uses `OT_TLS_CERT` and `OT_TLS_KEY`. |
+| `OT_ADMIN_TLS_CLIENT_CA` | The admin listener's own client CA. Unset: `OT_TLS_CLIENT_CA`. The revocation lists (`OT_TLS_CLIENT_CRL`) apply to both listeners. |
+
+#### Admin listener
+
+With `OT_ADMIN_BIND` (for example `10.20.0.5:8091`, an address on the management network, or
+`127.0.0.1:8091`), OpenTrack listens there as well as on `OT_BIND`. Every admin route (accounts,
+tokens, security and sign-in settings, sources, settings, plugins, configuration export and
+import, the audit record, and every other change that needs the admin role) is served **only** on
+the admin listener. On `OT_BIND` an admin asking for one gets `404` ("not served on this
+address"): that listener has no admin interface. Everyone else is refused there as anywhere
+(`401` without a sign-in, `403` without the role). The admin listener serves the whole UI and API
+with the same sign-in; on the main one the UI hides the admin areas (`/auth/me` says
+`admin_api: false`).
+
+It takes the main listener's TLS unless `OT_ADMIN_TLS_*` set its own. `OT_ADMIN_BIND` can't be
+`OT_BIND`, and `OT_ADMIN_TLS_*` need it; OpenTrack refuses to start otherwise. Publish the port
+only to the management network, and firewall it ([hardening](../security/hardening.md)). Unset,
+nothing changes. `opentrack health` still checks `OT_BIND`.
 
 TLS for feeds is set per source, in the source's transport (see the README, "Sources and
 pipelines").
@@ -450,6 +470,7 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | Service | Protocol | Direction | Default | Purpose | TLS and authentication |
 |---|---|---|---|---|---|
 | Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA` and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| Admin listener | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_ADMIN_BIND`, none | The admin API routes, and the web UI and the rest of the API ([Admin listener](#admin-listener)); only here while it is set | As the control plane, or `OT_ADMIN_TLS_CERT`/`OT_ADMIN_TLS_KEY` and `OT_ADMIN_TLS_CLIENT_CA`; the same sign-in |
 | Redis | TCP, RESP | Outbound | `redis://127.0.0.1:6379` | Observation streams, the live picture, the outbox, commands between roles | `rediss://`, `OT_REDIS_CA`, mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY`; a password in the URL |
 | NATS | TCP, NATS | Outbound | `nats://127.0.0.1:4222` | Tracks (`tracks.>`, JetStream), contacts (`contacts.>`) and raw output (`opentrack.raw.<source>`); the multi-node sync boundary (`<OT_SYNC_PREFIX>.out.*` and `.in.*`, prefix `ot.sync`) | `tls://`, `OT_NATS_CA`, mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY`; `.creds`, a token, or a user and password |
 | OpenTelemetry | TCP; OTLP over gRPC (4317) or HTTP (4318) | Outbound | Off | Logs (the audit record included), traces and metrics to the collector ([OpenTelemetry](#opentelemetry)) | `https://` endpoint, `OTEL_EXPORTER_OTLP_CERTIFICATE`, mutual TLS, headers |
