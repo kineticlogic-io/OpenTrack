@@ -64,6 +64,7 @@ async fn once(s: &AppState, n: u64) -> Result<(), ApiError> {
     }
     s.auth.activity.prune(now - 86_400_000);
 
+    disable_expired(s).await?;
     if n.is_multiple_of(10) {
         disable_inactive(s, &settings.inactivity).await?;
     }
@@ -74,6 +75,31 @@ async fn once(s: &AppState, n: u64) -> Result<(), ApiError> {
         tracing::info!(seq, %hash, "audit record head");
     }
     Ok(())
+}
+
+/// Turn off temporary accounts whose time has run out (AC-2(2)).
+pub async fn disable_expired(s: &AppState) -> Result<usize, ApiError> {
+    let now = now_ms();
+    let off = s
+        .with_db(move |db| {
+            let off = db.disable_expired(now)?;
+            for u in &off {
+                db.audit(
+                    &AuditEvent::new("system", "account_disabled").detail(json!({
+                        "user": u.id,
+                        "email": u.email,
+                        "reason": "expired",
+                        "expires_at_ms": u.expires_at_ms,
+                    })),
+                )?;
+            }
+            Ok(off)
+        })
+        .await?;
+    for u in &off {
+        tracing::warn!(email = %u.email, "turned off a temporary account whose time ran out");
+    }
+    Ok(off.len())
 }
 
 /// Turn off accounts nobody has signed in to for

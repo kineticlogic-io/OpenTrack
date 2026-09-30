@@ -159,7 +159,7 @@ the actor `cli`. The commands open the database directly, so they work while the
 | Command | What it does |
 |---|---|
 | `opentrack user list` | Every account: email, role, origin (`local` or `saml`), active or off, and whether it has a password. |
-| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin]` | Adds an account. With `--password-stdin` the password is the first line of standard input (it must meet the [password policy](#passwords)). Without one, the account can only use single sign-on or an API token. |
+| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin] [--temporary]` | Adds an account (`--temporary`: turned off 72 hours after it is made). With `--password-stdin` the password is the first line of standard input (it must meet the [password policy](#passwords)). Without one, the account can only use single sign-on or an API token. |
 | `opentrack user role <email> <role>` | Changes the role: `viewer`, `track_manager` or `admin`. |
 | `opentrack user passwd <email>` | Sets the password from standard input. The account's sessions and API tokens end. |
 | `opentrack user disable <email>` / `enable <email>` | Turns the account off (its sessions and tokens stop working at once) or on. |
@@ -280,6 +280,11 @@ For `link`. See [Multi-node](#multi-node).
 |---|---|---|
 | `OT_LOG` | `info` | Log filter, in `tracing` syntax: `warn`, `debug`, or per module, such as `info,opentrack=debug,ot_source=debug`. |
 | `OT_LOG_FORMAT` | text | `json` writes one JSON object a line, for log collectors. |
+
+Every API request is logged at `info` with target `access`: the account, method, path, status,
+client address, user agent, referrer, `X-Forwarded-For` and duration. It goes wherever the logs
+go (standard output and [OpenTelemetry](#opentelemetry)). `OT_LOG=info,access=warn` turns it
+off for both, which an accredited deployment shouldn't do: it is part of the audit trail.
 
 The server roles log to standard output. The one-off commands (`migrate`, `user`, `config`,
 `plugin`, `retire`, `bench`, `synthetic`) log to standard error, so their output on standard
@@ -463,6 +468,12 @@ In **Settings → Users**, **Add account**: email, name, role, and a password th
 [password policy](#password-policy). Leave the password empty for an account that signs in only with single sign-on.
 Accounts that SAML makes appear here on their first sign-on, with the origin `saml`. From the
 command line: `opentrack user add`.
+
+**Temporary** (or `--temporary` on the command line) makes a temporary or emergency account: it
+is turned off 72 hours after it is made (fixed), with its sessions and API tokens, and the audit
+record says so (`account_disabled`, reason `expired`). Its row shows **temporary**, then
+**expired**. Turning it on again gives it another 72 hours; the infinity button makes it
+permanent.
 
 ### Disabling accounts
 
@@ -1322,6 +1333,12 @@ For local accounts:
 | Earlier passwords that can't be reused | 5 |
 | Minimum age (between changes) | 24 hours (an admin's reset is exempt) |
 | Maximum age | 60 days |
+| Common passwords | refused: one of the 100,000 most common, or one whose letters spell one (`Password2026!!!`) |
+
+The common-password list is built in (SecLists, MIT licence). To add your own, such as
+passwords known to be compromised in your organisation, put one per line in
+`common-passwords.txt` in the data directory (beside `opentrack.db`; lines starting with `#` are
+skipped); it is read at the next start.
 
 An expired password, or a temporary one an admin set, must be changed at the next sign-in. Until
 it is, that session can do nothing else. The first admin's password is temporary as well. That
@@ -1366,9 +1383,17 @@ since then.
 
 Every sign-in event is written to an append-only `audit` table, along with every decision the
 decision log records:
-- sign-in succeeded or refused, with the reason and address;
-- sign-out, lockout, unlock, session ended or timed out;
-- password changed, account turned off.
+- sign-in succeeded or refused, with the reason and address, and the first use in an hour of each
+  API token, client certificate and OpenStare identity (`login`, `via`);
+- sign-out, lockout, unlock, session ended or timed out, the notice accepted
+  (`consent_accepted`);
+- password changed, account turned off (inactive or expired);
+- a credential that identifies no one (`access_refused`), a role that doesn't reach
+  (`access_denied`), a change the server refused (`change_refused`, with the status);
+- an admin reading accounts, API tokens, sign-in settings, the configuration export or the
+  audit record (`read_security_object`), and every source probe (`probe_source`).
+
+A decision's row carries the address of the request that made it.
 
 Each row carries a SHA-256 over the row before it, so a row changed, removed or inserted breaks
 the chain. The database refuses updates to the table.

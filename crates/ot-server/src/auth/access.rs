@@ -45,7 +45,11 @@ impl Uses {
         if !matches!(u.via, Via::ApiToken | Via::ClientCert | Via::Openstare) {
             return false;
         }
-        let key = format!("{:?}:{}", u.via, u.jti.as_ref().map_or(u.id.as_str(), |j| j.0.as_str()));
+        let key = format!(
+            "{:?}:{}",
+            u.via,
+            u.jti.as_ref().map_or(u.id.as_str(), |j| j.0.as_str())
+        );
         let Ok(mut m) = self.last.lock() else {
             return false;
         };
@@ -110,7 +114,12 @@ pub async fn after(
     if s.auth.uses.first_in_a_while(user, now) {
         audit(
             s,
-            event(&user.email, "login", ip, json!({ "via": user.via, "first_use_in": "1 h" })),
+            event(
+                &user.email,
+                "login",
+                ip,
+                json!({ "via": user.via, "first_use_in": "1 h" }),
+            ),
         )
         .await;
     }
@@ -128,13 +137,30 @@ pub async fn after(
         )
         .await;
     } else if read && status.is_success() && is_security_read(path) {
-        audit(s, event(&user.email, "read_security_object", ip, json!({ "path": path }))).await;
+        audit(
+            s,
+            event(
+                &user.email,
+                "read_security_object",
+                ip,
+                json!({ "path": path }),
+            ),
+        )
+        .await;
     }
 }
 
 /// Record a request the gate refused: a credential that identifies no one,
 /// or a role that doesn't reach.
-pub async fn refused(s: &AppState, actor: &str, op: &str, method: &Method, path: &str, ip: &str, detail: Value) {
+pub async fn refused(
+    s: &AppState,
+    actor: &str,
+    op: &str,
+    method: &Method,
+    path: &str,
+    ip: &str,
+    detail: Value,
+) {
     let mut d = json!({ "method": method.as_str(), "path": path });
     if let (Value::Object(d), Value::Object(extra)) = (&mut d, detail) {
         d.extend(extra);
@@ -153,7 +179,12 @@ pub fn log(
     headers: &HeaderMap,
     ms: u128,
 ) {
-    let h = |n: header::HeaderName| headers.get(n).and_then(|v| v.to_str().ok()).map(|v| v.chars().take(256).collect::<String>());
+    let h = |n: header::HeaderName| {
+        headers
+            .get(n)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.chars().take(256).collect::<String>())
+    };
     tracing::info!(
         target: "access",
         actor = actor.unwrap_or("-"),
@@ -192,7 +223,10 @@ mod tests {
         let tok = user(Via::ApiToken, Some("t1"));
         assert!(u.first_in_a_while(&tok, 0));
         assert!(!u.first_in_a_while(&tok, 1_000));
-        assert!(u.first_in_a_while(&user(Via::ApiToken, Some("t2")), 1_000), "another token");
+        assert!(
+            u.first_in_a_while(&user(Via::ApiToken, Some("t2")), 1_000),
+            "another token"
+        );
         assert!(u.first_in_a_while(&tok, USE_EVERY_MS + 1));
         assert!(!u.first_in_a_while(&user(Via::Session, Some("s1")), 0));
     }

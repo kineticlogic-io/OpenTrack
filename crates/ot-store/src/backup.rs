@@ -147,6 +147,9 @@ pub struct Account {
     pub active_since_ms: Option<i64>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
+    /// A temporary account: turned off when this passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
 }
 
 /// An earlier password hash (a new password cannot repeat a recent one).
@@ -380,7 +383,7 @@ impl Db {
                 "SELECT id, email, name, role, active, origin, password_hash,
                         password_changed_at_ms, must_change_password, created_at_ms,
                         updated_at_ms, last_login_at_ms, tokens_valid_from_ms,
-                        locked_until_ms, active_since_ms, disabled_reason
+                        locked_until_ms, active_since_ms, disabled_reason, expires_at_ms
                  FROM users ORDER BY email",
             )?
             .query_map([], |r| {
@@ -402,6 +405,7 @@ impl Db {
                     locked_until_ms: r.get(13)?,
                     active_since_ms: r.get(14)?,
                     disabled_reason: r.get(15)?,
+                    expires_at_ms: r.get(16)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -555,8 +559,8 @@ impl Db {
                     "INSERT INTO users (id, email, name, role, active, password_hash, origin,
                          created_at_ms, updated_at_ms, last_login_at_ms, tokens_valid_from_ms,
                          password_changed_at_ms, must_change_password, locked_until_ms,
-                         active_since_ms, disabled_reason)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                         active_since_ms, disabled_reason, expires_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         a.id,
                         a.email.trim(),
@@ -574,6 +578,7 @@ impl Db {
                         a.locked_until_ms,
                         a.active_since_ms,
                         a.disabled_reason,
+                        a.expires_at_ms,
                     ],
                 )?;
                 for h in &a.password_history {

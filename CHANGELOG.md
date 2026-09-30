@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Accounts and audit
+
+Closing the accreditation POA&M's account and audit items (#64):
+- **Temporary accounts:** **Temporary** in Settings → Users (or `opentrack user add --temporary`)
+  makes an account that is turned off 72 hours after it is made (fixed), with its sessions and
+  API tokens, audited as `account_disabled` reason `expired` (P-13).
+- **Common passwords refused:** a new password that is one of the 100,000 most common, or whose
+  letters spell one, is refused; a site can add its own list as `common-passwords.txt` in the
+  data directory (P-15).
+- **More in the audit record:** a credential that identifies no one (`access_refused`), a role
+  refusal (`access_denied`), a refused change (`change_refused`), an admin reading accounts,
+  tokens, sign-in settings, the configuration export or the audit record
+  (`read_security_object`), and the first use in an hour of each API token, client certificate
+  and OpenStare identity (`login`). Decisions' audit rows carry the client address (P-01 to P-03).
+- **Access log:** every API request is logged with target `access` (account, method, path,
+  status, address, user agent, referrer, forwarded-for, duration), on standard output and over
+  OpenTelemetry.
+- Scheduled scanning (P-23) is accepted as release-time only: every release image is scanned
+  when it is built.
+
 ### Security documentation
 
 The development-process documents the accreditation review found missing (POA&M P-20, P-24,

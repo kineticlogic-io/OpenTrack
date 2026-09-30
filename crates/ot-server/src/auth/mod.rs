@@ -490,7 +490,12 @@ async fn from_token(s: &AppState, token: &str, via: Via, idle_ms: i64) -> Option
     // session started just after "sign out everywhere" stands; an API
     // token's row is revoked with it, so its issue time only needs to be
     // before that second.
-    if !user.active || revoked || (!session && claims.iat < user.tokens_valid_from_ms / 1000) {
+    let expired = user.expired(chrono::Utc::now().timestamp_millis());
+    if !user.active
+        || expired
+        || revoked
+        || (!session && claims.iat < user.tokens_valid_from_ms / 1000)
+    {
         return None;
     }
     let role = Role::parse(&user.role)?;
@@ -520,7 +525,7 @@ async fn from_cert(s: &AppState, cert: &PeerCert) -> Option<AuthUser> {
         .user
         .clone();
     let user = s.with_db(move |db| db.user_by_email(&email)).await.ok()??;
-    if !user.active {
+    if !user.active || user.expired(chrono::Utc::now().timestamp_millis()) {
         return None;
     }
     Some(AuthUser {
@@ -629,7 +634,9 @@ async fn gate(
     let cert = req.extensions().get::<PeerCert>().cloned();
     let Some(user) = identify(s, req.headers(), cert.as_ref()).await else {
         if access::credential_presented(req.headers(), cert.is_some()) {
-            let actor = cert.as_ref().map_or("anonymous".to_owned(), |c| format!("cert:{}", c.common_name));
+            let actor = cert.as_ref().map_or("anonymous".to_owned(), |c| {
+                format!("cert:{}", c.common_name)
+            });
             access::refused(s, &actor, "access_refused", method, api_path, ip, json!({ "reason": "the credential identifies no one (invalid, expired, revoked or unknown)" })).await;
         }
         return (deny(StatusCode::UNAUTHORIZED, "sign in first"), None);
@@ -661,7 +668,16 @@ async fn gate(
     if let policy::Need::Role(role) = need
         && user.role < role
     {
-        access::refused(s, &user.email, "access_denied", method, api_path, ip, json!({ "role": user.role, "needs": role })).await;
+        access::refused(
+            s,
+            &user.email,
+            "access_denied",
+            method,
+            api_path,
+            ip,
+            json!({ "role": user.role, "needs": role }),
+        )
+        .await;
         let r = deny(
             StatusCode::FORBIDDEN,
             &format!("this needs the {} role", role.as_str()),
@@ -731,6 +747,7 @@ mod tests {
             locked_until_ms: None,
             active_since_ms: None,
             disabled_reason: None,
+            expires_at_ms: None,
         };
         let (t, jti, _) = a.issue(&u, "session", 60).unwrap();
         let c = a.decode(&t).unwrap();

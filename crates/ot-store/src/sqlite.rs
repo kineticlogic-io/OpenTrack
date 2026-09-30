@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_sync.sql"),
     include_str!("../migrations/0015_account_policy.sql"),
     include_str!("../migrations/0016_audit.sql"),
+    include_str!("../migrations/0017_account_expiry.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { TbCopy, TbKey, TbLockOpen, TbLogout, TbPlus, TbTrash } from 'react-icons/tb'
+import { TbCopy, TbInfinity, TbKey, TbLockOpen, TbLogout, TbPlus, TbTrash } from 'react-icons/tb'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, Toggle, useToast, type DataTableColumn } from 'staresdk'
 import { api, describePolicy, ROLES, type Account, type ApiTokenRow, type Role } from '../../api/client'
 import { useAuth } from '../../auth/context'
@@ -47,6 +47,16 @@ function AccountState({ a, now }: { a: Account; now: number }) {
           inactive
         </Badge>
       )}
+      {a.expires_at_ms != null &&
+        (a.expires_at_ms > now ? (
+          <Badge size="sm" color="grey" title={`Temporary: turned off at ${fmtTime(a.expires_at_ms)}`}>
+            temporary
+          </Badge>
+        ) : (
+          <Badge size="sm" color="warning" title={`Temporary: its time ran out at ${fmtTime(a.expires_at_ms)}`}>
+            expired
+          </Badge>
+        ))}
       {a.must_change_password && a.has_password && (
         <Badge size="sm" color="grey" title="A temporary or expired password: to change at the next sign-in">
           new password due
@@ -63,12 +73,13 @@ function AddAccount({ onClose, onAdded }: { onClose: () => void; onAdded: () => 
   const [name, setName] = useState('')
   const [role, setRole] = useState<Role>('viewer')
   const [password, setPassword] = useState('')
+  const [temporary, setTemporary] = useState(false)
   const [busy, setBusy] = useState(false)
   const add = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true)
     try {
-      const u = await api.createUser({ email: email.trim(), name: name.trim(), role, ...(password ? { password } : {}) })
+      const u = await api.createUser({ email: email.trim(), name: name.trim(), role, temporary, ...(password ? { password } : {}) })
       toast({ variant: 'success', title: 'Account added', message: u.email })
       onAdded()
     } catch (err) {
@@ -91,6 +102,12 @@ function AddAccount({ onClose, onAdded }: { onClose: () => void; onAdded: () => 
         </SettingsRow>
         <SettingsRow label="Password" hint={`${passwordHint} Leave it empty for an account that signs in only with single sign-on.`}>
           <Input style={{ ...INPUT, width: 280 }} type="password" autoComplete="new-password" aria-label="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </SettingsRow>
+        <SettingsRow
+          label="Temporary"
+          hint="A temporary or emergency account: turned off automatically 72 hours after it is made (fixed). To keep it, turn it on again and choose Temporary again, or make it permanent."
+        >
+          <Toggle size="sm" aria-label="Temporary account" value={temporary} onChange={setTemporary} />
         </SettingsRow>
         <ModalButtons onClose={onClose}>
           <Button size="sm" type="submit" icon={<TbPlus />} disabled={busy || !email.trim()}>
@@ -255,9 +272,12 @@ export function UsersPanel() {
   }, [toast])
   useEffect(load, [load])
 
-  const change = async (a: Account, patch: { role?: Role; active?: boolean }) => {
+  const change = async (a: Account, patch: { role?: Role; active?: boolean; temporary?: boolean }) => {
+    // Turned on again, an expired temporary account gets another 72 hours.
+    const renew = patch.active === true && a.expires_at_ms != null && a.expires_at_ms <= Date.now()
     try {
-      const u = await api.updateUser(a.id, patch)
+      const u = await api.updateUser(a.id, renew ? { ...patch, temporary: true } : patch)
+      if (renew) toast({ variant: 'success', title: 'Temporary account on again', message: `${a.email}: another 72 hours` })
       setAccounts((xs) => (xs ?? []).map((x) => (x.id === u.id ? u : x)))
     } catch (e) {
       toast({ variant: 'error', title: 'Not changed', message: errorMessage(e) })
@@ -377,6 +397,9 @@ export function UsersPanel() {
         <span className="num-row" style={{ justifyContent: 'flex-end' }}>
           {a.locked_until_ms != null && a.locked_until_ms > now && (
             <Button size="xs" variant="ghost" icon={<TbLockOpen />} title="Unlock" aria-label={`Unlock ${a.email}`} onClick={() => unlock(a)} />
+          )}
+          {a.expires_at_ms != null && (
+            <Button size="xs" variant="ghost" icon={<TbInfinity />} title="Make permanent" aria-label={`Make ${a.email} permanent`} onClick={() => change(a, { temporary: false })} />
           )}
           <Button size="xs" variant="ghost" icon={<TbKey />} title="Set or remove password" aria-label={`Password of ${a.email}`} onClick={() => setResetting(a)} />
           <Button size="xs" variant="ghost" icon={<TbLogout />} title="Sign out everywhere" aria-label={`Sign out ${a.email} everywhere`} onClick={() => revoke(a)} />

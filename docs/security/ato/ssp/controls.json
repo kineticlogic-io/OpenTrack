@@ -29,10 +29,10 @@
  {
   "id": "ac-2.2",
   "title": "Automated Temporary and Emergency Account Management",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "OpenTrack has no expiry date for accounts, so temporary and emergency accounts are not removed or disabled automatically at the end of their authorised period. API tokens always expire (1 hour to 10 years, default 365 days), and any account not marked Never turn off is disabled automatically after 35 days without a sign-in; break-glass accounts marked Never turn off are exempt. The [[SITE: account manager]] turns off or deletes temporary and emergency accounts within [[SITE: time period]] by procedure.",
-  "evidence": "crates/ot-store/src/auth.rs (User, disable_inactive); crates/ot-server/src/auth/stig.rs; docs/guides/admin.md#api-tokens; docs/guides/admin.md#inactive-accounts",
+  "narrative": "Temporary and emergency accounts are made with Temporary (Settings -> Users, or opentrack user add --temporary) and are turned off automatically 72 hours after they are made (fixed), with their sessions ended and API tokens revoked, audited as account_disabled reason expired; sign-in refuses them once expired. The site's process says when temporary and emergency accounts are used ([[SITE: temporary account procedure]]).",
+  "evidence": "crates/ot-server/src/auth/maintenance.rs (disable_expired); crates/ot-server/src/auth/stig.rs (TEMPORARY_ACCOUNT_HOURS); docs/guides/admin.md#adding-accounts",
   "site": "Define the lifetime of temporary and emergency accounts and disable them manually (Settings -> Users, Active off, or opentrack user) until the product supports account expiry."
  },
  {
@@ -325,7 +325,7 @@
  },
  {
   "id": "ac-20.2",
-  "title": "Portable Storage Devices — Restricted Use",
+  "title": "Portable Storage Devices \u2014 Restricted Use",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "Use of portable storage on external systems is restricted by the site. OpenTrack has no removable-media functions.",
@@ -362,19 +362,19 @@
  {
   "id": "au-2",
   "title": "Event Logging",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "OpenTrack records in its audit record: sign-in success and failure (reason, method, address), sign-out, lockout, unlock, session end and idle timeout, password change and expiry, account disable, every decision (account, token, sign-in, source, schema, settings, plugin and track management changes), audit export and chain verification. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record). The [[SITE: organisation]] selects the events to log, coordinates with other entities and reviews the selection [[SITE: frequency]].",
-  "evidence": "crates/ot-store/src/audit.rs; crates/ot-server/src/auth/api.rs; crates/ot-server/src/auth/sessions.rs; crates/ot-server/src/auth/maintenance.rs; crates/ot-server/src/audit_api.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record",
+  "narrative": "OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).",
+  "evidence": "crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record",
   "site": "Define the event types to be logged [[SITE: event types]] and review them [[SITE: frequency]]; POA&M: audit access denials and per-call token/certificate authentication."
  },
  {
   "id": "au-3",
   "title": "Content of Audit Records",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "Each audit row holds a sequence number, UTC time in milliseconds, the actor (account email, or system), the operation, the outcome (success or failure), details (reason, method, session, the change's before and after) and the decision id, chained by SHA-256; the OpenTelemetry export adds the host, process, node id and role as resource attributes. Sign-in and session rows carry the client address, but decision rows (every configuration and track change) do not, so a change's source address is found only through the actor's sessions.",
-  "evidence": "crates/ot-store/src/audit.rs (AuditRow, append); crates/ot-store/src/sqlite.rs (record_decision); crates/ot-server/src/telemetry.rs; docs/guides/admin.md#audit-record",
+  "narrative": "Each audit record carries what happened (op), when (UTC ms), where (the client address, on decisions too), the source (actor, and via for tokens, certificates and OpenStare), the outcome and the detail (method, path, status, reason, before/after with secrets masked); the access log adds User-Agent, Referer and X-Forwarded-For. Records are hash-chained.",
+  "evidence": "crates/ot-store/src/audit.rs (with_client); crates/ot-server/src/auth/access.rs",
   "site": "POA&M: record the client address on decision rows."
  },
  {
@@ -488,10 +488,10 @@
  {
   "id": "au-12",
   "title": "Audit Record Generation",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "Every OpenTrack role generates the audit records listed in AU-2 in the audit table and as audit.record events on standard output and over OpenTelemetry; the event set is fixed in the product, and the site selects what the SIEM keeps and alerts on. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record).",
-  "evidence": "crates/ot-store/src/audit.rs; crates/ot-server/src/telemetry.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record; docs/guides/admin.md#opentelemetry",
+  "narrative": "OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).",
+  "evidence": "crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record",
   "site": "Route audit.record to the SIEM; POA&M: generate audit records for access denials and per-call authentication."
  },
  {
@@ -532,7 +532,7 @@
  },
  {
   "id": "ia-2.8",
-  "title": "Access to Accounts — Replay Resistant",
+  "title": "Access to Accounts \u2014 Replay Resistant",
   "status": "Implemented",
   "responsibility": "Shared",
   "narrative": "Authentication runs over TLS, SAML assertions are accepted once and only in answer to a request OpenTrack made in the last 5 minutes, and sessions are signed tokens with a unique id backed by a server-side session record, sent in HttpOnly, SameSite=Strict, Secure cookies. The site configures TLS on the UI and API as the hardening checklist requires.",
@@ -587,9 +587,9 @@
  {
   "id": "ia-5.1",
   "title": "Password-based Authentication",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. OpenTrack does not check new passwords against a list of commonly used, expected or compromised passwords, as IA-5(1)(a)-(b) requires.",
+  "narrative": "Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. New and changed passwords are refused when they are, or are built from, one of the 100,000 most common passwords or a password on the site's own list (common-passwords.txt in the data directory).",
   "evidence": "crates/ot-server/src/auth/password.rs (check, check_change); crates/ot-server/src/auth/stig.rs; crates/ot-server/src/fips.rs; crates/ot-server/src/auth/api.rs; docs/guides/admin.md#password-policy",
   "site": "POA&M: add a compromised/common password list check; meanwhile prefer SSO and keep local accounts to break-glass and service use."
  },
@@ -937,7 +937,7 @@
  },
  {
   "id": "cm-7.5",
-  "title": "Authorized Software — Allow-by-exception",
+  "title": "Authorized Software \u2014 Allow-by-exception",
   "status": "Implemented",
   "responsibility": "Shared",
   "narrative": "Within OpenTrack only software an admin explicitly adds and enables runs as a plugin, its SHA-256 is recorded and checked on import, and plugins can be disabled or deleted. The [[SITE: organization]] maintains the list of authorized software, admits only the cosign-verified OpenTrack image and approved plugins, and reviews the list [[SITE: frequency]].",
@@ -1531,7 +1531,7 @@
  },
  {
   "id": "sc-7.5",
-  "title": "Deny by Default — Allow by Exception",
+  "title": "Deny by Default \u2014 Allow by Exception",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "The [[SITE: organization]] denies network traffic by default and allows by exception at its boundary devices and host firewalls. Within the application, every /api/v1 route requires sign-in except the few public sign-in routes, and any change not listed for track managers requires admin.",
@@ -2395,7 +2395,7 @@
  },
  {
   "id": "pe-13.1",
-  "title": "Detection Systems — Automatic Activation and Notification",
+  "title": "Detection Systems \u2014 Automatic Activation and Notification",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "Fire detection with automatic activation and notification is provided by the [[SITE: organisation]]. OpenTrack has no product role.",

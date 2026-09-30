@@ -294,6 +294,14 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let role = cli.command.role();
     let telemetry = telemetry::init(role, !cli.command.is_server(), &cli.common);
+    // A site's own list of common passwords sits beside the database.
+    if let Some(dir) = cli.common.sqlite.parent() {
+        auth::password::set_site_dir(if dir.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            dir
+        });
+    }
     tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
     #[cfg(feature = "saml")]
     auth::openssl_fips();

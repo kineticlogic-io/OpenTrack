@@ -1,32 +1,5 @@
 [
  {
-  "id": "P-01",
-  "weakness": "Refused and denied actions are not audited: a request refused by the role gate (401/403 in auth::layer) or a change refused by a handler (e.g. 409 on update_user) writes no audit row; reads of security objects (accounts, tokens, sign-in settings, configuration export) are not audited.",
-  "controls": "AU-2, AU-3, AU-12, AC-2(4)",
-  "checks": "ASD V-222450, V-222451, V-222452, V-222454, V-222455, V-222457, V-222458, V-222460, V-222461, V-222465, V-222471; CP SRG V-233038, V-233040, V-233189, V-233252 to V-233262",
-  "severity": "CAT II",
-  "remediation": "Write a failure audit row (actor, method, path, address, reason) for every 401/403 and every refused change, and an access row for reads of security objects; both exported as audit.record.",
-  "target": "0.4.x"
- },
- {
-  "id": "P-02",
-  "weakness": "Sign-ins by client certificate, API token and OpenStare trust are not written to the audit record (no session is created); refused certificates and tokens are only logged.",
-  "controls": "AU-2, AC-7",
-  "checks": "ASD V-222462",
-  "severity": "CAT II",
-  "remediation": "Audit the first use of each certificate, token and OpenStare identity per connection or per interval, and every refusal.",
-  "target": "0.4.x"
- },
- {
-  "id": "P-03",
-  "weakness": "Decision rows (every configuration and track change) carry no client address, and HTTP request details (User-Agent, Referer, X-Forwarded-For) are not recorded.",
-  "controls": "AU-3",
-  "checks": "ASD V-222447",
-  "severity": "CAT II",
-  "remediation": "Record the client address on every decision and add a per-request access event (actor, method, path, status, address, User-Agent).",
-  "target": "0.4.x"
- },
- {
   "id": "P-10",
   "weakness": "Classification markings are not carried on every output: TAK/CoT events, the CSV track export, the audit CSV, registry sheets and configuration exports carry no marking, and the UI does not show a track's own label.",
   "controls": "AC-16, MP-3",
@@ -34,24 +7,6 @@
   "severity": "CAT I",
   "remediation": "Mark each output (CoT detail element, export headers) and show the track label in the UI; or refuse labelled tracks on unmarked outputs.",
   "target": "0.5.0"
- },
- {
-  "id": "P-13",
-  "weakness": "Accounts cannot be made temporary or emergency with an expiry; break-glass accounts are exempt from the inactivity rule.",
-  "controls": "AC-2(2)",
-  "checks": "ASD V-222409; CP SRG V-233020",
-  "severity": "CAT II",
-  "remediation": "Add an optional account expiry (72 h for temporary accounts), disabled by the maintenance sweep and audited.",
-  "target": "0.4.x"
- },
- {
-  "id": "P-15",
-  "weakness": "New passwords are not checked against a list of commonly used or compromised passwords.",
-  "controls": "IA-5(1)",
-  "checks": "CP SRG V-263591, V-263592, V-263593, V-263594",
-  "severity": "CAT II",
-  "remediation": "Check password::check against a shipped blocklist (updatable, e.g. from NIST SP 800-63B sources).",
-  "target": "0.4.x"
  },
  {
   "id": "P-16",
@@ -113,8 +68,8 @@
   "controls": "SI-2(2), RA-5(2)",
   "checks": "SSP SI-2(2)",
   "severity": "CAT III",
-  "remediation": "Scheduled workflow (daily) running cargo deny, npm audit and scripts/ato/scan on the latest release.",
-  "target": "0.4.x"
+  "remediation": "Accepted by the product owner (2026-09-30): dependency advisories and the image scan run when each release is built (scripts/ato/scan, cargo deny, npm audit), not on a schedule. A site that needs scheduled scanning runs scripts/ato/scan on its own schedule.",
+  "target": "accepted"
  },
  {
   "id": "P-25",

@@ -1908,7 +1908,10 @@ impl Engine {
             let id = cmd["id"].as_str().unwrap_or_default().to_owned();
             // The decisions it records carry the operator's address.
             let ip = cmd["ip"].as_str().unwrap_or_default().to_owned();
-            let result = match crate::auth::access::CLIENT_IP.scope(ip, self.command(&cmd)).await {
+            let result = match crate::auth::access::CLIENT_IP
+                .scope(ip, self.command(&cmd))
+                .await
+            {
                 Ok(v) => json!({ "ok": true, "result": v }),
                 Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
             };

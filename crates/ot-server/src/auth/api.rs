@@ -334,7 +334,9 @@ async fn login(
     // dummy hash, so every refusal takes as long as a wrong password.
     let (user, hash, refusal) = match found {
         Some((u, Some(h))) if u.active => (Some(u), h, None),
-        Some((u, _)) if !u.active => (None, dummy_hash().to_owned(), Some("account_disabled")),
+        Some((u, _)) if !u.active || u.expired(now_ms()) => {
+            (None, dummy_hash().to_owned(), Some("account_disabled"))
+        }
         Some(_) => (None, dummy_hash().to_owned(), Some("no_password")),
         None => (None, dummy_hash().to_owned(), Some("unknown_account")),
     };
@@ -556,6 +558,10 @@ struct NewUser {
     /// Without one the account can only use single sign-on.
     #[serde(default)]
     password: Option<String>,
+    /// A temporary or emergency account: turned off
+    /// [`stig::TEMPORARY_ACCOUNT_HOURS`] after it is made.
+    #[serde(default)]
+    temporary: bool,
 }
 
 fn check_email(e: &str) -> Result<(), ApiError> {
@@ -601,6 +607,12 @@ async fn create_user(
             if hash.is_some() {
                 db.set_must_change_password(&id, true)?;
             }
+            if b.temporary {
+                db.set_account_expiry(
+                    &id,
+                    Some(now_ms() + stig::TEMPORARY_ACCOUNT_HOURS * 3_600_000),
+                )?;
+            }
             let u = db.user(&id)?.unwrap_or(u);
             db.record(&ot_store::Decision {
                 after: Some(json!(u)),
@@ -621,6 +633,10 @@ struct UserChange {
     role: Option<Role>,
     #[serde(default)]
     active: Option<bool>,
+    /// Make the account temporary (turned off
+    /// [`stig::TEMPORARY_ACCOUNT_HOURS`] from now), or permanent.
+    #[serde(default)]
+    temporary: Option<bool>,
 }
 
 /// Refuse a change that would leave no active admin.
@@ -672,7 +688,24 @@ async fn update_user(
                         .into(),
                 ));
             }
-            let u = db.update_user(&id, b.name.as_deref(), b.role.map(Role::as_str), b.active)?;
+            // Turned on again, an expired temporary account needs a new
+            // term (or to become permanent) first.
+            if b.active == Some(true)
+                && b.temporary.is_none()
+                && before.as_ref().is_some_and(|u| u.expired(now_ms()))
+            {
+                return Err(ot_store::StoreError::Conflict(
+                    "this temporary account's time has run out: give it another term \
+                     (temporary: true) or make it permanent (temporary: false)"
+                        .into(),
+                ));
+            }
+            let mut u =
+                db.update_user(&id, b.name.as_deref(), b.role.map(Role::as_str), b.active)?;
+            if let Some(t) = b.temporary {
+                let until = t.then(|| now_ms() + stig::TEMPORARY_ACCOUNT_HOURS * 3_600_000);
+                u = db.set_account_expiry(&id, until)?;
+            }
             db.record(&ot_store::Decision {
                 before: before.map(|b| json!(b)),
                 after: Some(json!(u)),
@@ -1524,33 +1557,69 @@ mod tests {
                 .or_else(|| body.as_array())
                 .map(|rows| {
                     rows.iter()
-                        .map(|r| (r["op"].as_str().unwrap_or("").to_owned(), r["outcome"].to_string()))
+                        .map(|r| {
+                            (
+                                r["op"].as_str().unwrap_or("").to_owned(),
+                                r["outcome"].to_string(),
+                            )
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
         };
         // A viewer reaching for an admin's page.
-        let (st, v, _) = call(&app, "POST", "/api/v1/auth/users", Some(&admin),
-            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW }))).await;
+        let (st, v, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
         assert_eq!(st, StatusCode::CREATED, "{v}");
         let (_, viewer) = sign_in(&app, "rv@x.org", VIEW).await;
         let viewer = viewer.unwrap();
-        call(&app, "POST", "/api/v1/auth/password", Some(&viewer),
-            Some(json!({ "current": VIEW, "new": VIEW2 }))).await;
+        call(
+            &app,
+            "POST",
+            "/api/v1/auth/password",
+            Some(&viewer),
+            Some(json!({ "current": VIEW, "new": VIEW2 })),
+        )
+        .await;
         let (_, viewer) = sign_in(&app, "rv@x.org", VIEW2).await;
         let viewer = viewer.unwrap();
         let (st, ..) = call(&app, "GET", "/api/v1/auth/users", Some(&viewer), None).await;
         assert_eq!(st, StatusCode::FORBIDDEN);
         // A credential that identifies no one.
-        let (st, ..) = call(&app, "GET", "/api/v1/sources", Some("Bearer not-a-token"), None).await;
+        let (st, ..) = call(
+            &app,
+            "GET",
+            "/api/v1/sources",
+            Some("Bearer not-a-token"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
         // A refused change: the same account twice.
-        let (st, ..) = call(&app, "POST", "/api/v1/auth/users", Some(&admin),
-            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW }))).await;
+        let (st, ..) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&admin),
+            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
         assert!(st.is_client_error(), "{st}");
         // An API token's use, audited once.
-        let (_, tok, _) = call(&app, "POST", "/api/v1/auth/api-tokens", Some(&admin),
-            Some(json!({ "name": "script" }))).await;
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "script" })),
+        )
+        .await;
         let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
         for _ in 0..3 {
             let (st, ..) = call(&app, "GET", "/api/v1/sources", Some(&bearer), None).await;
@@ -1562,7 +1631,11 @@ mod tests {
         let (st, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
         assert_eq!(st, StatusCode::OK, "{body}");
         let got = ops(&body);
-        let has = |op: &str, outcome: &str| got.iter().filter(|(o, out)| o == op && out.contains(outcome)).count();
+        let has = |op: &str, outcome: &str| {
+            got.iter()
+                .filter(|(o, out)| o == op && out.contains(outcome))
+                .count()
+        };
         assert_eq!(has("access_denied", "failure"), 1, "{got:?}");
         assert_eq!(has("access_refused", "failure"), 1, "{got:?}");
         assert!(has("change_refused", "failure") >= 1, "{got:?}");
@@ -1582,7 +1655,42 @@ mod tests {
             .iter()
             .find(|r| r["op"] == "create_user" && r["actor"] == "root@x.org")
             .unwrap();
-        assert!(by_admin["ip"].as_str().is_some_and(|ip| !ip.is_empty()), "{by_admin}");
+        assert!(
+            by_admin["ip"].as_str().is_some_and(|ip| !ip.is_empty()),
+            "{by_admin}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_temporary_account_expires_72_hours_after_it_is_made() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let before = now_ms();
+        let (st, u, _) = call(&app, "POST", "/api/v1/auth/users", Some(&admin),
+            Some(json!({ "email": "tmp@x.org", "role": "viewer", "password": VIEW, "temporary": true }))).await;
+        assert_eq!(st, StatusCode::CREATED, "{u}");
+        let exp = u["expires_at_ms"].as_i64().unwrap();
+        let hours = stig::TEMPORARY_ACCOUNT_HOURS * 3_600_000;
+        assert!(exp >= before + hours && exp <= now_ms() + hours, "{u}");
+        // Made permanent.
+        let uri = format!("/api/v1/auth/users/{}", u["id"].as_str().unwrap());
+        let (st, u, _) = call(
+            &app,
+            "PUT",
+            &uri,
+            Some(&admin),
+            Some(json!({ "temporary": false })),
+        )
+        .await;
+        assert_eq!(
+            (st, u["expires_at_ms"].is_null()),
+            (StatusCode::OK, true),
+            "{u}"
+        );
     }
 
     #[tokio::test]

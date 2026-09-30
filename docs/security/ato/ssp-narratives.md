@@ -10,13 +10,13 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 
 | Family | Controls | Implemented | Partially | Planned | Inherited | N/A |
 |---|---|---|---|---|---|---|
-| AC Access Control | 39 | 26 | 1 | 0 | 12 | 0 |
+| AC Access Control | 39 | 27 | 0 | 0 | 12 | 0 |
 | AT Awareness and Training | 6 | 0 | 0 | 0 | 6 | 0 |
-| AU Audit and Accountability | 16 | 10 | 3 | 0 | 3 | 0 |
+| AU Audit and Accountability | 16 | 13 | 0 | 0 | 3 | 0 |
 | CA Assessment, Authorization, and Monitoring | 10 | 2 | 0 | 0 | 8 | 0 |
 | CM Configuration Management | 24 | 17 | 0 | 0 | 7 | 0 |
 | CP Contingency Planning | 23 | 4 | 0 | 0 | 19 | 0 |
-| IA Identification and Authentication | 24 | 16 | 2 | 0 | 6 | 0 |
+| IA Identification and Authentication | 24 | 17 | 1 | 0 | 6 | 0 |
 | IR Incident Response | 13 | 2 | 0 | 0 | 11 | 0 |
 | MA Maintenance | 9 | 0 | 0 | 0 | 9 | 0 |
 | MP Media Protection | 7 | 0 | 0 | 0 | 7 | 0 |
@@ -28,15 +28,10 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 | SC System and Communications Protection | 25 | 10 | 1 | 0 | 13 | 1 |
 | SI System and Information Integrity | 18 | 8 | 2 | 0 | 6 | 2 |
 | SR Supply Chain Risk Management | 12 | 4 | 0 | 0 | 8 | 0 |
-| **All** | 287 | 114 | 11 | 0 | 159 | 3 |
+| **All** | 287 | 119 | 6 | 0 | 159 | 3 |
 
 Partially implemented and planned controls are on the POA&M (`poam.md`):
 
-- **AC-2(2)** Automated Temporary and Emergency Account Management: partially implemented.
-- **AU-2** Event Logging: partially implemented.
-- **AU-3** Content of Audit Records: partially implemented.
-- **AU-12** Audit Record Generation: partially implemented.
-- **IA-5(1)** Password-based Authentication: partially implemented.
 - **IA-5(2)** Public Key-based Authentication: partially implemented.
 - **RA-5** Vulnerability Monitoring and Scanning: partially implemented.
 - **SA-22** Unsupported System Components: partially implemented.
@@ -74,11 +69,11 @@ Account management is automated in the product: the Users panel, the /api/v1/aut
 
 ### AC-2(2) Automated Temporary and Emergency Account Management
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack has no expiry date for accounts, so temporary and emergency accounts are not removed or disabled automatically at the end of their authorised period. API tokens always expire (1 hour to 10 years, default 365 days), and any account not marked Never turn off is disabled automatically after 35 days without a sign-in; break-glass accounts marked Never turn off are exempt. The [[SITE: account manager]] turns off or deletes temporary and emergency accounts within [[SITE: time period]] by procedure.
+Temporary and emergency accounts are made with Temporary (Settings -> Users, or opentrack user add --temporary) and are turned off automatically 72 hours after they are made (fixed), with their sessions ended and API tokens revoked, audited as account_disabled reason expired; sign-in refuses them once expired. The site's process says when temporary and emergency accounts are used ([[SITE: temporary account procedure]]).
 
-*Evidence:* crates/ot-store/src/auth.rs (User, disable_inactive); crates/ot-server/src/auth/stig.rs; docs/guides/admin.md#api-tokens; docs/guides/admin.md#inactive-accounts
+*Evidence:* crates/ot-server/src/auth/maintenance.rs (disable_expired); crates/ot-server/src/auth/stig.rs (TEMPORARY_ACCOUNT_HOURS); docs/guides/admin.md#adding-accounts
 
 *Site:* Define the lifetime of temporary and emergency accounts and disable them manually (Settings -> Users, Active off, or opentrack user) until the product supports account expiry.
 
@@ -448,21 +443,21 @@ The [[SITE: organisation]] develops, documents and disseminates the audit and ac
 
 ### AU-2 Event Logging
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-OpenTrack records in its audit record: sign-in success and failure (reason, method, address), sign-out, lockout, unlock, session end and idle timeout, password change and expiry, account disable, every decision (account, token, sign-in, source, schema, settings, plugin and track management changes), audit export and chain verification. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record). The [[SITE: organisation]] selects the events to log, coordinates with other entities and reviews the selection [[SITE: frequency]].
+OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).
 
-*Evidence:* crates/ot-store/src/audit.rs; crates/ot-server/src/auth/api.rs; crates/ot-server/src/auth/sessions.rs; crates/ot-server/src/auth/maintenance.rs; crates/ot-server/src/audit_api.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record
+*Evidence:* crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record
 
 *Site:* Define the event types to be logged [[SITE: event types]] and review them [[SITE: frequency]]; POA&M: audit access denials and per-call token/certificate authentication.
 
 ### AU-3 Content of Audit Records
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-Each audit row holds a sequence number, UTC time in milliseconds, the actor (account email, or system), the operation, the outcome (success or failure), details (reason, method, session, the change's before and after) and the decision id, chained by SHA-256; the OpenTelemetry export adds the host, process, node id and role as resource attributes. Sign-in and session rows carry the client address, but decision rows (every configuration and track change) do not, so a change's source address is found only through the actor's sessions.
+Each audit record carries what happened (op), when (UTC ms), where (the client address, on decisions too), the source (actor, and via for tokens, certificates and OpenStare), the outcome and the detail (method, path, status, reason, before/after with secrets masked); the access log adds User-Agent, Referer and X-Forwarded-For. Records are hash-chained.
 
-*Evidence:* crates/ot-store/src/audit.rs (AuditRow, append); crates/ot-store/src/sqlite.rs (record_decision); crates/ot-server/src/telemetry.rs; docs/guides/admin.md#audit-record
+*Evidence:* crates/ot-store/src/audit.rs (with_client); crates/ot-server/src/auth/access.rs
 
 *Site:* POA&M: record the client address on decision rows.
 
@@ -580,11 +575,11 @@ OpenTrack keeps its local audit record forever (fixed; nothing deletes rows). Re
 
 ### AU-12 Audit Record Generation
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-Every OpenTrack role generates the audit records listed in AU-2 in the audit table and as audit.record events on standard output and over OpenTelemetry; the event set is fixed in the product, and the site selects what the SIEM keeps and alerts on. Not recorded: requests refused for lack of a role (403) or of a session (401), and authentication of individual calls by API token, client certificate or OpenStare session (these create no session; only TLS-level client certificate refusals and OpenStare check failures reach the log, not the audit record).
+OpenTrack records sign-in success and failure (reason, address), the first use each hour of API tokens, client certificates and OpenStare identities, sign-out, lockout, unlock, session end and timeout, notice acceptance, password changes, accounts turned off, every decision (every configuration and track change), refused credentials, role refusals and refused changes, admin reads of security objects (accounts, tokens, sign-in settings, configuration export, the audit record) and every source probe, in the append-only audit record; every API request is also logged (target access). All of it is exported over OpenTelemetry to the site's SIEM. The site selects which events its SIEM alerts on ([[SITE: audit review and alerting]]).
 
-*Evidence:* crates/ot-store/src/audit.rs; crates/ot-server/src/telemetry.rs; crates/ot-server/src/auth/mod.rs (layer); docs/guides/admin.md#audit-record; docs/guides/admin.md#opentelemetry
+*Evidence:* crates/ot-server/src/auth/access.rs; crates/ot-store/src/audit.rs; docs/guides/admin.md#audit-record
 
 *Site:* Route audit.record to the SIEM; POA&M: generate audit records for access denials and per-call authentication.
 
@@ -1194,9 +1189,9 @@ OpenTrack enforces the password policy on every password it accepts, including t
 
 ### IA-5(1) Password-based Authentication
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. OpenTrack does not check new passwords against a list of commonly used, expected or compromised passwords, as IA-5(1)(a)-(b) requires.
+Passwords must be at least 15 characters with upper case, lower case, a digit and a special character, differ from the current one by at least 8 characters, not repeat the last 5, and are changed at most once per 24 hours (admin resets exempt) and at least every 60 days; temporary passwords must be changed at first use; values are fixed. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations) and sent only in the TLS-protected sign-in call. New and changed passwords are refused when they are, or are built from, one of the 100,000 most common passwords or a password on the site's own list (common-passwords.txt in the data directory).
 
 *Evidence:* crates/ot-server/src/auth/password.rs (check, check_change); crates/ot-server/src/auth/stig.rs; crates/ot-server/src/fips.rs; crates/ot-server/src/auth/api.rs; docs/guides/admin.md#password-policy
 

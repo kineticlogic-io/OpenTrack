@@ -35,14 +35,21 @@ pub struct User {
     pub locked_until_ms: Option<i64>,
     /// When the account was last turned on (restarts its inactivity clock).
     pub active_since_ms: Option<i64>,
-    /// Why it was turned off automatically (`inactivity`).
+    /// Why it was turned off automatically (`inactivity`, `expired`).
     pub disabled_reason: Option<String>,
+    /// A temporary account: turned off when this passes.
+    pub expires_at_ms: Option<i64>,
 }
 
 /// `locked_until_ms` of an account locked until an admin unlocks it.
 pub const LOCKED_UNTIL_UNLOCKED: i64 = i64::MAX;
 
 impl User {
+    /// Whether a temporary account's time has run out at `now_ms`.
+    pub fn expired(&self, now_ms: i64) -> bool {
+        self.expires_at_ms.is_some_and(|t| t <= now_ms)
+    }
+
     /// Whether sign-in is locked at `now_ms`.
     pub fn locked(&self, now_ms: i64) -> bool {
         self.locked_until_ms.is_some_and(|t| t > now_ms)
@@ -124,7 +131,7 @@ pub struct ApiToken {
 const USER_COLUMNS: &str = "id, email, name, role, active, origin, password_hash IS NOT NULL,
     created_at_ms, updated_at_ms, last_login_at_ms, tokens_valid_from_ms,
     password_changed_at_ms, must_change_password, failed_logins, locked_until_ms,
-    active_since_ms, disabled_reason";
+    active_since_ms, disabled_reason, expires_at_ms";
 
 const SESSION_COLUMNS: &str = "s.id, s.user_id, u.email, s.created_at_ms, s.last_seen_ms,
     s.expires_at_ms, s.ip, s.user_agent, s.ended_at_ms, s.end_reason, s.prev_login_at_ms,
@@ -166,6 +173,7 @@ fn user(r: &Row<'_>) -> rusqlite::Result<User> {
         locked_until_ms: r.get(14)?,
         active_since_ms: r.get(15)?,
         disabled_reason: r.get(16)?,
+        expires_at_ms: r.get(17)?,
     })
 }
 
@@ -479,6 +487,41 @@ impl Db {
             self.revoke_api_tokens(&u.id, now)?;
         }
         Ok(stale)
+    }
+
+    /// Make an account temporary (turned off at `expires_at_ms`), or not.
+    pub fn set_account_expiry(&mut self, id: &str, expires_at_ms: Option<i64>) -> Result<User> {
+        let n = self.connection().execute(
+            "UPDATE users SET expires_at_ms = ?2, updated_at_ms = ?3 WHERE id = ?1",
+            params![id, expires_at_ms, now_ms()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("user {id}")));
+        }
+        self.user(id)?
+            .ok_or_else(|| StoreError::NotFound(format!("user {id}")))
+    }
+
+    /// Turn off active temporary accounts whose time has run out at
+    /// `now_ms`, ending their sessions and revoking their API tokens.
+    /// Returns them as they were.
+    pub fn disable_expired(&mut self, now_ms: i64) -> Result<Vec<User>> {
+        let due: Vec<User> = self
+            .users()?
+            .into_iter()
+            .filter(|u| u.active && u.expired(now_ms))
+            .collect();
+        for u in &due {
+            self.connection().execute(
+                "UPDATE users SET active = 0, disabled_reason = 'expired', updated_at_ms = ?2,
+                     tokens_valid_from_ms = ?2
+                 WHERE id = ?1 AND active = 1",
+                params![u.id, now_ms],
+            )?;
+            self.end_user_sessions(&u.id, "disabled", None)?;
+            self.revoke_api_tokens(&u.id, now_ms)?;
+        }
+        Ok(due)
     }
 
     /// Begin a session.
@@ -884,6 +927,31 @@ mod tests {
         assert!(u.must_change_password && u.password_changed_at_ms.is_some());
         db.set_password("u1", None, true, 5).unwrap();
         assert!(!db.user("u1").unwrap().unwrap().must_change_password);
+    }
+
+    #[test]
+    fn a_temporary_account_is_turned_off_when_its_time_runs_out() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.create_user(&new("u1", "temp@x")).unwrap();
+        db.create_user(&new("u2", "perm@x")).unwrap();
+        let now = now_ms();
+        let u = db.set_account_expiry("u1", Some(now + 1_000)).unwrap();
+        assert_eq!(u.expires_at_ms, Some(now + 1_000));
+        assert!(!u.expired(now) && u.expired(now + 1_000));
+        assert!(db.disable_expired(now).unwrap().is_empty(), "not yet");
+        let off = db.disable_expired(now + 2_000).unwrap();
+        assert_eq!(
+            off.iter().map(|u| u.email.as_str()).collect::<Vec<_>>(),
+            ["temp@x"]
+        );
+        let u = db.user("u1").unwrap().unwrap();
+        assert!(!u.active && u.disabled_reason.as_deref() == Some("expired"));
+        assert!(db.user("u2").unwrap().unwrap().active);
+        // Permanent again.
+        assert_eq!(
+            db.set_account_expiry("u1", None).unwrap().expires_at_ms,
+            None
+        );
     }
 
     #[test]

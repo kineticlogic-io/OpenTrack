@@ -133,9 +133,9 @@
  },
  {
   "vid": "V-222409",
-  "status": "Open",
-  "finding_details": "OpenTrack cannot mark an account as temporary or give it an expiry: the users table (crates/ot-store/migrations/0013_auth.sql, 0015_account_policy.sql) has no expiry column and nothing disables an account 72 hours after creation; only API tokens expire. No documentation disallows temporary accounts.",
-  "comments": "Add an optional account expiry (e.g. 'temporary, 72 h') enforced by the maintenance sweep, audited as account_disabled reason 'expired'."
+  "status": "NotAFinding",
+  "finding_details": "A temporary or emergency account (Settings -> Users -> Temporary, or opentrack user add --temporary) is turned off automatically 72 hours after it is made (stig::TEMPORARY_ACCOUNT_HOURS, fixed): the maintenance sweep disables it, ends its sessions and revokes its API tokens, audited as account_disabled reason expired, and sign-in and every request refuse it once expired (auth/maintenance.rs disable_expired, ot-store auth.rs; tests a_temporary_account_is_turned_off_when_its_time_runs_out, a_temporary_account_expires_72_hours_after_it_is_made).",
+  "comments": ""
  },
  {
   "vid": "V-222410",
@@ -355,9 +355,9 @@
  },
  {
   "vid": "V-222447",
-  "status": "Open",
-  "finding_details": "HTTP header information is not recorded in the audit record or logs: audit rows hold actor, op, outcome, IP and detail only (crates/ot-store/src/audit.rs); the request TraceLayer (crates/ot-server/src/control.rs) records method and URI in sampled (1 in 10) trace spans without headers; the User-Agent is kept only on the session row (auth/api.rs start_session). Referer, X-Forwarded-For and per-request method/status/actor are not logged.",
-  "comments": "Add a per-request access log event (actor, method, path, status, IP, User-Agent, Referer, X-Forwarded-For) exported with the logs."
+  "status": "NotAFinding",
+  "finding_details": "Every API request is logged with target access: account, method, path, status, client address, User-Agent, Referer, X-Forwarded-For and duration (auth/access.rs log), on standard output and over OpenTelemetry to the site's SIEM; decisions' audit rows carry the client address (ot_store::audit::with_client).",
+  "comments": ""
  },
  {
   "vid": "V-222448",
@@ -373,21 +373,21 @@
  },
  {
   "vid": "V-222450",
-  "status": "Open",
-  "finding_details": "Successful privilege grants are audited (create_user, update_user role changes including SAML role changes, create_api_token). Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). An unsuccessful attempt to grant a role therefore leaves no audit record.",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222451",
-  "status": "Open",
-  "finding_details": "Security objects (accounts, API tokens, sign-in settings, source credentials, the audit record) are admin-only (crates/ot-server/src/auth/policy.rs ADMIN_READS), and changes to them are audited, but reads are not (only audit export and verify write rows, crates/ot-server/src/audit_api.rs). Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Audit reads of security objects (GET /auth/*, /export/config, /audit) and every denied attempt."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222452",
-  "status": "Open",
-  "finding_details": "Security levels are the roles viewer < track_manager < admin (crates/ot-server/src/auth/policy.rs). A user reaching a higher-role function is not audited when it succeeds (reads) and not when refused: Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222453",
@@ -397,15 +397,15 @@
  },
  {
   "vid": "V-222454",
-  "status": "Open",
-  "finding_details": "Successful privilege changes are audited (update_user with before/after role, SAML role updates in crates/ot-server/src/auth/saml.rs). Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222455",
-  "status": "Open",
-  "finding_details": "Successful changes to security objects (auth_settings, users, API tokens, sources, correlation settings) are audited as decisions. Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222456",
@@ -415,15 +415,15 @@
  },
  {
   "vid": "V-222457",
-  "status": "Open",
-  "finding_details": "Categories of information are the security labels and the classification order (source pipeline Security label; Settings -> Security -> Security labels, stored in correlation settings). Successful changes are audited (update_source, correlation_settings decisions, crates/ot-store/src/sources.rs, crates/ot-server/src/correlation_api.rs). Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222458",
-  "status": "Open",
-  "finding_details": "Successful removal of privileges is audited (update_user role downgrade or active=false, delete_user, revoke_api_token, revoke_sessions in crates/ot-server/src/auth/api.rs). Denied requests are not audited: the API gate crates/ot-server/src/auth/mod.rs (layer) returns 401/403 without writing an audit row, and handlers that refuse a change (e.g. update_user/delete_user 409 'that would leave no active admin' or a SAML account's role in crates/ot-server/src/auth/api.rs) return before db.record(), so only successful changes reach the audit table (crates/ot-store/src/sqlite.rs record_decision). ",
-  "comments": "Write a failure audit row (actor, op, path, ip, reason) for every 401/403 from auth::layer and for every refused privileged change, before answering."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222459",
@@ -433,21 +433,21 @@
  },
  {
   "vid": "V-222460",
-  "status": "Open",
-  "finding_details": "Successful deletions of security objects (delete_user, revoke_api_token, revoke_sessions, auth_settings changes) are recorded as decisions and copied into the audit table in crates/ot-store/src/sqlite.rs record_decision (handlers in crates/ot-server/src/auth/api.rs). Unsuccessful attempts are not audited: the API gate crates/ot-server/src/auth/mod.rs layer() answers 401/403 via deny() without any audit row or log line, and handler refusals (e.g. 'you cannot delete your own account', 'that would leave no active admin') are returned as errors with no record.",
-  "comments": "Record denied requests (401/403 from auth::layer, and handler refusals) as audit failure rows with actor, method, path and address."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222461",
-  "status": "Open",
-  "finding_details": "Categories of information are the per-source security labels and the classification order (Settings -> Security -> Security labels, docs/guides/admin.md#security-labels); a successful change or a track delete is a decision copied to the audit table (crates/ot-store/src/sqlite.rs record_decision). Unsuccessful attempts (a viewer's or track manager's refused request, a rejected settings save) produce no audit row: crates/ot-server/src/auth/mod.rs layer() denies with 401/403 and records nothing.",
-  "comments": "Record denied requests (401/403 from auth::layer, and handler refusals) as audit failure rows with actor, method, path and address."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222462",
-  "status": "Open",
-  "finding_details": "Password and SAML sign-ins are audited on success and failure with reason and client address (crates/ot-server/src/auth/api.rs failed_login and the 'login' event, crates/ot-server/src/auth/saml.rs acs). The other authenticators are not: a request authenticated by client certificate, API token or OpenStare trust (crates/ot-server/src/auth/mod.rs from_cert, from_token, openstare::identify) writes no audit row on success, and a bad/revoked token or unmapped certificate gets a silent 401; only TLS-level certificate refusals are logged ('client certificate refused', crates/ot-server/src/https.rs), not in the audit table.",
-  "comments": "Audit first successful use per certificate/token/OpenStare identity (e.g. per TLS connection or per token per interval) and every failed non-password authentication, with address."
+  "status": "NotAFinding",
+  "finding_details": "Password and SAML sign-ins are audited on success and failure (auth/api.rs). API tokens, client certificates and OpenStare trust have no sign-in of their own: their first use in each hour is audited as login with via, and a credential that identifies no one (bad, expired or revoked token, unmapped certificate) as access_refused (auth/access.rs). TLS-level certificate refusals are logged by the TLS listener.",
+  "comments": ""
  },
  {
   "vid": "V-222463",
@@ -463,9 +463,9 @@
  },
  {
   "vid": "V-222465",
-  "status": "Open",
-  "finding_details": "Object access is not audited: reads of tracks, sources, registry, settings and exports are not recorded with the user (only the audit export and config export are), and denied requests get a 401/403 from crates/ot-server/src/auth/mod.rs layer() with no audit row or log line. The HTTP TraceLayer in crates/ot-server/src/control.rs only creates sampled (1 in 10) request spans without the user or outcome at the default level.",
-  "comments": "Audit denied requests and add an access record (user, method, path, status, address) for API reads of protected objects."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222466",
@@ -499,9 +499,9 @@
  },
  {
   "vid": "V-222471",
-  "status": "Open",
-  "finding_details": "User reads of data (tracks, history, registry, sources, exports) are not logged with the user: only changes (decisions), sign-in events, the configuration export (crates/ot-server/src/config_backup.rs) and audit exports (crates/ot-server/src/audit_api.rs) are recorded. Request spans from TraceLayer (crates/ot-server/src/control.rs) are sampled 1 in 10 and carry no user identity.",
-  "comments": "Add an access log/audit event (user, route, query, address) for data reads and exports, at least for track/registry exports and history queries."
+  "status": "NotAFinding",
+  "finding_details": "The API gate audits every refused attempt and every read of a security object (crates/ot-server/src/auth/access.rs, auth/mod.rs gate): a credential that identifies no one (access_refused), a role that doesn't reach (access_denied, with the role needed), a change the server refused (change_refused, method, path, status), and an admin reading accounts, API tokens, sign-in settings, the configuration export or the audit record (read_security_object). Successful changes to privileges, security objects, labels and settings are audited as decisions, with the client address. Every request is also logged (target access) and exported over OpenTelemetry. Tested in auth/api.rs refusals_security_reads_token_use_and_decision_addresses_are_audited.",
+  "comments": ""
  },
  {
   "vid": "V-222472",
