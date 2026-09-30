@@ -8,7 +8,7 @@ No build or setting turns it off.
 | Module | Used for | Where it comes from |
 |---|---|---|
 | **AWS-LC FIPS 3.0.x** (static, via `aws-lc-fips-sys` 0.14.2 / `aws-lc-rs` 1.x) | All of the binary's own cryptography: TLS for the UI/API, feeds, gRPC, MQTT, WebSocket, NATS, HTTP clients and OpenTelemetry export; session and API token signatures (HS256); password hashing; the NATS `.creds` nonce signature (Ed25519); SHA-256 of plugin files; every random secret and identifier | Compiled into the binary from the module source that `aws-lc-fips-sys` carries. The build needs Go and CMake. |
-| **OpenSSL 3.0.9 FIPS provider** (CMVP #4282) | SAML: libxmlsec1 checks the identity provider's XML signatures through OpenSSL | Built in the image from the 3.0.9 release as its security policy directs (`./Configure enable-fips`, `make install_fips`). The image's Debian OpenSSL 3.0 library loads it, and `default_properties = fips=yes` (`docker/openssl-fips.cnf`) leaves nothing else to use. |
+| **OpenSSL 3.0.9 FIPS provider** (CMVP #4282) | SAML: libxmlsec1 checks the identity provider's XML signatures through OpenSSL | Built in the image from the 3.0.9 release as its security policy directs (`./Configure enable-fips`, `make install_fips`). The image's OpenSSL 3.0 library (Debian 12's `libssl3`, part of the distroless runtime base) loads it, and `default_properties = fips=yes` (`docker/openssl-fips.cnf`) leaves nothing else to use. |
 
 Check each module's current CMVP status and security policy before you cite it
 in an accreditation package: the [CMVP search](https://csrc.nist.gov/projects/cryptographic-module-validation-program/validated-modules/search)
