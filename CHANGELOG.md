@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 0.4.5 (alpha), 2026-09-30
+
+The rest of the accreditation POA&M (#64): the ASD STIG is down to one open item (P-32,
+outbound destination logging), the Container Platform SRG to none.
+
+### Upgrade notes
+
+- **Nodes sign their sync messages** (ICD version 2): 0.4.5 nodes don't talk to earlier ones.
+  Upgrade a swarm together, then pin each peer's public key in Settings → Nodes on every node.
+  Back up `sync.key` (beside the database) with the database.
+- **Listening sources must authenticate their senders**, or carry `"unauthenticated": "accepted"`
+  (every UDP source needs it). An enabled listener without either doesn't start.
+- **External plugins need a secret** (a mutual HMAC handshake); update the plugin to the current
+  SDK, generate a secret in Settings → Plugins, restart the plugin with it. Without a secret only a
+  Unix socket under the data directory is used.
+- **Client certificates are checked by OCSP**, falling back to `OT_TLS_CLIENT_CRL`; with
+  neither, a certificate is refused. Sites whose certificates name no OCSP responder set
+  `OT_TLS_CLIENT_OCSP_URL` or `OT_TLS_CLIENT_CRL`.
+- **Changes made from a browser must come from OpenTrack's page** (CSRF). Behind a proxy that
+  rewrites `Host`, send `X-Forwarded-Host` or set `OT_PUBLIC_URL`.
+- The track CSV export starts with a marking line and a `classification` column.
+- Release images are signed with a new key made in the FIPS module: verify 0.4.5 and later with
+  `cosign.pub`, earlier releases with `cosign-2026-09.pub`.
+
+### Security
+
+- **Markings (P-10):** each labelled track has one portion marking, e.g. `(S//REL TO USA, GBR)`.
+  TAK events carry a `<__security …/>` detail element and remarks that start with it; track, audit,
+  registry and configuration exports are marked; the UI shows each track's marking. Nothing is
+  withheld by clearance.
+- **Listening sources (P-16):** `tcp_server` by mutual TLS, `grpc_server` by mutual TLS or a
+  token, or an explicit, audited risk acceptance shown in red.
+- **FIPS release signing (P-17):** the OpenSSL 3.0.9 FIPS provider signs the cosign payload
+  (`scripts/release/sign-image`).
+- **Admin listener (P-18):** `OT_ADMIN_BIND` serves every admin function on its own address only.
+- **IPv6 multicast (P-19)** for UDP sources and the TAK multicast output.
+- **No inline styles (P-25):** the CSP drops `'unsafe-inline'`; each page gets a style nonce.
+- **OCSP (P-26, #21)** for control-plane client certificates, with the CRLs as fallback.
+- **External plugins (P-28)** prove a shared secret each way on every connection.
+- **Bridge TLS and credentials (P-29)** for `opentrack bridge`.
+- **Signed sync messages (P-30):** Ed25519, keys pinned in Settings → Nodes, replays refused.
+- **CSRF and rate limit (P-31):** a header and Origin check on changes; 20 requests a second
+  (bursts of 100) per account, token or address, 429 beyond.
+
 ## 0.4.4 (alpha), 2026-09-30
 
 Closing the accreditation POA&M's 0.4 items (#64): the ASD STIG is down to 7 open items (all
