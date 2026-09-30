@@ -172,7 +172,7 @@ The UI's tabs:
 
 ## Sources and pipelines
 
-A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
+A source is a transport (`tcp_client`, `tcp_server`, `udp` with IPv4 or IPv6 multicast, `http_poll`, `websocket`,
 `mqtt`, `grpc_client`, `grpc_server`, `file`, which reads only under the data directory), framing, a codec and a pipeline. Transport metadata reaches the mapping under
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
@@ -183,6 +183,10 @@ certificate for mutual TLS), `server_name` (verify against this name instead of 
 `insecure_skip_verify` (development only). `tcp_server` takes `tls: {cert_file, key_file,
 client_ca_file}`; with a client CA, only clients presenting a certificate it signed are accepted,
 and each client's certificate subject is logged. Files are PEM; paths may use `${env:NAME}`.
+A listening source must authenticate its senders (mutual TLS for `tcp_server`; mutual TLS or a
+bearer `token` for `grpc_server`); one that does not, and every `udp` source, runs only with
+`"unauthenticated": "accepted"` on the source, a recorded risk acceptance
+([hardening checklist](docs/security/hardening.md#encrypt-every-link)).
 
 A source reports either **tracks** (a key per object: AIS, ADS-B, TAK, a radar's own tracks) or
 **detections** (`"reports": "detections"`: anonymous plots). Detections update the nearest system

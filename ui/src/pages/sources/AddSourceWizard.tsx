@@ -6,6 +6,8 @@ import { api, type FieldStat, type ProbeResult, type SourceSpec } from '../../ap
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
 import { MappingStudio } from './MappingStudio'
+import { needsAcceptance } from '../../lib/senderAuth'
+import { SenderAuth } from './SenderAuth'
 import { TransportForm } from './TransportForm'
 
 const STEPS = [
@@ -69,6 +71,7 @@ function connectProblems(spec: SourceSpec): string[] {
     if (!/^https?:\/\/./.test(String(t.url ?? '').trim())) p.push('a URL (http:// or https://)')
     if (!String(t.method ?? '').trim()) p.push('the method to call')
   }
+  if (needsAcceptance(spec)) p.push(t.type === 'udp' ? 'the acceptance of unauthenticated senders (UDP)' : 'sender authentication, or its risk accepted')
   return p
 }
 
@@ -189,6 +192,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
             onTransport={(transport) => setSpec({ ...spec, transport })}
             onCodec={(codec) => setSpec({ ...spec, pipeline: { ...spec.pipeline, codec } })}
           />
+          <SenderAuth spec={spec} onChange={setSpec} />
           {problems.length > 0 && <span className="muted">Still needed: {problems.join(', ')}.</span>}
         </div>
       )}

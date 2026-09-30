@@ -167,6 +167,8 @@ def main(argv):
         spec = json.loads((data_dir() / "scenarios/load-2k/scenario.json").read_text())["sources"][0]["spec"]
         spec.update(id="load", name=f"Live load: {a.tracks} tracks at 1 Hz")
         spec["transport"] = {"type": "udp", "bind": f"127.0.0.1:{UDP_PORT}"}
+        # A loopback UDP feed: its (lack of) sender authentication is accepted.
+        spec["unauthenticated"] = "accepted"
         http("POST", "/sources", spec)
         http("POST", "/sources/load/enable")
         time.sleep(3)

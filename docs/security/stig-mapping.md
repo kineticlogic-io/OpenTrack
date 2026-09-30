@@ -31,6 +31,7 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | CM-7 | Least functionality | Met | One binary, one role per command; plugins sandboxed (WebAssembly, WASI grants) |
 | IA-2 | Identification and authentication | Met | Local accounts, SAML, PKI client certificates, OpenStare trust, API tokens |
 | IA-2(12) | PIV credentials | Met | Client certificates mapped to accounts by CN; revocation checked against CRLs (`OT_TLS_CLIENT_CRL`), failing closed on unknown status or a stale list, reloaded on change. No OCSP |
+| IA-3 | Device identification and authentication | Partial | Listening sources authenticate their senders: `tcp_server` by mutual TLS, `grpc_server` by mutual TLS or a bearer token; a listener that does not (UDP and multicast cannot) runs only with the per-source `unauthenticated: accepted` risk acceptance, recorded in the decision log and needing the authorising official's acceptance ([hardening.md](hardening.md#encrypt-every-link)) |
 | IA-5(1) | Password-based authentication | Partial | 15 characters, four classes, 8 changed, 5 remembered, 24 h minimum / 60 days maximum age (all fixed), temporary passwords changed at first use, PBKDF2-HMAC-SHA256 (600,000 iterations). No check against a compromised-password list (POA&M P-15) |
 | IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA and CRL status, as IA-2(12) |
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |

@@ -181,6 +181,11 @@ async fn save(
     normalised: Value,
     actor: String,
 ) -> Result<SourceRow, ApiError> {
+    if spec.unauthenticated.is_some() {
+        // The decision records the acceptance; the log says it plainly.
+        tracing::warn!(source = %spec.id, transport = spec.transport.kind(), %actor,
+            "listening source saved with unauthenticated senders accepted");
+    }
     s.with_db(move |db| {
         db.put_source(
             &SourceWrite {
@@ -900,6 +905,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_listener_needs_authentication_or_a_recorded_acceptance() {
+        let Some((app, _redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        publish_example_schema(&app).await;
+        let mut spec: Value =
+            serde_json::from_str(include_str!("../../../docs/examples/gps-udp.json")).unwrap();
+        spec["id"] = json!("udp-auth");
+        let accepted = spec.clone();
+        spec.as_object_mut().unwrap().remove("unauthenticated");
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("UDP cannot carry TLS"),
+            "{body}"
+        );
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(accepted)).await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        // Moved to mutual TLS, the acceptance goes: a decision whose before
+        // and after (the two revisions) show the change.
+        spec["transport"] = json!({"type": "tcp_server", "bind": "127.0.0.1:0",
+            "tls": {"cert_file": "s.pem", "key_file": "s.key", "client_ca_file": "ca.pem"}});
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/udp-auth", Some(spec)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (_, revs) = call(&app, "GET", "/api/v1/sources/udp-auth/revisions", None).await;
+        let rev = |n: i64| {
+            revs["revisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["revision"] == n)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(rev(1)["spec"]["unauthenticated"], "accepted", "{revs}");
+        assert!(rev(2)["spec"].get("unauthenticated").is_none(), "{revs}");
+        assert!(rev(2)["decision_id"].is_i64(), "{revs}");
+        let (_, d) = call(&app, "GET", "/api/v1/decisions?op=update_source", None).await;
+        assert_eq!(d["decisions"][0]["evidence"]["source"], "udp-auth", "{d}");
+    }
+
+    #[tokio::test]
     async fn source_lifecycle_through_the_api() {
         let Some((app, redis)) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
@@ -1093,7 +1144,7 @@ mod tests {
         // Dry run: a CoT event carrying an ELNOT resolves through the registry.
         let spec = json!({
             "id": "cot-test", "name": "CoT test",
-            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"}, "unauthenticated": "accepted",
             "pipeline": {
                 "codec": {"type": "cot_xml"},
                 "mapping": {"rules": [{"name": "event", "key": "event.@uid",
@@ -1132,7 +1183,7 @@ mod tests {
         };
         let spec = json!({
             "id": "trace-test", "name": "Trace test",
-            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"}, "unauthenticated": "accepted",
             "pipeline": {
                 "codec": {"type": "json"},
                 "mapping": {"rules": [{"name": "pos", "key": "id",

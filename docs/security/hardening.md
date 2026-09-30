@@ -62,6 +62,16 @@ document the risk acceptance; keep multicast TTL at 1. The TAK output panel mark
 plaintext, and the `cot` role logs a warning when a plaintext output starts. OpenTrack sends
 events as the tracks are, without adding classification markings to them.
 
+**Listening sources authenticate their senders.** A `tcp_server` source needs TLS with a
+`client_ca_file` (mutual TLS, certificates required); a `grpc_server` source needs that or a bearer
+`token`. A source that cannot (UDP, multicast included, has no TLS) or does not is refused unless it
+carries `"unauthenticated": "accepted"`: anyone who can reach its port can then feed it tracks.
+**Each such source is an exception needing the authorising official's acceptance**; record it
+with the source's name, port and the network that protects it. The flag is saved with the source,
+so setting or clearing it is in the decision log (before and after) and the source's history; the
+source list marks it with an UNAUTHENTICATED badge. A listener saved before 0.4.5 without it is not
+started until it authenticates its senders or the flag is set (its status says why).
+
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 
 **Open only the ports you use.** Every port, protocol and service OpenTrack listens on or connects

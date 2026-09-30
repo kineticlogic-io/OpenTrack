@@ -302,6 +302,8 @@ def main(argv):
             spec = json.loads(json.dumps(spec0))
             spec.update(id="sensor", name=f"{'AIS' if n.ais else 'Radar tracker'} of {n.site}")
             spec["transport"] = {"type": "udp", "bind": f"127.0.0.1:{n.udp}"}
+            # A loopback UDP feed: its (lack of) sender authentication is accepted.
+            spec["unauthenticated"] = "accepted"
             if not n.ais:
                 spec["pipeline"]["mapping"]["rules"][0]["identifiers"] = []
                 spec["publish_alone"] = True

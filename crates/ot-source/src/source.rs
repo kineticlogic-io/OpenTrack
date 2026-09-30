@@ -42,6 +42,22 @@ pub struct SourceSpec {
     /// sensor. Unset: [`EmitterMotion::default`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emitter_motion: Option<EmitterMotion>,
+    /// A listening source must authenticate its senders (mutual TLS, or a
+    /// bearer token for gRPC). One that cannot (UDP, multicast) or does not
+    /// runs only with this set to `accepted`: the recorded acceptance of
+    /// that risk, which the authorising official signs off (ASD V-222533;
+    /// see `docs/security/hardening.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unauthenticated: Option<Unauthenticated>,
+}
+
+/// The risk acceptance for a listening source that does not authenticate
+/// its senders. It has one value so that the JSON says what it means:
+/// `"unauthenticated": "accepted"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unauthenticated {
+    Accepted,
 }
 
 /// How the emitters a bearing source hears may move (see
@@ -102,6 +118,34 @@ impl SourceSpec {
     }
 }
 
+/// Whether a listening transport authenticates its senders; `None` for a
+/// transport that connects out (it authenticates the far end, if at all,
+/// with its own TLS settings). Mutual TLS counts only when a certificate is
+/// required (not `client_cert_optional`); a gRPC bearer token counts too.
+fn authenticates_senders(t: &TransportConfig) -> Option<bool> {
+    let mutual = |tls: &Option<crate::tls::ServerTls>| {
+        tls.as_ref().is_some_and(|t| {
+            t.client_ca_file
+                .as_deref()
+                .is_some_and(|f| !f.trim().is_empty())
+                && !t.client_cert_optional
+        })
+    };
+    match t {
+        TransportConfig::Udp { .. } => Some(false),
+        TransportConfig::TcpServer { tls, .. } => Some(mutual(tls)),
+        TransportConfig::GrpcServer { tls, token, .. } => {
+            Some(mutual(tls) || token.as_deref().is_some_and(|t| !t.trim().is_empty()))
+        }
+        TransportConfig::TcpClient { .. }
+        | TransportConfig::HttpPoll { .. }
+        | TransportConfig::Websocket { .. }
+        | TransportConfig::Mqtt { .. }
+        | TransportConfig::GrpcClient { .. }
+        | TransportConfig::File { .. } => None,
+    }
+}
+
 fn default_priority() -> i64 {
     100
 }
@@ -131,6 +175,8 @@ pub enum SourceError {
     NoName,
     #[error("{0}")]
     Transport(String),
+    #[error("{0}")]
+    Unauthenticated(String),
     #[error(transparent)]
     Mapping(#[from] crate::mapping::MappingError),
     #[error("framing: {0}")]
@@ -148,6 +194,36 @@ pub enum SourceError {
 }
 
 impl SourceSpec {
+    /// Why this source may not run as configured: a listener that does not
+    /// authenticate its senders without the recorded risk acceptance, or
+    /// the acceptance on a source that does not need it (so the flag, and
+    /// the warning it carries, only ever marks a real exception).
+    pub fn authentication_problem(&self) -> Option<String> {
+        let accepted = self.unauthenticated == Some(Unauthenticated::Accepted);
+        match (authenticates_senders(&self.transport), accepted) {
+            (Some(false), false) => Some(format!(
+                "a {} source listens without authenticating its senders: {}, or accept \
+                 the risk with \"unauthenticated\": \"accepted\"",
+                self.transport.kind(),
+                match &self.transport {
+                    TransportConfig::Udp { .. } => "UDP cannot carry TLS",
+                    TransportConfig::GrpcServer { .. } => {
+                        "set tls with a client_ca_file (mutual TLS) or a bearer token"
+                    }
+                    _ => "set tls with a client_ca_file (mutual TLS)",
+                }
+            )),
+            (None, true) => Some(format!(
+                "\"unauthenticated\" is for listening sources; a {} source does not listen",
+                self.transport.kind()
+            )),
+            (Some(true), true) => {
+                Some("this source authenticates its senders; clear \"unauthenticated\"".to_owned())
+            }
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), SourceError> {
         if let Some(label) = &self.security {
             label.validate().map_err(SourceError::Tracker)?;
@@ -207,6 +283,10 @@ impl SourceSpec {
         | TransportConfig::TcpServer { framing, .. } = &self.transport
         {
             crate::frame::Framer::new(framing.clone())?;
+        }
+        // Last, so that a broken setting is reported before its security.
+        if let Some(e) = self.authentication_problem() {
+            return Err(SourceError::Unauthenticated(e));
         }
         Ok(())
     }
@@ -276,7 +356,7 @@ mod tests {
     fn spec(id: &str) -> serde_json::Value {
         json!({
             "id": id, "name": "Test",
-            "transport": { "type": "udp", "bind": "0.0.0.0:6969" },
+            "transport": { "type": "udp", "bind": "0.0.0.0:6969" }, "unauthenticated": "accepted",
             "pipeline": { "codec": { "type": "cot_xml" }, "mapping": { "rules": [
                 { "name": "event", "key": "event.@uid", "fields": {
                     "position.latitude": "event.point.@lat", "position.longitude": "event.point.@lon" } } ] } }
@@ -305,6 +385,87 @@ mod tests {
             let s: SourceSpec = serde_json::from_value(spec(bad)).unwrap();
             assert!(matches!(s.validate(), Err(SourceError::BadId(_))), "{bad}");
         }
+    }
+
+    #[test]
+    fn listeners_authenticate_senders_or_carry_the_acceptance() {
+        let with = |transport: serde_json::Value, flag: bool| {
+            let mut v = spec("feed");
+            v["transport"] = transport;
+            if !flag {
+                v.as_object_mut().unwrap().remove("unauthenticated");
+            }
+            check(v)
+        };
+        let udp = json!({"type": "udp", "bind": "0.0.0.0:6969"});
+        let e = with(udp.clone(), false).unwrap_err();
+        assert!(
+            e.contains("UDP cannot carry TLS") && e.contains("accepted"),
+            "{e}"
+        );
+        with(udp, true).unwrap();
+        // TLS alone lets anyone send; so does an optional client certificate.
+        let tls = json!({"cert_file": "s.pem", "key_file": "s.key"});
+        let tcp = |tls: serde_json::Value| json!({"type": "tcp_server", "bind": "0.0.0.0:8087", "tls": tls});
+        assert!(with(json!({"type": "tcp_server", "bind": "0.0.0.0:8087"}), false).is_err());
+        assert!(with(tcp(tls.clone()), false).is_err());
+        let mut optional = tls.clone();
+        optional["client_ca_file"] = json!("ca.pem");
+        optional["client_cert_optional"] = json!(true);
+        assert!(with(tcp(optional), false).is_err());
+        let mut mutual = tls.clone();
+        mutual["client_ca_file"] = json!("ca.pem");
+        with(tcp(mutual.clone()), false).unwrap();
+        // The acceptance only marks a real exception.
+        let e = with(tcp(mutual), true).unwrap_err();
+        assert!(e.contains("clear"), "{e}");
+        let e = with(
+            json!({"type": "tcp_client", "host": "feed", "port": 8087}),
+            true,
+        )
+        .unwrap_err();
+        assert!(e.contains("does not listen"), "{e}");
+        with(
+            json!({"type": "tcp_client", "host": "feed", "port": 8087}),
+            false,
+        )
+        .unwrap();
+        // The flag round-trips as written.
+        let s: SourceSpec = serde_json::from_value(spec("feed")).unwrap();
+        assert_eq!(s.unauthenticated, Some(Unauthenticated::Accepted));
+        assert_eq!(
+            serde_json::to_value(&s).unwrap()["unauthenticated"],
+            "accepted"
+        );
+        let mut v = spec("feed");
+        v["unauthenticated"] = json!(true);
+        assert!(
+            serde_json::from_value::<SourceSpec>(v).is_err(),
+            "only \"accepted\""
+        );
+    }
+
+    #[test]
+    fn a_grpc_server_authenticates_with_a_token_or_mutual_tls() {
+        let batch = "acme.tracks.v1.TrackBatch";
+        let e = check(grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            batch,
+        ))
+        .unwrap_err();
+        assert!(e.contains("bearer token"), "{e}");
+        let mut v = grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            batch,
+        );
+        v["unauthenticated"] = json!("accepted");
+        check(v).unwrap();
+        check(grpc_spec(
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051",
+                   "tls": {"cert_file": "s.pem", "key_file": "s.key", "client_ca_file": "ca.pem"}}),
+            batch,
+        ))
+        .unwrap();
     }
 
     /// A gRPC source over the test producer's schema (see `proto::tests`).
@@ -338,7 +499,7 @@ mod tests {
         ))
         .unwrap();
         check(grpc_spec(
-            json!({"type": "grpc_server", "bind": "0.0.0.0:50051"}),
+            json!({"type": "grpc_server", "bind": "0.0.0.0:50051", "token": "${env:ACME_TOKEN}"}),
             batch,
         ))
         .unwrap();

@@ -120,7 +120,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | An unauthorised device feeds false tracks to a listener | `tcp_server` and `grpc_server` take TLS with a client CA and CRLs; `grpc_server` a bearer token and a method allow-list | UDP and multicast have no authentication; TCP and gRPC listeners accept anyone unless configured | P-16 |
+| S | An unauthorised device feeds false tracks to a listener | A listener must authenticate its senders: `tcp_server` by TLS with a client CA (and CRLs), `grpc_server` by that or a bearer token (and a method allow-list). Otherwise it is refused, on save and at start, unless the source carries `"unauthenticated": "accepted"`, which the decision log records | UDP and multicast cannot authenticate; each such source, and any other accepted listener, is an exception the authorising official accepts | |
 | S | A client connects to an impostor feed | TLS with the system roots or a private CA, and an optional server name; client certificates | `insecure_skip_verify` exists (F-4, excluded by the hardening checklist) | |
 | T | Malformed or hostile input | Typed decoding; frame limit (4 MiB default); gRPC `max_message_kib`; malformed gRPC messages refused with INVALID_ARGUMENT; no `unsafe` in OpenTrack's code; pipeline reject stage | A feed that authenticates can still lie: correlation weighs it, a track manager can drop it | |
 | I | Feed credentials disclosed | Secrets masked for non-admins; `${env:NAME}` keeps them out of the database; source changes audited masked (#62) | Inline secrets are in the database and its backups | |
@@ -177,7 +177,6 @@ flowchart LR
 | I | Events carry no classification marking | | CoT events are unmarked | P-10 |
 | S | A client impersonates the server | Clients verify OpenTrack's certificate | | |
 | D | A slow client holds up the others | Per-client queue of 8,192 events; a client that falls behind is dropped and counted | | |
-| — | IPv6 multicast | | IPv4 only | P-19 |
 
 ## OpenTelemetry export
 
