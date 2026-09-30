@@ -1906,7 +1906,9 @@ impl Engine {
     async fn process_commands(&mut self) -> anyhow::Result<()> {
         for cmd in self.redis.pop_commands(20).await? {
             let id = cmd["id"].as_str().unwrap_or_default().to_owned();
-            let result = match self.command(&cmd).await {
+            // The decisions it records carry the operator's address.
+            let ip = cmd["ip"].as_str().unwrap_or_default().to_owned();
+            let result = match crate::auth::access::CLIENT_IP.scope(ip, self.command(&cmd)).await {
                 Ok(v) => json!({ "ok": true, "result": v }),
                 Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
             };

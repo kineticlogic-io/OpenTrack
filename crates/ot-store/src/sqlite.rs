@@ -534,13 +534,14 @@ pub fn record_decision(tx: &Transaction<'_>, d: &Decision, at_ms: i64) -> Result
         "before": d.before,
         "after": d.after,
     });
+    let ip = crate::audit::client();
     crate::audit::append(
         tx,
         at_ms,
         &d.actor,
         &d.op,
         true,
-        None,
+        ip.as_deref(),
         &detail.to_string(),
         Some(id),
     )?;

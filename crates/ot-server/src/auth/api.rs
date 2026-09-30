@@ -1510,6 +1510,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refusals_security_reads_token_use_and_decision_addresses_are_audited() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, admin) = sign_in(&app, "root@x.org", ROOT).await;
+        let admin = admin.unwrap();
+        let ops = |body: &Value| -> Vec<(String, String)> {
+            body["rows"]
+                .as_array()
+                .or_else(|| body["records"].as_array())
+                .or_else(|| body.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|r| (r["op"].as_str().unwrap_or("").to_owned(), r["outcome"].to_string()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // A viewer reaching for an admin's page.
+        let (st, v, _) = call(&app, "POST", "/api/v1/auth/users", Some(&admin),
+            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW }))).await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+        let (_, viewer) = sign_in(&app, "rv@x.org", VIEW).await;
+        let viewer = viewer.unwrap();
+        call(&app, "POST", "/api/v1/auth/password", Some(&viewer),
+            Some(json!({ "current": VIEW, "new": VIEW2 }))).await;
+        let (_, viewer) = sign_in(&app, "rv@x.org", VIEW2).await;
+        let viewer = viewer.unwrap();
+        let (st, ..) = call(&app, "GET", "/api/v1/auth/users", Some(&viewer), None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // A credential that identifies no one.
+        let (st, ..) = call(&app, "GET", "/api/v1/sources", Some("Bearer not-a-token"), None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        // A refused change: the same account twice.
+        let (st, ..) = call(&app, "POST", "/api/v1/auth/users", Some(&admin),
+            Some(json!({ "email": "rv@x.org", "role": "viewer", "password": VIEW }))).await;
+        assert!(st.is_client_error(), "{st}");
+        // An API token's use, audited once.
+        let (_, tok, _) = call(&app, "POST", "/api/v1/auth/api-tokens", Some(&admin),
+            Some(json!({ "name": "script" }))).await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        for _ in 0..3 {
+            let (st, ..) = call(&app, "GET", "/api/v1/sources", Some(&bearer), None).await;
+            assert_eq!(st, StatusCode::OK);
+        }
+        // An admin reading the accounts.
+        let (st, ..) = call(&app, "GET", "/api/v1/auth/users", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let got = ops(&body);
+        let has = |op: &str, outcome: &str| got.iter().filter(|(o, out)| o == op && out.contains(outcome)).count();
+        assert_eq!(has("access_denied", "failure"), 1, "{got:?}");
+        assert_eq!(has("access_refused", "failure"), 1, "{got:?}");
+        assert!(has("change_refused", "failure") >= 1, "{got:?}");
+        assert!(has("read_security_object", "success") >= 1, "{got:?}");
+        let token_uses = body.to_string().matches("api_token").count();
+        assert!(token_uses >= 1, "{body}");
+        assert_eq!(
+            got.iter().filter(|(o, _)| o == "login").count(),
+            // Three password sign-ins, and the token's first use.
+            4,
+            "{got:?}"
+        );
+        // A decision's audit copy carries the client address.
+        let by_admin = body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["op"] == "create_user" && r["actor"] == "root@x.org")
+            .unwrap();
+        assert!(by_admin["ip"].as_str().is_some_and(|ip| !ip.is_empty()), "{by_admin}");
+    }
+
+    #[tokio::test]
     async fn lockout_sessions_idle_timeout_and_the_audit_record() {
         let Some(app) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
