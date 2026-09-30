@@ -86,12 +86,12 @@ flowchart LR
 |---|---|---|---|---|
 | S | Password guessing, credential stuffing | Lockout after 3 failures in 15 minutes until an admin unlocks (`auth/stig.rs`); per-address rate limit, a burst of 5 then one a second (`auth/mod.rs`); PBKDF2-HMAC-SHA256, 600,000 iterations; 15-character, four-class policy | No check against a compromised-password list | P-15 |
 | S | Stolen session or token replayed | Server-side session record, idle timeout 15 minutes (admins 10), 24 h maximum, 3 per account, revocable (`auth/sessions.rs`); cookie `HttpOnly`, `SameSite=Strict`, `Secure` over TLS, ends with the browser; HSTS; API tokens signed with the session key (HS256), each with a stored record that expires and can be revoked, voided when the account is turned off or its password set | A token stolen from a script's host works until revoked or expired | |
-| T | Cross-site request forgery | `SameSite=Strict` session cookie; API tokens are headers; `frame-ancestors 'none'` and `X-Frame-Options: DENY` | No separate CSRF token: relies on SameSite, which every supported browser honours | |
-| T | Script injection into the UI | CSP: script from this origin only, no inline or evaluated script (`control.rs`, `CSP`); React escaping; no `dangerouslySetInnerHTML` ([coding-standards.md](coding-standards.md)) | Inline styles allowed (F-5) | P-25 |
+| T | Cross-site request forgery | `SameSite=Strict` session cookie; a change made with a cookie must carry the `X-OpenTrack-CSRF` header the page sends (another site's form can't set a header, and CORS is never allowed); any change whose `Origin` (or `Referer`) is another site is refused, sign-in included; SAML's consumer is the one cross-site post (`auth/csrf.rs`); API tokens are headers; `frame-ancestors 'none'` and `X-Frame-Options: DENY` | Behind a proxy that rewrites `Host` without `X-Forwarded-Host`, `OT_PUBLIC_URL` must name the public address or the page's changes are refused | P-31 |
+| T | Script injection into the UI | CSP: script from this origin only, no inline or evaluated script; styles from this origin or a `<style>` with the page's nonce, fresh on each load, so injected markup can't style the page either (`control.rs`, `CSP`, `page_csp`); React escaping; no `dangerouslySetInnerHTML` ([coding-standards.md](coding-standards.md)) | | P-25 |
 | R | A user denies a change | Every change is a decision with its actor; the audit record is append-only and hash-chained (`ot-store/src/audit.rs`), exported as `audit.record` to the SIEM | Refused requests, reads of security objects, sign-ins by certificate, token and OpenStare, and the client address on decisions are not audited | P-01, P-02, P-03 |
 | I | Data read beyond a user's role | Every `/api/v1` route has a role (`auth/policy.rs`, tested); unlisted changes need an admin; source secrets masked for non-admins (`ot_core::secrets`); server errors answer with a reference only (`ApiError`); status detail for admins only | Viewers see the whole picture: OpenTrack does not filter by clearance (AC-16, by design); outputs carry no classification markings | P-10 |
-| D | Request floods, large bodies | Body limits (axum default; explicit ones for imports, plugins, sheets); sign-in rate limit | No general per-client rate limit on the API; a proxy or the platform provides it | |
-| E | A user raises their own role | Roles only changed by admins; SAML gives at most `track_manager` unless **Allow admin**; SAML never takes a local account; `OT_AUTH=off` makes everyone admin but is excluded by the hardening checklist (F-4) | Administration shares the user listener | P-18 |
+| D | Request floods, large bodies | Body limits (axum default; explicit ones for imports, plugins, sheets); a rate limit per client on the whole API, 20 requests a second with bursts of 100, per account, API token or address, answered 429 with `Retry-After` and audited once a minute (`auth/rate.rs`); sign-in's own stricter limit | Volumetric floods and many addresses at once are the platform's (a proxy, the network) | P-31 |
+| E | A user raises their own role | Roles only changed by admins; SAML gives at most `track_manager` unless **Allow admin**; SAML never takes a local account; `OT_AUTH=off` makes everyone admin but is excluded by the hardening checklist (F-4) | Administration shares the user listener unless `OT_ADMIN_BIND` puts it on its own (the main one then answers admin routes 404) | P-18 |
 
 ## SAML assertion consumer
 
@@ -111,7 +111,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; CRLs (`OT_TLS_CLIENT_CRL`) fail closed on unknown status or a stale list, reloaded on change; only mapped CNs sign in, to active accounts | No OCSP; certificate sign-ins are not audited | P-26, P-02 |
+| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; OCSP (AIA or `OT_TLS_CLIENT_OCSP_URL`), answers signed by the CA or its delegated responder, then CRLs (`OT_TLS_CLIENT_CRL`, reloaded on change); refused with neither, on a stale list or unknown status; only mapped CNs sign in, to active accounts | OCSP usually travels over plain HTTP, so it relies on the response signature; the nonce is optional (a responder may omit it), so a replayed answer is bounded only by its nextUpdate (or an hour); certificate sign-ins are not audited | P-26, P-02 |
 | S | OpenStare's answer is spoofed | Off by default; OpenTrack asks OpenStare's `/api/auth/me` itself; roles only by the mapping (unlisted roles refused) | Default API URL is plain HTTP on loopback; over a network it must be HTTPS. A compromised OpenStare signs users in here up to the mapped role, for up to 30 s after a revocation | P-02 |
 
 ## Source transports
@@ -120,7 +120,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | An unauthorised device feeds false tracks to a listener | `tcp_server` and `grpc_server` take TLS with a client CA and CRLs; `grpc_server` a bearer token and a method allow-list | UDP and multicast have no authentication; TCP and gRPC listeners accept anyone unless configured | P-16 |
+| S | An unauthorised device feeds false tracks to a listener | A listener must authenticate its senders: `tcp_server` by TLS with a client CA (and CRLs), `grpc_server` by that or a bearer token (and a method allow-list). Otherwise it is refused, on save and at start, unless the source carries `"unauthenticated": "accepted"`, which the decision log records | UDP and multicast cannot authenticate; each such source, and any other accepted listener, is an exception the authorising official accepts | |
 | S | A client connects to an impostor feed | TLS with the system roots or a private CA, and an optional server name; client certificates | `insecure_skip_verify` exists (F-4, excluded by the hardening checklist) | |
 | T | Malformed or hostile input | Typed decoding; frame limit (4 MiB default); gRPC `max_message_kib`; malformed gRPC messages refused with INVALID_ARGUMENT; no `unsafe` in OpenTrack's code; pipeline reject stage | A feed that authenticates can still lie: correlation weighs it, a track manager can drop it | |
 | I | Feed credentials disclosed | Secrets masked for non-admins; `${env:NAME}` keeps them out of the database; source changes audited masked (#62) | Inline secrets are in the database and its backups | |
@@ -136,7 +136,7 @@ flowchart LR
 |---|---|---|---|---|
 | T | A malicious or buggy WebAssembly plugin reads files, calls out or exhausts the host | wasmtime sandbox; WASI grants: no directories, network or environment unless granted; memory ceiling (256 MB default); call timeout by epoch interruption (5 s default), the instance discarded after; one instance per stream | wasmtime is a large dependency; a sandbox escape there would be a host compromise | |
 | T | A replaced plugin file | Only admins add or replace; each change is in the decision log with the component's SHA-256; loaded before it is stored | | |
-| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout | JSON lines with no TLS or authentication; the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | |
+| S, I, T | An external plugin impersonated or its traffic read | Only admins add one; call timeout; on every connection OpenTrack and the plugin prove they hold a shared secret (HMAC-SHA256 challenge and response each way, role-labelled so a reflected challenge fails); one that fails is refused, logged and audited; without a secret only a Unix socket under the data directory is reached | JSON lines with no TLS: after the handshake traffic can be read or changed on the way; the secret is stored in the database (OpenTrack must answer with it); the process is not sandboxed. Keep external plugins on the same host (loopback or a Unix socket) | P-28 |
 
 ## Redis
 
@@ -162,9 +162,10 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | A rogue node sends reports or decisions (merges, deletes) | Messages from site codes not in **Trusted nodes** are dropped and counted; the networking package must prove the sender (keys, certificates, radio crypto) | OpenTrack trusts the site code the package gives it; anyone who can publish on `<prefix>.in.*` on the local NATS can claim a trusted site. Restrict those subjects to the package | |
-| T | Replayed or reordered decisions | HLC ordering, global decision ids (duplicates harmless), anti-entropy repair | | |
-| I | The picture read on the link | The package's encryption | `opentrack bridge` takes only NATS URLs: no CA, client certificate or `.creds` options | |
+| S | A rogue node sends reports or decisions (merges, deletes), claiming a trusted site | Every message is signed with the sender's Ed25519 key; a message is accepted only from a site in **Trusted nodes** with a key an admin pinned, and only if the signature verifies. Refusals are counted and logged; a failing signature from a trusted site is audited (`sync_signature_refused`). Pinning a key is an admin's decision, audited | A captured node's key signs as that node until an admin removes its key everywhere. A trusted node can relay (so could invent) decisions under another trusted site's id: entries are not signed one by one, but any node may decide anyway | |
+| T | Tampered, replayed or reordered messages | The signature covers envelope and body; a message whose clock is more than 5 minutes off is refused, and an accepted signature is refused again for 10 minutes; HLC ordering, global decision ids (duplicates harmless), anti-entropy repair | Nodes' clocks must agree to within 5 minutes | |
+| D | A flood of forged messages | Refused before decoding the body; logs and audit rate-limited to once a minute per site | Verification costs CPU and refused messages still use the link; keep strangers off it (the package) | |
+| I | The picture read on the link | The package's encryption; `opentrack bridge` connects to each node's NATS over TLS (FIPS provider) with a CA, a client certificate (mutual TLS) and `.creds`, user and password or token, per node if they differ; secrets from files or the environment, never logged | Beyond the NATS servers, the link is only as private as the package or the bridge's TLS; a bridge run without `tls://` or a CA sends in the clear | |
 | E | Users of an unattended node (a drone) change the shared picture | **Receive only** accepts no track management from the node's own users | | |
 
 ## TAK output
@@ -177,7 +178,6 @@ flowchart LR
 | I | Events carry no classification marking | | CoT events are unmarked | P-10 |
 | S | A client impersonates the server | Clients verify OpenTrack's certificate | | |
 | D | A slow client holds up the others | Per-client queue of 8,192 events; a client that falls behind is dropped and counted | | |
-| — | IPv6 multicast | | IPv4 only | P-19 |
 
 ## OpenTelemetry export
 

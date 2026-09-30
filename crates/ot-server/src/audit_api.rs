@@ -1,5 +1,6 @@
 //! The audit record over the API (admins): rows by time, actor, operation
-//! and outcome, as JSON or CSV, and a check of its hash chain.
+//! and outcome, as JSON or CSV (marked on its first line, see
+//! `crate::marking`), and a check of its hash chain.
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
@@ -86,8 +87,13 @@ async fn list(
             Ok(rows)
         })
         .await?;
-    let mut w = csv::Writer::from_writer(Vec::new());
+    // Marked with the banner's text: audit rows carry no labels.
+    let marking = crate::marking::Marker::load(&s).await?.file([]);
+    let mut w = csv::WriterBuilder::new()
+        .flexible(true)
+        .from_writer(Vec::new());
     let err = |e: csv::Error| ApiError::internal(e.to_string());
+    w.write_record([&marking]).map_err(err)?;
     w.write_record([
         "seq",
         "time",

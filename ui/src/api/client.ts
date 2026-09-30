@@ -121,6 +121,8 @@ export interface SystemTrack {
 export interface TrackResponse {
   /** Probability that the track is a real object (its sources' existence and pairing confidences). */
   confidence?: number
+  /** The track's security label as a portion marking, e.g. `(S//REL TO USA, GBR)`; absent when it has none. */
+  marking?: string | null
   track: SystemTrack
   /** The `opentrack.track.v2` message as published. */
   message: TrackMessage
@@ -290,6 +292,8 @@ export interface TrackRow {
   state: SystemTrack['state']
   class: string
   gold_name: string
+  /** The track's security label as a portion marking; null when it has none. */
+  marking?: string | null
   domain: string
   affiliation: string
   force_code: number
@@ -383,11 +387,26 @@ export class ApiError extends Error {
 /** Who the API records as the acting operator until authentication exists. */
 const ACTOR = 'op:ui'
 
+/**
+ * Every API request says it comes from OpenTrack's own page. The server refuses a change made with
+ * the session cookie that lacks it (cross-site request forgery): another site's form or script
+ * cannot set it.
+ */
+export const CSRF_HEADER = 'x-opentrack-csrf'
+
+/** `init` with the CSRF header added. */
+export function withCsrf(input: RequestInfo | URL, init: RequestInit | undefined): RequestInit {
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  headers.set(CSRF_HEADER, '1')
+  return { ...init, headers }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     headers: {
       'x-opentrack-actor': ACTOR,
+      [CSRF_HEADER]: '1',
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -539,6 +558,23 @@ export interface SyncStatus {
   engine?: { at: string; reporting: number; shared: number; from_other_nodes: number } | null
 }
 
+/** A peer's public key, pinned by an admin: sync messages from its site must verify with it. */
+export interface PinnedKey {
+  site: string
+  public_key: string
+  fingerprint: string | null
+  pinned_by: string
+  pinned_at: string | null
+}
+
+/** This node's public key (sync messages it sends are signed with it) and the keys pinned for peers. */
+export interface SyncKeys {
+  site: string
+  public_key: string
+  fingerprint: string
+  peers: PinnedKey[]
+}
+
 // --- Sign-in ---------------------------------------------------------------------------------
 
 export const ROLES = ['viewer', 'track_manager', 'admin'] as const
@@ -564,6 +600,8 @@ export interface Me {
   session?: string
   /** The previous good sign-in and the failed ones since, as they stood at this sign-in. */
   last_login?: { previous_at_ms: number | null; failed_attempts: number }
+  /** False when this address does not serve the admin routes: with OT_ADMIN_BIND they are only on the admin listener. */
+  admin_api?: boolean
 }
 
 /** What the sign-in page offers. */
@@ -748,6 +786,8 @@ export interface PluginInfo {
   sha256?: string | null
   size?: number | null
   address?: string | null
+  /** An external plugin: whether it has a secret (the secret is never returned). */
+  secret_set?: boolean
   grants?: PluginGrants
   updated_at_ms?: number
   used_by: { source?: string; name?: string; as: PluginKind; enabled?: boolean; correlation?: boolean }[]
@@ -798,6 +838,8 @@ export interface SourceSpec {
   confirm_after?: number
   /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
   security?: SecurityLabel
+  /** A listener that does not authenticate its senders runs only with this risk acceptance recorded (UDP always needs it). */
+  unauthenticated?: 'accepted'
   /** For a source reporting lines of bearing: how the emitters it hears may move (unset: 0.1 m/s², 30 m/s). */
   emitter_motion?: EmitterMotion
 }
@@ -824,6 +866,8 @@ export interface SourceStatus {
   transport: string
   link: LinkStatus
   last_error: string | null
+  /** Set when the worker refuses to start the source, saying why (e.g. a listener without sender authentication). */
+  not_started?: string
   totals_since_start: Record<string, number>
   /** The windows a tracker with auto timing chose from the sensor's revisit rate. */
   tracker_timing?: {
@@ -1081,6 +1125,9 @@ export const api = {
     return parsed as ServerStatus
   },
   syncStatus: () => get<SyncStatus>('/sync/status'),
+  syncKeys: () => get<SyncKeys>('/sync/keys'),
+  pinSyncKey: (site: string, publicKey: string) => request<SyncKeys>('PUT', `/sync/keys/${enc(site)}`, { public_key: publicKey }),
+  removeSyncKey: (site: string) => request<SyncKeys>('DELETE', `/sync/keys/${enc(site)}`),
   takStatus: () => get<TakStatus>('/tak/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
@@ -1135,7 +1182,7 @@ export const api = {
   addPluginWasm: async (file: File, replace = false): Promise<PluginInfo> => {
     const res = await fetch(`/api/v1/plugins${replace ? '?replace=true' : ''}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/wasm' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/wasm' },
       body: file,
     })
     const text = await res.text()
@@ -1143,9 +1190,11 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText)
     return parsed as PluginInfo
   },
-  addPluginExternal: (address: string, replace = false) =>
-    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address }),
-  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants }) =>
+  addPluginExternal: (address: string, secret: string, replace = false) =>
+    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address, ...(secret ? { secret } : {}) }),
+  /** A new external-plugin secret from the server's FIPS DRBG; not stored, shown once. */
+  newPluginSecret: () => request<{ secret: string }>('POST', '/plugins/secret'),
+  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants; secret?: string }) =>
     request<PluginInfo>('PUT', `/plugins/${enc(name)}`, body),
   deletePlugin: (name: string, force = false) => request<unknown>('DELETE', `/plugins/${enc(name)}${force ? '?force=true' : ''}`),
   checkPlugin: (name: string) => request<PluginCheck>('POST', `/plugins/${enc(name)}/check`),
@@ -1208,7 +1257,7 @@ export const api = {
   importConfig: async (file: File): Promise<ConfigImported> => {
     const res = await fetch('/api/v1/import/config', {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/json' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/json' },
       body: file,
     })
     const text = await res.text()
@@ -1242,7 +1291,7 @@ export const api = {
     const format = file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx'
     const res = await fetch(`/api/v1/registry/import-sheet?format=${format}&apply=${apply}&label=${enc(file.name)}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1' },
       body: file,
     })
     const parsed = JSON.parse((await res.text()) || '{}')

@@ -2,8 +2,10 @@
 //! `OT_TLS_CLIENT_CA`, clients may also present a certificate that CA
 //! signed; its common name then signs the caller in as the account the
 //! security settings map it to (browsers, without one, sign in as usual).
+//! The handshake checks the certificate's path; its revocation status
+//! (OCSP, else the CRLs) is checked right after, before any request.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -15,34 +17,27 @@ use tokio::net::TcpListener;
 use tower::ServiceExt;
 
 use crate::auth::PeerCert;
+use crate::cert_status::CertStatus;
 
-/// The TLS acceptor new connections use; replaced when the client CRLs
-/// change, without dropping connections already made.
+/// The TLS acceptor new connections use.
 #[derive(Clone)]
-pub struct Acceptor(Arc<RwLock<tokio_rustls::TlsAcceptor>>);
+pub struct Acceptor(tokio_rustls::TlsAcceptor);
 
 impl Acceptor {
     pub fn new(a: tokio_rustls::TlsAcceptor) -> Self {
-        Self(Arc::new(RwLock::new(a)))
+        Self(a)
     }
 
     fn current(&self) -> tokio_rustls::TlsAcceptor {
-        self.0
-            .read()
-            .map_or_else(|e| e.into_inner().clone(), |a| a.clone())
-    }
-
-    fn set(&self, a: tokio_rustls::TlsAcceptor) {
-        match self.0.write() {
-            Ok(mut g) => *g = a,
-            Err(e) => *e.into_inner() = a,
-        }
+        self.0.clone()
     }
 }
 
-/// Rebuild the acceptor whenever a client CRL file changes (checked each
-/// minute). A list that fails to load leaves the previous one in force.
-pub async fn reload_on_crl_change(tls: ot_source::tls::ServerTls, acceptor: Acceptor) {
+/// Reload the client revocation lists whenever a file changes (checked each
+/// minute). They live in the status check after the handshake, not in the
+/// acceptor (see [`CertStatus`]). A list that fails to load leaves the
+/// previous one in force.
+pub async fn reload_on_crl_change(tls: ot_source::tls::ServerTls, status: Arc<CertStatus>) {
     let mut stamp = tls.crl_stamp();
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     tick.tick().await;
@@ -52,9 +47,9 @@ pub async fn reload_on_crl_change(tls: ot_source::tls::ServerTls, acceptor: Acce
         if now == stamp {
             continue;
         }
-        match tls.acceptor() {
-            Ok(a) => {
-                acceptor.set(a);
+        match tls.client_crl_verifier() {
+            Ok(v) => {
+                status.set_crls(v);
                 stamp = now;
                 tracing::info!("client certificate revocation lists reloaded");
             }
@@ -73,6 +68,7 @@ pub async fn serve(
     listener: TcpListener,
     app: Router,
     acceptor: Acceptor,
+    cert_status: Option<Arc<CertStatus>>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
     tokio::pin!(shutdown);
@@ -89,6 +85,7 @@ pub async fn serve(
             () = &mut shutdown => return Ok(()),
         };
         let (acceptor, app) = (acceptor.current(), app.clone());
+        let cert_status = cert_status.clone();
         tokio::spawn(async move {
             let tls =
                 match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await {
@@ -105,6 +102,15 @@ pub async fn serve(
                     }
                     Err(_) => return,
                 };
+            // A client certificate's status (OCSP, else the CRLs), before
+            // any request is served; see cert_status.
+            if let Some(status) = &cert_status
+                && let Some(chain) = tls.get_ref().1.peer_certificates()
+                && let Err(e) = status.check(chain, peer).await
+            {
+                tracing::warn!(%peer, error = %e, "client certificate refused");
+                return;
+            }
             let cert = tls
                 .get_ref()
                 .1

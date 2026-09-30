@@ -1,7 +1,7 @@
 # OpenTrack administrator guide
 
 For the people who install, configure, secure and keep OpenTrack running. The people who work on
-the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.4**.
+the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.5**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI and other documents can link to
 it (in the app: `#help/admin/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses:
@@ -205,7 +205,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 | `writer` | The writer. Several may run; give each its own `OT_WRITER_CONSUMER`. |
 | `cot` | The TAK output: the published tracks as Cursor-on-Target to the outputs Settings → TAK output configures ([TAK output](#tak-output)). Idle until one is on. Run one per Redis namespace. |
 | `link` | This node's side of the link to other nodes ([Multi-node](#multi-node)). |
-| `bridge` | Carries sync messages between nodes' NATS servers, for server sites with no networking package of their own: `opentrack bridge --node nats://a:4222 --node nats://b:4222`. It can also drop, delay, duplicate, cap and partition messages, for tests (`--loss`, `--delay-ms`, `--jitter-ms`, `--duplicate`, `--rate-kbps`, `--partition`). |
+| `bridge` | Carries sync messages between nodes' NATS servers, for server sites with no networking package of their own: `opentrack bridge --node nats://a:4222 --node nats://b:4222`. It can also drop, delay, duplicate, cap and partition messages, for tests (`--loss`, `--delay-ms`, `--jitter-ms`, `--duplicate`, `--rate-kbps`, `--partition`). TLS and credentials: `--nats-*` / `OT_BRIDGE_NATS_*` ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)). |
 | `all` | `serve`, `sources`, `engine`, `writer`, `cot` and `link` in one process. It migrates the database once before they start. |
 
 ### Other commands
@@ -219,15 +219,16 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 
 ### Plugin commands
 
-- `opentrack plugin check <file.wasm | address> [--grants '<json>']` loads a plugin, opens each
+- `opentrack plugin check <file.wasm | address> [--grants '<json>'] [--secret-file <path>]` loads a plugin, opens each
   kind it provides with its default options, and prints its manifest and what worked. It changes
   nothing and exits non-zero when something failed.
-- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--replace]` adds it, as
+- `opentrack plugin add <file.wasm | address> [--grants '<json>'] [--secret-file <path>] [--replace]` adds it, as
   Settings → General → Plugins does. `--replace` installs a new build of a plugin that is already added.
 - `opentrack plugin list` lists the plugins added and whether each is enabled.
 
 An address is `host:port`, `tcp://host:port` or `unix:/path`. Grants are JSON, for example
-`'{"memory_mb": 512}'`. See [Plugins](#plugins).
+`'{"memory_mb": 512}'`. An external plugin's secret comes from `--secret-file` or
+`OT_PLUGIN_SECRET`, never the command line. See [Plugins](#plugins).
 
 ### User commands
 
@@ -298,11 +299,12 @@ For `serve` (and `all`).
 | Variable | Default | |
 |---|---|---|
 | `OT_BIND` | `0.0.0.0:8090` | Address the API and UI listen on. |
+| `OT_ADMIN_BIND` | | A second address, for administration only: the admin routes are served there and nowhere else ([Admin listener](#admin-listener)). |
 | `OT_UI_DIR` | `ui/dist` | The built UI, served at `/`. Skipped when it has no `index.html`. |
 | `OT_AUTH` | `on` | `off` turns sign-in off: every caller is an admin. Development only ([Sign-in turned off](#sign-in-turned-off)). |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | The first admin account, made only while there are no accounts ([First admin](#first-admin)). |
 | `OT_SESSION_SECRET` | `session.key` beside the database | The key sessions and API tokens are signed with, at least 32 characters. Unset, one is made on first start and kept in `session.key`. Changing it signs everyone out and voids every API token. |
-| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. An `https://` address also marks cookies `Secure` and sends HSTS. |
+| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. An `https://` address also marks cookies `Secure` and sends HSTS. Behind a proxy that rewrites `Host` and sends no `X-Forwarded-Host`, set it so the page's changes pass the cross-site check ([Security](#security)). |
 | `OT_PUBLIC_TLS` | off | `1`: a proxy in front of OpenTrack ends TLS, so cookies are `Secure` and HSTS is sent. |
 
 ### TLS
@@ -315,7 +317,27 @@ marked `Secure`.
 | `OT_TLS_CERT` | The server certificate (PEM, with its chain). Needs `OT_TLS_KEY`. |
 | `OT_TLS_KEY` | Its private key (PEM). |
 | `OT_TLS_CLIENT_CA` | Accept client certificates this CA (PEM) signed, as the accounts [Client certificates](#client-certificates) maps them to. A client certificate is optional: browsers without one still sign in with a password or single sign-on. |
-| `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. A revoked certificate, one no list covers, or one whose issuer's list is past its next update is refused. Reloaded within a minute of a change. |
+| `OT_TLS_CLIENT_CRL` | Certificate revocation lists for client certificates: PEM or DER files, or directories of them, comma separated. Used when OCSP gives no answer: a revoked certificate, one no list covers, or one whose issuer's list is past its next update is then refused. Reloaded within a minute of a change. |
+| `OT_TLS_CLIENT_OCSP_URL` | The OCSP responder (`http://` or `https://`) to ask about every client certificate, instead of the one each certificate names in its authority information access extension. Needs `OT_TLS_CLIENT_CA`. See [Client certificates](#client-certificates). |
+| `OT_ADMIN_TLS_CERT`, `OT_ADMIN_TLS_KEY` | The [admin listener](#admin-listener)'s own certificate and key, together. Unset: it uses `OT_TLS_CERT` and `OT_TLS_KEY`. |
+| `OT_ADMIN_TLS_CLIENT_CA` | The admin listener's own client CA. Unset: `OT_TLS_CLIENT_CA`. The revocation lists (`OT_TLS_CLIENT_CRL`) apply to both listeners. |
+
+#### Admin listener
+
+With `OT_ADMIN_BIND` (for example `10.20.0.5:8091`, an address on the management network, or
+`127.0.0.1:8091`), OpenTrack listens there as well as on `OT_BIND`. Every admin route (accounts,
+tokens, security and sign-in settings, sources, settings, plugins, configuration export and
+import, the audit record, and every other change that needs the admin role) is served **only** on
+the admin listener. On `OT_BIND` an admin asking for one gets `404` ("not served on this
+address"): that listener has no admin interface. Everyone else is refused there as anywhere
+(`401` without a sign-in, `403` without the role). The admin listener serves the whole UI and API
+with the same sign-in; on the main one the UI hides the admin areas (`/auth/me` says
+`admin_api: false`).
+
+It takes the main listener's TLS unless `OT_ADMIN_TLS_*` set its own. `OT_ADMIN_BIND` can't be
+`OT_BIND`, and `OT_ADMIN_TLS_*` need it; OpenTrack refuses to start otherwise. Publish the port
+only to the management network, and firewall it ([hardening](../security/hardening.md)). Unset,
+nothing changes. `opentrack health` still checks `OT_BIND`.
 
 TLS for feeds is set per source, in the source's transport (see the README, "Sources and
 pipelines").
@@ -449,16 +471,18 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 
 | Service | Protocol | Direction | Default | Purpose | TLS and authentication |
 |---|---|---|---|---|---|
-| Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA` and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| Control plane | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_BIND`, `0.0.0.0:8090` | The web UI, the REST API (`/api/v1`), the SAML assertion consumer, `/healthz` | `OT_TLS_CERT`/`OT_TLS_KEY`, or a TLS proxy (`OT_PUBLIC_TLS`); client certificates with `OT_TLS_CLIENT_CA`, checked by OCSP and `OT_TLS_CLIENT_CRL`. Sign-in: session, API token, client certificate or OpenStare ([Sign-in](#sign-in)) |
+| OCSP responder | TCP, HTTP (or HTTPS) | Outbound | The client certificate's authority information access URL, or `OT_TLS_CLIENT_OCSP_URL` | The revocation status of a client certificate presented to the control plane (with `OT_TLS_CLIENT_CA`) | OCSP requests and responses (RFC 6960); answers are signed by the CA or its delegated responder, so plain HTTP is usual. 5 s limit, no redirects |
+| Admin listener | TCP; HTTP/1.1 and HTTP/2, HTTPS with a certificate | Inbound | `OT_ADMIN_BIND`, none | The admin API routes, and the web UI and the rest of the API ([Admin listener](#admin-listener)); only here while it is set | As the control plane, or `OT_ADMIN_TLS_CERT`/`OT_ADMIN_TLS_KEY` and `OT_ADMIN_TLS_CLIENT_CA`; the same sign-in |
 | Redis | TCP, RESP | Outbound | `redis://127.0.0.1:6379` | Observation streams, the live picture, the outbox, commands between roles | `rediss://`, `OT_REDIS_CA`, mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY`; a password in the URL |
 | NATS | TCP, NATS | Outbound | `nats://127.0.0.1:4222` | Tracks (`tracks.>`, JetStream), contacts (`contacts.>`) and raw output (`opentrack.raw.<source>`); the multi-node sync boundary (`<OT_SYNC_PREFIX>.out.*` and `.in.*`, prefix `ot.sync`) | `tls://`, `OT_NATS_CA`, mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY`; `.creds`, a token, or a user and password |
 | OpenTelemetry | TCP; OTLP over gRPC (4317) or HTTP (4318) | Outbound | Off | Logs (the audit record included), traces and metrics to the collector ([OpenTelemetry](#opentelemetry)) | `https://` endpoint, `OTEL_EXPORTER_OTLP_CERTIFICATE`, mutual TLS, headers |
 | TAK Server output | TCP, CoT XML | Outbound | None configured | Tracks to a TAK Server's streaming input ([TAK output](#tak-output)) | TLS (8089) with a client certificate; 8087 is plaintext |
-| TAK multicast output | UDP, CoT XML | Outbound | Group `239.2.3.1`, port `6969`, TTL 1 | Tracks to ATAK and WinTAK on the network | None: always plaintext |
+| TAK multicast output | UDP, CoT XML, IPv4 or IPv6 | Outbound | Group `239.2.3.1`, port `6969`, TTL 1 (IPv6: hop limit) | Tracks to ATAK and WinTAK on the network | None: always plaintext |
 | TAK listening output | TCP, CoT XML | Inbound | None configured (**Listen on**, such as `0.0.0.0:8089`) | ATAK and WinTAK connect as to a TAK Server | TLS, with an optional client CA and revocation lists |
-| Source `tcp_server` | TCP | Inbound | None: the source's `bind` | A feed that connects to OpenTrack | TLS; mutual TLS with `client_ca_file` and revocation lists |
-| Source `udp` | UDP, optionally joining an IPv4 multicast group | Inbound | None: the source's `bind` | A feed sent as datagrams | None |
-| Source `grpc_server` | TCP, gRPC over HTTP/2 | Inbound | None: the source's `bind` | Producers' gRPC calls ([docs/protobuf-grpc.md](../protobuf-grpc.md)) | TLS; mutual TLS with `client_ca_file`; a bearer `token` |
+| Source `tcp_server` | TCP | Inbound | None: the source's `bind` | A feed that connects to OpenTrack | TLS; mutual TLS with `client_ca_file` and revocation lists. Required, or the source's `unauthenticated: accepted` risk acceptance |
+| Source `udp` | UDP, optionally joining an IPv4 or IPv6 multicast group | Inbound | None: the source's `bind` | A feed sent as datagrams | None: runs only with the source's `unauthenticated: accepted` risk acceptance |
+| Source `grpc_server` | TCP, gRPC over HTTP/2 | Inbound | None: the source's `bind` | Producers' gRPC calls ([docs/protobuf-grpc.md](../protobuf-grpc.md)) | TLS; mutual TLS with `client_ca_file`; a bearer `token`. One of the two is required, or the source's `unauthenticated: accepted` risk acceptance |
 | Source `tcp_client` | TCP | Outbound | None: the source's `host` and `port` | A feed OpenTrack connects to | TLS, client certificate |
 | Source `http_poll` | TCP, HTTP or HTTPS | Outbound | None: the source's `url` | A polled feed | `https://`, CA, client certificate; headers (such as a token) |
 | Source `websocket` | TCP, WebSocket (`ws://`, `wss://`) | Outbound | None: the source's `url` | A streamed feed | `wss://`, CA, client certificate; headers |
@@ -468,10 +492,10 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | SAML identity provider | HTTPS, through the browser | None from the server: browsers go to the identity provider and post back to the control plane | Off | Single sign-on ([SAML](#saml)) | The identity provider's signature on the response |
 | OpenStare sign-in check | TCP, HTTP or HTTPS | Outbound | Off (API URL `http://127.0.0.1:3001`) | Asks OpenStare's `/api/auth/me` who a session or token is ([OpenStare sign-in](#openstare-sign-in)) | `https://` when the API URL is; the user's own OpenStare cookie or token |
 | Basemap tiles | TCP, HTTP or HTTPS | Outbound | Off | Map tiles, fetched for the browsers ([Basemap tiles](#basemap-tiles)) | An `https://` URL; a key in the query if the tile server takes one |
-| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | None: keep them on the same host (loopback or a Unix socket) |
+| External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | Mutual HMAC-SHA256 challenge and response with a shared secret on every connection (none needed on a Unix socket under the data directory); no TLS: keep them on the same host or a trusted network |
 | WebAssembly plugins | Whatever the plugin opens | Outbound | No network | Only the `host:port` addresses in the plugin's **network** grant | The plugin's own |
-| Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | NATS's; the networking package proves the sender ([docs/sync-icd.md](../sync-icd.md)) |
-| `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | Only what the NATS URL carries (`tls://`, credentials in the URL); no CA, client certificate or `.creds` options |
+| Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | Every message signed with the sender's Ed25519 key and checked against the key pinned for it; stale and replayed messages refused ([Signed sync messages](#signed-sync-messages), [docs/sync-icd.md](../sync-icd.md)) |
+| `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | TLS (`tls://`, `OT_BRIDGE_NATS_CA`), mutual TLS (`OT_BRIDGE_NATS_CERT`/`OT_BRIDGE_NATS_KEY`), `.creds`, user and password or token, per node if they differ ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)) |
 
 `opentrack health`, the image's health check, connects to `OT_BIND` on the same host. The
 command-line tools open the database directly and use no port.
@@ -485,6 +509,7 @@ The directory that holds the database (`data/` from source, `/data` in Docker):
 | `opentrack.db` | The SQLite database: sources and their revisions, the output schema, the registry and its revisions, correlation and instance settings, sign-in settings, accounts, API token records, plugins (WebAssembly files included), groups, correlation suggestions, the decision log, the track graph and the UID sequence. |
 | `opentrack.db-wal`, `opentrack.db-shm` | SQLite's write-ahead log and its index, while the database is open. They are part of the database: never delete them while OpenTrack runs, and never copy the `.db` file alone while it runs ([SQLite backup](#sqlite-backup)). |
 | `session.key` | The key sessions and API tokens are signed with, when `OT_SESSION_SECRET` is not set. Readable by its owner only. Lose it and everyone is signed out, and every API token stops working. |
+| `sync.key` | This node's Ed25519 key for signing sync messages (PKCS #8, base64), made on first start. Readable by its owner only. Lose it and the node makes a new one, which every other node must pin ([Signed sync messages](#signed-sync-messages)). |
 | `initial-admin.txt` | The first admin's made-up password, when no `OT_ADMIN_*` was given ([First admin](#first-admin)). Delete it once you've changed that password. |
 | `profiles/trackers/` | Tracker profiles imported or saved in the UI. |
 
@@ -723,9 +748,41 @@ With mutual TLS, a machine can sign in with its certificate alone.
    account's email. Save.
 
 A certificate the CA signed whose CN is listed signs in as that account, while the account is
-active. With `OT_TLS_CLIENT_CRL`, revoked certificates are refused; keep the lists current (a list
-past its next update refuses every certificate its CA issued), for example with a daily job that
-downloads your CA's CRLs into the directory. Refusals are logged as `client certificate refused`. Other callers can still use passwords and tokens.
+active. Other callers can still use passwords and tokens.
+
+**Revocation.** Every client certificate presented is checked for revocation right after the TLS
+handshake, before any request is served:
+
+1. **OCSP.** The server asks the certificate's OCSP responder: the URL in its authority
+   information access extension, or `OT_TLS_CLIENT_OCSP_URL` for every certificate (an internal
+   responder, or one reached through a firewall rule; see
+   [Ports, protocols and services](#ports-protocols-and-services)). The answer counts only if it
+   is signed by the issuing CA, or by a responder certificate that CA issued directly with the
+   OCSP Signing extended key usage (valid now); names this certificate; carries the request's
+   nonce, if it carries one; and is current (thisUpdate not in the future and nextUpdate not
+   past, allowing 5 minutes of clock skew; an answer without a nextUpdate must be under an hour
+   old). **Good** lets the certificate in; **revoked** refuses it. Both are remembered until the
+   answer's nextUpdate, at most an hour (5 minutes without one), for up to 10,000 certificates,
+   and a browser's parallel connections share one query.
+2. **Revocation lists.** With no usable OCSP answer, `OT_TLS_CLIENT_CRL` decides: the certificate
+   names no responder, the responder can't be reached within 5 seconds or answers with an HTTP
+   error (it is then left alone for 30 seconds), or its answer is unusable (unsigned, for another
+   certificate, stale, an error status) or **unknown**. Unknown isn't a revocation: it means the
+   responder doesn't vouch for the certificate, so the lists must. Keep them current (a list past
+   its next update refuses every certificate its CA issued), for example with a daily job that
+   downloads your CA's CRLs into the directory.
+3. **Neither.** With no OCSP answer and no revocation list, the certificate is refused (fail
+   closed).
+
+A refused certificate's connection is closed and logged as `client certificate refused`; the audit
+record gets `certificate_refused` (subject, serial, reason, `checked`: `ocsp`, `crl` or `none`, and
+the responder). An OCSP query that gave no usable answer is logged and audited as
+`ocsp_unavailable` (outcome, responder, and what the lists then decided).
+
+> **Upgrading to 0.4.5.** Client certificates are now checked after the handshake, OCSP first.
+> A site with `OT_TLS_CLIENT_CA` but no `OT_TLS_CLIENT_CRL`, whose certificates name no OCSP
+> responder, has its certificates **refused** from this release: set `OT_TLS_CLIENT_OCSP_URL`,
+> or give the lists with `OT_TLS_CLIENT_CRL`. Let the server reach the responder (outbound HTTP).
 
 ### Sign-in turned off
 
@@ -746,7 +803,8 @@ page:
 
 Each OpenTrack sets its own banner, whatever the OpenStare it feeds shows. Browsers pick up a change
 within a minute. The banner marks the system; it does not mark the tracks (see
-[Security labels](#security-labels)).
+[Security labels](#security-labels)). Its text also marks exported files with no labelled content,
+whether or not the banner is shown, so keep it right (see [Markings](#markings)).
 
 ### Notice and consent
 
@@ -786,6 +844,48 @@ It runs lowest first, and by default reads `UNCLASSIFIED`, `CUI`, `CONFIDENTIAL`
 Case does not matter, `U`, `C`, `S` and `TS` stand for their names, and caveats after `//` are
 ignored when ranking. A classification that isn't in the list ranks above all of them, so a track
 is never marked too low. Add `TOP SECRET` (or your own levels) if your sources carry them.
+
+OpenTrack does not hide or withhold anything by label or by the user's clearance: everyone signed
+in sees every track, and every output sends every published track. Labels are marked, not enforced;
+enforcement is downstream.
+
+### Markings
+
+Every output shows a labelled track's label as one **portion marking**, in common US marking
+syntax:
+- the classification abbreviated: `U`, `C`, `S`, `TS` (others, such as `CUI` or `NATO SECRET`, in
+  capitals as written);
+- after `//`, the restrictions in their order, in capitals, each once, separated by `/`
+  (with any `//` caveats written in the classification first);
+- last, the releasability as `REL TO` with `USA` first, then other country codes, then
+  organisations (`FVEY`, `NATO`), each alphabetical. Releasable to nothing in common (`NONE`)
+  is `NOFORN`, and a `NOFORN` restriction drops the `REL TO` list.
+
+So `SECRET` with `ORCON` and sharing `GBR, USA` is `(S//ORCON/REL TO USA, GBR)`, and
+`UNCLASSIFIED` with `FOUO` is `(U//FOUO)`. A track without a label has no marking.
+
+Where the marking appears:
+- **TAK**: a `__security` element and the start of the remarks (see
+  [What TAK receives](#what-tak-receives)).
+- **NATS**: the label itself, as `security` ([docs/nats-output.md](../nats-output.md)).
+- **The UI**: the track card (**Marking**) and the track table's **Marking** column; the track
+  API (`GET /api/v1/tracks/<UID>`, `GET /api/v1/tracks`) returns it as `marking`.
+- **Exported files**, each with an overall marking:
+
+| File | Overall marking | Per item |
+|---|---|---|
+| Tracks, GeoJSON (Settings → Data) | top-level `security.marking` | each labelled feature's `security` (the label) and `marking` |
+| Tracks, CSV | the first line, above the header | the `classification` column (empty when unlabelled) |
+| Audit record CSV | the first line | none |
+| Registry XLSX / CSV | the first row, above the header (and each printed page's header and footer in XLSX) | none |
+| Configuration export | the `marking` member | the sources' labels, in their specifications |
+
+A file's overall marking is the banner's text (**Settings → Banners**, whether or not the banner
+is shown) when nothing in it has a label. Otherwise it is the marking of its items' labels combined
+as a fused track's are (highest classification, every restriction, shared releasability), with the
+banner's text standing for any item without a label, so a file is never marked below the system
+it came from. For the configuration export the items are the sources. A registry sheet imports
+with or without its marking row.
 
 ## Settings tab
 
@@ -848,6 +948,25 @@ revision: the source's **History** tab lists them, with who saved each and the s
 track managers, passwords, tokens, header and metadata values, credentials in URLs and API keys in
 messages show as `••••••` (`${env:…}` references stay visible). See the README, "Sources and pipelines", and `docs/examples/`.
 
+**A listening source must authenticate its senders.** `tcp_server` needs TLS with a client CA
+(mutual TLS, a certificate required: not `client_cert_optional`); `grpc_server` needs that or a
+bearer `token`. Otherwise the source is saved and run only with the risk accepted on it,
+`"unauthenticated": "accepted"` (the red **Accept unauthenticated senders** toggle on its Transport
+tab; always needed for `udp`, which cannot carry TLS). The flag is refused where it is not needed
+(a client transport, or a listener that authenticates), so it only ever marks a real exception;
+each one needs the authorising official's acceptance ([hardening checklist](../security/hardening.md#encrypt-every-link)).
+The source list shows an UNAUTHENTICATED badge on such sources, and the decision log records the
+flag set or cleared. **Upgrading to 0.4.5:** an enabled listener saved before without sender
+authentication or the flag is not started; its state is *not started* and its Status tab says why.
+Add a client CA or token, or set the flag, and save. A configuration import is checked the same way.
+
+**UDP multicast.** A `udp` source joins `multicast_group` if one is set, IPv4 (`239.2.3.1`, with
+`bind` `0.0.0.0:port`) or IPv6 (`ff15::6969`, with `bind` `[::]:port`); the group and the bind must
+be the same IP version. `multicast_interface` picks the interface to join on: an IPv4 address of
+this node for an IPv4 group, an interface name (`eth0`) or index (`2`) for an IPv6 group. Blank:
+the system's choice. A name is looked up when the source starts, so a missing interface shows as
+the source's error.
+
 The pipeline designer's **Live preview** (right-hand pane) is a dry run of the pipeline as edited,
 not yet saved, over the source's stored samples; **Capture samples** replaces them with up to 20
 frames (or 15 s) of the live feed. Nothing is published. The pane shows the first 5 samples, each
@@ -899,17 +1018,31 @@ database.
 Codecs, trackers and pairing scorers of your own, beside the built-in ones. **Settings → General → Plugins**
 (admins change it; others see it):
 - **Add plugin:** a WebAssembly component (`.wasm`, run sandboxed inside OpenTrack), or an
-  external plugin's address (a program of its own serving the plugin interface on a socket).
-  **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
+  external plugin's address (a program of its own serving the plugin interface on a socket) and
+  its **secret**. **Replace** installs a new build of a plugin with the same name, keeping its grants and whether
   it is enabled.
-- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Grants**, **Delete**.
+- **Enable** toggle, **Check** (loads it and opens each kind it provides), **Secret** (external
+  plugins), **Grants**, **Delete**.
+- **Secret** (external plugins): OpenTrack and the plugin prove to each other that they hold it
+  (HMAC-SHA256 challenge and response each way) on every connection; a plugin that fails is
+  refused, logged as an error and audited (`plugin_auth_failed`), and its status says why.
+  **Generate** makes one with the FIPS DRBG and shows it once: start the plugin with it
+  (`OT_PLUGIN_SECRET` or `--secret-file`), then add or save. You can paste your own (32 characters
+  or more) or `${env:NAME}`. The API never returns it, only whether one is set. Only a plugin on a
+  unix socket under the data directory may have none: filesystem permissions decide who can
+  listen there. Details: [docs/plugins.md](../plugins.md#authentication).
 - **Grants** (WebAssembly only): memory ceiling (MB), time per call (ms; a call that runs longer is
   stopped), network addresses it may connect to, server directories it may see (read only unless
   `rw`), and environment variables.
 - **Used by** shows the sources and correlation settings that use it.
 
 A WebAssembly plugin is stored in the database, so it is backed up with it. An external plugin is
-only an address: run and back up its program yourself.
+only an address and its secret: run and back up its program yourself.
+
+**Upgrading from 0.4.4 or earlier:** external plugins had no secret, and after the upgrade one
+without a secret does not load (its status says *no secret*) unless it is on a unix socket under
+the data directory. For each: update it to the current SDK, **Generate** a secret in its
+**Secret** dialog, restart the plugin with that secret, then **Save**.
 
 Plugins are loaded without a restart. From the command line: [Plugin commands](#plugin-commands).
 Writing plugins: [docs/plugins.md](../plugins.md).
@@ -931,17 +1064,89 @@ To turn it on:
    - **Share the picture:** on.
    - **Trusted nodes:** the other nodes' site codes, comma separated. Messages from any other node
      are dropped.
+   - **This node's key:** copy this node's public key and give it to each other node's admin.
+     Read the fingerprint out to them over another channel (a phone call, the deployment plan).
+   - In the table, **Pin key** for each trusted node: paste that node's public key and compare the
+     fingerprint with the one its admin gives you. A trusted node with no key shows **no key:
+     refused**: its messages are refused until you pin one.
    - **Sending budget:** this node's share of the link in kbit/s (0: no cap). Past it, new tracks,
      state changes and the largest drifts go first.
    - **Receive only:** apply other nodes' track management here but accept none from this node's
      users (a node with no operator, such as a drone).
    - **Share the profile:** publishing an output schema or saving correlation settings on any node
      applies on every node that shares the profile; the later change wins.
-4. Save. The table shows each trusted node: heard, silent (not heard for 30 s) or never heard, and
-   how many of its decisions this node holds. Below it: how many tracks this node reports and holds
-   only from others, and the decisions applied, waiting for their tracks, superseded or failed.
+4. Save. The table shows each trusted node: heard, silent (not heard for 30 s) or never heard, how
+   many of its decisions this node holds, and its key's fingerprint. Below it: how many tracks this
+   node reports and holds only from others, and the decisions applied, waiting for their tracks,
+   superseded or failed; and, if any, the messages refused.
+
+#### Signed sync messages
+
+Every sync message is signed with the sending node's Ed25519 key (FIPS 186-5, in the FIPS module) and
+accepted only if it verifies with the key pinned for its site code. Pinning, replacing and removing a
+key are an admin's, and each is recorded in the decision log and the audit record
+(`sync_key_pin`, `sync_key_remove`, with the key before and after).
+
+A node refuses, counts and logs (at most once a minute per node) a message:
+- from a node not in **Trusted nodes**, or with no key pinned;
+- whose signature does not verify with the pinned key. This is also audited
+  (`sync_signature_refused`), at most once a minute per node: someone may be using that node's
+  name. It is also what you see after a node's key changed and the new one is not pinned yet;
+- whose clock is more than 5 minutes from this node's (keep nodes on NTP or GPS time);
+- already accepted once (a replay).
+
+The key is made on first start and kept in `sync.key` beside the database. Back it up with the
+database. If you lose it, the node makes a new one: pin the new key on every other node. To replace
+a node's key on purpose (it may have been exposed), stop the node, delete `sync.key`, start it, and
+pin the new key everywhere; remove the old one from nodes that no longer trust it.
+
+**Upgrading to 0.4.5.** Sync messages are now version 2 (signed). Nodes on 0.4.4 or earlier don't
+understand them, and 0.4.5 refuses theirs, so upgrade every node of a swarm together. After the
+upgrade no trusted node has a key pinned, so every message is refused until you exchange keys: on
+each node, copy **This node's key** and pin it on every other node. The **Nodes** panel shows
+**no key: refused** against each node still missing one.
 
 The registry, sources and plugins are not shared between nodes.
+
+### The bridge's NATS credentials and TLS
+
+`opentrack bridge` signs in to each node's NATS the way OpenTrack's own NATS connection does, and
+with TLS through the same FIPS module. What you give with the `--nats-*` flags (or the
+`OT_BRIDGE_NATS_*` variables) applies to every `--node`:
+
+| Flag | Variable | |
+|---|---|---|
+| `--nats-ca` | `OT_BRIDGE_NATS_CA` | Trust this CA (PEM), and refuse a connection without TLS. |
+| `--nats-cert`, `--nats-key` | `OT_BRIDGE_NATS_CERT`, `OT_BRIDGE_NATS_KEY` | Mutual TLS: this client certificate and key (PEM). |
+| `--nats-creds` | `OT_BRIDGE_NATS_CREDS` | A credentials file (JWT and NKey); the nonce is signed in the FIPS module. |
+| `--nats-user` | `OT_BRIDGE_NATS_USER` | A user, with a password. |
+| `--nats-password-file` | `OT_BRIDGE_NATS_PASSWORD_FILE` | A file holding the password. |
+| `--nats-token-file` | `OT_BRIDGE_NATS_TOKEN_FILE` | A file holding a token. |
+| `--nats-password`, `--nats-token` | `OT_BRIDGE_NATS_PASSWORD`, `OT_BRIDGE_NATS_TOKEN` | The password or token itself. Prefer the files or the variables: a flag shows in the process list. |
+
+A node whose NATS needs something else says so after its URL, with `;name=value` options: `ca`,
+`cert`, `key`, `creds`, `user`, `password-file` and `token-file`. An empty value drops the shared
+one. Passwords and tokens go in files there, never on the command line:
+
+```sh
+OT_BRIDGE_NATS_CA=/run/secrets/ca.pem \
+OT_BRIDGE_NATS_CERT=/run/secrets/bridge.pem OT_BRIDGE_NATS_KEY=/run/secrets/bridge.key \
+opentrack bridge \
+  --node tls://nats-a.site-a:4222 \
+  --node 'tls://nats-b.site-b:4222;ca=/run/secrets/site-b-ca.pem;creds=/run/secrets/site-b.creds'
+```
+
+The bridge refuses to start on half a key pair, a user without a password (or the other way
+round), more than one way of signing in to one node, a password or token given as a node option,
+or a file it cannot read. It logs each node's prefix, whether it uses TLS and how it signs in
+(`creds`, `token`, `user` or `none`), never a secret or the user information in a URL. A node
+whose server refuses the certificate or the credentials is retried; the server's log says why.
+
+To check a node's link by hand: start the bridge with `OT_LOG=info`, then list the server's
+connections (`curl http://<nats>:8222/connz?subs=1`, with its monitoring port on). The
+`opentrack-bridge` connection should show a `tls_version` and a subscription to
+`<prefix>.out.>`. Stop the bridge, drop `--nats-cert` and start it again: the server should log a
+TLS handshake error and show no `opentrack-bridge` connection.
 
 <a id="tak-output"></a>
 ## TAK output
@@ -971,7 +1176,7 @@ Every output has:
 | **Name** | 1 to 32 letters, digits, `-` or `_`, unique. It names the output in logs, the status and the metrics. |
 | **On** | Send to it, or keep it without sending. |
 | **Stale after** | Seconds after a track's **last report** that TAK lets it go (10 to 86400, default 60). OpenTrack re-sends a track every half of this until then, then stops: a track that stops reporting greys out and leaves TAK this long after its last report, even while OpenTrack still holds it (OpenTrack keeps a silent track for up to 6 hours). A new report brings it back. If OpenTrack itself stops sending, tracks leave TAK the same way. |
-| **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. |
+| **Remarks** | Put the OpenTrack track number and the sources reporting the track in the event's remarks. A labelled track's remarks carry its marking whether or not this is on (see [What TAK receives](#what-tak-receives)). |
 
 and one of three deliveries:
 
@@ -982,9 +1187,10 @@ and one of three deliveries:
   converted from TAK's `.p12`: see [TAK certificates](#tak-certificates)), and an optional **server name** to check the certificate against. OpenTrack reconnects after a
   failure, waiting 1 s and doubling up to a minute, and sends the whole picture on every connect.
 - **Multicast**: UDP datagrams, one event each, to a **group** and **port** (TAK's SA multicast,
-  `239.2.3.1:6969`, by default), with a **TTL** (1: this network only) and an optional
-  **interface** address to send from. ATAK and WinTAK on the network hear it with no setup. A
-  unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
+  `239.2.3.1:6969`, by default), with a **TTL** (1: this network only; the hop limit for IPv6) and
+  an optional **interface** to send from: an IPv4 address of this node for an IPv4 group, an
+  interface name (`eth0`) or index for an IPv6 group (such as `ff15::6969`). ATAK and WinTAK on the
+  network hear it with no setup. A unicast address also works (one receiver, such as a TAK Server's UDP input). The picture is sent
   when the output starts; after that each track at least every half of its stale time, while it is still reporting.
 - **Listen for clients**: OpenTrack is the server. It listens on **Listen on** (such as
   `0.0.0.0:8089`) and ATAK or WinTAK connect to it as to a TAK Server (a server connection to this
@@ -1060,12 +1266,14 @@ Each published track is one CoT event:
 | `point` | Latitude, longitude, `hae` (height above the ellipsoid) and the error: `ce` the circular 1-sigma horizontal error (from the ellipse, covariance or circular error), `le` the vertical error. `9999999` when unknown. |
 | `detail/track` | `course` (degrees true) and `speed` (m/s), when known. |
 | `detail/contact` | `callsign`: the track's callsign, a `callsign` identifier, its name, its platform's name, or its track number (`OTK000000042`). |
-| `detail/remarks` | With **Remarks**: `OpenTrack <UID>; sources: <source ids>`. |
+| `detail/__security` | A labelled track only: `classification` (as the label gives it), `caveats` (its restrictions, `/` separated), `releasability` (its sharing) and `marking` (the portion marking, see [Markings](#markings)). Absent attributes are empty in the label. |
+| `detail/remarks` | With **Remarks**: `OpenTrack <UID>; sources: <source ids>`. A labelled track's remarks start with its marking, `(S//REL TO USA, GBR) OpenTrack …`, and are the marking alone when **Remarks** is off, so every TAK client shows it. An unlabelled track has neither. |
 
 A track that ends gets a delete, in the form ATAK sends:
 `<event uid="tms-<UID>" type="t-x-d-d" how="m-g" …>` with `stale` equal to `time`, and
 `<detail><link uid="tms-<UID>" relation="none" type="<its last type>"/><__forcedelete/></detail>`.
-TAK removes the track at once. A client that missed it (disconnected at the time) drops the track
+TAK removes the track at once. A delete carries no marking: it holds nothing about the track but
+its uid. A client that missed it (disconnected at the time) drops the track
 when it goes stale.
 
 Updates of one track are sent at most every `OT_COT_MIN_INTERVAL_SECS` (2 s), identity and
@@ -1145,7 +1353,7 @@ What it holds (the file's sections):
 
 | Section | What |
 |---|---|
-| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`. |
+| `format`, `version` | `"opentrack-config"`, `2`. Also `opentrack` (the release that wrote it), `site_code`, `exported_at`, `exported_by`, `notice`, `marking` (see [Markings](#markings)). |
 | `sources` | Every source as stored: `id`, `name`, `transport`, `codec`, `enabled`, `priority`, `revision`, `spec` (with its secrets), `raw_subject` (raw output, if consented). |
 | `schema_versions` | Every output schema version (`version`, `status`, `published_at_ms`, `notes`, `fields`), the draft too. |
 | `correlation_settings` | The saved correlation settings, security labels included (`null`: never saved). |
@@ -1217,7 +1425,8 @@ downloads every entity: id, name, status, publish override, the OTH-GOLD minimum
 attributes. **Import sheet** (track managers) brings a sheet back: it plans every row first, and
 writes nothing while any row has an error. A row updates the entity its `entity_id` names (and
 creates it under that id if missing), else the one its identifiers belong to, else creates one.
-The entities' revision history is not in the sheet.
+The entities' revision history is not in the sheet. The sheet's first row is its marking (see
+[Markings](#markings)); an import reads a sheet with or without it.
 
 ### Restore
 
@@ -1368,6 +1577,20 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 ## Security
 
 - **Keep sign-in on.** `OT_AUTH=off` makes everyone an admin.
+- **Changes come from OpenTrack's page.** A change (anything but a read) made with the session
+  cookie must carry the `X-OpenTrack-CSRF` header the page sends with every call, and any change
+  whose `Origin` names another site is refused (403, audited as `access_denied` with reason
+  `csrf`). Scripts with an API token need no header. The server is the address a browser asked
+  for (`Host`), the one a proxy says it was asked for (`X-Forwarded-Host`), or `OT_PUBLIC_URL`.
+  SAML's assertion consumer is the one address another site (the identity provider) posts to.
+- **Request rate.** Each client may make 20 API requests a second, in bursts of up to 100: an
+  account (all its sessions together), each API token on its own, or an address before sign-in.
+  More is answered 429 with `Retry-After`, and the first in a minute is logged and audited
+  (`rate_limited`). A busy page makes a few a second. Sign-in has its own stricter limit. The
+  values are fixed.
+- **Content security policy.** The page may run only this server's scripts, and styles from
+  this server's stylesheets or a `<style>` carrying the page's nonce, fresh on each load:
+  injected markup can neither run nor style anything.
 - **Use TLS** (`OT_TLS_CERT`, `OT_TLS_KEY`), or a TLS-terminating proxy that forwards to OpenTrack
   on a private address. Over TLS, session cookies are `Secure`.
 - **Protect the data directory.** `session.key` and `initial-admin.txt` are written readable by
@@ -1471,7 +1694,11 @@ decision log records:
   (`consent_accepted`);
 - password changed, account turned off (inactive or expired);
 - a credential that identifies no one (`access_refused`), a role that doesn't reach
-  (`access_denied`), a change the server refused (`change_refused`, with the status);
+  (`access_denied`), a change from another site's page (`access_denied`, reason `csrf`), a
+  change the server refused (`change_refused`, with the status);
+- a client over the request rate (`rate_limited`, once a minute per client);
+- a client certificate refused as revoked or of unknown status (`certificate_refused`), and an
+  OCSP query with no usable answer, so the revocation lists decided (`ocsp_unavailable`);
 - an admin reading accounts, API tokens, sign-in settings, the configuration export or the
   audit record (`read_security_object`), and every source probe (`probe_source`).
 
@@ -1491,7 +1718,8 @@ the chain. The database refuses updates to the table.
   ```
 - **Review through the API** (admins): `GET /api/v1/audit` filters by time (`from_ms`, `to_ms`),
   account (`actor`), event (`op`, comma-separated) and `outcome`, pages back with `before_seq`,
-  and gives CSV with `format=csv`. `GET /api/v1/audit/verify` checks the chain.
+  and gives CSV with `format=csv` (its first line the banner's text as the file's marking, see
+  [Markings](#markings)). `GET /api/v1/audit/verify` checks the chain.
 - **Fail closed:** if a sign-in can't be recorded in the table, it is refused. A collector outage
   does not refuse anything: the table has the record, and the Telemetry status shows the outage
   ([OpenTelemetry](#opentelemetry)).
@@ -1517,6 +1745,7 @@ including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_UR
 |---|---|
 | Browsers and API clients | `OT_TLS_CERT`/`OT_TLS_KEY`, optional client certificates (`OT_TLS_CLIENT_CA`, revocation lists `OT_TLS_CLIENT_CRL`), or a TLS proxy |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and mutual TLS with `OT_NATS_CERT`/`OT_NATS_KEY` |
+| `opentrack bridge` to each node's NATS | the same, as `OT_BRIDGE_NATS_CA`, `OT_BRIDGE_NATS_CERT`/`OT_BRIDGE_NATS_KEY`, or per node ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)) |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, and mutual TLS with `OT_REDIS_CERT`/`OT_REDIS_KEY` |
 | Feeds | per source, in its transport's TLS settings |
 | TAK | per output in Settings → TAK output: TLS to a TAK Server with a client certificate, TLS for a listening output with optional client certificates and revocation lists. Multicast is always plaintext ([TAK output](#tak-output)) |

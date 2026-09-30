@@ -44,6 +44,12 @@ RUN curl -fsSLo openssl.tar.gz \
     && cp /opt/ossl/lib*/ossl-modules/fips.so /out/fips.so \
     && cp /opt/ossl/ssl/fipsmodule.cnf /out/fipsmodule.cnf
 
+# Only the provider and its configuration: `--target openssl-fips-out
+# --output type=local,dest=DIR` gives the release signing script
+# (scripts/release/sign-image) the same validated module.
+FROM scratch AS openssl-fips-out
+COPY --from=openssl-fips /out/ /
+
 FROM rust:1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS server
 # SAML single sign-on signs and checks XML with libxmlsec1; the AWS-LC FIPS
 # module builds with CMake and Go.

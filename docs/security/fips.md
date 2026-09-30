@@ -7,7 +7,7 @@ No build or setting turns it off.
 
 | Module | Used for | Where it comes from |
 |---|---|---|
-| **AWS-LC FIPS 3.0.x** (static, via `aws-lc-fips-sys` 0.14.2 / `aws-lc-rs` 1.x) | All of the binary's own cryptography: TLS for the UI/API, feeds, gRPC, MQTT, WebSocket, NATS, HTTP clients and OpenTelemetry export; session and API token signatures (HS256); password hashing; the NATS `.creds` nonce signature (Ed25519); SHA-256 of plugin files; every random secret and identifier | Compiled into the binary from the module source that `aws-lc-fips-sys` carries. The build needs Go and CMake. |
+| **AWS-LC FIPS 3.0.x** (static, via `aws-lc-fips-sys` 0.14.2 / `aws-lc-rs` 1.x) | All of the binary's own cryptography: TLS for the UI/API, feeds, gRPC, MQTT, WebSocket, NATS, HTTP clients and OpenTelemetry export; session and API token signatures (HS256); password hashing; the NATS `.creds` nonce signature (Ed25519); sync message signatures (Ed25519) and key fingerprints (SHA-256); SHA-256 of plugin files; every random secret and identifier | Compiled into the binary from the module source that `aws-lc-fips-sys` carries. The build needs Go and CMake. |
 | **OpenSSL 3.0.9 FIPS provider** (CMVP #4282) | SAML: libxmlsec1 checks the identity provider's XML signatures through OpenSSL | Built in the image from the 3.0.9 release as its security policy directs (`./Configure enable-fips`, `make install_fips`). The image's OpenSSL 3.0 library (Debian 12's `libssl3`, part of the distroless runtime base) loads it, and `default_properties = fips=yes` (`docker/openssl-fips.cnf`) leaves nothing else to use. |
 
 Check each module's current CMVP status and security policy before you cite it
@@ -42,9 +42,12 @@ apply.
 | Passwords | PBKDF2-HMAC-SHA256 (SP 800-132), 600,000 iterations, 128-bit salt, 256-bit output, stored as `$pbkdf2-sha256$i=…$salt$hash` |
 | Session and API tokens | HMAC-SHA256 (JWT HS256) keyed with `OT_SESSION_SECRET` or `session.key` (256 random bits) |
 | SAML relay state | HMAC-SHA256 |
-| Random values | AWS-LC CTR-DRBG: token ids, the session key, generated passwords, SAML request ids (128 bits) |
+| External plugin handshake | HMAC-SHA256 challenge and response each way over two 256-bit DRBG nonces, keyed with the shared secret; verified in constant time |
+| Random values | AWS-LC CTR-DRBG: token ids, the session key, generated passwords, SAML request ids, the page's style nonce (128 bits), plugin secrets and handshake nonces (256 bits) |
 | NATS `.creds` | Ed25519 (FIPS 186-5) over the server nonce |
+| Sync messages between nodes | Ed25519 (FIPS 186-5): each node's key pair is made by the module (`Ed25519KeyPair::generate_pkcs8v1`) and every message is signed and verified with it; key fingerprints and ids are SHA-256. AWS-LC's service indicator reports Ed25519 key generation, signing and verification as approved in FIPS mode (aws-lc-rs's `signature/tests/fips.rs`), so ECDSA P-256 was not needed |
 | Plugin identity | SHA-256 |
+| Client certificate status (OCSP) | Response signatures verified by `rustls-webpki` with the AWS-LC provider's algorithms; the request nonce from the DRBG; the RFC 6960 CertID's issuer name and key hashes are SHA-1 (`SHA1_FOR_LEGACY_USE_ONLY`), as the protocol defines them: an identifier, not a signature or security strength |
 
 ### SAML signatures
 

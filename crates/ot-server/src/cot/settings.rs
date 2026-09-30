@@ -1,9 +1,10 @@
 //! TAK outputs as an admin configures them (Settings → TAK output), saved
 //! with the instance settings under `tak`.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ot_source::tls::{ClientTls, ServerTls};
+use ot_source::transport::{MulticastInterface, check_multicast};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -78,11 +79,12 @@ pub enum Delivery {
         group: String,
         #[serde(default = "default_port")]
         port: u16,
-        /// Multicast hops (1: this network only).
+        /// Multicast hops (1: this network only); the hop limit for IPv6.
         #[serde(default = "default_ttl")]
         ttl: u32,
-        /// Local interface address to send from (default: the system's
-        /// choice).
+        /// Where to send from (default: the system's choice): a local
+        /// interface address for IPv4, an interface name or index for an
+        /// IPv6 group.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interface: Option<String>,
     },
@@ -154,25 +156,44 @@ impl TakOutput {
                 ttl,
                 interface,
             } => {
-                group
+                let ip = group
                     .trim()
-                    .parse::<Ipv4Addr>()
-                    .map_err(|_| at(format!("group {group:?} is not an IPv4 address")))?;
+                    .parse::<IpAddr>()
+                    .map_err(|_| at(format!("group {group:?} is not an IP address")))?;
                 if *port == 0 {
                     return Err(at("give the port".into()));
                 }
                 if !(1..=255).contains(ttl) {
                     return Err(at("ttl is 1 to 255".into()));
                 }
-                if !blank(interface)
-                    && interface
-                        .as_deref()
-                        .unwrap_or_default()
-                        .trim()
-                        .parse::<Ipv4Addr>()
-                        .is_err()
-                {
-                    return Err(at("interface is an IPv4 address of this host".into()));
+                let iface = if blank(interface) {
+                    None
+                } else {
+                    Some(
+                        interface
+                            .as_deref()
+                            .unwrap_or_default()
+                            .parse::<MulticastInterface>()
+                            .map_err(at)?,
+                    )
+                };
+                if ip.is_multicast() {
+                    check_multicast(ip, iface.as_ref()).map_err(at)?;
+                } else {
+                    // A unicast address: IPv4 may still pick the address
+                    // to send from; IPv6 routing picks it.
+                    match (ip, &iface) {
+                        (_, None) | (IpAddr::V4(_), Some(MulticastInterface::Address(_))) => {}
+                        (IpAddr::V4(_), Some(_)) => {
+                            return Err(at("interface is an IPv4 address of this host".into()));
+                        }
+                        (IpAddr::V6(_), Some(_)) => {
+                            return Err(at(
+                                "interface applies to an IPv6 multicast group, not a unicast address"
+                                    .into(),
+                            ));
+                        }
+                    }
                 }
             }
             Delivery::Listen { bind, tls } => {
@@ -264,6 +285,23 @@ mod tests {
         assert!(out("m", json!({"kind": "multicast", "group": "x"})).is_err());
         assert!(out("m", json!({"kind": "multicast", "ttl": 0})).is_err());
         assert!(out("m", json!({"kind": "multicast", "interface": "eth0"})).is_err());
+        assert!(out("m", json!({"kind": "multicast", "interface": "10.0.0.2"})).is_ok());
+        // IPv6: a multicast group, joined by interface name or index.
+        let v6 = |g: &str, i: Option<&str>| {
+            let mut d = json!({"kind": "multicast", "group": g});
+            if let Some(i) = i {
+                d["interface"] = json!(i);
+            }
+            out("m", d)
+        };
+        assert!(v6("ff15::6969", None).is_ok());
+        assert!(v6("ff15::6969", Some("eth0")).is_ok());
+        assert!(v6("ff15::6969", Some("2")).is_ok());
+        assert!(v6("ff15::6969", Some("10.0.0.2")).is_err(), "IPv4 address");
+        assert!(v6("ff15::6969", Some("fe80::1")).is_err(), "IPv6 address");
+        assert!(v6("2001:db8::1", None).is_ok(), "unicast, as for IPv4");
+        assert!(v6("2001:db8::1", Some("eth0")).is_err());
+        assert!(v6("239.2.3.1", Some("eth0")).is_err());
         assert!(out("t", json!({"kind": "tak_server", "host": "", "port": 8087})).is_err());
         assert!(out("t", json!({"kind": "tak_server", "host": "h", "port": 0})).is_err());
         assert!(

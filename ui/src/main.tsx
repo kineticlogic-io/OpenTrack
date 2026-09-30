@@ -1,4 +1,5 @@
 import { StrictMode } from 'react'
+import { MotionConfig } from 'framer-motion'
 import { createRoot } from 'react-dom/client'
 import '@fontsource/montserrat/400.css'
 import '@fontsource/montserrat/500.css'
@@ -12,6 +13,11 @@ import { ThemeProvider, ToastProvider } from 'staresdk'
 import './index.css'
 import { AuthProvider } from './auth/AuthProvider'
 import { Root } from './auth/Root'
+import { applyCspNonce, cspNonce } from './lib/cspNonce'
+
+// Before anything adds a <style> element (see lib/cspNonce.ts).
+const nonce = cspNonce()
+applyCspNonce(nonce)
 
 // After a deploy, a page loaded earlier asks for code chunks the server no longer has. Reload once
 // to pick up the new build (the guard stops a loop if loading keeps failing for another reason).
@@ -34,12 +40,14 @@ window.addEventListener('vite:preloadError', (event) => {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ThemeProvider>
-      <ToastProvider>
-        <AuthProvider>
-          <Root />
-        </AuthProvider>
-      </ToastProvider>
-    </ThemeProvider>
+    <MotionConfig nonce={nonce || undefined}>
+      <ThemeProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <Root />
+          </AuthProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </MotionConfig>
   </StrictMode>,
 )

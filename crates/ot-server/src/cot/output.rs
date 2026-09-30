@@ -11,14 +11,16 @@
 //! comes back gets the picture again.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use anyhow::bail;
 use bytes::Bytes;
 use chrono::Utc;
 use ot_core::Uid;
+use ot_source::transport::MulticastInterface;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
@@ -544,24 +546,47 @@ fn connected(ctx: &Ctx, peer: &str, backoff: &mut Duration) {
 
 /// The UDP socket a multicast output sends from.
 pub fn udp_socket(
-    dest: SocketAddrV4,
+    dest: SocketAddr,
     ttl: u32,
-    interface: Option<Ipv4Addr>,
+    interface: Option<&MulticastInterface>,
 ) -> anyhow::Result<tokio::net::UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    if dest.ip().is_multicast() {
-        socket.set_multicast_ttl_v4(ttl)?;
-        // Listeners on this host (and tests) hear it too.
-        socket.set_multicast_loop_v4(true)?;
-        if let Some(i) = interface {
-            socket.set_multicast_if_v4(&i)?;
+    let socket = Socket::new(Domain::for_address(dest), Type::DGRAM, Some(Protocol::UDP))?;
+    let local = match dest.ip() {
+        IpAddr::V4(ip) => {
+            let from = match interface {
+                None => None,
+                Some(MulticastInterface::Address(a)) => Some(*a),
+                Some(other) => bail!("an IPv4 destination needs an interface address, not {other}"),
+            };
+            if ip.is_multicast() {
+                socket.set_multicast_ttl_v4(ttl)?;
+                // Listeners on this host (and tests) hear it too.
+                socket.set_multicast_loop_v4(true)?;
+                if let Some(i) = from {
+                    socket.set_multicast_if_v4(&i)?;
+                }
+            } else {
+                socket.set_ttl_v4(ttl)?;
+            }
+            SocketAddr::V4(SocketAddrV4::new(from.unwrap_or(Ipv4Addr::UNSPECIFIED), 0))
         }
-    } else {
-        socket.set_ttl_v4(ttl)?;
-    }
-    let local = SocketAddrV4::new(interface.unwrap_or(Ipv4Addr::UNSPECIFIED), 0);
-    socket.bind(&SocketAddr::V4(local).into())?;
+        IpAddr::V6(ip) => {
+            if ip.is_multicast() {
+                socket.set_multicast_hops_v6(ttl)?;
+                socket.set_multicast_loop_v6(true)?;
+                // IPv6 picks the outgoing interface by index; a name is
+                // looked up now, so a missing one is an output error.
+                if let Some(i) = interface {
+                    socket.set_multicast_if_v6(i.index()?)?;
+                }
+            } else {
+                socket.set_unicast_hops_v6(ttl)?;
+            }
+            SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))
+        }
+    };
+    socket.bind(&local.into())?;
     socket.set_nonblocking(true)?;
     Ok(tokio::net::UdpSocket::from_std(socket.into())?)
 }
@@ -571,15 +596,16 @@ async fn multicast(group: String, port: u16, ttl: u32, interface: Option<String>
     let mut backoff = Duration::from_secs(1);
     loop {
         let result: anyhow::Result<()> = async {
-            let ip: Ipv4Addr = group.trim().parse()?;
+            let ip: IpAddr = group.trim().parse()?;
             let iface = interface
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .map(str::parse::<Ipv4Addr>)
-                .transpose()?;
-            let dest = SocketAddrV4::new(ip, port);
-            let socket = udp_socket(dest, ttl, iface)?;
+                .map(str::parse::<MulticastInterface>)
+                .transpose()
+                .map_err(anyhow::Error::msg)?;
+            let dest = SocketAddr::new(ip, port);
+            let socket = udp_socket(dest, ttl, iface.as_ref())?;
             let mut queue = ctx.register(&dest.to_string());
             let _connected = Connected::new(&ctx.counters);
             ctx.counters.set_state("sending");

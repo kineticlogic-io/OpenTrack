@@ -1,6 +1,6 @@
 # Deployment hardening
 
-This is the checklist for deploying OpenTrack 0.4.4 to an accredited environment. The controls
+This is the checklist for deploying OpenTrack 0.4.5 to an accredited environment. The controls
 themselves are described in the administrator guide, under
 [Security hardening](../guides/admin.md#security-hardening). How they map to NIST 800-53 is in
 [stig-mapping.md](stig-mapping.md).
@@ -43,12 +43,22 @@ themselves are described in the administrator guide, under
 6. **Never set `OT_AUTH=off`** outside a laboratory. It makes every caller an admin; the server
    warns every minute and the UI shows a red banner.
 
+## Separate administration
+
+Set `OT_ADMIN_BIND` to an address on the management network (or `127.0.0.1:…` behind a jump
+host), so the admin interface is on its own listener and the users' address has none (SC-7,
+SC-2): the admin routes answer 404 there. Publish that port to the management network only,
+and allow only administrators' hosts to reach it with the host or network firewall. Give it its
+own certificate and client CA (`OT_ADMIN_TLS_*`) if administrators use different PKI.
+[Admin listener](../guides/admin.md#admin-listener).
+
 ## Encrypt every link
 
 | Link | Settings |
 |---|---|
-| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
+| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, checked by OCSP (each certificate's AIA responder, or `OT_TLS_CLIENT_OCSP_URL`; allow the outbound HTTP) with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily, as the fallback; with neither a certificate is refused), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
+| `opentrack bridge` | the same for each node's NATS: `tls://` URLs, `OT_BRIDGE_NATS_CA`, `OT_BRIDGE_NATS_CERT` / `OT_BRIDGE_NATS_KEY`, `OT_BRIDGE_NATS_CREDS`; per node after the URL (`;ca=`, `;cert=`, `;key=`, `;creds=`). Passwords and tokens from files (`OT_BRIDGE_NATS_PASSWORD_FILE`, `OT_BRIDGE_NATS_TOKEN_FILE`), not flags |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |
 | Feeds | each source's transport TLS settings; don't use `insecure_skip_verify` |
 | TAK output | Settings → TAK output: a TAK Server over TLS (8089) with a client certificate; a listening output with TLS and a **client CA** (and revocation lists) so only enrolled TAK clients connect |
@@ -59,16 +69,37 @@ output lets anyone who can reach its port take the whole picture. **Multicast is
 plaintext**: anyone on the network segment (or as far as its TTL reaches) can read it. Use them
 only on a network that is itself protected and accredited for the picture's classification, and
 document the risk acceptance; keep multicast TTL at 1. The TAK output panel marks each output TLS or
-plaintext, and the `cot` role logs a warning when a plaintext output starts. OpenTrack sends
-events as the tracks are, without adding classification markings to them.
+plaintext, and the `cot` role logs a warning when a plaintext output starts. A labelled track's
+events carry its marking (a `__security` element and the start of the remarks), but that marks
+them; it does not protect them.
+
+**Listening sources authenticate their senders.** A `tcp_server` source needs TLS with a
+`client_ca_file` (mutual TLS, certificates required); a `grpc_server` source needs that or a bearer
+`token`. A source that cannot (UDP, multicast included, has no TLS) or does not is refused unless it
+carries `"unauthenticated": "accepted"`: anyone who can reach its port can then feed it tracks.
+**Each such source is an exception needing the authorising official's acceptance**; record it
+with the source's name, port and the network that protects it. The flag is saved with the source,
+so setting or clearing it is in the decision log (before and after) and the source's history; the
+source list marks it with an UNAUTHENTICATED badge. A listener saved before 0.4.5 without it is not
+started until it authenticates its senders or the flag is set (its status says why).
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
+
+**Pin every peer's key (multi-node).** Sync messages between nodes are signed with each node's
+Ed25519 key and accepted only from trusted nodes whose public key an admin has pinned in
+**Settings → Nodes**. Compare fingerprints over a second channel when pinning, keep `sync.key`
+readable by the service account only, and remove a lost or captured node's key on every other node
+at once. Keep nodes' clocks within 5 minutes (NTP, GPS): older messages are refused as possible
+replays. See the admin guide, [Signed sync messages](../guides/admin.md#signed-sync-messages).
 
 **Open only the ports you use.** Every port, protocol and service OpenTrack listens on or connects
 to, with its default and its TLS and authentication options, is in the admin guide's
 [Ports, protocols and services](../guides/admin.md#ports-protocols-and-services) table. Register
 the ones you enable in PPSM, and let only those through the firewall. Keep external plugins on
-the same host (loopback or a Unix socket): their protocol has no TLS or authentication.
+the same host (loopback or a Unix socket): their protocol has no TLS. Give each a secret
+(Settings → General → Plugins → Secret; [plugins.md](../plugins.md#authentication)): OpenTrack
+and the plugin then authenticate each other on every connection, and one without a secret loads
+only from a Unix socket under the data directory.
 
 ## Sign-in
 
@@ -91,6 +122,13 @@ The account policy is fixed at the STIG values; there is nothing to set:
 - **Sessions:** idle timeout 15 minutes (admins 10), 3 per account, 24 hours at most.
 - **Inactivity:** accounts are turned off after 35 days, except those marked **Never turn off**.
 - **Audit record:** kept forever.
+- **API request rate:** 20 a second, bursts of 100, per account, API token or address (429
+  with `Retry-After` beyond).
+- **Cross-site checks:** a change made with the session cookie carries the page's
+  `X-OpenTrack-CSRF` header; a change from another site's `Origin` is refused. Behind a proxy,
+  pass `Host` through (or send `X-Forwarded-Host`), or set `OT_PUBLIC_URL`.
+- **Content security policy:** no inline script; a `<style>` only with the page's nonce, fresh
+  on each load; no `'unsafe-inline'`.
 
 ## Operate
 

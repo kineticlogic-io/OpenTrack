@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
-import { Badge, CollapsiblePanel, DataTable, Input, SaveButton, Toggle, type DataTableColumn } from 'staresdk'
-import { api, DEFAULT_SYNC, type SyncSettings, type SyncStatus } from '../../api/client'
+import { useCallback, useEffect, useState } from 'react'
+import { TbCopy, TbKey, TbTrash } from 'react-icons/tb'
+import { Badge, Button, CollapsiblePanel, DataTable, Input, Modal, SaveButton, Toggle, useToast, type DataTableColumn } from 'staresdk'
+import { api, DEFAULT_SYNC, type PinnedKey, type SyncKeys, type SyncSettings, type SyncStatus } from '../../api/client'
+import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
-import { fmtTime } from '../../lib/format'
+import { errorMessage, fmtTime } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 import { SettingsRow as Row } from './SettingsRow'
 
@@ -14,6 +16,7 @@ interface PeerRow {
   site: string
   heard: string | null
   seq: number | null
+  key: PinnedKey | null
 }
 
 /**
@@ -48,10 +51,32 @@ export function NodesPanel({
     const t = setInterval(load, REFRESH_MS)
     return () => clearInterval(t)
   }, [])
+  const admin = useCan('admin')
+  const { toast } = useToast()
+  const [keys, setKeys] = useState<SyncKeys | null>(null)
+  const [pinning, setPinning] = useState<string | null>(null)
+  const loadKeys = useCallback(() => api.syncKeys().then(setKeys, () => {}), [])
+  useEffect(() => void loadKeys(), [loadKeys])
+  const copyKey = () =>
+    navigator.clipboard.writeText(keys?.public_key ?? '').then(
+      () => toast({ variant: 'success', title: 'Copied', message: "This node's public key is on the clipboard." }),
+      () => toast({ variant: 'error', title: 'Not copied', message: 'Select the key and copy it.' }),
+    )
+  const removeKey = async (site: string) => {
+    if (!window.confirm(`Remove the key pinned for ${site}? Its messages are refused until a key is pinned again.`)) return
+    try {
+      setKeys(await api.removeSyncKey(site))
+    } catch (err) {
+      toast({ variant: 'error', title: 'Key not removed', message: errorMessage(err) })
+    }
+  }
 
   const heads = new Map((status?.log.heads ?? []).map((h) => [h.site, h.seq]))
   const heard = status?.link?.heard ?? {}
-  const rows: PeerRow[] = sync.peers.map((site) => ({ site, heard: heard[site] ?? null, seq: heads.get(site) ?? null }))
+  const pinned = new Map((keys?.peers ?? []).map((k) => [k.site, k]))
+  const rows: PeerRow[] = sync.peers.map((site) => ({ site, heard: heard[site] ?? null, seq: heads.get(site) ?? null, key: pinned.get(site) ?? null }))
+  const unkeyed = rows.filter((r) => r.key == null).map((r) => r.site)
+  const counts = status?.link?.counts ?? {}
   const columns: DataTableColumn<PeerRow>[] = [
     { key: 'site', header: 'Node', width: 90, mono: true, render: (r) => r.site },
     {
@@ -68,7 +93,38 @@ export function NodesPanel({
       },
     },
     { key: 'heard', header: 'Last heard', width: 180, mono: true, render: (r) => (r.heard ? fmtTime(Date.parse(r.heard)) : '—') },
-    { key: 'seq', header: 'Its decisions held', mono: true, render: (r) => r.seq ?? 0 },
+    { key: 'seq', header: 'Its decisions held', width: 140, mono: true, render: (r) => r.seq ?? 0 },
+    {
+      key: 'key',
+      header: 'Key',
+      render: (r) =>
+        r.key ? (
+          <span className="mono" title={`${r.key.public_key}\npinned by ${r.key.pinned_by}${r.key.pinned_at ? ` at ${fmtTime(Date.parse(r.key.pinned_at))}` : ''}`}>
+            {r.key.fingerprint ?? 'not a key'}
+          </span>
+        ) : (
+          <Badge color="danger" size="sm">
+            no key: refused
+          </Badge>
+        ),
+    },
+    ...(admin
+      ? [
+          {
+            key: 'actions',
+            header: '',
+            width: 150,
+            render: (r: PeerRow) => (
+              <div className="num-row">
+                <Button size="sm" variant="ghost" icon={<TbKey />} onClick={() => setPinning(r.site)}>
+                  {r.key ? 'Replace' : 'Pin key'}
+                </Button>
+                {r.key && <Button size="sm" variant="ghost" icon={<TbTrash />} aria-label={`Remove the key pinned for ${r.site}`} onClick={() => removeKey(r.site)} />}
+              </div>
+            ),
+          },
+        ]
+      : []),
   ]
   const byStatus = status?.log.by_status ?? {}
   const e = status?.engine
@@ -79,7 +135,7 @@ export function NodesPanel({
         <Row label="Share the picture" hint="Exchange tracks and track-management decisions with the nodes below, through this node's NATS (ot.sync.*), which a networking package or opentrack bridge carries. Every node gets the whole picture under one set of track numbers; each reports only what its own sensors see.">
           <Toggle value={sync.enabled} onChange={(enabled) => set({ enabled })} aria-label="Share the picture" />
         </Row>
-        <Row label="Trusted nodes" hint={`Site codes of the nodes this one exchanges with, comma separated (this node is ${siteCode}). Messages from any other node are dropped.`}>
+        <Row label="Trusted nodes" hint={`Site codes of the nodes this one exchanges with, comma separated (this node is ${siteCode}). Messages from any other node are dropped, and so are a trusted node's until its public key is pinned in the table below.`}>
           <Input
             style={{ ...INPUT, width: 320 }}
             aria-label="Trusted nodes"
@@ -110,6 +166,17 @@ export function NodesPanel({
             <span className="muted">kbit/s</span>
           </div>
         </Row>
+        <Row
+          label="This node's key"
+          hint="Every sync message this node sends is signed with this key. Give the public key to each other node's admin to pin; compare the fingerprint over another channel (a phone call, the deployment plan)."
+        >
+          <div className="num-row">
+            <span className="mono">{keys?.fingerprint ?? '—'}</span>
+            <Button size="sm" variant="ghost" icon={<TbCopy />} onClick={copyKey} disabled={!keys}>
+              Copy public key
+            </Button>
+          </div>
+        </Row>
         <Row label="Receive only" hint="Apply other nodes' track management here, but accept none from this node's own users: for a node with no operator, such as a drone.">
           <Toggle value={sync.receive_only} onChange={(receive_only) => set({ receive_only })} aria-label="Receive only" />
         </Row>
@@ -127,6 +194,14 @@ export function NodesPanel({
               </InfoTip>
             </h4>
             <DataTable aria-label="Trusted nodes" rows={rows} columns={columns} rowKey={(r) => r.site} density="compact" />
+            {unkeyed.length > 0 && (
+              <div className="num-row">
+                <Badge color="danger" size="sm">
+                  {unkeyed.length === 1 ? `${unkeyed[0]} has no key` : `${unkeyed.length} nodes have no key`}
+                </Badge>
+                <span className="muted">Messages from a node without a pinned key are refused.</span>
+              </div>
+            )}
           </>
         )}
         <div className="num-row muted">
@@ -141,7 +216,71 @@ export function NodesPanel({
           </InfoTip>
           {status?.link === undefined || status?.link === null ? <Badge color="grey" size="sm">no link running</Badge> : null}
         </div>
+        {(counts.no_key ?? 0) + (counts.bad_signature ?? 0) + (counts.stale ?? 0) + (counts.replayed ?? 0) + (counts.untrusted ?? 0) > 0 && (
+          <div className="num-row muted">
+            <span>
+              Refused since the link started: {counts.untrusted ?? 0} from untrusted nodes, {counts.no_key ?? 0} with no key pinned,{' '}
+              {counts.bad_signature ?? 0} failing their signature, {counts.stale ?? 0} too old, {counts.replayed ?? 0} repeated.
+            </span>
+            <InfoTip label="Refused messages">
+              A message is accepted only from a trusted node with a pinned key, when its signature verifies with that key, its clock is within 5 minutes of
+              this node&apos;s, and it has not been accepted before. A failing signature from a trusted node may be another node using its name: it is
+              logged and recorded in the audit log. After replacing a node&apos;s key, pin the new one here.
+            </InfoTip>
+          </div>
+        )}
+        {pinning && (
+          <PinKeyModal
+            site={pinning}
+            current={pinned.get(pinning) ?? null}
+            onClose={() => setPinning(null)}
+            onPinned={(k) => {
+              setKeys(k)
+              setPinning(null)
+            }}
+          />
+        )}
       </div>
     </CollapsiblePanel>
+  )
+}
+
+/** Pin (or replace) the public key of a peer: an admin's decision, recorded in the decision and audit logs. */
+function PinKeyModal({ site, current, onClose, onPinned }: { site: string; current: PinnedKey | null; onClose: () => void; onPinned: (k: SyncKeys) => void }) {
+  const { toast } = useToast()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try {
+      onPinned(await api.pinSyncKey(site, text.trim()))
+    } catch (err) {
+      toast({ variant: 'error', title: 'Key not pinned', message: errorMessage(err) })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal title={`${current ? 'Replace' : 'Pin'} the key of ${site}`} onClose={onClose} width={560} resizable={false}>
+      <div className="panel-body stack">
+        <div className="num-row">
+          <span>Paste {site}&apos;s public key (ed25519:…), from its Settings → Nodes.</span>
+          <InfoTip label="Pinning a key">
+            Compare the fingerprint shown after pinning with the one {site}&apos;s admin reads out over another channel. From then on this node accepts sync
+            messages claiming to be from {site} only if they are signed with this key.
+          </InfoTip>
+        </div>
+        {current && <span className="muted mono">Now: {current.fingerprint ?? current.public_key}</span>}
+        <Input aria-label={`Public key of ${site}`} placeholder="ed25519:…" value={text} onChange={(ev) => setText(ev.target.value)} />
+        <div className="num-row" style={{ justifyContent: 'flex-end' }}>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={save} disabled={busy || text.trim() === ''}>
+            Pin
+          </Button>
+        </div>
+      </div>
+    </Modal>
   )
 }

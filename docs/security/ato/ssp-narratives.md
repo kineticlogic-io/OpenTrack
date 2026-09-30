@@ -16,7 +16,7 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 | CA Assessment, Authorization, and Monitoring | 10 | 2 | 0 | 0 | 8 | 0 |
 | CM Configuration Management | 24 | 17 | 0 | 0 | 7 | 0 |
 | CP Contingency Planning | 23 | 4 | 0 | 0 | 19 | 0 |
-| IA Identification and Authentication | 24 | 17 | 1 | 0 | 6 | 0 |
+| IA Identification and Authentication | 24 | 18 | 0 | 0 | 6 | 0 |
 | IR Incident Response | 13 | 2 | 0 | 0 | 11 | 0 |
 | MA Maintenance | 9 | 0 | 0 | 0 | 9 | 0 |
 | MP Media Protection | 7 | 0 | 0 | 0 | 7 | 0 |
@@ -25,17 +25,15 @@ OpenTrack (the product), Shared (product and site) or Site (hosting, platform, o
 | PS Personnel Security | 9 | 0 | 0 | 0 | 9 | 0 |
 | RA Risk Assessment | 10 | 2 | 1 | 0 | 7 | 0 |
 | SA System and Services Acquisition | 17 | 11 | 1 | 0 | 5 | 0 |
-| SC System and Communications Protection | 25 | 10 | 1 | 0 | 13 | 1 |
+| SC System and Communications Protection | 25 | 11 | 0 | 0 | 13 | 1 |
 | SI System and Information Integrity | 18 | 8 | 2 | 0 | 6 | 2 |
 | SR Supply Chain Risk Management | 12 | 4 | 0 | 0 | 8 | 0 |
-| **All** | 287 | 119 | 6 | 0 | 159 | 3 |
+| **All** | 287 | 121 | 4 | 0 | 159 | 3 |
 
 Partially implemented and planned controls are on the POA&M (`poam.md`):
 
-- **IA-5(2)** Public Key-based Authentication: partially implemented.
 - **RA-5** Vulnerability Monitoring and Scanning: partially implemented.
 - **SA-22** Unsupported System Components: partially implemented.
-- **SC-18** Mobile Code: partially implemented.
 - **SI-2** Flaw Remediation: partially implemented.
 - **SI-2(2)** Automated Flaw Remediation Status: partially implemented.
 
@@ -1199,11 +1197,11 @@ Passwords must be at least 15 characters with upper case, lower case, a digit an
 
 ### IA-5(2) Public Key-based Authentication
 
-**Status:** Partially implemented · **Responsibility:** Shared
+**Status:** Implemented · **Responsibility:** Shared
 
-For client certificates OpenTrack validates the certification path to the CA in OT_TLS_CLIENT_CA, checks end-entity revocation against CRLs (failing closed on unknown status or a list past its next update, reloading on change), and maps the certificate's CN to an account; the private key stays on the user's token. Revocation status comes from CRLs only: OCSP is not supported (roadmap #21).
+Client certificates are validated to the configured CA and checked for revocation by OCSP (the certificate's AIA responder or OT_TLS_CLIENT_OCSP_URL; answers verified, cached to nextUpdate) with the configured CRLs as fallback; a certificate with neither is refused (fail closed); refusals are audited (certificate_refused, ocsp_unavailable). Certificates map to accounts by CN. The site operates the CA, the responder and the CRLs.
 
-*Evidence:* crates/ot-server/src/https.rs; crates/ot-server/src/auth/mod.rs (from_cert); docs/guides/admin.md#client-certificates; docs/security/stig-mapping.md (IA-5(2), F-6)
+*Evidence:* crates/ot-server/src/cert_status.rs; crates/ot-server/src/ocsp.rs; docs/guides/admin.md#client-certificates
 
 *Site:* Refresh CRLs at least daily into OT_TLS_CLIENT_CRL; POA&M: OCSP support (roadmap #21).
 
@@ -2223,11 +2221,11 @@ The [[SITE: organization]] issues server and client certificates from an approve
 
 ### SC-18 Mobile Code
 
-**Status:** Partially implemented · **Responsibility:** OpenTrack
+**Status:** Implemented · **Responsibility:** OpenTrack
 
-The only mobile code is the UI's own JavaScript bundle, served from the same origin. The Content-Security-Policy allows scripts from this origin only (no inline or evaluated script, object-src 'none', frame-ancestors 'none'), but allows inline styles (style-src 'unsafe-inline'), which React, MapLibre and CodeMirror need (finding F-5, open, low). Plugins are server-side WebAssembly, not browser code.
+The only mobile code is the UI's own JavaScript, served from OpenTrack. The Content Security Policy allows scripts and styles from this origin only; inline styles only with a per-page nonce from the FIPS DRBG (no 'unsafe-inline'), no framing. Injected markup can neither run script nor style the page.
 
-*Evidence:* crates/ot-server/src/control.rs (CSP); docs/security/stig-mapping.md#findings
+*Evidence:* crates/ot-server/src/control.rs (page_csp); ui/src/lib/cspNonce.ts
 
 ### SC-20 Secure Name/Address Resolution Service (Authoritative Source)
 

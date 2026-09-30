@@ -2219,6 +2219,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2288,6 +2297,19 @@ name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
+
+[[package]]
+name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
 
 [[package]]
 name = "nkeys"
@@ -2546,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "ot-codec-stanag4607"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chrono",
  "serde",
@@ -2556,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "ot-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chrono",
  "serde",
@@ -2567,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "ot-nats"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "async-nats",
  "aws-lc-rs",
@@ -2582,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "ot-plugin"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2600,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "ot-sapient"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "prost",
  "prost-reflect",
@@ -2613,7 +2635,7 @@ dependencies = [
 
 [[package]]
 name = "ot-server"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2647,6 +2669,7 @@ dependencies = [
  "rumqttc",
  "rust_xlsxwriter",
  "rustls",
+ "rustls-webpki",
  "samael",
  "serde",
  "serde_json",
@@ -2665,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "ot-source"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2678,6 +2701,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "miette",
+ "nix",
  "ot-codec-stanag4607",
  "ot-core",
  "ot-sapient",
@@ -2705,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "ot-store"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2726,8 +2750,10 @@ dependencies = [
 
 [[package]]
 name = "ot-sync"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "ot-core",
  "serde",
  "serde_json",

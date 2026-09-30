@@ -162,6 +162,8 @@ mod tests {
         assert_eq!(n(Method::PUT, "/correlation/settings"), admin);
         assert_eq!(n(Method::POST, "/sources"), admin);
         assert_eq!(n(Method::PUT, "/settings"), admin);
+        assert_eq!(n(Method::PUT, "/sync/keys/BBB"), admin);
+        assert_eq!(n(Method::DELETE, "/sync/keys/BBB"), admin);
         assert_eq!(n(Method::POST, "/plugins"), admin);
         assert_eq!(n(Method::POST, "/admin/purge"), admin);
         // A prefix is a whole path segment: /groupsx is not /groups.

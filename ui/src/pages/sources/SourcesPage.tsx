@@ -6,6 +6,7 @@ import { ago, errorMessage, fmtCount } from '../../lib/format'
 import { SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
 import { AddSourceWizard } from './AddSourceWizard'
 import { SourceDetail } from './SourceDetail'
+import { UnauthenticatedBadge } from './SenderAuth'
 import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
 
@@ -20,7 +21,7 @@ const COLUMNS: DataTableColumn<SourceRow>[] = [
     header: 'Source',
     render: (s) => (
       <span>
-        {s.name} <span className="muted mono">{s.id}</span>
+        {s.name} <span className="muted mono">{s.id}</span> <UnauthenticatedBadge spec={s.spec} />
       </span>
     ),
     sortValue: (s) => s.name,
@@ -128,7 +129,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
         persistKey="ot.panel.sources"
         titleActions={
           <InfoTip label="Sources columns">
-            State: {SOURCE_STATES_INFO} Emitted: track updates the source has sent on since its worker last started (a restart or a saved
+            Source: an UNAUTHENTICATED badge marks a listener that runs without authenticating its senders, with that risk accepted on the
+            source. State: {SOURCE_STATES_INFO} Emitted: track updates the source has sent on since its worker last started (a restart or a saved
             change resets it). Last frame: how long ago a message last arrived.
           </InfoTip>
         }

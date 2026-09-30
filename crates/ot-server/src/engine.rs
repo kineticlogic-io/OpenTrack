@@ -4870,6 +4870,24 @@ mod tests {
             .unwrap();
     }
 
+    /// Pin every link's public key on every other node (Settings → Nodes).
+    async fn introduce(nodes: &mut [(&Engine, &mut crate::link::Link)]) {
+        let keys: Vec<_> = nodes
+            .iter()
+            .map(|(e, l)| (e.common.site, l.key().public().to_string()))
+            .collect();
+        for (e, l) in nodes.iter_mut() {
+            for (site, key) in keys.clone() {
+                if site != e.common.site {
+                    e.db(move |db| db.sync_pin_key(site, &key, "test"))
+                        .await
+                        .unwrap();
+                }
+            }
+            l.refresh().await.unwrap();
+        }
+    }
+
     /// Deliver `outs` from one link to another, as a networking package
     /// would (addressed messages only to their node), and let the receiving
     /// engine apply what arrived. Returns the receiver's answers.
@@ -4903,6 +4921,7 @@ mod tests {
         let mut la = crate::link::Link::new(a.common.clone()).await.unwrap();
         let mut lb = crate::link::Link::new(b.common.clone()).await.unwrap();
         let mut lc = crate::link::Link::new(c.common.clone()).await.unwrap();
+        introduce(&mut [(&a, &mut la), (&b, &mut lb), (&c, &mut lc)]).await;
 
         for s in 0..3 {
             feed(
@@ -5099,6 +5118,10 @@ mod tests {
         let b = node("BBB", &["radar"], &["AAA", "CCC"]).await.unwrap();
         let c = node("CCC", &[], &["AAA", "BBB"]).await.unwrap();
         let mut nodes = [a, b, c];
+        {
+            let [a, b, c] = &mut nodes;
+            introduce(&mut [(&a.e, &mut a.l), (&b.e, &mut b.l), (&c.e, &mut c.l)]).await;
+        }
         // A ship: A's AIS sees it first, B's radar a little later.
         for s in 0..40 {
             let lat = 32.0 + 0.00001 * s as f64;
@@ -5176,8 +5199,10 @@ mod tests {
             bytes += exchange(&mut nodes).await;
         }
         eprintln!("60 s of a still ship: {bytes} bytes of reports");
+        // Each message carries a 68-byte signature trailer as well.
+        let per = 64 + ot_sync::sign::TRAILER;
         assert!(
-            (64..=6 * 64).contains(&bytes),
+            (per..=6 * per).contains(&bytes),
             "60 s of a still ship cost {bytes} bytes"
         );
 

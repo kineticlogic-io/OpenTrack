@@ -351,7 +351,8 @@ async fn acs_checked(s: &AppState, f: AcsForm, client: &Client) -> Result<Respon
         Ok(Err(why)) => return Err(why.into()),
         Err(e) => return Err(e.message),
     };
-    match super::api::start_session(s, user, client, How::Saml).await {
+    // The body (and its `admin_api`) is not sent: the browser is redirected.
+    match super::api::start_session(s, user, client, How::Saml, true).await {
         Ok((mut headers, _)) => {
             headers.insert(header::LOCATION, HeaderValue::from_static("/"));
             Ok((StatusCode::FOUND, headers).into_response())

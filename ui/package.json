@@ -1,7 +1,7 @@
 {
   "name": "opentrack-ui",
   "private": true,
-  "version": "0.4.4",
+  "version": "0.4.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -35,6 +35,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "staresdk": "file:vendor/staresdk-0.1.9.tgz",
+    "style-mod": "^4.1.4",
     "uplot": "^1.6.32"
   },
   "devDependencies": {

@@ -28,6 +28,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 tower.workspace = true
 tokio-rustls.workspace = true
+webpki.workspace = true
 quick-xml.workspace = true
 socket2.workspace = true
 samael = { workspace = true, optional = true }

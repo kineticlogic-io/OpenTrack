@@ -14,6 +14,17 @@
 #
 # and the same on site B (port 8092, opentrack-b, peers ["AAA"]).
 #
+# Then pin each site's public key on the other (Settings -> Nodes -> Pin key,
+# or through the API, with $B an admin token made on site B likewise):
+# messages are refused until the key is pinned.
+#
+#   KA=$(curl -s localhost:8091/api/v1/sync/keys -H "authorization: Bearer $A" | jq -r .public_key)
+#   KB=$(curl -s localhost:8092/api/v1/sync/keys -H "authorization: Bearer $B" | jq -r .public_key)
+#   curl -X PUT localhost:8091/api/v1/sync/keys/BBB -H "authorization: Bearer $A" \
+#        -H 'content-type: application/json' -d "{\"public_key\": \"$KB\"}"
+#   curl -X PUT localhost:8092/api/v1/sync/keys/AAA -H "authorization: Bearer $B" \
+#        -H 'content-type: application/json' -d "{\"public_key\": \"$KA\"}"
+#
 # Site A is http://localhost:8091, site B http://localhost:8092. Their first
 # admin is admin@example.org with the password in OT_EXAMPLE_PASSWORD.
 x-site: &site

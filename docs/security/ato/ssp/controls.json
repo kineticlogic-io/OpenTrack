@@ -596,10 +596,10 @@
  {
   "id": "ia-5.2",
   "title": "Public Key-based Authentication",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "For client certificates OpenTrack validates the certification path to the CA in OT_TLS_CLIENT_CA, checks end-entity revocation against CRLs (failing closed on unknown status or a list past its next update, reloading on change), and maps the certificate's CN to an account; the private key stays on the user's token. Revocation status comes from CRLs only: OCSP is not supported (roadmap #21).",
-  "evidence": "crates/ot-server/src/https.rs; crates/ot-server/src/auth/mod.rs (from_cert); docs/guides/admin.md#client-certificates; docs/security/stig-mapping.md (IA-5(2), F-6)",
+  "narrative": "Client certificates are validated to the configured CA and checked for revocation by OCSP (the certificate's AIA responder or OT_TLS_CLIENT_OCSP_URL; answers verified, cached to nextUpdate) with the configured CRLs as fallback; a certificate with neither is refused (fail closed); refusals are audited (certificate_refused, ocsp_unavailable). Certificates map to accounts by CN. The site operates the CA, the responder and the CRLs.",
+  "evidence": "crates/ot-server/src/cert_status.rs; crates/ot-server/src/ocsp.rs; docs/guides/admin.md#client-certificates",
   "site": "Refresh CRLs at least daily into OT_TLS_CLIENT_CRL; POA&M: OCSP support (roadmap #21)."
  },
  {
@@ -1622,10 +1622,10 @@
  {
   "id": "sc-18",
   "title": "Mobile Code",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "The only mobile code is the UI's own JavaScript bundle, served from the same origin. The Content-Security-Policy allows scripts from this origin only (no inline or evaluated script, object-src 'none', frame-ancestors 'none'), but allows inline styles (style-src 'unsafe-inline'), which React, MapLibre and CodeMirror need (finding F-5, open, low). Plugins are server-side WebAssembly, not browser code.",
-  "evidence": "crates/ot-server/src/control.rs (CSP); docs/security/stig-mapping.md#findings",
+  "narrative": "The only mobile code is the UI's own JavaScript, served from OpenTrack. The Content Security Policy allows scripts and styles from this origin only; inline styles only with a per-page nonce from the FIPS DRBG (no 'unsafe-inline'), no framing. Injected markup can neither run script nor style the page.",
+  "evidence": "crates/ot-server/src/control.rs (page_csp); ui/src/lib/cspNonce.ts",
   "site": ""
  },
  {

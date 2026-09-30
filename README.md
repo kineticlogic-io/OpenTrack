@@ -64,7 +64,8 @@ OTH-GOLD's track management sets do:
 **Plugins.** Codecs, trackers and pairing scorers of your own, beside the built-in ones. They are
 WebAssembly components run sandboxed inside OpenTrack, with only the memory, time, files and
 network an operator grants them. Or they are external programs serving the same interface over a
-socket, for Python with numpy or Stone Soup, or a GPU. They are managed in Settings → General → Plugins and
+socket, for Python with numpy or Stone Soup, or a GPU; OpenTrack and an external plugin
+authenticate each other with a shared secret on every connection. They are managed in Settings → General → Plugins and
 written with the Rust and Python SDKs in `sdk/`. A scorer's evidence feeds the engine's own pairing
 test, so every decision stays explainable. See [docs/plugins.md](docs/plugins.md).
 
@@ -172,7 +173,7 @@ The UI's tabs:
 
 ## Sources and pipelines
 
-A source is a transport (`tcp_client`, `tcp_server`, `udp` with multicast, `http_poll`, `websocket`,
+A source is a transport (`tcp_client`, `tcp_server`, `udp` with IPv4 or IPv6 multicast, `http_poll`, `websocket`,
 `mqtt`, `grpc_client`, `grpc_server`, `file`, which reads only under the data directory), framing, a codec and a pipeline. Transport metadata reaches the mapping under
 `_frame` (an MQTT topic is `_frame.topic`, `_frame.topic_levels[1]` its second level). Secrets are
 written as `${env:NAME}` and resolved when the source starts.
@@ -183,6 +184,10 @@ certificate for mutual TLS), `server_name` (verify against this name instead of 
 `insecure_skip_verify` (development only). `tcp_server` takes `tls: {cert_file, key_file,
 client_ca_file}`; with a client CA, only clients presenting a certificate it signed are accepted,
 and each client's certificate subject is logged. Files are PEM; paths may use `${env:NAME}`.
+A listening source must authenticate its senders (mutual TLS for `tcp_server`; mutual TLS or a
+bearer `token` for `grpc_server`); one that does not, and every `udp` source, runs only with
+`"unauthenticated": "accepted"` on the source, a recorded risk acceptance
+([hardening checklist](docs/security/hardening.md#encrypt-every-link)).
 
 A source reports either **tracks** (a key per object: AIS, ADS-B, TAK, a radar's own tracks) or
 **detections** (`"reports": "detections"`: anonymous plots). Detections update the nearest system
@@ -276,7 +281,7 @@ Every API call needs a signed-in caller, modelled on OpenStare's sign-in.
   - **Inactivity:** accounts not signed in for 35 days are turned off; an admin turns them on again. Break-glass accounts are exempt (Settings → Users → Never turn off).
   - After signing in, a notice gives the previous sign-in and the failed attempts since.
 - **Audit record:** every decision and every sign-in event (success and failure with reason and address, sign-out, lockout, unlock, session time-out and end, password change and expiry, accounts turned off, settings changes) in an append-only table, each row SHA-256 chained to the one before. Every row is also written to the server log (`audit record`, target `audit`) and exported over OpenTelemetry as a log event named `audit.record`, for a SIEM; `GET /api/v1/audit` filters it and exports CSV and `/api/v1/audit/verify` checks the chain (admins). A sign-in whose record cannot be written is refused. It is kept forever.
-- **Web hardening:** a content security policy, `nosniff`, no framing, no referrer, HSTS over TLS and `no-store` on the API, on every response. The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` over TLS or behind a TLS proxy (`OT_PUBLIC_TLS=1`).
+- **Web hardening:** a content security policy (no inline script; styles only with the page's per-load nonce), `nosniff`, no framing, no referrer, HSTS over TLS and `no-store` on the API, on every response. The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` over TLS or behind a TLS proxy (`OT_PUBLIC_TLS=1`); a change made with it must carry the page's CSRF header and come from this server's origin. Each client's API requests are rate-limited (20 a second, bursts of 100).
 - **Security labels:** a fused track or group is marked with the highest classification of its sources (the order is a correlation setting, Settings → Security → Security labels), the union of their restrictions and the intersection of their releasability.
 - **Settings → Banners** can require users to accept a warning after signing in (as OpenStare's warning banner), besides the classification banner.
 - **`OT_AUTH=off`** turns sign-in off for development: every caller is an admin. The server warns every minute and the UI shows a red banner.
@@ -303,7 +308,7 @@ Everything the UI does is a REST call under `/api/v1`. The main ones:
 | Decisions | `GET /decisions?op=…`, `POST /decisions/{id}/undo` |
 | History | `GET /tracks/{uid}/history`, `POST /history/{uid}/delete` |
 | Sources | `GET/POST /sources`, `GET/PUT/DELETE /sources/{id}`, `POST /sources/{id}/enable`, `/sources/{id}/disable`, `/sources/validate`, `/probe`, `GET /sources/{id}/revisions`, `/sources/{id}/metrics` |
-| Plugins | `GET/POST /plugins`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
+| Plugins | `GET/POST /plugins`, `POST /plugins/secret`, `GET/PUT/DELETE /plugins/{name}`, `POST /plugins/{name}/check` |
 | Tracker profiles | `GET/POST /tracker-profiles`, `GET/DELETE /tracker-profiles/{name}` |
 | Status | `GET /status`, `/metrics`, `/healthz` |
 | Tracks | `GET /tracks`, `GET /tracks/{uid}`, `GET /tracks/{uid}/explain` |
@@ -413,7 +418,10 @@ Turning it on:
 | `OT_PUBLIC_URL` | | where browsers reach OpenTrack (`https://host:8090`); SAML needs it |
 | `OT_TLS_CERT`, `OT_TLS_KEY` | | serve the API and UI over TLS (cookies become `Secure`) |
 | `OT_TLS_CLIENT_CA` | | with TLS, accept client certificates this CA signed, as the accounts Settings → Security maps them to |
-| `OT_TLS_CLIENT_CRL` | | revocation lists for those client certificates (PEM/DER files or directories, comma separated); revoked, uncovered or stale-listed certificates are refused; reloaded on change |
+| `OT_TLS_CLIENT_CRL` | | revocation lists for those client certificates (PEM/DER files or directories, comma separated), used when OCSP gives no answer; revoked, uncovered or stale-listed certificates are refused; reloaded on change |
+| `OT_TLS_CLIENT_OCSP_URL` | | the OCSP responder to ask about client certificates instead of each one's own (AIA); with neither an OCSP answer nor a revocation list a certificate is refused |
+| `OT_ADMIN_BIND` | | also listen here, and serve the admin routes only here (the main address answers them 404); for a management network |
+| `OT_ADMIN_TLS_CERT`, `OT_ADMIN_TLS_KEY`, `OT_ADMIN_TLS_CLIENT_CA` | | the admin listener's own TLS; unset, the main listener's (the CRLs are shared) |
 | `OT_REDIS_CA`, `OT_REDIS_CERT`, `OT_REDIS_KEY` | | TLS to Redis with a `rediss://` URL: trust this CA; mutual TLS with this certificate and key |
 | `OT_PUBLIC_TLS` | off | `1`: a proxy in front ends TLS, so cookies are `Secure` and HSTS is sent (also implied by an `https://` `OT_PUBLIC_URL`) |
 | `OT_SYNC_PREFIX` | `ot.sync` | subject prefix of the sync boundary with other nodes (`<prefix>.out.*`, `<prefix>.in.*`) |

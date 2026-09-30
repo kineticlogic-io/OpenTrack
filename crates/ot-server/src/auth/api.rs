@@ -17,7 +17,7 @@ use ot_store::AuditEvent;
 use ot_store::sqlite::now_ms;
 
 use super::sessions::ended;
-use super::{AuthSettings, AuthUser, Role, Via, hash_password, verify_password};
+use super::{AdminElsewhere, AuthSettings, AuthUser, Role, Via, hash_password, verify_password};
 use super::{password, stig};
 use crate::api::actor;
 use crate::control::{ApiError, AppState};
@@ -151,7 +151,14 @@ async fn consent(
     Ok(Json(json!({ "consent_required": false })))
 }
 
-pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiError> {
+/// `admin_api`: whether this listener serves the admin routes (not when
+/// they are on the admin listener, `OT_ADMIN_BIND`), so the page shows
+/// admin areas only where they work.
+pub(super) async fn me_value(
+    s: &AppState,
+    u: &AuthUser,
+    admin_api: bool,
+) -> Result<Value, ApiError> {
     let session = u.via == Via::Session;
     let (id, jti) = (u.id.clone(), u.jti.as_ref().map(|j| j.0.clone()));
     let (user, row) = if session {
@@ -172,6 +179,7 @@ pub(super) async fn me_value(s: &AppState, u: &AuthUser) -> Result<Value, ApiErr
         "can_change_password": session && has_password,
         "must_change_password": false,
         "consent_required": s.auth.consent.required(s, u).await,
+        "admin_api": admin_api,
     });
     if let Some(user) = &user {
         v["must_change_password"] = json!(has_password && user.must_change_password);
@@ -203,6 +211,7 @@ pub(super) async fn start_session(
     user: ot_store::User,
     client: &Client,
     how: How,
+    admin_api: bool,
 ) -> Result<(HeaderMap, Value), ApiError> {
     let settings = s.auth.settings();
     let now = now_ms();
@@ -292,7 +301,7 @@ pub(super) async fn start_session(
         must_change: false,
         sso: how == How::Saml,
     };
-    Ok((headers, me_value(s, &au).await?))
+    Ok((headers, me_value(s, &au, admin_api).await?))
 }
 
 /// What every refused password sign-in says, whatever the reason.
@@ -301,6 +310,7 @@ const GENERIC_FAILURE: &str = "wrong email or password";
 async fn login(
     State(s): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    elsewhere: Option<Extension<AdminElsewhere>>,
     headers: HeaderMap,
     Json(b): Json<Login>,
 ) -> Result<Response, ApiError> {
@@ -403,7 +413,8 @@ async fn login(
         s.with_db(move |db| db.rehash_password(&id, &new)).await?;
         tracing::info!(user = %user.email, "password hash upgraded to PBKDF2");
     }
-    let (headers, body) = start_session(&s, user, &client, How::Password).await?;
+    let (headers, body) =
+        start_session(&s, user, &client, How::Password, elsewhere.is_none()).await?;
     Ok((headers, Json(body)).into_response())
 }
 
@@ -458,8 +469,9 @@ async fn public(State(s): State<AppState>) -> Json<Value> {
 async fn me(
     State(s): State<AppState>,
     Extension(u): Extension<AuthUser>,
+    elsewhere: Option<Extension<AdminElsewhere>>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(me_value(&s, &u).await?))
+    Ok(Json(me_value(&s, &u, elsewhere.is_none()).await?))
 }
 
 #[derive(Deserialize)]
@@ -475,6 +487,7 @@ async fn change_password(
     State(s): State<AppState>,
     Extension(u): Extension<AuthUser>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    elsewhere: Option<Extension<AdminElsewhere>>,
     headers: HeaderMap,
     Json(b): Json<ChangePassword>,
 ) -> Result<Response, ApiError> {
@@ -539,7 +552,8 @@ async fn change_password(
         .with_db(move |db| db.user_by_email(&u.email))
         .await?
         .ok_or_else(|| ApiError::not_found("account"))?;
-    let (headers, body) = start_session(&s, user, &client, How::PasswordChange).await?;
+    let (headers, body) =
+        start_session(&s, user, &client, How::PasswordChange, elsewhere.is_none()).await?;
     Ok((headers, Json(body)).into_response())
 }
 
@@ -1065,7 +1079,12 @@ mod tests {
         }
         match auth {
             Some(a) if a.starts_with("Bearer ") => req = req.header("authorization", a),
-            Some(c) => req = req.header("cookie", c),
+            // As the page does, which sends the CSRF header with every call.
+            Some(c) => {
+                req = req
+                    .header("cookie", c)
+                    .header(super::super::csrf::HEADER, "1")
+            }
             None => {}
         }
         // Clients cannot say who they are this way.
@@ -1419,6 +1438,91 @@ mod tests {
         )
         .await;
         (st, c)
+    }
+
+    #[tokio::test]
+    async fn with_an_admin_listener_the_main_one_does_not_serve_admin_routes() {
+        let Some((admin_app, _)) = app_and_state().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        // As main.rs builds the main listener's router with OT_ADMIN_BIND.
+        let main = admin_app
+            .clone()
+            .layer(Extension(crate::auth::AdminElsewhere));
+        let (st, v, root) = call(
+            &main,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "root@x.org", "password": ROOT })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["admin_api"], json!(false), "{v}");
+        let root = root.unwrap();
+        let (_, v, _) = call(&main, "GET", "/api/v1/auth/me", Some(&root), None).await;
+        assert_eq!(v["admin_api"], json!(false), "{v}");
+        // Admin reads and changes: not here, for an admin.
+        for (method, uri, body) in [
+            ("GET", "/api/v1/auth/users", None),
+            ("GET", "/api/v1/audit", None),
+            (
+                "POST",
+                "/api/v1/auth/users",
+                Some(json!({ "email": "no@x.org", "role": "viewer", "password": VIEW })),
+            ),
+        ] {
+            let (st, v, _) = call(&main, method, uri, Some(&root), body).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{method} {uri}: {v}");
+            assert!(
+                v["error"].as_str().unwrap().contains("admin listener"),
+                "{v}"
+            );
+        }
+        // Reads, and the account's own things, still are.
+        let (st, v, _) = call(&main, "GET", "/api/v1/sources", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let (st, ..) = call(&main, "GET", "/api/v1/auth/sessions", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK);
+        // Unauthenticated and under-privileged callers are refused as ever.
+        let (st, ..) = call(&main, "GET", "/api/v1/auth/users", None, None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+        // The admin listener serves them, with the same session.
+        let (st, v, _) = call(&admin_app, "GET", "/api/v1/auth/me", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["admin_api"], json!(true), "{v}");
+        let (st, v, _) = call(
+            &admin_app,
+            "POST",
+            "/api/v1/auth/users",
+            Some(&root),
+            Some(json!({ "email": "al@x.org", "role": "viewer", "password": VIEW })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+        let (st, _, _) = call(&admin_app, "GET", "/api/v1/auth/users", Some(&root), None).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // A viewer on the main listener: a password change answers
+        // admin_api false too, and an admin route is still a 403 for it.
+        let (_, viewer) = sign_in(&main, "al@x.org", VIEW).await;
+        let (st, v, _) = call(
+            &main,
+            "POST",
+            "/api/v1/auth/password",
+            viewer.as_deref(),
+            Some(json!({ "current": VIEW, "new": VIEW2 })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["admin_api"], json!(false), "{v}");
+        let (_, viewer) = sign_in(&main, "al@x.org", VIEW2).await;
+        let (st, ..) = call(&main, "GET", "/api/v1/auth/users", viewer.as_deref(), None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        let (st, ..) = call(&main, "GET", "/api/v1/sources", viewer.as_deref(), None).await;
+        assert_eq!(st, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -2028,7 +2132,7 @@ mod tests {
             .await
             .unwrap();
         let id = user.id.clone();
-        let (headers, _) = start_session(state, user, &Client::default(), How::Saml)
+        let (headers, _) = start_session(state, user, &Client::default(), How::Saml, true)
             .await
             .unwrap();
         let cookie = headers[header::SET_COOKIE]
@@ -2426,5 +2530,198 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    /// A request with exactly these headers, from one address.
+    async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, HeaderMap, Value) {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(ConnectInfo(std::net::SocketAddr::from((
+                [10, 7, 0, 1],
+                40000,
+            ))));
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let body = match body {
+            Some(b) => {
+                req = req.header("content-type", "application/json");
+                Body::from(b.to_string())
+            }
+            None => Body::empty(),
+        };
+        let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            headers,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn audit_ops(body: &Value) -> Vec<(String, String)> {
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["op"].as_str().unwrap_or("").to_owned(),
+                    format!("{} {}", r["outcome"], r["detail"]),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cookie_borne_change_must_come_from_the_page() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, _, cookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "root@x.org", "password": ROOT })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = cookie.unwrap();
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "script" })),
+        )
+        .await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        let host = ("host", "ot.test:8090");
+        let csrf = (super::super::csrf::HEADER, "1");
+        let change = Some(json!({ "name": "another" }));
+        let path = "/api/v1/auth/api-tokens";
+
+        // The session cookie alone: another site's form could send that.
+        let c = [("cookie", admin.as_str()), host];
+        let (st, _, body) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("csrf"))
+        );
+        // With the header but from another site.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            csrf,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // The page: its own origin and the header.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            csrf,
+            ("origin", "http://ot.test:8090"),
+        ];
+        let (st, _, body) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        // Reads need neither.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+        assert_eq!(st, StatusCode::OK);
+        // A script's token needs no header, but not from another site's page.
+        let c = [("authorization", bearer.as_str()), host];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::CREATED);
+        let c = [
+            ("authorization", bearer.as_str()),
+            host,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // Nor sign in from another site's page (login CSRF).
+        let c = [host, ("origin", "http://evil.test")];
+        let login = Some(json!({ "email": "root@x.org", "password": ROOT }));
+        let (st, ..) = send(&app, "POST", "/api/v1/auth/login", &c, login.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // The sign-in page itself sends its origin.
+        let c = [host, ("origin", "http://ot.test:8090")];
+        let (st, ..) = send(&app, "POST", "/api/v1/auth/login", &c, login).await;
+        assert_eq!(st, StatusCode::OK);
+
+        let (_, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
+        let csrf_denials = audit_ops(&body)
+            .into_iter()
+            .filter(|(op, d)| op == "access_denied" && d.contains("failure") && d.contains("csrf"))
+            .count();
+        assert_eq!(csrf_denials, 4, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_flood_is_answered_429_and_audited_once() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, _, cookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "root@x.org", "password": ROOT })),
+        )
+        .await;
+        let admin = cookie.unwrap();
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "flood" })),
+        )
+        .await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        let c = [("authorization", bearer.as_str())];
+        // The burst, and whatever the rate refills while it is sent.
+        let mut allowed = 0;
+        let refused = loop {
+            let (st, h, _) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+            if st == StatusCode::TOO_MANY_REQUESTS {
+                break h;
+            }
+            assert_eq!(st, StatusCode::OK);
+            allowed += 1;
+            assert!(allowed < 1_000, "never limited");
+        };
+        assert!(allowed >= super::super::rate::BURST as usize, "{allowed}");
+        assert_eq!(refused["retry-after"], "1");
+        for _ in 0..5 {
+            let (st, ..) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+            assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+        }
+        // Each token is a client of its own: the account's session goes on.
+        let (st, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let limited = audit_ops(&body)
+            .into_iter()
+            .filter(|(op, d)| op == "rate_limited" && d.contains("failure"))
+            .count();
+        assert_eq!(limited, 1, "{body}");
     }
 }

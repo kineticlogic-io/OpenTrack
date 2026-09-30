@@ -11,10 +11,16 @@
 //!   <detail>
 //!     <track course="270.0" speed="5.00"/>
 //!     <contact callsign="TED STEVENS"/>
-//!     <remarks>OpenTrack OTK000000001; sources: ais</remarks>
+//!     <__security classification="SECRET" caveats="ORCON" releasability="USA, GBR"
+//!                 marking="(S//ORCON/REL TO USA, GBR)"/>
+//!     <remarks>(S//ORCON/REL TO USA, GBR) OpenTrack OTK000000001; sources: ais</remarks>
 //!   </detail>
 //! </event>
 //! ```
+//!
+//! A track with no security label has no `__security` element and no
+//! marking in its remarks. One with a label always has both, whether or not
+//! the output adds remarks: without them, the remarks are the marking alone.
 //!
 //! and its delete, in the form ATAK itself sends (a `t-x-d-d` event whose
 //! `link` names the item, with `__forcedelete`, stale at once):
@@ -58,6 +64,8 @@ pub struct CotTrack {
     pub speed: Option<f64>,
     pub callsign: String,
     pub remarks: String,
+    /// The track's security label, when it has one.
+    pub security: Option<ot_core::SecurityLabel>,
 }
 
 /// A track's CoT type: from its SIDC (the feed's 2525C, 2525D or CoT type,
@@ -139,6 +147,7 @@ impl CotTrack {
             speed: known(v.kinematics.speed_mps),
             callsign: callsign(track),
             remarks,
+            security: v.security.clone(),
         }
     }
 }
@@ -205,7 +214,8 @@ fn point(w: &mut Writer<Vec<u8>>, lat: f64, lon: f64, hae: f64, ce: f64, le: f64
 /// source whose clock runs ahead) and stale `stale` after it, so TAK lets a
 /// track go when its reports stop, however often it is re-sent. `None` once
 /// that is past: nothing to send. `remarks`: add the remarks (track number
-/// and sources).
+/// and sources). A labelled track's marking goes out either way: a
+/// `__security` element and the start of the remarks.
 pub fn event_xml(
     t: &CotTrack,
     now: DateTime<Utc>,
@@ -251,9 +261,28 @@ pub fn event_xml(
             BytesStart::new("contact").with_attributes([("callsign", t.callsign.as_str())]),
         ),
     );
-    if remarks && !t.remarks.is_empty() {
+    let marking = t.security.as_ref().map(ot_core::SecurityLabel::marking);
+    if let (Some(l), Some(m)) = (&t.security, &marking) {
+        let mut e = BytesStart::new("__security");
+        e.push_attribute(("classification", l.classification.trim()));
+        if !l.restrictions.is_empty() {
+            e.push_attribute(("caveats", l.restrictions.join("/").as_str()));
+        }
+        if let Some(r) = l.sharing.as_deref() {
+            e.push_attribute(("releasability", r));
+        }
+        e.push_attribute(("marking", m.as_str()));
+        write(&mut w, Event::Empty(e));
+    }
+    let text = match (marking, remarks && !t.remarks.is_empty()) {
+        (Some(m), true) => Some(format!("{m} {}", t.remarks)),
+        (Some(m), false) => Some(m),
+        (None, true) => Some(t.remarks.clone()),
+        (None, false) => None,
+    };
+    if let Some(text) = text {
         write(&mut w, Event::Start(BytesStart::new("remarks")));
-        write(&mut w, Event::Text(BytesText::new(&t.remarks)));
+        write(&mut w, Event::Text(BytesText::new(&text)));
         write(&mut w, Event::End(BytesEnd::new("remarks")));
     }
     write(&mut w, Event::End(BytesEnd::new("detail")));
@@ -539,6 +568,54 @@ pub(crate) mod tests {
         assert_eq!(
             many,
             "OpenTrack OTK000000006; sources: ais, s0, s1, s2, s3 and 3 more"
+        );
+    }
+
+    #[test]
+    fn a_labelled_track_carries_its_marking() {
+        let t = track(
+            8,
+            serde_json::json!({"security": {
+                "classification": "SECRET", "restrictions": ["orcon", "<x&y>"],
+                "sharing": "GBR, USA"
+            }}),
+        );
+        let c = CotTrack::of(&t);
+        for with_remarks in [true, false] {
+            let xml = event_xml(&c, at(), Duration::from_secs(60), with_remarks).unwrap();
+            let parsed = parse(&xml);
+            let sec = &parsed.iter().find(|(n, _)| n == "__security").unwrap().1;
+            assert_eq!(sec["classification"], "SECRET");
+            assert_eq!(sec["caveats"], "orcon/<x&y>");
+            assert_eq!(sec["releasability"], "GBR, USA");
+            let marking = "(S//ORCON/<X&Y>/REL TO USA, GBR)";
+            assert_eq!(sec["marking"], marking);
+            // Inside detail, before the remarks.
+            let names: Vec<&str> = parsed.iter().map(|(n, _)| n.as_str()).collect();
+            let at_sec = names.iter().position(|n| *n == "__security").unwrap();
+            let at_detail = names.iter().position(|n| *n == "detail").unwrap();
+            assert!(at_detail < at_sec);
+            let text = &parsed.iter().find(|(n, _)| n == "#text").unwrap().1[""];
+            if with_remarks {
+                assert_eq!(
+                    text,
+                    &format!("{marking} OpenTrack OTK000000008; sources: ais")
+                );
+            } else {
+                assert_eq!(text, marking, "the marking alone when remarks are off");
+            }
+        }
+        // Unlabelled: neither.
+        let plain = CotTrack::of(&track(9, serde_json::json!({})));
+        let parsed = parse(&event_xml(&plain, at(), Duration::from_secs(60), true).unwrap());
+        assert!(parsed.iter().all(|(n, _)| n != "__security"));
+        let text = &parsed.iter().find(|(n, _)| n == "#text").unwrap().1[""];
+        assert!(text.starts_with("OpenTrack "), "{text}");
+        let parsed = parse(&event_xml(&plain, at(), Duration::from_secs(60), false).unwrap());
+        assert!(
+            parsed
+                .iter()
+                .all(|(n, _)| n != "remarks" && n != "__security")
         );
     }
 
