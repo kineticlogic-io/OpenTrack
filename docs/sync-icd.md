@@ -1,6 +1,6 @@
 # OpenTrack sync messages: interface control document
 
-Version 1. The implementation is `crates/ot-sync/src/wire.rs`, and its tests pin the byte layouts below.
+Version 2. The implementation is `crates/ot-sync/src/wire.rs` and `crates/ot-sync/src/sign.rs`, and their tests pin the byte layouts below. Version 2 is version 1 with a signature on every message (0.4.5).
 
 This document is for whatever carries OpenTrack's messages between nodes (the *networking package*). OpenTrack does no networking between nodes. It hands its messages to the package on the node's own NATS server, and receives other nodes' messages from the package the same way. The design is in [multi-node.md](multi-node.md).
 
@@ -16,9 +16,9 @@ This document is for whatever carries OpenTrack's messages between nodes (the *n
 An `out` message with the header `OT-To: <site code>` is for that node only; without it, it is for every node. The package delivers the payload unchanged on `in` at each destination. It may keep the same `<kind>`, or deliver everything on any `in` subject: OpenTrack reads the kind from the payload.
 
 What OpenTrack needs from the package:
-- **Payloads are opaque and at most 1024 bytes.** Deliver them byte for byte.
+- **Payloads are opaque and at most 1024 bytes**, signature included. Deliver them byte for byte. The signature is in the payload, not in NATS headers, so a package that carries only payloads loses nothing.
 - **Delivery may be lossy.** Messages may be dropped, duplicated, reordered or delayed. OpenTrack repairs what matters (decisions) itself, and everything else is replaced by the next message.
-- **The sender is authenticated.** Every payload names its sending node by site code. OpenTrack trusts that name, and drops messages from site codes an admin has not listed as peers. Proving the name is the package's job (keys, certificates, radio crypto).
+- **Nothing about the sender.** Every payload names its sending node by site code and is signed with that node's key (see *Signature*). OpenTrack checks the signature itself, so a package need not prove the sender, though it may (and should keep strangers off the link: a refused message still costs bandwidth).
 - **Priority, when the link is short.** In order of importance: `decision`, `want`, `summary`, `release`, `report`, then `attrs`. `attrs` can be dropped first.
 - **No echo needed.** OpenTrack ignores its own messages if they come back.
 
@@ -36,12 +36,12 @@ All integers are big-endian. A *site code* is 3 ASCII bytes, A–Z or 0–9. A *
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 2 | magic `"OT"` (`0x4F 0x54`) |
-| 2 | 1 | version, `1`; receivers drop other versions |
+| 2 | 1 | version, `2`; receivers drop other versions |
 | 3 | 1 | kind: 1 report, 2 attrs, 3 decision, 4 summary, 5 want, 6 release |
 | 4 | 3 | sender's site code |
 | 7 | 8 | sender's clock (HLC) when sent: Unix ms × 65536 + counter |
 
-The body follows directly, and nothing may follow the body.
+The body follows directly, then the signature trailer (below). Nothing else may follow the body.
 
 ### 1: `report`: tracks the sender reports
 
@@ -121,6 +121,34 @@ It is sent to the node whose summary showed the gap (`OT-To`), which answers wit
 ### 6: `release`: tracks the sender stops reporting
 
 Body: `u16` count, then that many UIDs. It is sent when a node leaves, so that others take its tracks over at once instead of after two missed heartbeats (24 s).
+
+## Signature
+
+Every message ends with a 68-byte trailer:
+
+| Offset from the end | Size | Field |
+|---|---|---|
+| −68 | 4 | key id: the first 4 bytes of SHA-256 of the sender's 32-byte Ed25519 public key |
+| −64 | 64 | Ed25519 signature (RFC 8032, FIPS 186-5) |
+
+The signature covers every byte before it: the envelope, the body and the key id. A node signs each message once, whoever it is for, so a broadcast costs one signature, not one per peer. The key id only tells a receiver which key was used (for a clear refusal after a key change); the signature decides.
+
+Keys:
+- Each node makes its key pair once, in the FIPS module, and keeps it in `sync.key` beside its database (readable by its owner only).
+- A public key is written `ed25519:` then the 32 bytes in standard base64. People compare it by its fingerprint: the first 16 bytes of the SHA-256 of the key, in hex, in groups of four characters.
+- An admin pins each peer's public key in **Settings → Nodes**.
+
+A receiver accepts a message only if all of these hold:
+1. its site code is in **Trusted nodes** and a key is pinned for it (otherwise *untrusted* or *no key*);
+2. the signature verifies with that key (otherwise *bad signature*; logged, and audited as possible impersonation);
+3. its envelope clock is within 5 minutes of the receiver's clock (otherwise *stale*);
+4. the same signature has not been accepted before (otherwise *replayed*). Ed25519 signatures are deterministic, so a copy of a message has the same signature. Receivers remember accepted signatures for 10 minutes, twice the clock window, so a copy is refused whenever it arrives.
+
+Refused messages are counted in the link status (Settings → Nodes), and logged at most once a minute per site.
+
+Replays beyond the message: decisions carry global ids (`<site>:<seq>`), so a decision already held changes nothing, even inside a fresh message. A `want` answer is new messages with a new clock.
+
+What a signature does not cover: a node may relay decisions another node made (anti-entropy), and those entries are not signed by the node that made them. A trusted node can therefore claim that another trusted node made a decision. It could make the same decision under its own name anyway, since any node decides, so this gives it nothing more.
 
 ## Change control
 

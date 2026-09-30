@@ -309,6 +309,13 @@ def main(argv):
             http(n.api, "POST", "/sources/sensor/enable")
             http(n.api, "PUT", "/settings", {"sync": {"enabled": True, "peers": [s for s in sites if s != n.site],
                                                       "budget_kbps": a.budget_kbps}})
+        # Every node accepts only messages signed with a key pinned for the
+        # sender (Settings -> Nodes): pin each node's key on the others.
+        keys = {n.site: http(n.api, "GET", "/sync/keys")["public_key"] for n in nodes}
+        for n in nodes:
+            for site, key in keys.items():
+                if site != n.site:
+                    http(n.api, "PUT", f"/sync/keys/{site}", {"public_key": key})
         blog = open(out / "bridge.log", "w")
         bridge = subprocess.Popen(bridge_cmd, env={"PATH": "/usr/bin:/bin", "OT_LOG": "info"}, stdout=blog, stderr=blog)
         procs.append(bridge)

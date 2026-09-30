@@ -2728,6 +2728,8 @@ dependencies = [
 name = "ot-sync"
 version = "0.4.4"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "ot-core",
  "serde",
  "serde_json",

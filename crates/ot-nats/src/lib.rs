@@ -51,6 +51,105 @@ pub struct NatsSettings {
     pub max_age: Duration,
 }
 
+impl NatsSettings {
+    /// The credentials and TLS part of these settings.
+    pub fn auth(&self) -> NatsAuth {
+        NatsAuth {
+            creds_file: self.creds_file.clone(),
+            token: self.token.clone(),
+            user: self.user.clone(),
+            password: self.password.clone(),
+            tls_ca: self.tls_ca.clone(),
+            tls_cert: self.tls_cert.clone(),
+            tls_key: self.tls_key.clone(),
+        }
+    }
+}
+
+/// How a client proves who it is to a NATS server, and how it checks the
+/// server: what every OpenTrack connection to NATS shares (the tracks
+/// connection here, and `opentrack bridge`'s one per node).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct NatsAuth {
+    /// Credentials file (JWT + NKey), if the server uses decentralised auth.
+    pub creds_file: Option<PathBuf>,
+    pub token: Option<String>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// TLS to the server: trust this CA (PEM) and require TLS.
+    pub tls_ca: Option<PathBuf>,
+    /// A client certificate and key (PEM) for mutual TLS.
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+}
+
+/// Secrets never reach a log line: only whether each is set.
+impl std::fmt::Debug for NatsAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set = |o: bool| if o { "<set>" } else { "<none>" };
+        f.debug_struct("NatsAuth")
+            .field("creds_file", &self.creds_file)
+            .field("token", &set(self.token.is_some()))
+            .field("user", &self.user)
+            .field("password", &set(self.password.is_some()))
+            .field("tls_ca", &self.tls_ca)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .finish()
+    }
+}
+
+/// Connect options carrying `auth`: the `.creds` sign-in (the nonce signed
+/// in the FIPS module), token or user and password, and TLS (through the
+/// process's rustls provider, which `opentrack` sets to the FIPS one before
+/// anything connects). The caller adds its name, retries and timeouts.
+pub async fn connect_options(auth: &NatsAuth) -> Result<ConnectOptions, NatsError> {
+    // `.creds` sign-in signs the server's nonce in the FIPS module.
+    let mut opts = match &auth.creds_file {
+        Some(path) => {
+            let bad =
+                |e: String| NatsError::Connect(format!("credentials {}: {e}", path.display()));
+            let text = tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| bad(e.to_string()))?;
+            let creds = std::sync::Arc::new(creds::Creds::parse(&text).map_err(bad)?);
+            ConnectOptions::with_auth_callback(move |nonce| {
+                let creds = creds.clone();
+                async move {
+                    let mut auth = async_nats::Auth::new();
+                    auth.jwt = Some(creds.jwt.clone());
+                    auth.signature = Some(creds.sign(&nonce));
+                    Ok(auth)
+                }
+            })
+        }
+        None => ConnectOptions::new(),
+    };
+    if let Some(token) = &auth.token {
+        opts = opts.token(token.clone());
+    }
+    if let (Some(user), Some(pass)) = (&auth.user, &auth.password) {
+        opts = opts.user_and_password(user.clone(), pass.clone());
+    }
+    if let Some(ca) = &auth.tls_ca {
+        opts = opts.add_root_certificates(ca.clone()).require_tls(true);
+    }
+    match (&auth.tls_cert, &auth.tls_key) {
+        (Some(cert), Some(key)) => {
+            opts = opts
+                .add_client_certificate(cert.clone(), key.clone())
+                .require_tls(true);
+        }
+        (None, None) => {}
+        _ => {
+            return Err(NatsError::Connect(
+                "a client certificate needs its key, and the other way round".into(),
+            ));
+        }
+    }
+    Ok(opts)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NatsError {
     #[error("NATS connect: {0}")]
@@ -141,54 +240,12 @@ impl Nats {
     /// Connect without waiting for the server: the client keeps retrying in
     /// the background, and publishes fail (transiently) until it is up.
     pub async fn connect(settings: NatsSettings) -> Result<Self, NatsError> {
-        // `.creds` sign-in signs the server's nonce in the FIPS module.
-        let base = match &settings.creds_file {
-            Some(path) => {
-                let bad =
-                    |e: String| NatsError::Connect(format!("credentials {}: {e}", path.display()));
-                let text = tokio::fs::read_to_string(path)
-                    .await
-                    .map_err(|e| bad(e.to_string()))?;
-                let creds = std::sync::Arc::new(creds::Creds::parse(&text).map_err(bad)?);
-                ConnectOptions::with_auth_callback(move |nonce| {
-                    let creds = creds.clone();
-                    async move {
-                        let mut auth = async_nats::Auth::new();
-                        auth.jwt = Some(creds.jwt.clone());
-                        auth.signature = Some(creds.sign(&nonce));
-                        Ok(auth)
-                    }
-                })
-            }
-            None => ConnectOptions::new(),
-        };
-        let mut opts = base
+        let opts = connect_options(&settings.auth())
+            .await?
             .name(&settings.name)
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(5))
             .max_reconnects(None);
-        if let Some(token) = &settings.token {
-            opts = opts.token(token.clone());
-        }
-        if let (Some(user), Some(pass)) = (&settings.user, &settings.password) {
-            opts = opts.user_and_password(user.clone(), pass.clone());
-        }
-        if let Some(ca) = &settings.tls_ca {
-            opts = opts.add_root_certificates(ca.clone()).require_tls(true);
-        }
-        match (&settings.tls_cert, &settings.tls_key) {
-            (Some(cert), Some(key)) => {
-                opts = opts
-                    .add_client_certificate(cert.clone(), key.clone())
-                    .require_tls(true);
-            }
-            (None, None) => {}
-            _ => {
-                return Err(NatsError::Connect(
-                    "a client certificate needs its key, and the other way round".into(),
-                ));
-            }
-        }
         let client = opts
             .connect(settings.url.as_str())
             .await
@@ -464,6 +521,39 @@ mod tests {
         })
         .await;
         assert!(matches!(r, Err(NatsError::Connect(m)) if m.contains("key")));
+    }
+
+    #[tokio::test]
+    async fn a_bad_credentials_file_fails_before_connecting() {
+        let dir = std::env::temp_dir().join(format!("ot-nats-creds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.creds");
+        std::fs::write(&path, "not a creds file").unwrap();
+        let auth = NatsAuth {
+            creds_file: Some(path),
+            ..Default::default()
+        };
+        let r = connect_options(&auth).await;
+        assert!(matches!(r, Err(NatsError::Connect(m)) if m.contains("no user JWT")));
+        let missing = NatsAuth {
+            creds_file: Some(dir.join("missing.creds")),
+            ..Default::default()
+        };
+        assert!(connect_options(&missing).await.is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn auth_debug_hides_the_secrets() {
+        let auth = NatsAuth {
+            token: Some("s3cret-token".into()),
+            user: Some("bridge".into()),
+            password: Some("s3cret-pass".into()),
+            ..Default::default()
+        };
+        let shown = format!("{auth:?}");
+        assert!(!shown.contains("s3cret"), "{shown}");
+        assert!(shown.contains("bridge") && shown.contains("<set>"));
     }
 
     fn msg(n: &Nats, id: &str, msg_id: &str, body: &str) -> Outgoing {

@@ -49,6 +49,7 @@ themselves are described in the administrator guide, under
 |---|---|
 | Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
+| `opentrack bridge` | the same for each node's NATS: `tls://` URLs, `OT_BRIDGE_NATS_CA`, `OT_BRIDGE_NATS_CERT` / `OT_BRIDGE_NATS_KEY`, `OT_BRIDGE_NATS_CREDS`; per node after the URL (`;ca=`, `;cert=`, `;key=`, `;creds=`). Passwords and tokens from files (`OT_BRIDGE_NATS_PASSWORD_FILE`, `OT_BRIDGE_NATS_TOKEN_FILE`), not flags |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |
 | Feeds | each source's transport TLS settings; don't use `insecure_skip_verify` |
 | TAK output | Settings → TAK output: a TAK Server over TLS (8089) with a client certificate; a listening output with TLS and a **client CA** (and revocation lists) so only enrolled TAK clients connect |
@@ -64,6 +65,13 @@ events carry its marking (a `__security` element and the start of the remarks), 
 them; it does not protect them.
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
+
+**Pin every peer's key (multi-node).** Sync messages between nodes are signed with each node's
+Ed25519 key and accepted only from trusted nodes whose public key an admin has pinned in
+**Settings → Nodes**. Compare fingerprints over a second channel when pinning, keep `sync.key`
+readable by the service account only, and remove a lost or captured node's key on every other node
+at once. Keep nodes' clocks within 5 minutes (NTP, GPS): older messages are refused as possible
+replays. See the admin guide, [Signed sync messages](../guides/admin.md#signed-sync-messages).
 
 **Open only the ports you use.** Every port, protocol and service OpenTrack listens on or connects
 to, with its default and its TLS and authentication options, is in the admin guide's
