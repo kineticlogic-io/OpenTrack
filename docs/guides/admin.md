@@ -159,7 +159,7 @@ the actor `cli`. The commands open the database directly, so they work while the
 | Command | What it does |
 |---|---|
 | `opentrack user list` | Every account: email, role, origin (`local` or `saml`), active or off, and whether it has a password. |
-| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin]` | Adds an account. With `--password-stdin` the password is the first line of standard input (at least 8 characters). Without one, the account can only use single sign-on or an API token. |
+| `opentrack user add <email> --role <role> [--name <name>] [--password-stdin]` | Adds an account. With `--password-stdin` the password is the first line of standard input (it must meet the [password policy](#passwords)). Without one, the account can only use single sign-on or an API token. |
 | `opentrack user role <email> <role>` | Changes the role: `viewer`, `track_manager` or `admin`. |
 | `opentrack user passwd <email>` | Sets the password from standard input. The account's sessions and API tokens end. |
 | `opentrack user disable <email>` / `enable <email>` | Turns the account off (its sessions and tokens stop working at once) or on. |
@@ -412,7 +412,7 @@ Every change records the account that made it in the decision log.
 ### First admin
 
 When the database has no accounts, `serve` makes an admin:
-- from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD` (at least 8 characters, or the server refuses to
+- from `OT_ADMIN_EMAIL` and `OT_ADMIN_PASSWORD` (it must meet the [password policy](#passwords), or the server refuses to
   start); or, without them,
 - `admin@opentrack.local`, with a made-up password written to `initial-admin.txt` beside the
   database. The log says where.
@@ -432,8 +432,8 @@ command line: `opentrack user add`.
 
 In the Users table:
 - **Role** changes at once.
-- **Active** off: the account can't sign in, and its sessions and API tokens stop working at once.
-  Turn it on again to restore them.
+- **Active** off: the account can't sign in, its sessions end and its API tokens are revoked for
+  good. Turned on again, it can sign in; issue it new API tokens.
 - **Delete** removes the account and its API tokens. The decision log keeps what it did.
 
 OpenTrack refuses any change that would leave no active admin, and won't delete your own account.
@@ -480,7 +480,7 @@ tokens independent of people's passwords.
 
 To sign an account out everywhere, use **Sign out everywhere** (the door button on its row). Every
 session and API token it holds ends now; it can sign in again. From the command line, `opentrack
-user passwd` also ends them (turning an account off and on again does not: its tokens work again).
+user passwd` also ends them, and so does turning the account off (its API tokens don't come back when it is turned on again).
 
 ### Users panel
 
@@ -1213,7 +1213,7 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 
 | Symptom | Likely cause and fix |
 |---|---|
-| The server doesn't start: `OT_ADMIN_PASSWORD: a password needs at least 8 characters`. | Use a longer password, or leave both `OT_ADMIN_*` unset. |
+| The server doesn't start: `OT_ADMIN_PASSWORD: the password needs at least 15 characters, ...`. | Choose a password that meets the [password policy](#passwords), or leave both `OT_ADMIN_*` unset. |
 | No `initial-admin.txt`. | It is made only on the first start with no accounts and no `OT_ADMIN_*`. Use `opentrack user add <email> --role admin --password-stdin`. |
 | Every admin is locked out. | `opentrack user passwd <email>` (or `user enable`, or `user add … --role admin`) on the server. |
 | Everyone was signed out after a restart, and API tokens fail. | The signing key changed: `session.key` was lost or `OT_SESSION_SECRET` changed. Restore it, or make new tokens. |

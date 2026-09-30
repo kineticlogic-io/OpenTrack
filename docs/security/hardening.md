@@ -20,7 +20,9 @@ themselves are described in the administrator guide, under
 
    Keep them. The only writable volume is `/data`.
 4. **Set the first admin** with `OT_ADMIN_EMAIL` and a policy-compliant `OT_ADMIN_PASSWORD`, or use
-   the temporary password in `initial-admin.txt`. The first sign-in forces a change either way.
+   the temporary password in `initial-admin.txt`, which the first sign-in forces you to change.
+   An `OT_ADMIN_PASSWORD` is not forced to change: choose it as the account's real password, and
+   unset the variable once the account exists.
    Then delete `initial-admin.txt`.
 5. **Set `OT_SESSION_SECRET`** (32 characters or more) from your secret store, or protect
    `session.key` in the data directory. Anyone with it can mint sessions.
