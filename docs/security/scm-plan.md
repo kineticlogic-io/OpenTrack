@@ -31,7 +31,7 @@ from a tagged commit.
 | Vendored UI package | `ui/vendor/staresdk-<version>.tgz`, with `ui/vendor/STARESDK_SOURCE` naming the openstare commit it was built from; rebuilt by `scripts/vendor-staresdk.sh` | Replaced only by that script, in its own commit |
 | Supply-chain policy | `deny.toml` | Pull requests; every advisory exception has a reason |
 | CI and release workflows | `.github/workflows/ci.yml`, `release.yml`; actions pinned by commit SHA | Pull requests |
-| Signing | `cosign.pub`, `.github/cosign/signing-config.json`; the private key and password are repository secrets, with the maintainer's offline backup | [supply-chain.md](supply-chain.md) |
+| Signing | `cosign.pub` (and `cosign-2026-09.pub` for releases up to 0.4.4), `scripts/release/`; the private key and password are repository secrets, with the maintainer's offline backup | [supply-chain.md](supply-chain.md) |
 | Branch protection | `scripts/github/protect-main.sh` | Re-run after any change to it |
 | Deployment samples | `docker-compose.yml`, `docker-compose.sapient.yml`, `docs/examples/` | Pull requests |
 | Documentation | `README.md`, `CHANGELOG.md`, `SECURITY.md`, `docs/` (guides, security documents) | Pull requests, in the same pull request as the behaviour they describe |
@@ -103,8 +103,8 @@ A release is prepared on a `release-<version>` branch and published from `main`:
    (no public transparency log: the repository is private), verifies the signature, and attaches
    the SBOMs (`scripts/security/sbom.py`) and `image-digest.txt` to the release.
    **While GitHub Actions is unavailable**, the maintainer does the same on the test server: build
-   and push with `docker buildx build --provenance=mode=max --sbom=true`, `cosign sign --key` with
-   the project key and `.github/cosign/signing-config.json`, `cosign verify --key cosign.pub
+   and push with `docker buildx build --provenance=mode=max --sbom=true`, `scripts/release/sign-image` (the
+   OpenSSL FIPS provider signs the cosign payload with the project key), `cosign verify --key cosign.pub
    --insecure-ignore-tlog=true`, then `scripts/security/sbom.py` and `gh release upload` for the
    SBOMs and `image-digest.txt`. v0.4.2 and v0.4.3 were released this way.
 5. **Scan** the pushed image: `scripts/ato/scan ghcr.io/phornstein/opentrack:v<version>`. Commit

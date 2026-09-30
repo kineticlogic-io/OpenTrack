@@ -66,9 +66,12 @@ Publishing a GitHub release runs `.github/workflows/release.yml`, which:
 
 1. Builds the image with BuildKit's SLSA provenance (`mode=max`) and SBOM attestations attached.
 2. Pushes it to the private package `ghcr.io/phornstein/opentrack:<tag>`.
-3. Signs its digest with the project's cosign key. The signature goes to no public transparency
-   log, because the repository is private and a public entry would name it;
-   `.github/cosign/signing-config.json` lists no log. The workflow then verifies the signature.
+3. Signs its digest with `scripts/release/sign-image`: cosign makes the payload, the **OpenSSL
+   3.0.9 FIPS provider** (CMVP #4282, built from the Dockerfile's `openssl-fips` stage) signs it
+   with the project key (ECDSA P-256, SHA-256), and cosign attaches the signature. cosign's own
+   cryptography never touches the key (SC-13). The signature goes to no public transparency log,
+   because the repository is private and a public entry would name it. The script then verifies
+   the signature.
 4. Attaches the two SBOMs and `image-digest.txt` to the release.
 
 **Verify an image:**
@@ -79,11 +82,15 @@ docker buildx imagetools inspect ghcr.io/phornstein/opentrack@<digest> --format 
 ```
 
 **The key:**
-- The public key is `cosign.pub` in the repository.
-- The private key and its password are the repository secrets `COSIGN_PRIVATE_KEY` and
-  `COSIGN_PASSWORD`. The maintainer keeps a backup readable only by them, outside the repository.
-- **Rotate it:** `cosign generate-key-pair`, replace both secrets, commit the new `cosign.pub`,
-  and re-sign the images still supported.
+- The public key is `cosign.pub` in the repository. Releases up to 0.4.4 were signed with an
+  earlier key made by cosign itself: verify those with `cosign-2026-09.pub`.
+- The private key was made inside the FIPS provider (`scripts/release/new-signing-key`) and is
+  kept as encrypted PKCS#8 (AES-256-CBC, PBKDF2-HMAC-SHA-256). It and its password are the
+  repository secrets `RELEASE_SIGNING_KEY` and `RELEASE_SIGNING_PASSWORD`; the maintainer keeps a
+  backup readable only by them, outside the repository.
+- **Rotate it:** `scripts/release/new-signing-key <key.pem> <password-file> cosign.pub`, replace
+  both secrets, keep the old public key beside it for the releases it signed, and re-sign the
+  images still supported with `scripts/release/sign-image`.
 
 The operating-system packages in the image come from Debian 12 (bookworm): the distroless base's
 own, and the libraries `runtime-libs` copies in. Rebuild to pick up Debian security updates: the
