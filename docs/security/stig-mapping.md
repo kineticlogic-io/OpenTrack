@@ -20,7 +20,7 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | AC-10 | Concurrent session control | Met | 3 sessions per account (fixed); the oldest ends |
 | AC-11, AC-12 | Session lock and termination | Met | Idle timeout 15 minutes (admins 10), counted from the user's own activity; absolute lifetime 24 hours; all fixed; sessions kept on the server and revocable |
 | AC-16 | Security attributes | Partial | Labels per source are carried on every track. A fused track takes the highest classification, the union of the restrictions and the intersection of the releasability lists. OpenTrack does not filter by clearance (a deliberate decision; enforcement is downstream) |
-| AU-2, AU-3, AU-12 | Audit events and their content | Met | Sign-in success and failure (reason, address), sign-out, lockout, unlock, session end and timeout, password change, account turned off, every decision; actor, time, outcome, detail |
+| AU-2, AU-3, AU-12 | Audit events and their content | Partial | Sign-in success and failure (reason, address), sign-out, lockout, unlock, session end and timeout, password change, account turned off, every decision; actor, time, outcome, detail. Not yet: refused requests and changes, reads of security objects, certificate/token/OpenStare sign-ins, the address on decisions (POA&M P-01 to P-03) |
 | AU-4 | Audit log storage capacity | Inherited | The collector and SIEM store the exported record ([admin guide, OpenTelemetry](../guides/admin.md#opentelemetry)); the local table is small (one row per event) and lives on the `/data` volume, sized by the host |
 | AU-5 | Response to audit failure | Met | A sign-in that can't be recorded in the audit table is refused. A collector outage does not stop OpenTrack: each role logs `OpenTelemetry export failing`, the Overview's Telemetry status turns red and `/api/v1/status` reports it; the table still holds every record. Alerting on the SIEM side is inherited |
 | AU-6, AU-7 | Review, reduction and reports | Met / Inherited | Every audit row is exported over OpenTelemetry (log event `audit.record`: seq, actor, op, outcome, address, detail, hash) and logged on standard output (JSON with `OT_LOG_FORMAT=json`); review, correlation and reports in the SIEM are inherited; `GET /api/v1/audit` (filters, CSV; admins) |
@@ -31,15 +31,15 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | CM-7 | Least functionality | Met | One binary, one role per command; plugins sandboxed (WebAssembly, WASI grants) |
 | IA-2 | Identification and authentication | Met | Local accounts, SAML, PKI client certificates, OpenStare trust, API tokens |
 | IA-2(12) | PIV credentials | Met | Client certificates mapped to accounts by CN; revocation checked against CRLs (`OT_TLS_CLIENT_CRL`), failing closed on unknown status or a stale list, reloaded on change. No OCSP |
-| IA-5(1) | Password-based authentication | Met | 15 characters, four classes, 8 changed, 5 remembered, 24 h minimum / 60 days maximum age (all fixed), temporary passwords changed at first use, PBKDF2-HMAC-SHA256 (600,000 iterations) |
+| IA-5(1) | Password-based authentication | Partial | 15 characters, four classes, 8 changed, 5 remembered, 24 h minimum / 60 days maximum age (all fixed), temporary passwords changed at first use, PBKDF2-HMAC-SHA256 (600,000 iterations). No check against a compromised-password list (POA&M P-15) |
 | IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA and CRL status, as IA-2(12) |
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |
 | IA-8 | Non-organisational users | Inherited | Through the identity provider |
-| SA-11, RA-5 | Developer testing, vulnerability scanning | Met | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; image scanning at release |
+| SA-11, RA-5 | Developer testing, vulnerability scanning | Partial | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; each release image scanned with `scripts/ato/scan` (Trivy, Grype). The base image's OS packages carry unfixed findings (POA&M P-22); nothing scans on a schedule yet (P-23) |
 | SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis, feeds and OpenTelemetry export, with mutual TLS available on each; HSTS |
 | SC-13 | Cryptographic protection | Met | AWS-LC FIPS 3.0 and the OpenSSL 3.0.9 FIPS provider; `ring` banned in CI |
 | SC-17 | PKI certificates | Inherited | Your CA issues the server and client certificates |
-| SC-18 | Mobile code | Met | Content-Security-Policy: this origin only, no inline script. Inline *styles* are allowed (F-5) |
+| SC-18 | Mobile code | Partial | Content-Security-Policy: this origin only, no inline script. Inline *styles* are allowed (F-5) |
 | SC-23 | Session authenticity | Met | Signed session tokens with a server-side session record; `HttpOnly`, `SameSite=Strict` and `Secure` cookies; no framing |
 | SC-28 | Protection of information at rest | Inherited | Encrypt the `/data` volume and backups (the platform's disk encryption) |
 | SI-2 | Flaw remediation | Met | Dependency advisories fail CI; rebuild on Debian security updates |
@@ -47,6 +47,10 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | SR-3, SR-4 | Supply chain controls, provenance | Met | Lockfiles, pinned toolchain and base images, actions pinned by commit, SBOMs (CycloneDX); release images signed (cosign key) with SLSA provenance and SBOM attestations |
 
 ## Findings
+
+The accreditation package ([`ato/`](ato/README.md)) evaluates every ASD STIG V6R4 and Container
+Platform SRG V2R4 rule; its open items, with those below, are on the POA&M ([`ato/poam.md`](ato/poam.md)).
+
 
 | ID | Finding | Status |
 |---|---|---|

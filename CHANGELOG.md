@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Accreditation package
+
+A generic DoD RMF package for sites taking OpenTrack to an ATO (#20), in `docs/security/ato/`:
+- **SSP narratives** for all 287 NIST SP 800-53 Rev 5 Moderate controls (status and
+  responsibility: OpenTrack, Shared or Site; `[[SITE: ...]]` placeholders).
+- **STIG checklists** (`.ckl`) for the ASD STIG V6R4 (286 rules) and the Container Platform SRG
+  V2R4 (188), every rule evaluated with evidence; site items left Not Reviewed with who answers.
+- **Image scans** per release (`scripts/ato/scan`: Trivy and Grype), starting with v0.4.2.
+- **POA&M** (27 items, Markdown and a CSV with the DoD template's columns).
+- Generated from reviewed sources (`evaluations/`, `ssp/controls.json`, `poam.json`) by
+  `scripts/ato/{checklist,ssp,poam}`.
+- `stig-mapping.md` brought in line with the evaluation: AU-2/3/12, IA-5(1), SC-18, SA-11/RA-5
+  are Partial. Admin guide and hardening guide corrections (API tokens after turning an account
+  off, the first admin's password).
+
 ### OpenTelemetry
 
 OpenTrack hands its logs, the audit record included, its traces and its metrics to the
