@@ -55,6 +55,7 @@ services:
       OT_TLS_CERT: ${OT_TLS_CERT:-}
       OT_TLS_KEY: ${OT_TLS_KEY:-}
       OT_TLS_CLIENT_CA: ${OT_TLS_CLIENT_CA:-}
+      OT_TLS_CLIENT_OCSP_URL: ${OT_TLS_CLIENT_OCSP_URL:-}
       OT_LOG: ${OT_LOG:-info}
       # OpenTelemetry (docs/guides/admin.md#opentelemetry): logs, the audit
       # record, traces and metrics to your collector. Off while unset.

@@ -111,7 +111,7 @@ flowchart LR
 
 | | Threat | Mitigations | Residual risk | POA&M |
 |---|---|---|---|---|
-| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; CRLs (`OT_TLS_CLIENT_CRL`) fail closed on unknown status or a stale list, reloaded on change; only mapped CNs sign in, to active accounts | No OCSP; certificate sign-ins are not audited | P-26, P-02 |
+| S | A revoked or foreign certificate signs in | Path validation to `OT_TLS_CLIENT_CA`; OCSP (AIA or `OT_TLS_CLIENT_OCSP_URL`), answers signed by the CA or its delegated responder, then CRLs (`OT_TLS_CLIENT_CRL`, reloaded on change); refused with neither, on a stale list or unknown status; only mapped CNs sign in, to active accounts | OCSP usually travels over plain HTTP, so it relies on the response signature; the nonce is optional (a responder may omit it), so a replayed answer is bounded only by its nextUpdate (or an hour); certificate sign-ins are not audited | P-26, P-02 |
 | S | OpenStare's answer is spoofed | Off by default; OpenTrack asks OpenStare's `/api/auth/me` itself; roles only by the mapping (unlisted roles refused) | Default API URL is plain HTTP on loopback; over a network it must be HTTPS. A compromised OpenStare signs users in here up to the mapped role, for up to 30 s after a revocation | P-02 |
 
 ## Source transports

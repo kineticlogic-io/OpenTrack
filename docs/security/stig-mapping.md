@@ -30,9 +30,9 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | CM-6 | Configuration settings | Met (accepted risk) | The account policy (passwords, lockout, sessions, inactivity, audit retention) is fixed at the STIG values, not configurable. `OT_AUTH=off` and per-feed `insecure_skip_verify` remain by the product owner's decision (F-4): the first warns every minute with a red banner; neither may be used in an accredited deployment (hardening checklist) |
 | CM-7 | Least functionality | Met | One binary, one role per command; plugins sandboxed (WebAssembly, WASI grants) |
 | IA-2 | Identification and authentication | Met | Local accounts, SAML, PKI client certificates, OpenStare trust, API tokens |
-| IA-2(12) | PIV credentials | Met | Client certificates mapped to accounts by CN; revocation checked against CRLs (`OT_TLS_CLIENT_CRL`), failing closed on unknown status or a stale list, reloaded on change. No OCSP |
+| IA-2(12) | PIV credentials | Met | Client certificates mapped to accounts by CN; revocation checked by OCSP (the certificate's AIA responder or `OT_TLS_CLIENT_OCSP_URL`; signed answers only, cached to nextUpdate), falling back to CRLs (`OT_TLS_CLIENT_CRL`, reloaded on change); with neither, or on a stale list or unknown status, the certificate is refused (fail closed) |
 | IA-5(1) | Password-based authentication | Partial | 15 characters, four classes, 8 changed, 5 remembered, 24 h minimum / 60 days maximum age (all fixed), temporary passwords changed at first use, PBKDF2-HMAC-SHA256 (600,000 iterations). No check against a compromised-password list (POA&M P-15) |
-| IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA and CRL status, as IA-2(12) |
+| IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA, then OCSP status with CRL fallback, as IA-2(12) |
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |
 | IA-8 | Non-organisational users | Inherited | Through the identity provider |
 | SA-11, RA-5 | Developer testing, vulnerability scanning | Partial | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; coverage measured for each release (`scripts/coverage.sh`); a threat model reviewed each minor release ([threat-model.md](threat-model.md)); each release image scanned with `scripts/ato/scan` (Trivy, Grype). The base image's OS packages carry unfixed findings (POA&M P-22); nothing scans on a schedule yet (P-23) |
@@ -60,7 +60,7 @@ Platform SRG V2R4 rule; its open items, with those below, are on the POA&M ([`at
 | F-3 | The IdP entity ID, sign-in URL and certificate fields in Settings → Security looked editable, but sign-ons are checked against the pasted metadata alone. | **Fixed:** the three are read-only values read from the metadata on every save and read (what older settings stored is replaced); to change them, paste new metadata |
 | F-4 | `OT_AUTH=off` and per-feed `insecure_skip_verify` exist. | **Accepted** by the product owner; excluded by the hardening checklist |
 | F-5 | The CSP allows inline styles (`style-src 'unsafe-inline'`), which React, MapLibre and CodeMirror need. | Open (low) |
-| F-6 | Client certificates were not checked for revocation. | **Fixed:** CRLs (`OT_TLS_CLIENT_CRL`), end-entity status, fail closed, hot reload. OCSP not supported |
+| F-6 | Client certificates were not checked for revocation. | **Fixed:** OCSP (AIA or `OT_TLS_CLIENT_OCSP_URL`) with CRL fallback (`OT_TLS_CLIENT_CRL`), end-entity status, fail closed, hot reload |
 | F-7 | Release images were not signed. | **Fixed:** `.github/workflows/release.yml` signs with the project key (no public log, the repository being private) and attaches SLSA provenance and SBOMs |
 | F-8 | Turning an account off and on again revived its API tokens (a token issued in the same second as the turn-off survived it). | **Fixed:** turning an account off, by an admin or for inactivity, revokes its tokens for good |
 | F-9 | `rust-toolchain.toml` followed `stable`. | **Fixed:** pinned to 1.98.1, here and in CI |

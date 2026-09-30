@@ -45,6 +45,7 @@ apply.
 | Random values | AWS-LC CTR-DRBG: token ids, the session key, generated passwords, SAML request ids (128 bits) |
 | NATS `.creds` | Ed25519 (FIPS 186-5) over the server nonce |
 | Plugin identity | SHA-256 |
+| Client certificate status (OCSP) | Response signatures verified by `rustls-webpki` with the AWS-LC provider's algorithms; the request nonce from the DRBG; the RFC 6960 CertID's issuer name and key hashes are SHA-1 (`SHA1_FOR_LEGACY_USE_ONLY`), as the protocol defines them: an identifier, not a signature or security strength |
 
 ### SAML signatures
 

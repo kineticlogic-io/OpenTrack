@@ -47,7 +47,7 @@ themselves are described in the administrator guide, under
 
 | Link | Settings |
 |---|---|
-| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
+| Browsers and API | `OT_TLS_CERT` and `OT_TLS_KEY` (optionally `OT_TLS_CLIENT_CA` for CAC/PKI client certificates, checked by OCSP (each certificate's AIA responder, or `OT_TLS_CLIENT_OCSP_URL`; allow the outbound HTTP) with `OT_TLS_CLIENT_CRL` pointing at a directory of your CAs' CRLs, refreshed daily, as the fallback; with neither a certificate is refused), **or** a TLS proxy with `OT_PUBLIC_TLS=1` / an `https://` `OT_PUBLIC_URL`, so cookies are `Secure` and HSTS is sent |
 | NATS | a `tls://` URL, `OT_NATS_CA`, and `OT_NATS_CERT` / `OT_NATS_KEY` for mutual TLS; prefer `.creds` or mTLS over a shared token |
 | Redis | a `rediss://` URL, `OT_REDIS_CA`, `OT_REDIS_CERT` / `OT_REDIS_KEY` (Redis `tls-auth-clients yes`) |
 | Feeds | each source's transport TLS settings; don't use `insecure_skip_verify` |

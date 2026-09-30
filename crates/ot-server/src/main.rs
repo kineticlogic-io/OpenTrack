@@ -13,6 +13,7 @@ mod audit_api;
 mod auth;
 mod basemap;
 mod bridge;
+mod cert_status;
 mod config;
 mod config_backup;
 mod control;
@@ -27,6 +28,7 @@ mod https;
 mod link;
 mod manage_api;
 mod metrics;
+mod ocsp;
 mod plugin_cli;
 mod plugins;
 mod plugins_api;
@@ -191,6 +193,12 @@ struct ServeArgs {
         value_delimiter = ','
     )]
     tls_client_crl: Vec<String>,
+    /// With a client CA: the OCSP responder to ask about client
+    /// certificates instead of the one each names (its authority
+    /// information access URL). Without an answer the CRLs decide; without
+    /// either the certificate is refused.
+    #[arg(long, env = "OT_TLS_CLIENT_OCSP_URL", requires = "tls_client_ca")]
+    tls_client_ocsp_url: Option<String>,
     /// Browsers reach this server over TLS that a proxy in front of it ends
     /// (`1`): session cookies are `Secure` and HSTS is sent, as when this
     /// server serves TLS itself.
@@ -407,6 +415,7 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         &mut args.tls_cert,
         &mut args.tls_key,
         &mut args.tls_client_ca,
+        &mut args.tls_client_ocsp_url,
         &mut args.public_url,
         &mut args.admin_email,
         &mut args.admin_password,
@@ -457,6 +466,7 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding {}", args.bind))?;
     tokio::spawn(metrics::run_sampler(state.clone()));
     tokio::spawn(auth::maintenance::run(state.clone()));
+    let audit_state = state.clone();
     let app = control::router(state, Some(args.ui_dir));
     if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
         let tls = ot_source::tls::ServerTls {
@@ -470,12 +480,29 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
                 .filter(|p| !p.trim().is_empty())
                 .collect(),
         };
-        let acceptor = https::Acceptor::new(tls.acceptor()?);
-        if !tls.client_crl_files.is_empty() {
-            tokio::spawn(https::reload_on_crl_change(tls, acceptor.clone()));
+        // The handshake checks a client certificate's path only; its
+        // status (OCSP, else the CRLs) is checked after (cert_status).
+        let handshake = cert_status::handshake_tls(&tls);
+        let acceptor = https::Acceptor::new(handshake.acceptor()?);
+        let status = match tls.client_ca_file {
+            Some(_) => {
+                let sink: cert_status::AuditSink = Arc::new(move |e| {
+                    let s = audit_state.clone();
+                    tokio::spawn(async move { auth::access::audit(&s, e).await });
+                });
+                let status =
+                    cert_status::CertStatus::new(&tls, args.tls_client_ocsp_url, Some(sink))?;
+                Some(Arc::new(status))
+            }
+            None => None,
+        };
+        if let Some(status) = &status
+            && !tls.client_crl_files.is_empty()
+        {
+            tokio::spawn(https::reload_on_crl_change(tls, status.clone()));
         }
         tracing::info!(addr = %args.bind, "control plane listening (TLS)");
-        return https::serve(listener, app, acceptor, shutdown_signal()).await;
+        return https::serve(listener, app, acceptor, status, shutdown_signal()).await;
     }
     tracing::info!(addr = %args.bind, "control plane listening");
     axum::serve(
