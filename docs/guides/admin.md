@@ -470,7 +470,7 @@ FIPS module ([FIPS cryptography](#fips-cryptography)).
 | Basemap tiles | TCP, HTTP or HTTPS | Outbound | Off | Map tiles, fetched for the browsers ([Basemap tiles](#basemap-tiles)) | An `https://` URL; a key in the query if the tile server takes one |
 | External plugins | TCP (`host:port`) or a Unix socket | Outbound | None added | Codec, tracker and scorer calls as JSON lines ([Plugins](#plugins)) | None: keep them on the same host (loopback or a Unix socket) |
 | WebAssembly plugins | Whatever the plugin opens | Outbound | No network | Only the `host:port` addresses in the plugin's **network** grant | The plugin's own |
-| Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | NATS's; the networking package proves the sender ([docs/sync-icd.md](../sync-icd.md)) |
+| Multi-node sync | NATS subjects (above) | Through NATS | Idle until **Share the picture** is on | Tracks and decisions between nodes ([Multi-node](#multi-node)) | Every message signed with the sender's Ed25519 key and checked against the key pinned for it; stale and replayed messages refused ([Signed sync messages](#signed-sync-messages), [docs/sync-icd.md](../sync-icd.md)) |
 | `opentrack bridge` | TCP, NATS | Outbound, to each `--node` | Not run by `all` | Carries sync subjects between server sites' NATS servers | TLS (`tls://`, `OT_BRIDGE_NATS_CA`), mutual TLS (`OT_BRIDGE_NATS_CERT`/`OT_BRIDGE_NATS_KEY`), `.creds`, user and password or token, per node if they differ ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)) |
 
 `opentrack health`, the image's health check, connects to `OT_BIND` on the same host. The
@@ -485,6 +485,7 @@ The directory that holds the database (`data/` from source, `/data` in Docker):
 | `opentrack.db` | The SQLite database: sources and their revisions, the output schema, the registry and its revisions, correlation and instance settings, sign-in settings, accounts, API token records, plugins (WebAssembly files included), groups, correlation suggestions, the decision log, the track graph and the UID sequence. |
 | `opentrack.db-wal`, `opentrack.db-shm` | SQLite's write-ahead log and its index, while the database is open. They are part of the database: never delete them while OpenTrack runs, and never copy the `.db` file alone while it runs ([SQLite backup](#sqlite-backup)). |
 | `session.key` | The key sessions and API tokens are signed with, when `OT_SESSION_SECRET` is not set. Readable by its owner only. Lose it and everyone is signed out, and every API token stops working. |
+| `sync.key` | This node's Ed25519 key for signing sync messages (PKCS #8, base64), made on first start. Readable by its owner only. Lose it and the node makes a new one, which every other node must pin ([Signed sync messages](#signed-sync-messages)). |
 | `initial-admin.txt` | The first admin's made-up password, when no `OT_ADMIN_*` was given ([First admin](#first-admin)). Delete it once you've changed that password. |
 | `profiles/trackers/` | Tracker profiles imported or saved in the UI. |
 
@@ -931,15 +932,47 @@ To turn it on:
    - **Share the picture:** on.
    - **Trusted nodes:** the other nodes' site codes, comma separated. Messages from any other node
      are dropped.
+   - **This node's key:** copy this node's public key and give it to each other node's admin.
+     Read the fingerprint out to them over another channel (a phone call, the deployment plan).
+   - In the table, **Pin key** for each trusted node: paste that node's public key and compare the
+     fingerprint with the one its admin gives you. A trusted node with no key shows **no key:
+     refused**: its messages are refused until you pin one.
    - **Sending budget:** this node's share of the link in kbit/s (0: no cap). Past it, new tracks,
      state changes and the largest drifts go first.
    - **Receive only:** apply other nodes' track management here but accept none from this node's
      users (a node with no operator, such as a drone).
    - **Share the profile:** publishing an output schema or saving correlation settings on any node
      applies on every node that shares the profile; the later change wins.
-4. Save. The table shows each trusted node: heard, silent (not heard for 30 s) or never heard, and
-   how many of its decisions this node holds. Below it: how many tracks this node reports and holds
-   only from others, and the decisions applied, waiting for their tracks, superseded or failed.
+4. Save. The table shows each trusted node: heard, silent (not heard for 30 s) or never heard, how
+   many of its decisions this node holds, and its key's fingerprint. Below it: how many tracks this
+   node reports and holds only from others, and the decisions applied, waiting for their tracks,
+   superseded or failed; and, if any, the messages refused.
+
+#### Signed sync messages
+
+Every sync message is signed with the sending node's Ed25519 key (FIPS 186-5, in the FIPS module) and
+accepted only if it verifies with the key pinned for its site code. Pinning, replacing and removing a
+key are an admin's, and each is recorded in the decision log and the audit record
+(`sync_key_pin`, `sync_key_remove`, with the key before and after).
+
+A node refuses, counts and logs (at most once a minute per node) a message:
+- from a node not in **Trusted nodes**, or with no key pinned;
+- whose signature does not verify with the pinned key. This is also audited
+  (`sync_signature_refused`), at most once a minute per node: someone may be using that node's
+  name. It is also what you see after a node's key changed and the new one is not pinned yet;
+- whose clock is more than 5 minutes from this node's (keep nodes on NTP or GPS time);
+- already accepted once (a replay).
+
+The key is made on first start and kept in `sync.key` beside the database. Back it up with the
+database. If you lose it, the node makes a new one: pin the new key on every other node. To replace
+a node's key on purpose (it may have been exposed), stop the node, delete `sync.key`, start it, and
+pin the new key everywhere; remove the old one from nodes that no longer trust it.
+
+**Upgrading to 0.4.5.** Sync messages are now version 2 (signed). Nodes on 0.4.4 or earlier don't
+understand them, and 0.4.5 refuses theirs, so upgrade every node of a swarm together. After the
+upgrade no trusted node has a key pinned, so every message is refused until you exchange keys: on
+each node, copy **This node's key** and pin it on every other node. The **Nodes** panel shows
+**no key: refused** against each node still missing one.
 
 The registry, sources and plugins are not shared between nodes.
 

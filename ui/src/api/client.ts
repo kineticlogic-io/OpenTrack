@@ -539,6 +539,23 @@ export interface SyncStatus {
   engine?: { at: string; reporting: number; shared: number; from_other_nodes: number } | null
 }
 
+/** A peer's public key, pinned by an admin: sync messages from its site must verify with it. */
+export interface PinnedKey {
+  site: string
+  public_key: string
+  fingerprint: string | null
+  pinned_by: string
+  pinned_at: string | null
+}
+
+/** This node's public key (sync messages it sends are signed with it) and the keys pinned for peers. */
+export interface SyncKeys {
+  site: string
+  public_key: string
+  fingerprint: string
+  peers: PinnedKey[]
+}
+
 // --- Sign-in ---------------------------------------------------------------------------------
 
 export const ROLES = ['viewer', 'track_manager', 'admin'] as const
@@ -1081,6 +1098,9 @@ export const api = {
     return parsed as ServerStatus
   },
   syncStatus: () => get<SyncStatus>('/sync/status'),
+  syncKeys: () => get<SyncKeys>('/sync/keys'),
+  pinSyncKey: (site: string, publicKey: string) => request<SyncKeys>('PUT', `/sync/keys/${enc(site)}`, { public_key: publicKey }),
+  removeSyncKey: (site: string) => request<SyncKeys>('DELETE', `/sync/keys/${enc(site)}`),
   takStatus: () => get<TakStatus>('/tak/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),

@@ -65,6 +65,13 @@ events as the tracks are, without adding classification markings to them.
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 
+**Pin every peer's key (multi-node).** Sync messages between nodes are signed with each node's
+Ed25519 key and accepted only from trusted nodes whose public key an admin has pinned in
+**Settings → Nodes**. Compare fingerprints over a second channel when pinning, keep `sync.key`
+readable by the service account only, and remove a lost or captured node's key on every other node
+at once. Keep nodes' clocks within 5 minutes (NTP, GPS): older messages are refused as possible
+replays. See the admin guide, [Signed sync messages](../guides/admin.md#signed-sync-messages).
+
 **Open only the ports you use.** Every port, protocol and service OpenTrack listens on or connects
 to, with its default and its TLS and authentication options, is in the admin guide's
 [Ports, protocols and services](../guides/admin.md#ports-protocols-and-services) table. Register

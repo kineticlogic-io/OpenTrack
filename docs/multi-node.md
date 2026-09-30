@@ -169,7 +169,7 @@ Decision logs converge by anti-entropy. A node reads its peers' `summary` and as
 
 In 0.3.2 these are subjects on the node's local NATS. A package bridges them to the network, and so does a small built-in bridge for server sites that links two NATS servers directly. The bridge signs in to each NATS server as OpenTrack's own NATS connection does: TLS with a CA and a client certificate, `.creds`, a user and password or a token, the same for every node or set per node (see the admin guide, [The bridge's NATS credentials and TLS](guides/admin.md#the-bridges-nats-credentials-and-tls)). Messages have a versioned binary encoding documented as an ICD (`docs/sync-icd.md`), so the package needs nothing from OpenTrack but that document.
 
-The site code is the sender's identity. Proving it belongs to the package or the link (NKeys, mTLS, radio crypto), and OpenTrack drops and counts messages whose sender is not in its trusted peer list.
+The site code is the sender's identity, and OpenTrack proves it itself (from 0.4.5). Each node signs every message it sends with its own Ed25519 key, once, whoever it is for (68 bytes a message). A receiver accepts a message only if an admin has pinned a public key for its site code in **Settings → Nodes**, the signature verifies with it, its clock is within 5 minutes, and the same message was not accepted before. Everything else is refused, counted and logged; a trusted site's message that fails its signature is also audited, as possible impersonation. The package still keeps strangers off the link (NKeys, mTLS, radio crypto), since refused messages cost bandwidth. Details: [sync-icd.md, *Signature*](sync-icd.md#signature).
 
 ## Configuration travels as a swarm profile
 
@@ -179,7 +179,7 @@ The output schema and correlation settings are shared, so the same track has the
 
 HLC stamps order decisions. Track reports carry the sensor time. Nodes need clocks within about a second of each other. Drones have GPS time, and sites have NTP.
 
-A node whose peers' reports keep arriving from the future (more than 2 s ahead) shows a clock warning. It still accepts them.
+A node whose peers' reports keep arriving from the future (more than 2 s ahead) shows a clock warning. It still accepts them. A message whose clock is more than 5 minutes from the receiver's is refused: that bounds how long a recorded message could be replayed.
 
 ## How we will know it works
 

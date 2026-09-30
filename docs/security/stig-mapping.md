@@ -30,13 +30,14 @@ Status: **Met**; **Partial** (met with a stated limit); **Open** (see the findin
 | CM-6 | Configuration settings | Met (accepted risk) | The account policy (passwords, lockout, sessions, inactivity, audit retention) is fixed at the STIG values, not configurable. `OT_AUTH=off` and per-feed `insecure_skip_verify` remain by the product owner's decision (F-4): the first warns every minute with a red banner; neither may be used in an accredited deployment (hardening checklist) |
 | CM-7 | Least functionality | Met | One binary, one role per command; plugins sandboxed (WebAssembly, WASI grants) |
 | IA-2 | Identification and authentication | Met | Local accounts, SAML, PKI client certificates, OpenStare trust, API tokens |
+| IA-3 | Device identification and authentication | Met | Other OpenTrack nodes: each sync message is signed with the node's Ed25519 key and accepted only if it verifies with the public key an admin pinned for its site code; pins audited ([admin guide](../guides/admin.md#signed-sync-messages)) |
 | IA-2(12) | PIV credentials | Met | Client certificates mapped to accounts by CN; revocation checked against CRLs (`OT_TLS_CLIENT_CRL`), failing closed on unknown status or a stale list, reloaded on change. No OCSP |
 | IA-5(1) | Password-based authentication | Partial | 15 characters, four classes, 8 changed, 5 remembered, 24 h minimum / 60 days maximum age (all fixed), temporary passwords changed at first use, PBKDF2-HMAC-SHA256 (600,000 iterations). No check against a compromised-password list (POA&M P-15) |
 | IA-5(2) | PKI-based authentication | Met | Path validation to the configured CA and CRL status, as IA-2(12) |
 | IA-7 | Cryptographic module authentication | Met | FIPS 140-3 modules only ([fips.md](fips.md)) |
 | IA-8 | Non-organisational users | Inherited | Through the identity provider |
 | SA-11, RA-5 | Developer testing, vulnerability scanning | Partial | CI: tests, clippy `-D warnings`, `cargo deny` (RustSec), `npm audit`; coverage measured for each release (`scripts/coverage.sh`); a threat model reviewed each minor release ([threat-model.md](threat-model.md)); each release image scanned with `scripts/ato/scan` (Trivy, Grype). The base image's OS packages carry unfixed findings (POA&M P-22); nothing scans on a schedule yet (P-23) |
-| SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis, feeds and OpenTelemetry export, with mutual TLS available on each; HSTS |
+| SC-8, SC-8(1) | Transmission confidentiality and integrity | Met | TLS for the UI and API, NATS, Redis, feeds and OpenTelemetry export, with mutual TLS available on each; HSTS. Sync messages between nodes signed (Ed25519) end to end, whatever carries them |
 | SC-13 | Cryptographic protection | Met | AWS-LC FIPS 3.0 and the OpenSSL 3.0.9 FIPS provider; `ring` banned in CI |
 | SC-17 | PKI certificates | Inherited | Your CA issues the server and client certificates |
 | SC-18 | Mobile code | Partial | Content-Security-Policy: this origin only, no inline script. Inline *styles* are allowed (F-5) |

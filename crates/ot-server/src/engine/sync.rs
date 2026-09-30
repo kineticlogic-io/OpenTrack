@@ -728,7 +728,9 @@ impl Engine {
         );
         let (reports, attrs) = self.within_budget(out.reports, out.attrs);
         let mut msgs = ot_sync::wire::encode_reports(site, hlc, &reports);
-        for chunk in out.release.chunks(140) {
+        // As many UIDs as fit in a message once signed.
+        let most = (ot_sync::wire::MAX_UNSIGNED - ot_sync::wire::HEADER - 2) / 7;
+        for chunk in out.release.chunks(most) {
             msgs.push(
                 ot_sync::wire::Message::new(
                     site,
@@ -764,7 +766,8 @@ impl Engine {
         reports.sort_by(|a, b| b.urgency.total_cmp(&a.urgency));
         let (mut sent, mut deferred) = (Vec::new(), 0usize);
         for q in reports {
-            // A report and its share of a message's envelope.
+            // A report and its share of a message's envelope and signature
+            // (83 bytes over the ~28 reports a full message holds).
             let size = ot_sync::wire::REPORT_BASE as f64
                 + 8.0
                 + q.report.identifiers.as_ref().map_or(0.0, |ids| {
@@ -773,7 +776,7 @@ impl Engine {
                         .sum::<usize>() as f64
                         + 1.0
                 })
-                + 0.6;
+                + 3.0;
             if q.urgency.is_infinite() || self.sync_allowance >= size {
                 self.sync_allowance -= size;
                 sent.push(q.report);
