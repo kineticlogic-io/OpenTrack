@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Deployment
+
+- **The image runs on distroless Debian 12** (`gcr.io/distroless/cc-debian12`, non-root, pinned
+  by digest): no shell and no package manager, and of Debian only glibc, OpenSSL 3, CA
+  certificates and the libraries the binary loads, each still listed by package for scanners.
+  FIPS is unchanged. Command-line tools run as the binary: `docker compose exec opentrack
+  opentrack ...` (POA&M P-22).
+- **`docker-compose.yml` is hardened** (POA&M P-21): a bridge network with only 8090 published
+  (`OT_BIND_PORT`), a named volume for `/data`, memory, CPU and process limits (`OT_MEM_LIMIT`,
+  `OT_CPUS`, `OT_PIDS_LIMIT`), its own Redis on an internal network, and NATS on the host through
+  `host.docker.internal` (`OT_NATS_URL` defaults to `nats://host.docker.internal:4222`).
+- **Upgrading a host-network node:** move `./data` into the volume, drop `OT_BIND`,
+  `OT_DATA_DIR` and `OT_REDIS_URL` from `.env`, and point a `127.0.0.1` NATS URL at
+  `host.docker.internal`. The steps, and an override that keeps host networking, are in the
+  administrator guide under "Upgrading a host-network deployment".
+
 ## 0.4.3 (alpha), 2026-09-30
 
 A security release: the fixes from the accreditation review, OpenTelemetry export, and the

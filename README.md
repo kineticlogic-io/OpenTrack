@@ -339,8 +339,10 @@ operational `tracks.>` subjects.
 
 UI development: `opentrack serve` plus `cd ui && npm run dev` (Vite proxies `/api` to :8090).
 
-Or with Docker: `docker compose up --build` (host networking, beside an existing Redis, publishing
-to OpenStare's NATS). For a local NATS with JetStream: `docker compose --profile dev-nats up nats`.
+Or with Docker: `docker compose up --build` (a bridge network with only 8090 published, its own
+Redis, publishing to OpenStare's NATS on the host). For a local NATS with JetStream:
+`docker compose --profile dev-nats up`, with `OT_NATS_URL=nats://nats:4222`. Nodes on the old
+host-network file: see the administrator guide, "Upgrading a host-network deployment".
 
 ### Headless
 

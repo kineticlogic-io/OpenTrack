@@ -48,22 +48,100 @@ the answer. So the roles can run in one process or in several.
 
 ### Docker compose
 
-The `docker-compose.yml` in the repository runs `opentrack all` with host networking, beside an
-existing Redis, publishing to an existing NATS (OpenStare's, as a rule).
+The `docker-compose.yml` in the repository runs `opentrack all` beside its own Redis, publishing
+to an existing NATS (OpenStare's, as a rule):
+- **A bridge network.** Only port 8090 is published (`OT_BIND_PORT` picks the host port, for
+  example `127.0.0.1:8090` to keep it behind a proxy on the same host). Redis sits on a second,
+  internal network that only OpenTrack reaches and that has no route out; it is never published.
+- **NATS on the host.** The container reaches the host as `host.docker.internal`
+  (`extra_hosts: host-gateway`), so `OT_NATS_URL` defaults to
+  `nats://host.docker.internal:4222`. NATS must listen on an address the Docker bridge reaches
+  (not only `127.0.0.1`). A NATS elsewhere needs only its URL.
+- **Named volumes:** `opentrack-data` at `/data` (the SQLite database and `session.key`) and
+  `redis-data` for Redis.
+- **Limits:** OpenTrack gets 2 GB of memory, 2 CPUs and 1,024 processes (`OT_MEM_LIMIT`,
+  `OT_CPUS`, `OT_PIDS_LIMIT`); 16,000 live tracks at 1 Hz use about one core and 300 MB. Redis
+  gets 16 GB and 2 CPUs (`OT_REDIS_MEM_LIMIT`, `OT_REDIS_CPUS`). Redis grows with history and
+  the observation window: a history point costs about 130 bytes (2,000 tracks for 12 h at 10 s
+  is about 1.1 GB), and `OT_OBS_WINDOW_SECS` at 600 s holds about 4.8 GB at 16,000 reports a
+  second. Size `OT_REDIS_MEM_LIMIT` from those, with headroom for Redis' snapshots.
+- **Hardening** on both containers: read-only root file system, every capability dropped,
+  `no-new-privileges` ([Container hardening](#container-hardening)).
 
 1. Create a `.env` file next to `docker-compose.yml`. Compose refuses to start without it. Put
    your `OT_*` settings and secrets in it (see [Configuration](#configuration)). At least set
-   `OT_SITE_CODE`, and `OT_ADMIN_EMAIL` with `OT_ADMIN_PASSWORD`.
-2. Make the data directory writable by uid 1000, the user the container runs as. By default it is
-   `./data`; set `OT_DATA_DIR` to put it elsewhere. It is mounted at `/data`.
-3. Start it: `docker compose up -d --build`.
-4. Open `http://<host>:8090` and sign in.
+   `OT_SITE_CODE`, and `OT_ADMIN_EMAIL` with `OT_ADMIN_PASSWORD`. Leave `OT_BIND` and
+   `OT_REDIS_URL` out: the defaults are right for this file.
+2. Start it: `docker compose up -d --build`.
+3. Open `http://<host>:8090` and sign in.
 
-For a local NATS with JetStream while testing: `docker compose --profile dev-nats up -d nats`.
+For a local NATS with JetStream while testing: `docker compose --profile dev-nats up -d`, with
+`OT_NATS_URL=nats://nats:4222` in `.env`.
 
 In the image, `OT_SQLITE_PATH` is `/data/opentrack.db`, `OT_UI_DIR` is `/opt/opentrack/ui` and
-`OT_PROFILES_DIR` is `/opt/opentrack/profiles/trackers`. Run the command-line tools inside the
-container, for example `docker compose exec opentrack opentrack user list`.
+`OT_PROFILES_DIR` is `/opt/opentrack/profiles/trackers`. The image has no shell: run the
+command-line tools as the binary itself, for example
+`docker compose exec opentrack opentrack user list`.
+
+#### Upgrading a host-network deployment
+
+Up to 0.4.3 the compose file ran OpenTrack with host networking, a `./data` bind mount and an
+external Redis. To move a node to the hardened file:
+
+1. **Back up** `./data` ([SQLite backup](#sqlite-backup)), then stop OpenTrack:
+   `docker compose down`.
+2. **Check `.env`.** Remove `OT_BIND` (or set it to `0.0.0.0:8090`) and `OT_DATA_DIR`. Remove
+   `OT_REDIS_URL` to use the Redis in the compose file. Change a `127.0.0.1` NATS URL to
+   `host.docker.internal` (for example `nats://host.docker.internal:4222`), and make sure that
+   NATS listens on an address the Docker bridge reaches. Feeds that OpenTrack reaches on
+   `127.0.0.1` need the same change.
+3. **Create the volumes** without starting anything: `docker compose create`. The data volume is
+   `<project>_opentrack-data`, where the project is this directory's name in lower case (or
+   `COMPOSE_PROJECT_NAME`); `docker volume ls` shows it.
+4. **Copy `./data` into it,** keeping uid 1000 as the owner (the image has no shell, so use
+   another image):
+
+   ```sh
+   docker run --rm -v "$PWD/data:/from:ro" -v <project>_opentrack-data:/to \
+     debian:bookworm-slim sh -c 'cp -a /from/. /to/ && chown -R 1000:1000 /to'
+   ```
+5. **Redis (optional).** The new Redis starts empty. OpenTrack rebuilds the picture from the
+   feeds, and tracks take new numbers (never ones already issued; [Restore](#restore)). To keep
+   the live picture instead, save the old Redis and copy the file in before starting:
+
+   ```sh
+   redis-cli -h 127.0.0.1 -p 6379 --rdb dump.rdb
+   docker run --rm -v "$PWD/dump.rdb:/dump.rdb:ro" -v <project>_redis-data:/to \
+     debian:bookworm-slim sh -c 'cp /dump.rdb /to/dump.rdb && chown 999:1000 /to/dump.rdb'
+   ```
+
+   Or keep the external Redis: set `OT_REDIS_URL=redis://host.docker.internal:6379` (Redis must
+   listen on an address the bridge reaches, with a password or TLS), and stop the bundled one
+   from starting as in the host-networking override below.
+6. **Start it:** `docker compose up -d --build`. Check **Overview → System status**, then move
+   `./data` somewhere safe; nothing reads it any more.
+
+**Keeping host networking.** A site that must stay on the host network (an accepted exception;
+[hardening](../security/hardening.md)) keeps the rest of the file with a
+`docker-compose.override.yml` next to it, which compose reads by itself:
+
+```yaml
+services:
+  opentrack:
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    extra_hosts: !reset []
+    depends_on: !reset {}
+    environment:
+      OT_REDIS_URL: ${OT_REDIS_URL:-redis://127.0.0.1:6379}
+      OT_NATS_URL: ${OT_NATS_URL:-nats://127.0.0.1:4222}
+  redis:
+    profiles: ["bundled-redis"]   # never started; the host's Redis is used
+```
+
+To keep the `./data` directory as well, add `volumes: !override ["./data:/data"]` under
+`opentrack`.
 
 ### From source
 
@@ -1134,6 +1212,10 @@ The entities' revision history is not in the sheet.
 
 With roles in separate processes, migrate once (or start one role) before starting the others.
 
+A node still on the host-network compose file (0.4.3 and before) moves its data directory into a
+volume and gets its own Redis when it takes the new `docker-compose.yml`: follow
+[Upgrading a host-network deployment](#upgrading-a-host-network-deployment) instead of step 3.
+
 To go back, restore the backup from step 2 and run the old release. An older release refuses a
 database a newer one has migrated: "database schema version N is newer than this build supports
 (M)".
@@ -1380,11 +1462,20 @@ including TLS ended at a proxy (`OT_PUBLIC_TLS=1` or an `https://` `OT_PUBLIC_UR
 
 ### Container hardening
 
-The image runs as an unprivileged user and has a health check (`opentrack health`). Its base
-images are pinned by digest. The compose file runs it with:
+The image runs as an unprivileged user (uid 1000) and has a health check (`opentrack health`).
+Its runtime base is distroless Debian 12 (`gcr.io/distroless/cc-debian12`): no shell, no package
+manager, only glibc, OpenSSL 3, CA certificates and the shared libraries the binary loads (SAML's
+libxmlsec1 and libxml2 and theirs). Its base images are pinned by digest. The compose file runs it
+with:
 - a read-only root file system (only `/data` and scratch space are writable);
 - every Linux capability dropped;
-- `no-new-privileges`.
+- `no-new-privileges`;
+- a bridge network with only port 8090 published, and Redis on an internal network;
+- a named volume for `/data`;
+- memory, CPU and process limits ([Docker compose](#docker-compose)).
+
+Redis in the compose file runs the same way: its own user, read-only, no capabilities,
+`no-new-privileges`, limits, and no published port.
 
 ### Signed images
 

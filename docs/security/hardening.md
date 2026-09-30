@@ -11,14 +11,28 @@ themselves are described in the administrator guide, under
    `cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/phornstein/opentrack@<digest>`
    ([supply-chain.md](supply-chain.md)).
 2. **Use the image.** Only the image has OpenSSL's FIPS provider, so only it has SAML under FIPS.
-   Its base images are pinned by digest. Scan the built image with your scanner (for example
-   `grype` or `trivy`) and keep the report ([supply-chain.md](supply-chain.md)).
+   Its runtime is distroless Debian 12 (`gcr.io/distroless/cc-debian12`, non-root): no shell, no
+   package manager, and of the operating system only glibc, OpenSSL 3, CA certificates and the
+   libraries the binary loads. It runs as uid 1000. Its base images are pinned by digest. Scan the
+   built image with your scanner (for example `grype` or `trivy`) and keep the report
+   ([supply-chain.md](supply-chain.md)).
 3. **Run it hardened.** `docker-compose.yml` already sets:
    - `read_only: true`, with `tmpfs` for `/tmp` and `/home/opentrack`;
    - `cap_drop: [ALL]`;
-   - `security_opt: no-new-privileges`.
+   - `security_opt: no-new-privileges`;
+   - a bridge network with only port 8090 published (`OT_BIND_PORT`); Redis on an internal network
+     with no route out and no published port; NATS reached on the host through `host-gateway`;
+   - a named volume for `/data`;
+   - `mem_limit`, `cpus` and `pids_limit` on OpenTrack and Redis (size them:
+     [admin guide, Docker compose](../guides/admin.md#docker-compose)).
 
-   Keep them. The only writable volume is `/data`.
+   Keep them. The only writable volume is `/data`. Redis in the same file runs as its own user,
+   read-only, with no capabilities and `no-new-privileges`.
+
+   **Host networking is an exception.** A site that must run OpenTrack on the host network (the
+   override in the [admin guide](../guides/admin.md#upgrading-a-host-network-deployment)) exposes
+   every port OpenTrack opens and shares the host's network namespace. Record it as a risk
+   acceptance, and restrict the host's ports with its firewall.
 4. **Set the first admin** with `OT_ADMIN_EMAIL` and a policy-compliant `OT_ADMIN_PASSWORD`, or use
    the temporary password in `initial-admin.txt`, which the first sign-in forces you to change.
    An `OT_ADMIN_PASSWORD` is not forced to change: choose it as the account's real password, and
@@ -86,4 +100,5 @@ The account policy is fixed at the STIG values; there is nothing to set:
 - **Keep logs off the host.** The hourly chain head in the exported logs is what shows that the
   audit tail was cut.
 - **Patch:** CI runs `cargo deny` (RustSec) and `npm audit`. Rebuild the image when either reports
-  something, and when Debian bookworm ships security updates.
+  something, and when Debian 12 ships security updates for a package in the image (the distroless
+  base, or a library it copies in; [supply-chain.md](supply-chain.md)).
