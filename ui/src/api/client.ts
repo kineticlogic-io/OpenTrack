@@ -387,11 +387,26 @@ export class ApiError extends Error {
 /** Who the API records as the acting operator until authentication exists. */
 const ACTOR = 'op:ui'
 
+/**
+ * Every API request says it comes from OpenTrack's own page. The server refuses a change made with
+ * the session cookie that lacks it (cross-site request forgery): another site's form or script
+ * cannot set it.
+ */
+export const CSRF_HEADER = 'x-opentrack-csrf'
+
+/** `init` with the CSRF header added. */
+export function withCsrf(input: RequestInfo | URL, init: RequestInit | undefined): RequestInit {
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  headers.set(CSRF_HEADER, '1')
+  return { ...init, headers }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     headers: {
       'x-opentrack-actor': ACTOR,
+      [CSRF_HEADER]: '1',
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -1165,7 +1180,7 @@ export const api = {
   addPluginWasm: async (file: File, replace = false): Promise<PluginInfo> => {
     const res = await fetch(`/api/v1/plugins${replace ? '?replace=true' : ''}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/wasm' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/wasm' },
       body: file,
     })
     const text = await res.text()
@@ -1240,7 +1255,7 @@ export const api = {
   importConfig: async (file: File): Promise<ConfigImported> => {
     const res = await fetch('/api/v1/import/config', {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/json' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/json' },
       body: file,
     })
     const text = await res.text()
@@ -1274,7 +1289,7 @@ export const api = {
     const format = file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx'
     const res = await fetch(`/api/v1/registry/import-sheet?format=${format}&apply=${apply}&label=${enc(file.name)}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1' },
       body: file,
     })
     const parsed = JSON.parse((await res.text()) || '{}')

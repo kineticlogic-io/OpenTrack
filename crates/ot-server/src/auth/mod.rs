@@ -6,16 +6,19 @@
 //! Every API request passes [`layer`]: it finds who is calling (a client
 //! certificate, an API token, the session cookie, or OpenStare's session),
 //! checks the role the path needs ([`policy`]), and sets the actor the
-//! decision log records. The role always comes from the account as it is
+//! decision log records. It also holds each client to its request rate
+//! ([`rate`]) and refuses changes forged from another site ([`csrf`]). The role always comes from the account as it is
 //! now, so a role change or a deactivation takes effect at once.
 
 pub mod access;
 pub mod api;
 pub mod consent;
+pub mod csrf;
 pub mod maintenance;
 mod openstare;
 pub mod password;
 pub mod policy;
+pub mod rate;
 #[cfg(feature = "saml")]
 mod saml;
 #[cfg(feature = "saml")]
@@ -155,6 +158,8 @@ pub struct Auth {
     /// When API tokens, certificates and OpenStare identities were last
     /// audited as used.
     pub uses: access::Uses,
+    /// Each client's API request rate ([`rate`]).
+    pub rate: rate::Limiter,
     #[cfg(feature = "saml")]
     saml: saml::State,
 }
@@ -185,6 +190,7 @@ impl Auth {
             activity: sessions::Activity::default(),
             consent: consent::Consent::default(),
             uses: access::Uses::default(),
+            rate: rate::Limiter::default(),
             #[cfg(feature = "saml")]
             saml: saml::State::default(),
         }
@@ -628,11 +634,28 @@ async fn gate(
     // Paths under /api/v1, as the policy names them.
     let api_path = path.strip_prefix("/api/v1").unwrap_or(path);
     let need = policy::need(method, api_path);
+    let by_ip = format!("ip:{ip}");
     if need == policy::Need::Public {
+        if let Some(r) = limited(s, &by_ip, "anonymous", method, api_path, ip).await {
+            return (r, None);
+        }
+        // Signing in or out from another site's page (login CSRF).
+        if let Err(r) = csrf::check(
+            method,
+            api_path,
+            req.headers(),
+            s.auth.public_url.as_deref(),
+            false,
+        ) {
+            return (forged(s, "anonymous", &r, method, api_path, ip).await, None);
+        }
         return (next.run(req).await, None);
     }
     let cert = req.extensions().get::<PeerCert>().cloned();
     let Some(user) = identify(s, req.headers(), cert.as_ref()).await else {
+        if let Some(r) = limited(s, &by_ip, "anonymous", method, api_path, ip).await {
+            return (r, None);
+        }
         if access::credential_presented(req.headers(), cert.is_some()) {
             let actor = cert.as_ref().map_or("anonymous".to_owned(), |c| {
                 format!("cert:{}", c.common_name)
@@ -642,6 +665,23 @@ async fn gate(
         return (deny(StatusCode::UNAUTHORIZED, "sign in first"), None);
     };
     let email = Some(user.email.clone());
+    if let Some(r) = limited(s, &rate_key(&user, ip), &user.email, method, api_path, ip).await {
+        return (r, email);
+    }
+    let cookie_borne =
+        user.via == Via::Session || (user.via == Via::Openstare && bearer(req.headers()).is_none());
+    if let Err(r) = csrf::check(
+        method,
+        api_path,
+        req.headers(),
+        s.auth.public_url.as_deref(),
+        cookie_borne,
+    ) {
+        return (
+            forged(s, &user.email, &r, method, api_path, ip).await,
+            email,
+        );
+    }
     // The notice-and-consent banner first, as the page shows it (AC-8).
     if !policy::allowed_before_consent(api_path) && s.auth.consent.required(s, &user).await {
         let r = (
@@ -691,6 +731,82 @@ async fn gate(
     let res = next.run(req).await;
     access::after(s, &user, method, api_path, res.status(), ip).await;
     (res, email)
+}
+
+/// Whose bucket a request comes from ([`rate`]): an account, all its
+/// sessions together; each API token on its own; with sign-in off, the
+/// address.
+fn rate_key(user: &AuthUser, ip: &str) -> String {
+    match (user.via, &user.jti) {
+        (Via::Disabled, _) => format!("ip:{ip}"),
+        (Via::ApiToken, Some((jti, _))) => format!("token:{jti}"),
+        _ => format!("account:{}", user.id),
+    }
+}
+
+/// A 429 when `client` is over its rate ([`rate`]); the first in a minute
+/// is logged and audited (`rate_limited`), not every one.
+async fn limited(
+    s: &AppState,
+    client: &str,
+    actor: &str,
+    method: &axum::http::Method,
+    path: &str,
+    ip: &str,
+) -> Option<Response> {
+    let rate::Verdict::Refuse { retry_after, note } = s.auth.rate.check(client) else {
+        return None;
+    };
+    if note {
+        tracing::warn!(client, actor, ip, "API rate limit reached");
+        access::refused(
+            s,
+            actor,
+            "rate_limited",
+            method,
+            path,
+            ip,
+            json!({ "client": client, "per_sec": rate::PER_SEC, "burst": rate::BURST }),
+        )
+        .await;
+    }
+    let mut r = deny(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many requests: slow down",
+    );
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
+    Some(r)
+}
+
+/// Refuse a forged change ([`csrf`]), audited as `access_denied`.
+async fn forged(
+    s: &AppState,
+    actor: &str,
+    r: &csrf::Refusal,
+    method: &axum::http::Method,
+    path: &str,
+    ip: &str,
+) -> Response {
+    let origin = match r {
+        csrf::Refusal::ForeignOrigin(o) => Some(o.chars().take(256).collect::<String>()),
+        csrf::Refusal::NoHeader => None,
+    };
+    access::refused(
+        s,
+        actor,
+        "access_denied",
+        method,
+        path,
+        ip,
+        json!({ "reason": "csrf", "detail": r.message(), "origin": origin }),
+    )
+    .await;
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(json!({ "error": r.message(), "code": "csrf" })),
+    )
+        .into_response()
 }
 
 /// The caller's address, when the server recorded it.

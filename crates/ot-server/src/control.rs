@@ -13,13 +13,13 @@ use axum::http::StatusCode;
 use axum::http::header::{self, CACHE_CONTROL};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{MethodRouter, get};
 use axum::{Json, Router};
 use ot_core::Uid;
 use ot_store::{Db, RedisStore};
 use serde_json::{Value, json};
 use tower_http::compression::CompressionLayer;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeader;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 
@@ -80,6 +80,7 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
     if let Some(dir) = ui_dir.filter(|d| d.join("index.html").is_file()) {
         app = app
             .nest_service("/assets", assets(&dir))
+            .route("/index.html", page_handler(&dir))
             .fallback_service(page(&dir));
     }
     app.layer(CompressionLayer::new())
@@ -92,15 +93,33 @@ pub fn router(state: AppState, ui_dir: Option<PathBuf>) -> Router {
         )
 }
 
-/// The page's content security policy: everything from this server (the
-/// map's worker is a bundled file; its land outlines are served here),
-/// inline styles (React's `style` attributes, the map's and editors'), and
-/// images and fonts as data or blob URLs (symbols, the map's sprites). No
-/// inline or evaluated script, no plugins, never framed.
-pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+/// The content security policy: everything from this server (the map's
+/// worker is a bundled file; its land outlines are served here), and images
+/// and fonts as data or blob URLs (symbols, the map's sprites). No inline or
+/// evaluated script, no plugins, never framed. Styles come from this
+/// server's stylesheets, or from a `<style>` element carrying the page's
+/// nonce ([`page_csp`]): no inline `style` attribute in markup. React's
+/// `style` props, the map's and the charts' are set through the CSSOM
+/// (`element.style`), which the policy doesn't govern.
+pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
     img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
     worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; \
     form-action 'self'; frame-ancestors 'none'";
+
+/// Where the UI build puts the page's nonce (`html.cspNonce` in
+/// ui/vite.config.ts): on its own `<style>` and `<script>` elements and in
+/// `<meta property="csp-nonce">`, which the UI reads to give the nonce to
+/// the libraries that add `<style>` elements (the code editor's, the
+/// animations').
+const NONCE_PLACEHOLDER: &str = "__OT_CSP_NONCE__";
+
+/// [`CSP`] for one page response: its `<style>` elements may carry `nonce`.
+pub fn page_csp(nonce: &str) -> String {
+    CSP.replace(
+        "style-src 'self';",
+        &format!("style-src 'self' 'nonce-{nonce}';"),
+    )
+}
 
 /// Security headers on every response, the API's and the UI's: the
 /// content security policy, no MIME sniffing, no framing, no referrer, no
@@ -119,7 +138,10 @@ async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) ->
             HeaderValue::from_static(v),
         );
     };
-    set(h, "content-security-policy", CSP);
+    // The page sets its own, with its nonce.
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        set(h, "content-security-policy", CSP);
+    }
     set(h, "x-content-type-options", "nosniff");
     set(h, "x-frame-options", "DENY");
     set(h, "referrer-policy", "no-referrer");
@@ -156,14 +178,46 @@ fn assets(dir: &std::path::Path) -> SetResponseHeader<ServeDir, HeaderValue> {
     )
 }
 
-/// The single-page app: any other path is the page, which is never cached so
-/// a deploy takes effect on the next load.
-fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValue> {
+/// The single-page app: any other path is the page ([`page_handler`]);
+/// the other files beside it (the icon) are never cached either, so a
+/// deploy takes effect on the next load.
+fn page(dir: &std::path::Path) -> SetResponseHeader<ServeDir<MethodRouter>, HeaderValue> {
     SetResponseHeader::overriding(
-        ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))),
+        ServeDir::new(dir)
+            // `/` is the page too, with its nonce, not the file as built.
+            .append_index_html_on_directories(false)
+            .fallback(page_handler(dir)),
         CACHE_CONTROL,
         HeaderValue::from_static("no-cache"),
     )
+}
+
+/// The page, `index.html`, with a fresh nonce for its styles in both the
+/// page and its content security policy (DRBG, see [`crate::fips`]). Read
+/// on each request (it is small) so a rebuilt UI is served at once.
+fn page_handler<S: Clone + Send + Sync + 'static>(dir: &std::path::Path) -> MethodRouter<S> {
+    get(index_page).with_state(Arc::new(dir.join("index.html")))
+}
+
+async fn index_page(State(path): State<Arc<PathBuf>>) -> Response {
+    let Ok(html) = tokio::fs::read_to_string(path.as_path()).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let nonce = crate::fips::random_hex::<16>();
+    let csp =
+        HeaderValue::from_str(&page_csp(&nonce)).unwrap_or_else(|_| HeaderValue::from_static(CSP));
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            ),
+            (CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+            (header::CONTENT_SECURITY_POLICY, csp),
+        ],
+        html.replace(NONCE_PLACEHOLDER, &nonce),
+    )
+        .into_response()
 }
 
 /// Every dependency's state. 503 (with the same body) when SQLite, Redis or
@@ -441,6 +495,9 @@ mod tests {
                 .unwrap()
                 .contains("frame-ancestors 'none'")
         );
+        let csp = h["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("style-src 'self';"), "{csp}");
+        assert!(!csp.contains("unsafe-inline"), "{csp}");
         assert_eq!(h["x-content-type-options"], "nosniff");
         assert_eq!(h["x-frame-options"], "DENY");
         assert_eq!(h["referrer-policy"], "no-referrer");
@@ -455,6 +512,68 @@ mod tests {
                 .unwrap()
                 .starts_with("max-age=")
         );
+    }
+
+    #[tokio::test]
+    async fn each_page_load_gets_its_own_style_nonce() {
+        use tower::ServiceExt;
+        let dir = std::env::temp_dir().join(format!("ot-page-{}", crate::fips::random_hex::<6>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("index.html"),
+            r#"<style nonce="__OT_CSP_NONCE__">b{}</style><meta property="csp-nonce" nonce="__OT_CSP_NONCE__">"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("favicon.svg"), "<svg/>").unwrap();
+        let app = Router::new()
+            .route("/index.html", page_handler(&dir))
+            .fallback_service(page(&dir))
+            .layer(axum::middleware::from_fn_with_state(
+                false,
+                security_headers,
+            ));
+        let load = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let req = axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let res = app.oneshot(req).await.unwrap();
+                let status = res.status();
+                let h = res.headers().clone();
+                let body = http_body_util::BodyExt::collect(res.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                (status, h, String::from_utf8(body.to_vec()).unwrap())
+            }
+        };
+        let mut seen = Vec::new();
+        for uri in ["/", "/index.html", "/trackdb/OTK1"] {
+            let (st, h, body) = load(uri).await;
+            assert_eq!(st, StatusCode::OK, "{uri}");
+            assert_eq!(h["cache-control"], "no-cache", "{uri}");
+            let csp = h["content-security-policy"].to_str().unwrap();
+            let nonce = csp
+                .split("'nonce-")
+                .nth(1)
+                .and_then(|r| r.split('\'').next())
+                .unwrap_or_else(|| panic!("{uri}: {csp}"))
+                .to_owned();
+            assert_eq!(nonce.len(), 32);
+            assert!(!body.contains(NONCE_PLACEHOLDER), "{body}");
+            assert_eq!(body.matches(&format!("nonce=\"{nonce}\"")).count(), 2);
+            assert!(!csp.contains("unsafe-inline"), "{csp}");
+            seen.push(nonce);
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "a fresh nonce each load");
+        // Other files beside the page are served as they are, with the plain policy.
+        let (st, h, body) = load("/favicon.svg").await;
+        assert_eq!((st, body.as_str()), (StatusCode::OK, "<svg/>"));
+        assert_eq!(h["content-security-policy"], CSP);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

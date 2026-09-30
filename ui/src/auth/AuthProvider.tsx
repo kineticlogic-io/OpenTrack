@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useToast } from 'staresdk'
-import { api, ApiError, type AuthPublic, type Me, type Role } from '../api/client'
+import { api, ApiError, withCsrf, type AuthPublic, type Me, type Role } from '../api/client'
 import { trackActivity, withIdle } from './activity'
 import { AuthCtx, here, roleAtLeast } from './context'
 
@@ -13,7 +13,8 @@ type Wrapped = typeof window.fetch & { __otAuth?: boolean }
  * Who is signed in, loaded from /auth/me at start. Any other /api call answered 401 means the
  * session ended (signed out, idle too long, ended elsewhere): go to the sign-in page, coming back
  * here after. A 403 (role too low) is shown as a toast with the server's reason. Every /api call
- * says how long the user has been idle, so polling alone does not keep a session alive.
+ * says how long the user has been idle, so polling alone does not keep a session alive, and
+ * carries the header that shows it comes from this page (the server's CSRF check).
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast()
@@ -34,7 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url
       const path = url.startsWith('http') ? new URL(url).pathname : url
       if (!path.startsWith('/api/')) return original(input, init)
-      const res = await original(input, withIdle(input, init))
+      const res = await original(input, withCsrf(input, withIdle(input, init)))
       if (res.status === 401 && !QUIET_401.some((p) => path.startsWith(p)) && window.location.pathname !== '/login') {
         window.location.assign('/login?ended=1&from=' + encodeURIComponent(here()))
       } else if (res.status === 403 && !path.startsWith('/api/v1/auth/login')) {

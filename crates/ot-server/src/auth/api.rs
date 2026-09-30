@@ -1065,7 +1065,12 @@ mod tests {
         }
         match auth {
             Some(a) if a.starts_with("Bearer ") => req = req.header("authorization", a),
-            Some(c) => req = req.header("cookie", c),
+            // As the page does, which sends the CSRF header with every call.
+            Some(c) => {
+                req = req
+                    .header("cookie", c)
+                    .header(super::super::csrf::HEADER, "1")
+            }
             None => {}
         }
         // Clients cannot say who they are this way.
@@ -2426,5 +2431,198 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    /// A request with exactly these headers, from one address.
+    async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, HeaderMap, Value) {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(ConnectInfo(std::net::SocketAddr::from((
+                [10, 7, 0, 1],
+                40000,
+            ))));
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let body = match body {
+            Some(b) => {
+                req = req.header("content-type", "application/json");
+                Body::from(b.to_string())
+            }
+            None => Body::empty(),
+        };
+        let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            headers,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn audit_ops(body: &Value) -> Vec<(String, String)> {
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["op"].as_str().unwrap_or("").to_owned(),
+                    format!("{} {}", r["outcome"], r["detail"]),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cookie_borne_change_must_come_from_the_page() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (st, _, cookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "root@x.org", "password": ROOT })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let admin = cookie.unwrap();
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "script" })),
+        )
+        .await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        let host = ("host", "ot.test:8090");
+        let csrf = (super::super::csrf::HEADER, "1");
+        let change = Some(json!({ "name": "another" }));
+        let path = "/api/v1/auth/api-tokens";
+
+        // The session cookie alone: another site's form could send that.
+        let c = [("cookie", admin.as_str()), host];
+        let (st, _, body) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("csrf"))
+        );
+        // With the header but from another site.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            csrf,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // The page: its own origin and the header.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            csrf,
+            ("origin", "http://ot.test:8090"),
+        ];
+        let (st, _, body) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        // Reads need neither.
+        let c = [
+            ("cookie", admin.as_str()),
+            host,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+        assert_eq!(st, StatusCode::OK);
+        // A script's token needs no header, but not from another site's page.
+        let c = [("authorization", bearer.as_str()), host];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::CREATED);
+        let c = [
+            ("authorization", bearer.as_str()),
+            host,
+            ("origin", "http://evil.test"),
+        ];
+        let (st, ..) = send(&app, "POST", path, &c, change.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // Nor sign in from another site's page (login CSRF).
+        let c = [host, ("origin", "http://evil.test")];
+        let login = Some(json!({ "email": "root@x.org", "password": ROOT }));
+        let (st, ..) = send(&app, "POST", "/api/v1/auth/login", &c, login.clone()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        // The sign-in page itself sends its origin.
+        let c = [host, ("origin", "http://ot.test:8090")];
+        let (st, ..) = send(&app, "POST", "/api/v1/auth/login", &c, login).await;
+        assert_eq!(st, StatusCode::OK);
+
+        let (_, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
+        let csrf_denials = audit_ops(&body)
+            .into_iter()
+            .filter(|(op, d)| op == "access_denied" && d.contains("failure") && d.contains("csrf"))
+            .count();
+        assert_eq!(csrf_denials, 4, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_flood_is_answered_429_and_audited_once() {
+        let Some(app) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let (_, _, cookie) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Some(json!({ "email": "root@x.org", "password": ROOT })),
+        )
+        .await;
+        let admin = cookie.unwrap();
+        let (_, tok, _) = call(
+            &app,
+            "POST",
+            "/api/v1/auth/api-tokens",
+            Some(&admin),
+            Some(json!({ "name": "flood" })),
+        )
+        .await;
+        let bearer = format!("Bearer {}", tok["token"].as_str().unwrap());
+        let c = [("authorization", bearer.as_str())];
+        // The burst, and whatever the rate refills while it is sent.
+        let mut allowed = 0;
+        let refused = loop {
+            let (st, h, _) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+            if st == StatusCode::TOO_MANY_REQUESTS {
+                break h;
+            }
+            assert_eq!(st, StatusCode::OK);
+            allowed += 1;
+            assert!(allowed < 1_000, "never limited");
+        };
+        assert!(allowed >= super::super::rate::BURST as usize, "{allowed}");
+        assert_eq!(refused["retry-after"], "1");
+        for _ in 0..5 {
+            let (st, ..) = send(&app, "GET", "/api/v1/auth/me", &c, None).await;
+            assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+        }
+        // Each token is a client of its own: the account's session goes on.
+        let (st, body, _) = call(&app, "GET", "/api/v1/audit?limit=200", Some(&admin), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let limited = audit_ops(&body)
+            .into_iter()
+            .filter(|(op, d)| op == "rate_limited" && d.contains("failure"))
+            .count();
+        assert_eq!(limited, 1, "{body}");
     }
 }

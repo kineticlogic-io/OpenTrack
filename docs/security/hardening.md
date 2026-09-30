@@ -113,6 +113,13 @@ The account policy is fixed at the STIG values; there is nothing to set:
 - **Sessions:** idle timeout 15 minutes (admins 10), 3 per account, 24 hours at most.
 - **Inactivity:** accounts are turned off after 35 days, except those marked **Never turn off**.
 - **Audit record:** kept forever.
+- **API request rate:** 20 a second, bursts of 100, per account, API token or address (429
+  with `Retry-After` beyond).
+- **Cross-site checks:** a change made with the session cookie carries the page's
+  `X-OpenTrack-CSRF` header; a change from another site's `Origin` is refused. Behind a proxy,
+  pass `Host` through (or send `X-Forwarded-Host`), or set `OT_PUBLIC_URL`.
+- **Content security policy:** no inline script; a `<style>` only with the page's nonce, fresh
+  on each load; no `'unsafe-inline'`.
 
 ## Operate
 

@@ -303,7 +303,7 @@ For `serve` (and `all`).
 | `OT_AUTH` | `on` | `off` turns sign-in off: every caller is an admin. Development only ([Sign-in turned off](#sign-in-turned-off)). |
 | `OT_ADMIN_EMAIL`, `OT_ADMIN_PASSWORD` | | The first admin account, made only while there are no accounts ([First admin](#first-admin)). |
 | `OT_SESSION_SECRET` | `session.key` beside the database | The key sessions and API tokens are signed with, at least 32 characters. Unset, one is made on first start and kept in `session.key`. Changing it signs everyone out and voids every API token. |
-| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. An `https://` address also marks cookies `Secure` and sends HSTS. |
+| `OT_PUBLIC_URL` | | Where browsers reach OpenTrack, such as `https://opentrack.example.org`. SAML needs it. An `https://` address also marks cookies `Secure` and sends HSTS. Behind a proxy that rewrites `Host` and sends no `X-Forwarded-Host`, set it so the page's changes pass the cross-site check ([Security](#security)). |
 | `OT_PUBLIC_TLS` | off | `1`: a proxy in front of OpenTrack ends TLS, so cookies are `Secure` and HSTS is sent. |
 
 ### TLS
@@ -1522,6 +1522,20 @@ Correlation tabs show it; `GET /api/v1/decisions`).
 ## Security
 
 - **Keep sign-in on.** `OT_AUTH=off` makes everyone an admin.
+- **Changes come from OpenTrack's page.** A change (anything but a read) made with the session
+  cookie must carry the `X-OpenTrack-CSRF` header the page sends with every call, and any change
+  whose `Origin` names another site is refused (403, audited as `access_denied` with reason
+  `csrf`). Scripts with an API token need no header. The server is the address a browser asked
+  for (`Host`), the one a proxy says it was asked for (`X-Forwarded-Host`), or `OT_PUBLIC_URL`.
+  SAML's assertion consumer is the one address another site (the identity provider) posts to.
+- **Request rate.** Each client may make 20 API requests a second, in bursts of up to 100: an
+  account (all its sessions together), each API token on its own, or an address before sign-in.
+  More is answered 429 with `Retry-After`, and the first in a minute is logged and audited
+  (`rate_limited`). A busy page makes a few a second. Sign-in has its own stricter limit. The
+  values are fixed.
+- **Content security policy.** The page may run only this server's scripts, and styles from
+  this server's stylesheets or a `<style>` carrying the page's nonce, fresh on each load:
+  injected markup can neither run nor style anything.
 - **Use TLS** (`OT_TLS_CERT`, `OT_TLS_KEY`), or a TLS-terminating proxy that forwards to OpenTrack
   on a private address. Over TLS, session cookies are `Secure`.
 - **Protect the data directory.** `session.key` and `initial-admin.txt` are written readable by
@@ -1625,7 +1639,9 @@ decision log records:
   (`consent_accepted`);
 - password changed, account turned off (inactive or expired);
 - a credential that identifies no one (`access_refused`), a role that doesn't reach
-  (`access_denied`), a change the server refused (`change_refused`, with the status);
+  (`access_denied`), a change from another site's page (`access_denied`, reason `csrf`), a
+  change the server refused (`change_refused`, with the status);
+- a client over the request rate (`rate_limited`, once a minute per client);
 - an admin reading accounts, API tokens, sign-in settings, the configuration export or the
   audit record (`read_security_object`), and every source probe (`probe_source`).
 
