@@ -26,6 +26,7 @@ mod history_api;
 mod https;
 mod link;
 mod manage_api;
+mod marking;
 mod metrics;
 mod plugin_cli;
 mod plugins;

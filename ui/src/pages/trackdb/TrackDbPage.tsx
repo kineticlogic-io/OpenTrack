@@ -63,6 +63,7 @@ const COLUMNS: DataTableColumn<TrackRow>[] = [
     sortValue: (t) => (t.kind === 'group' ? 2 : (t.groups ?? []).length + (t.paired_with ?? []).length > 0 ? 1 : 0),
   },
   { key: 'name', header: 'Name', render: displayName, sortValue: (t) => displayName(t) || null },
+  { key: 'marking', header: 'Marking', mono: true, width: 150, render: (t) => t.marking ?? '', sortValue: (t) => t.marking ?? null },
   { key: 'domain', header: 'Domain', width: 90, render: (t) => t.domain, sortValue: (t) => t.domain },
   { key: 'affiliation', header: 'Affiliation', width: 100, render: (t) => t.affiliation, sortValue: (t) => t.affiliation },
   {

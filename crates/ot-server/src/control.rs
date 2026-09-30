@@ -270,6 +270,8 @@ async fn track(
         .ok_or_else(|| ApiError::not_found(format!("system track {uid}")))?;
     Ok(Json(json!({
         "confidence": track.confidence(),
+        // The label's portion marking, the text every output shows.
+        "marking": track.view.security.as_ref().map(ot_core::SecurityLabel::marking),
         "track": track,
         "message": ot_core::wire::to_message(&track, &s.common.publish_context(), chrono::Utc::now()),
         "subject": ot_core::wire::subject(&s.common.nats.tracks_subject, uid),

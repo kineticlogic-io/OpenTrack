@@ -48,6 +48,10 @@ pub struct ConfigFile {
     /// A reminder that the file holds secrets.
     #[serde(default)]
     pub notice: String,
+    /// The file's security marking: the highest of its sources' labels,
+    /// else the classification banner's text (set by the server).
+    #[serde(default)]
+    pub marking: String,
     pub sources: Vec<SourceEntry>,
     pub schema_versions: Vec<SchemaEntry>,
     /// The saved correlation settings (`null`: never saved, the defaults).
@@ -489,6 +493,7 @@ impl Db {
             exported_at: Utc::now(),
             exported_by: String::new(),
             notice: String::new(),
+            marking: String::new(),
             sources,
             schema_versions,
             correlation_settings: self.correlation_settings()?,

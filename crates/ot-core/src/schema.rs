@@ -130,6 +130,89 @@ impl SecurityLabel {
     }
 }
 
+impl SecurityLabel {
+    /// The label's portion marking, the one text every output shows for it
+    /// (TAK remarks, exports, the UI), in common US marking syntax:
+    /// `(S//NOFORN)`, `(U//FOUO)`, `(S//ORCON/REL TO USA, GBR)`.
+    ///
+    /// - The classification is abbreviated (U, C, S, TS); one without an
+    ///   abbreviation (CUI, a foreign or unknown one) is upper-cased as it is.
+    /// - After `//` come the controls, separated by `/`: any `//` parts of the
+    ///   classification text, then the restrictions in their order (upper
+    ///   case, each once), then the releasability.
+    /// - Releasability is `REL TO` with USA first, then the other country
+    ///   codes, then organisation codes (four letters or more), each in
+    ///   alphabetical order. `NONE` (sources that release to nothing in
+    ///   common) is `NOFORN`; a `NOFORN` among the restrictions drops the
+    ///   `REL TO` list, as it is the stricter of the two.
+    pub fn marking(&self) -> String {
+        let mut parts = self.classification.split("//");
+        let head = normalize_classification(parts.next().unwrap_or(""));
+        let class = match head.as_str() {
+            "UNCLASSIFIED" => "U".to_owned(),
+            "CONFIDENTIAL" => "C".to_owned(),
+            "SECRET" => "S".to_owned(),
+            "TOP SECRET" => "TS".to_owned(),
+            _ => head,
+        };
+        let mut controls: Vec<String> = Vec::new();
+        let mut rel: Option<Vec<String>> = None;
+        let add_rel = |list: &str, rel: &mut Option<Vec<String>>| {
+            let items: Vec<String> = list
+                .split(',')
+                .map(|x| x.split_whitespace().collect::<Vec<_>>().join(" "))
+                .map(|x| x.to_uppercase())
+                .filter(|x| !x.is_empty())
+                .collect();
+            *rel = Some(match rel.take() {
+                None => items,
+                Some(have) => have.into_iter().filter(|x| items.contains(x)).collect(),
+            });
+        };
+        let tail: Vec<&str> = parts.flat_map(|p| p.split('/')).collect();
+        for c in tail
+            .into_iter()
+            .chain(self.restrictions.iter().map(String::as_str))
+        {
+            let c = c
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_uppercase();
+            if c.is_empty() {
+                continue;
+            }
+            if let Some(list) = c.strip_prefix("REL TO ") {
+                add_rel(list, &mut rel);
+            } else if !controls.contains(&c) {
+                controls.push(c);
+            }
+        }
+        if let Some(s) = &self.sharing {
+            let s = s.trim();
+            let upper = s.to_uppercase();
+            add_rel(upper.strip_prefix("REL TO ").unwrap_or(s), &mut rel);
+        }
+        let nofo = |c: &Vec<String>| c.iter().any(|x| x == "NOFORN" || x == "NF");
+        if let Some(mut list) = rel {
+            if list.is_empty() || list.iter().any(|x| x == "NONE") {
+                if !nofo(&controls) {
+                    controls.push("NOFORN".into());
+                }
+            } else if !nofo(&controls) {
+                list.sort_by_key(|x| (x != "USA", x.chars().count() > 3, x.clone()));
+                list.dedup();
+                controls.push(format!("REL TO {}", list.join(", ")));
+            }
+        }
+        if controls.is_empty() {
+            format!("({class})")
+        } else {
+            format!("({class}//{})", controls.join("/"))
+        }
+    }
+}
+
 /// The classification order a fused track's label is chosen by, lowest
 /// first (settings can replace it).
 pub const DEFAULT_CLASSIFICATION_ORDER: [&str; 4] =
@@ -930,5 +1013,50 @@ pub(crate) mod tests {
         assert_eq!(l.classification, "SPECIAL HANDLING");
         assert!(SecurityLabel::combine([], &o).is_none());
         assert!(l.validate().is_ok());
+    }
+
+    #[test]
+    fn markings_follow_us_syntax() {
+        let m = |c: &str, r: &[&str], s: Option<&str>| label(c, r, s).marking();
+        assert_eq!(m("UNCLASSIFIED", &[], None), "(U)");
+        assert_eq!(m("unclassified", &["fouo"], None), "(U//FOUO)");
+        assert_eq!(m("Secret", &[], Some("GBR, usa")), "(S//REL TO USA, GBR)");
+        assert_eq!(m("confidential", &[], None), "(C)");
+        assert_eq!(m("top_secret", &[], None), "(TS)");
+        assert_eq!(m("CUI", &[], None), "(CUI)");
+        assert_eq!(m("NATO SECRET", &[], None), "(NATO SECRET)");
+        // Restrictions in order, once each, then the releasability last:
+        // USA, the other countries, then organisations.
+        assert_eq!(
+            m(
+                "S",
+                &["ORCON", "propin", "orcon"],
+                Some("NATO, FVEY, CAN, usa, AUS, GBR")
+            ),
+            "(S//ORCON/PROPIN/REL TO USA, AUS, CAN, GBR, FVEY, NATO)"
+        );
+        // Written out already, or in the classification text.
+        assert_eq!(m("S", &[], Some("REL TO USA, GBR")), "(S//REL TO USA, GBR)");
+        assert_eq!(m("SECRET//NOFORN", &[], None), "(S//NOFORN)");
+        assert_eq!(
+            m("SECRET//REL TO USA, GBR, CAN", &[], Some("USA, CAN")),
+            "(S//REL TO USA, CAN)"
+        );
+        // Released to nothing in common, or NOFORN as well: NOFORN.
+        assert_eq!(m("S", &[], Some("NONE")), "(S//NOFORN)");
+        assert_eq!(m("S", &["NOFORN"], Some("USA, GBR")), "(S//NOFORN)");
+    }
+
+    #[test]
+    fn a_fused_marking_is_the_highest() {
+        let o = order();
+        let low = label("U", &["FOUO"], Some("USA, GBR, CAN"));
+        let high = label("SECRET", &[], Some("GBR, USA"));
+        let l = SecurityLabel::combine([&low, &high], &o).unwrap();
+        assert_eq!(l.marking(), "(S//FOUO/REL TO USA, GBR)");
+        // Nothing released in common; an unknown classification wins.
+        let odd = label("Special Handling", &[], Some("FRA"));
+        let l = SecurityLabel::combine([&high, &odd], &o).unwrap();
+        assert_eq!(l.marking(), "(SPECIAL HANDLING//NOFORN)");
     }
 }

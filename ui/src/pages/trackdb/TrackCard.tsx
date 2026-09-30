@@ -256,7 +256,10 @@ export function TrackCard({
         {icon && <img src={icon} alt={`${m.affiliation} ${m.domain} symbol`} height={36} />}
         <div className="card-name">
           <strong>{m.name !== 'UNKNOWN' ? m.name : (t.view.callsign ?? m.name)}</strong>
-          <span className="mono muted">{m.track_id}</span>
+          <span className="mono muted">
+            {data.marking && <span className="mono">{data.marking} </span>}
+            {m.track_id}
+          </span>
         </div>
         <span className="spacer" />
         {t.filtered ? (
@@ -297,6 +300,20 @@ export function TrackCard({
         {tab === 'card' ? (
           <div className="stack">
             <dl className="facts">
+              {data.marking && (
+                <>
+                  <dt>
+                    Marking
+                    <InfoTip label="Marking">
+                      The track&apos;s security label as a portion marking: its classification, restrictions and releasability (REL TO), taken
+                      from the labels of the sources that report it (the highest classification, every restriction, only the countries every
+                      source releases to). TAK events, NATS messages and exports carry the same marking. OpenTrack does not hide tracks by
+                      clearance: everyone signed in sees every track, so handle each as its marking says.
+                    </InfoTip>
+                  </dt>
+                  <dd className="mono">{data.marking}</dd>
+                </>
+              )}
               <dt>
                 Class-name
                 <InfoTip label="Class-name">

@@ -582,6 +582,7 @@ async fn list_tracks(
                 "state": t.state,
                 "class": m.class,
                 "gold_name": m.name,
+                "marking": t.view.security.as_ref().map(ot_core::SecurityLabel::marking),
                 "domain": m.domain,
                 "affiliation": m.affiliation,
                 "force_code": m.force_code,
@@ -1357,13 +1358,77 @@ mod tests {
         );
         for (uri, starts) in [
             ("/api/v1/export/tracks?format=geojson", "{"),
-            ("/api/v1/export/tracks?format=csv", "track_id,"),
+            (
+                "/api/v1/export/tracks?format=csv",
+                "SECRET\nclassification,track_id,",
+            ),
             ("/api/v1/export/config", "{"),
+            ("/api/v1/audit?format=csv", "SECRET\nseq,"),
+            ("/api/v1/registry/export?format=csv", "SECRET\nentity_id,"),
         ] {
             let (st, bytes) = call_raw(&app, "GET", uri, Vec::new()).await;
             assert_eq!(st, StatusCode::OK, "{uri}");
-            assert!(String::from_utf8_lossy(&bytes).starts_with(starts), "{uri}");
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(text.starts_with(starts), "{uri}: {text}");
         }
+        // A labelled track and an unlabelled one (the banner's SECRET):
+        // the file takes the highest, and each labelled track its own.
+        let track = |n: u64, security: Value| {
+            let t: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+            let obs = serde_json::from_value(json!({
+                "schema_version": 1, "source_id": "ais", "source_track_key": format!("k{n}"),
+                "observed_at": t, "received_at": t, "security": security,
+                "position": { "latitude": 32.68, "longitude": -117.23 }
+            }))
+            .unwrap();
+            let uid = ot_core::Uid::new(ot_core::SiteCode::new("TST").unwrap(), n).unwrap();
+            ot_core::SystemTrack::from_first_observation(uid, obs)
+        };
+        let labelled = track(
+            1,
+            json!({"classification": "UNCLASSIFIED", "restrictions": ["FOUO"], "sharing": "GBR, USA"}),
+        );
+        _redis.put_system_track(&labelled, true).await.unwrap();
+        _redis
+            .put_system_track(&track(2, Value::Null), true)
+            .await
+            .unwrap();
+        let (_, bytes) =
+            call_raw(&app, "GET", "/api/v1/export/tracks?format=csv", Vec::new()).await;
+        let text = String::from_utf8(bytes).unwrap();
+        let mut r = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(text.as_bytes());
+        let rows: Vec<Vec<String>> = r
+            .records()
+            .map(|x| x.unwrap().iter().map(str::to_owned).collect())
+            .collect();
+        assert_eq!(rows[0], ["(S//FOUO/REL TO USA, GBR)"], "{text}");
+        assert_eq!(rows[1][0], "classification");
+        let mut marks: Vec<&str> = rows[2..].iter().map(|r| r[0].as_str()).collect();
+        marks.sort();
+        assert_eq!(marks, ["", "(U//FOUO/REL TO USA, GBR)"]);
+        let (_, bytes) = call_raw(
+            &app,
+            "GET",
+            "/api/v1/export/tracks?format=geojson",
+            Vec::new(),
+        )
+        .await;
+        let g: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(g["security"]["marking"], "(S//FOUO/REL TO USA, GBR)");
+        let f = g["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == labelled.uid.doc_id())
+            .unwrap();
+        assert_eq!(f["properties"]["marking"], "(U//FOUO/REL TO USA, GBR)");
+        assert_eq!(
+            f["properties"]["security"]["classification"],
+            "UNCLASSIFIED"
+        );
         let (st, _) = call(
             &app,
             "POST",
