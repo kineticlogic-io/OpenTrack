@@ -79,5 +79,41 @@
   "severity": "CAT II",
   "remediation": "OCSP with stapling or responder queries (#21).",
   "target": "0.5.0"
+ },
+ {
+  "id": "P-28",
+  "weakness": "External plugins speak plaintext JSON lines to OpenTrack with no authentication; anything that can reach the plugin's socket or port can feed or impersonate it.",
+  "controls": "SC-8, IA-3",
+  "checks": "threat-model.md (plugins)",
+  "severity": "CAT II",
+  "remediation": "Authenticate external plugins (a shared secret or mutual TLS) and support TLS on TCP; until then keep them on loopback or a Unix socket (hardening checklist).",
+  "target": "0.5.0"
+ },
+ {
+  "id": "P-29",
+  "weakness": "`opentrack bridge` has no CA, client-certificate or NATS credentials options for the servers it links.",
+  "controls": "SC-8, IA-3",
+  "checks": "threat-model.md (multi-node sync)",
+  "severity": "CAT II",
+  "remediation": "Add TLS (CA, client certificate) and credentials (.creds, user/password) options for each side of the bridge.",
+  "target": "0.5.0"
+ },
+ {
+  "id": "P-30",
+  "weakness": "Any publisher allowed on the node's ot.sync.in.* subjects can claim a trusted site code; sync trust rests on the NATS server's permissions.",
+  "controls": "SC-8, IA-3, AC-4",
+  "checks": "threat-model.md (multi-node sync)",
+  "severity": "CAT II",
+  "remediation": "Sign sync messages per site (key per trusted site) and verify on receipt; document the NATS permissions needed meanwhile.",
+  "target": "0.5.0"
+ },
+ {
+  "id": "P-31",
+  "weakness": "State-changing API requests rely on SameSite=Strict cookies alone (no CSRF token), and the API has no general per-client rate limit (only sign-in is limited).",
+  "controls": "SC-5, SC-23",
+  "checks": "threat-model.md (UI/API)",
+  "severity": "CAT III",
+  "remediation": "Add a CSRF token (double-submit or header check) for cookie-authenticated changes, and a per-client request rate limit.",
+  "target": "0.5.0"
  }
 ]

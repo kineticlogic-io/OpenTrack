@@ -1,6 +1,6 @@
 # Deployment hardening
 
-This is the checklist for deploying OpenTrack 0.4.3 to an accredited environment. The controls
+This is the checklist for deploying OpenTrack 0.4.4 to an accredited environment. The controls
 themselves are described in the administrator guide, under
 [Security hardening](../guides/admin.md#security-hardening). How they map to NIST 800-53 is in
 [stig-mapping.md](stig-mapping.md).
