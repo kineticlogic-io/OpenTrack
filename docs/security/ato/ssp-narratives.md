@@ -1873,7 +1873,7 @@ The [[SITE: organization]] assesses supply chain risk for OpenTrack and its depe
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-OpenTrack scans its dependencies on every CI run (cargo deny against RustSec, npm audit at high) and each release image with Trivy and Grype (scripts/ato/scan), keeping the report with the release. The v0.4.2 scan reports 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base-image packages and, except one tzdata update of unknown severity, with no fixed version available, so they remain unremediated. The [[SITE: organization]] scans the deployed hosts and containers [[SITE: frequency]], analyzes the reports and remediates within [[SITE: response times]].
+OpenTrack scans its dependencies on every CI run (cargo deny against RustSec, npm audit at high) and each release image with Trivy and Grype (scripts/ato/scan), keeping the report with the release. The v0.4.2 scan reports 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base-image packages and, except one tzdata update of unknown severity, with no fixed version available, so they remain unremediated. The [[SITE: organization]] scans the deployed hosts and containers [[SITE: frequency]], analyzes the reports and remediates within [[SITE: response times]]. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* .github/workflows/ci.yml; deny.toml; scripts/ato/scan; docs/security/ato/scans/v0.4.2/scan.md
 
@@ -2067,7 +2067,7 @@ OpenTrack's threat model includes a criticality analysis naming the security-cri
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-The runtime image is based on Debian 12 (bookworm), whose v0.4.2 packages carry many CVEs with no fixed version, and it includes the OpenSSL 3.0.9 FIPS provider (the validated module) loaded by Debian's OpenSSL 3.0; one Rust crate is flagged unmaintained (rustls-pemfile, RUSTSEC-2025-0134, ignored as unused in third_party/rumqttc) and two crates are project-maintained forks (samael, rumqttc). cargo deny fails CI on any other unmaintained-crate advisory. Moving to a smaller, supported runtime image is the planned remediation. The [[SITE: organization]] replaces or justifies unsupported components.
+The runtime image is based on Debian 12 (bookworm), whose v0.4.2 packages carry many CVEs with no fixed version, and it includes the OpenSSL 3.0.9 FIPS provider (the validated module) loaded by Debian's OpenSSL 3.0; one Rust crate is flagged unmaintained (rustls-pemfile, RUSTSEC-2025-0134, ignored as unused in third_party/rumqttc) and two crates are project-maintained forks (samael, rumqttc). cargo deny fails CI on any other unmaintained-crate advisory. Moving to a smaller, supported runtime image is the planned remediation. The [[SITE: organization]] replaces or justifies unsupported components. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* Dockerfile; deny.toml; docs/security/ato/scans/v0.4.2/scan.md; docs/security/supply-chain.md#pinned-inputs
 
@@ -2299,7 +2299,7 @@ The [[SITE: organization]] develops, documents, disseminates and reviews the sys
 
 **Status:** Partially implemented · **Responsibility:** Shared
 
-OpenTrack fails CI on Rust and UI dependency advisories (cargo deny, npm audit), fixes product findings per release and publishes them in the CHANGELOG, and each release image is scanned. The Debian 12 base-image packages in v0.4.2 carry CVEs (5 Critical, 61 High) with no fixed version available, so they cannot be remediated by rebuilding; the planned remediation is a smaller runtime image. The [[SITE: organization]] installs OpenTrack releases and rebuilt images within [[SITE: time period]] of release and tests them first.
+OpenTrack fails CI on Rust and UI dependency advisories (cargo deny, npm audit), fixes product findings per release and publishes them in the CHANGELOG, and each release image is scanned. The Debian 12 base-image packages in v0.4.2 carry CVEs (5 Critical, 61 High) with no fixed version available, so they cannot be remediated by rebuilding; the planned remediation is a smaller runtime image. The [[SITE: organization]] installs OpenTrack releases and rebuilt images within [[SITE: time period]] of release and tests them first. From 0.4.4 the runtime image is distroless Debian 12 (no shell or package manager; only glibc, OpenSSL 3, CA certificates and the libraries the binary loads), which cut the scan findings from 258 to 59; what remains is in libxml2, zlib and libssl3, without a Debian fix yet (POA&M P-22).
 
 *Evidence:* .github/workflows/ci.yml; deny.toml; docs/security/ato/scans/v0.4.2/scan.md; docs/security/hardening.md#operate
 

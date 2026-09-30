@@ -45,21 +45,12 @@
   "target": "0.5.0"
  },
  {
-  "id": "P-21",
-  "weakness": "The sample docker-compose.yml uses host networking, a bind mount, and no CPU, memory or process limits.",
-  "controls": "CM-7, SC-6",
-  "checks": "CP SRG V-233127, V-270875",
-  "severity": "CAT II",
-  "remediation": "Ship a bridge network with only 8090 published, a named volume and resource limits; document host networking as an exception.",
-  "target": "0.4.x"
- },
- {
   "id": "P-22",
-  "weakness": "The v0.4.2 and v0.4.3 images have 5 Critical, 61 High, 99 Medium and 90 Low findings, all in Debian 12 base packages (perl-base, util-linux, libxml2, zlib, ncurses, ...), none with a fix at scan time (tzdata has one).",
+  "weakness": "After the move to distroless Debian 12 (0.4.4: 258 findings down to 59), the runtime image still carries unfixed findings in libraries the binary needs: libxml2 (1 Critical, 7 High; SAML), zlib1g (1 Critical, CVE-2023-45853), libssl3 (1 High), and Medium/Low in glibc, libxslt and the GCC runtime. None has a fix in Debian 12 at scan time.",
   "controls": "RA-5, SI-2, SA-22",
-  "checks": "scans/v0.4.2/scan.md, scans/v0.4.3/scan.md",
+  "checks": "scans/v0.4.2/scan.md, scans/v0.4.3/scan.md; the 0.4.4 release scan",
   "severity": "CAT I",
-  "remediation": "Rebuild on the current base; move to a minimal runtime image carrying only what the binary, SAML (libxml2/xmlsec) and the OpenSSL FIPS provider need.",
+  "remediation": "Rebuild on each Debian security update and at every release (the release scan shows what is fixed); track libxml2 and zlib fixes; consider building libxml2/xmlsec from current upstream releases if Debian doesn't fix them.",
   "target": "0.4.x"
  },
  {

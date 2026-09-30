@@ -499,9 +499,9 @@
  },
  {
   "vid": "V-233127",
-  "status": "Open",
-  "finding_details": "The image runs non-root, and the shipped docker-compose.yml sets read_only, cap_drop ALL and no-new-privileges, but it also runs the container with network_mode: host (sharing the host network namespace) and bind-mounts a host directory for /data; a platform enforcing this requirement would refuse it. Enforcement itself is the platform's.",
-  "comments": "Ship the compose file on a bridge network with 8090 published and a named volume; document host networking as an exception"
+  "status": "NotAFinding",
+  "finding_details": "The shipped docker-compose.yml runs OpenTrack on a bridge network with only the control-plane port published (OT_BIND_PORT), a named volume for /data (no host directory), a read-only root, all capabilities dropped and no-new-privileges; its Redis is on an internal network with no route out and is not published (docker-compose.yml; docs/guides/admin.md#docker-compose). Host networking is a documented, risk-accepted exception (docs/security/hardening.md).",
+  "comments": ""
  },
  {
   "vid": "V-233128",
@@ -1111,9 +1111,9 @@
  },
  {
   "vid": "V-270875",
-  "status": "Open",
-  "finding_details": "docker-compose.yml sets no CPU, memory or PID limits for the opentrack service, and the docs give no resource-limit values to apply on a platform.",
-  "comments": "Add mem_limit/cpus/pids_limit (deploy.resources.limits) to docker-compose.yml and document recommended requests/limits."
+  "status": "NotAFinding",
+  "finding_details": "docker-compose.yml sets memory, CPU and process limits on OpenTrack (mem_limit OT_MEM_LIMIT default 2g, cpus OT_CPUS default 2, pids_limit OT_PIDS_LIMIT default 1024) and on its Redis (OT_REDIS_MEM_LIMIT default 16g, cpus 2, pids 256), with sizing guidance in docs/guides/admin.md.",
+  "comments": ""
  },
  {
   "vid": "V-270876",
