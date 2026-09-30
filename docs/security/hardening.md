@@ -50,6 +50,12 @@ events as the tracks are, without adding classification markings to them.
 
 TLS runs only FIPS-approved suites (docs/security/fips.md).
 
+**Open only the ports you use.** Every port, protocol and service OpenTrack listens on or connects
+to, with its default and its TLS and authentication options, is in the admin guide's
+[Ports, protocols and services](../guides/admin.md#ports-protocols-and-services) table. Register
+the ones you enable in PPSM, and let only those through the firewall. Keep external plugins on
+the same host (loopback or a Unix socket): their protocol has no TLS or authentication.
+
 ## Sign-in
 
 - **SAML:** the identity provider signs with RSA-SHA256 or stronger. Keep **Allow admin** off

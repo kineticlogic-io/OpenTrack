@@ -325,7 +325,7 @@
  },
  {
   "id": "ac-20.2",
-  "title": "Portable Storage Devices \u2014 Restricted Use",
+  "title": "Portable Storage Devices — Restricted Use",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "Use of portable storage on external systems is restricted by the site. OpenTrack has no removable-media functions.",
@@ -532,7 +532,7 @@
  },
  {
   "id": "ia-2.8",
-  "title": "Access to Accounts \u2014 Replay Resistant",
+  "title": "Access to Accounts — Replay Resistant",
   "status": "Implemented",
   "responsibility": "Shared",
   "narrative": "Authentication runs over TLS, SAML assertions are accepted once and only in answer to a request OpenTrack made in the last 5 minutes, and sessions are signed tokens with a unique id backed by a server-side session record, sent in HttpOnly, SameSite=Strict, Secure cookies. The site configures TLS on the UI and API as the hardening checklist requires.",
@@ -937,7 +937,7 @@
  },
  {
   "id": "cm-7.5",
-  "title": "Authorized Software \u2014 Allow-by-exception",
+  "title": "Authorized Software — Allow-by-exception",
   "status": "Implemented",
   "responsibility": "Shared",
   "narrative": "Within OpenTrack only software an admin explicitly adds and enables runs as a plugin, its SHA-256 is recorded and checked on import, and plugins can be disabled or deleted. The [[SITE: organization]] maintains the list of authorized software, admits only the cosign-verified OpenTrack image and approved plugins, and reviews the list [[SITE: frequency]].",
@@ -974,11 +974,11 @@
  {
   "id": "cm-9",
   "title": "Configuration Management Plan",
-  "status": "Inherited",
-  "responsibility": "Site",
-  "narrative": "The [[SITE: organization]] writes the configuration management plan for [[SITE: system name]]. OpenTrack's supply-chain, hardening and upgrade documentation describe the product's configuration items and how they change.",
-  "evidence": "",
-  "site": "Write the CM plan, naming OpenTrack's configuration items (image, OT_* settings, database configuration)."
+  "status": "Implemented",
+  "responsibility": "Shared",
+  "narrative": "The [[SITE: organization]] writes the configuration management plan for [[SITE: system name]]. OpenTrack's software configuration management plan (docs/security/scm-plan.md) covers the product: its configuration items and released artefacts, branch protection and change control through issues and pull requests, version identification, the release process and roles. Its Deployed nodes section names what the site controls: OT_* settings, the runtime configuration in SQLite (every change a recorded decision; configuration export and import for baselines) and the signed image digest.",
+  "evidence": "docs/security/scm-plan.md; docs/guides/admin.md#configuration-export",
+  "site": "Write the CM plan, naming OpenTrack's configuration items (image digest, OT_* settings, runtime configuration and its export)."
  },
  {
   "id": "cm-10",
@@ -1289,11 +1289,11 @@
  {
   "id": "ra-5.11",
   "title": "Public Disclosure Program",
-  "status": "Planned",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "The [[SITE: organization]] establishes its public reporting channel for vulnerabilities in [[SITE: system name]]. OpenTrack does not yet publish a vulnerability disclosure policy or reporting channel for the product (no SECURITY.md; the repository is private, so its issue tracker is not public).",
-  "evidence": "",
-  "site": "Provide the site's reporting channel; forward product vulnerabilities to the OpenTrack maintainer."
+  "narrative": "OpenTrack publishes its vulnerability disclosure policy in SECURITY.md: reporters contact the maintainer privately on GitHub (the repository is private, so GitHub's private vulnerability reporting is not yet available), with response targets (acknowledgement within 5 working days, confirmation within 10, Critical and High fixed or mitigated within 30 days), supported versions, and how fixes and advisories are published (release notes, CHANGELOG Security fixes, advisories for Medium and above). The [[SITE: organization]] provides its own reporting channel for [[SITE: system name]] and forwards product vulnerabilities to the maintainer.",
+  "evidence": "SECURITY.md",
+  "site": "Provide the site's reporting channel; forward product vulnerabilities to the OpenTrack maintainer as SECURITY.md describes."
  },
  {
   "id": "ra-7",
@@ -1370,10 +1370,10 @@
  {
   "id": "sa-4.9",
   "title": "Functions, Ports, Protocols, and Services in Use",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "The functions, ports, protocols and services OpenTrack uses are documented across the admin guide: HTTPS UI/API on OT_BIND (8090), outbound Redis (6379, rediss), NATS (4222, tls), OTLP to the collector (4317 gRPC / 4318 HTTP), TAK outputs (8089 TLS, 8087 TCP, UDP multicast 239.2.3.1:6969, listening ports), per-source feed transports, SAML and OpenStare sign-in, and external plugin sockets. There is no single consolidated ports, protocols and services list for PPSM registration. The [[SITE: organization]] registers the ports and protocols it enables.",
-  "evidence": "docs/guides/admin.md#configuration; docs/guides/admin.md#tak-output; docs/guides/admin.md#opentelemetry; Dockerfile",
+  "narrative": "The admin guide lists every port, protocol and service OpenTrack listens on or connects to in one table for PPSM registration: direction, default, purpose, and TLS and authentication options. Only the control plane listens by default (OT_BIND, 8090); Redis (6379, rediss), NATS (4222, tls), OTLP (4317/4318), TAK outputs (8089 TLS, 8087 TCP, UDP multicast 239.2.3.1:6969, listening outputs), source listeners and clients, the OpenStare sign-in check, basemap tiles, external plugins and multi-node sync are each listed. The hardening checklist links it. The [[SITE: organization]] registers the ports and protocols it enables.",
+  "evidence": "docs/guides/admin.md#ports-protocols-and-services; docs/security/hardening.md; Dockerfile",
   "site": "Register the enabled ports and protocols in PPSM."
  },
  {
@@ -1399,8 +1399,8 @@
   "title": "Security and Privacy Engineering Principles",
   "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "OpenTrack applies security engineering principles: memory-safe Rust with unsafe code forbidden workspace-wide; least privilege (three roles, server-side checks on every route, default admin for any unlisted change, no Linux capabilities, non-root); secure defaults (sign-in on, fixed STIG account policy); fail closed (CRL status, audit write on sign-in, FIPS self-test at start); defence in depth (sandboxed plugins, security headers, hash-chained audit).",
-  "evidence": "Cargo.toml; crates/ot-server/src/auth/policy.rs; crates/ot-server/src/fips.rs; docs/security/hardening.md",
+  "narrative": "OpenTrack applies security engineering principles: memory-safe Rust with unsafe code forbidden workspace-wide; least privilege (three roles, server-side checks on every route, default admin for any unlisted change, no Linux capabilities, non-root); secure defaults (sign-in on, fixed STIG account policy); fail closed (CRL status, audit write on sign-in, FIPS self-test at start); defence in depth (sandboxed plugins, security headers, hash-chained audit). The threat model (docs/security/threat-model.md) applies them per interface and trust boundary, with STRIDE threats, mitigations and residual risk.",
+  "evidence": "Cargo.toml; crates/ot-server/src/auth/policy.rs; crates/ot-server/src/fips.rs; docs/security/hardening.md; docs/security/threat-model.md",
   "site": ""
  },
  {
@@ -1435,8 +1435,8 @@
   "title": "Developer Testing and Evaluation",
   "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "OpenTrack's developer testing runs on every push and pull request: unit and integration tests against Redis, NATS and MQTT (cargo test), clippy with warnings denied, rustfmt, UI lint, tests and build, cargo deny (RustSec, licences, banned crates) and npm audit. Each release image is scanned with Trivy and Grype, the ASD STIG and Container Platform SRG are evaluated, and flaws are fixed and recorded in the findings table and CHANGELOG.",
-  "evidence": ".github/workflows/ci.yml; scripts/ato/scan; docs/security/ato/; docs/security/stig-mapping.md#findings",
+  "narrative": "OpenTrack's developer testing runs on every push and pull request: unit and integration tests against Redis, NATS and MQTT (cargo test), clippy with warnings denied, rustfmt, UI lint, tests and build, cargo deny (RustSec, licences, banned crates) and npm audit. Test coverage is measured with scripts/coverage.sh (cargo llvm-cov) and its summary attached to each release; the threat model (docs/security/threat-model.md) is re-reviewed each minor release. Each release image is scanned with Trivy and Grype, the ASD STIG and Container Platform SRG are evaluated, and flaws are fixed and recorded in the findings table and CHANGELOG.",
+  "evidence": ".github/workflows/ci.yml; scripts/ato/scan; docs/security/ato/; docs/security/stig-mapping.md#findings; scripts/coverage.sh; docs/security/threat-model.md",
   "site": ""
  },
  {
@@ -1444,18 +1444,18 @@
   "title": "Development Process, Standards, and Tools",
   "status": "Implemented",
   "responsibility": "OpenTrack",
-  "narrative": "OpenTrack uses a documented development process and tools: the Rust toolchain pinned to 1.98.1 (rust-toolchain.toml and CI), Node 22, locked dependency builds (--locked, npm ci), cargo-deny policy in deny.toml, rustfmt and clippy standards, and CI actions pinned by commit. Changes to tools are deliberate and tested.",
-  "evidence": "rust-toolchain.toml; deny.toml; .github/workflows/ci.yml; docs/security/supply-chain.md",
+  "narrative": "OpenTrack uses a documented development process and tools: the Rust toolchain pinned to 1.98.1 (rust-toolchain.toml and CI), Node 22, locked dependency builds (--locked, npm ci), cargo-deny policy in deny.toml, rustfmt and clippy standards, and CI actions pinned by commit. Changes to tools are deliberate and tested. The process is written down: the software configuration management plan (docs/security/scm-plan.md) and the coding standards (docs/security/coding-standards.md).",
+  "evidence": "rust-toolchain.toml; deny.toml; .github/workflows/ci.yml; docs/security/supply-chain.md; docs/security/scm-plan.md; docs/security/coding-standards.md",
   "site": ""
  },
  {
   "id": "sa-15.3",
   "title": "Criticality Analysis",
-  "status": "Partially implemented",
+  "status": "Implemented",
   "responsibility": "Shared",
-  "narrative": "OpenTrack identifies its security-critical parts (the FIPS cryptographic boundary and the code outside it in docs/security/fips.md, forked crates in third_party with notes, the auth policy module), but has not produced a formal developer criticality analysis. The [[SITE: organization]] performs its criticality analysis at [[SITE: SDLC decision points]].",
-  "evidence": "docs/security/fips.md; docs/security/supply-chain.md",
-  "site": "Request or perform the criticality analysis."
+  "narrative": "OpenTrack's threat model includes a criticality analysis naming the security-critical components and why: authentication and sessions, the authorisation policy, the FIPS cryptographic boundary (AWS-LC, the rustls FIPS provider, the OpenSSL FIPS provider), SAML (samael fork, libxmlsec1, libxml2), TLS configuration, audit, the plugin sandbox, secrets masking, configuration export, the forked crates, input parsing, security headers and errors, multi-node trust and release signing. Changes to them are named in the pull request, tested for the property and called out in the CHANGELOG; the analysis is re-reviewed each minor release. The [[SITE: organization]] performs its own criticality analysis at [[SITE: SDLC decision points]], using OpenTrack's.",
+  "evidence": "docs/security/threat-model.md#criticality-analysis; docs/security/fips.md; third_party/*/OPENTRACK.md",
+  "site": "Perform the site's criticality analysis, drawing on OpenTrack's."
  },
  {
   "id": "sa-22",
@@ -1531,7 +1531,7 @@
  },
  {
   "id": "sc-7.5",
-  "title": "Deny by Default \u2014 Allow by Exception",
+  "title": "Deny by Default — Allow by Exception",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "The [[SITE: organization]] denies network traffic by default and allows by exception at its boundary devices and host firewalls. Within the application, every /api/v1 route requires sign-in except the few public sign-in routes, and any change not listed for track managers requires admin.",
@@ -2128,8 +2128,8 @@
   "title": "Incident Response Plan",
   "status": "Inherited",
   "responsibility": "Site",
-  "narrative": "The [[SITE: organisation]] incident response plan covers OpenTrack, is approved by [[SITE: official]] and reviewed [[SITE: frequency]]; the admin guide and docs/security/hardening.md (Operate) supply the OpenTrack-specific procedures (audit review in the SIEM, chain verification, session revocation, account turn-off).",
-  "evidence": "",
+  "narrative": "The [[SITE: organisation]] incident response plan covers OpenTrack, is approved by [[SITE: official]] and reviewed [[SITE: frequency]]; the admin guide and docs/security/hardening.md (Operate) supply the OpenTrack-specific procedures (audit review in the SIEM, chain verification, session revocation, account turn-off). For vulnerabilities in the product itself, SECURITY.md is OpenTrack's response process: reporting, triage, fix targets and how users are told.",
+  "evidence": "SECURITY.md",
   "site": "Include OpenTrack in the incident response plan and distribute it."
  },
  {
@@ -2395,7 +2395,7 @@
  },
  {
   "id": "pe-13.1",
-  "title": "Detection Systems \u2014 Automatic Activation and Notification",
+  "title": "Detection Systems — Automatic Activation and Notification",
   "status": "Inherited",
   "responsibility": "Site",
   "narrative": "Fire detection with automatic activation and notification is provided by the [[SITE: organisation]]. OpenTrack has no product role.",

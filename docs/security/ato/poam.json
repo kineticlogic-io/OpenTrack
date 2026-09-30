@@ -90,15 +90,6 @@
   "target": "0.5.0"
  },
  {
-  "id": "P-20",
-  "weakness": "Development process documents are missing: configuration management plan, threat model, coding standards, security incident response and disclosure process (SECURITY.md), security advisories, code coverage.",
-  "controls": "CM-9, SA-8, SA-11, SA-15, RA-5(11), IR-8",
-  "checks": "ASD V-222632, V-222649, V-222653, V-222655, V-222657, V-222670",
-  "severity": "CAT II",
-  "remediation": "Write docs/security/{scm-plan,threat-model,coding-standards}.md and SECURITY.md; publish GitHub Security Advisories; add coverage to CI.",
-  "target": "0.4.x"
- },
- {
   "id": "P-21",
   "weakness": "The sample docker-compose.yml uses host networking, a bind mount, and no CPU, memory or process limits.",
   "controls": "CM-7, SC-6",
@@ -126,15 +117,6 @@
   "target": "0.4.x"
  },
  {
-  "id": "P-24",
-  "weakness": "The ports, protocols and services are not listed in one place for PPSM registration.",
-  "controls": "SA-4(9), CM-7",
-  "checks": "SSP SA-4(9)",
-  "severity": "CAT III",
-  "remediation": "Add a PPSM table (port, protocol, direction, purpose, default) to the admin guide.",
-  "target": "0.4.x"
- },
- {
   "id": "P-25",
   "weakness": "The Content Security Policy allows inline styles (style-src 'unsafe-inline'), which React, MapLibre and CodeMirror need (finding F-5).",
   "controls": "SC-18",
@@ -150,15 +132,6 @@
   "checks": "stig-mapping F-6; roadmap #21",
   "severity": "CAT II",
   "remediation": "OCSP with stapling or responder queries (#21).",
-  "target": "0.5.0"
- },
- {
-  "id": "P-27",
-  "weakness": "No formal criticality analysis of components (SA-15(3)); security-critical parts are identified only in fips.md and the fork notes.",
-  "controls": "SA-15(3)",
-  "checks": "SSP SA-15(3)",
-  "severity": "CAT III",
-  "remediation": "Add a criticality analysis to the threat model (P-20).",
   "target": "0.5.0"
  }
 ]

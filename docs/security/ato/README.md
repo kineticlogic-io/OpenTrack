@@ -16,10 +16,16 @@ in, and every checklist item the site must answer is left *Not Reviewed* with wh
 | [`poam.md`](poam.md), [`poam.csv`](poam.csv) | Plan of Action and Milestones for every open finding: checklist items, partially implemented controls, scan findings. The CSV has the DoD POA&M template's columns, for eMASS. |
 | `evaluations/*.json`, `ssp/controls.json`, `poam.json` | The sources the checklists and narratives are generated from. Change these, never the generated files. |
 
-The product documents they build on: [`../stig-mapping.md`](../stig-mapping.md) (control
-mapping and findings F-1 to F-9), [`../hardening.md`](../hardening.md) (the deployment
-checklist), [`../fips.md`](../fips.md), [`../supply-chain.md`](../supply-chain.md), and the
-[admin guide](../../guides/admin.md).
+The product documents they build on:
+- [`../stig-mapping.md`](../stig-mapping.md): control mapping and findings F-1 to F-9;
+- [`../hardening.md`](../hardening.md): the deployment checklist;
+- [`../fips.md`](../fips.md) and [`../supply-chain.md`](../supply-chain.md);
+- [`../threat-model.md`](../threat-model.md): STRIDE per interface, and the criticality analysis;
+- [`../scm-plan.md`](../scm-plan.md): software configuration management, releases, roles;
+- [`../coding-standards.md`](../coding-standards.md): the rules the code is written to;
+- [`SECURITY.md`](../../../SECURITY.md): vulnerability reporting, response and advisories;
+- the [admin guide](../../guides/admin.md), including its
+  [ports, protocols and services](../../guides/admin.md#ports-protocols-and-services) table.
 
 ## What the adopting site does
 
