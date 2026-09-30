@@ -95,7 +95,7 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
             <span className="muted">s</span>
           </div>
         </Row>
-        <Row label="Remarks" hint="Put the OpenTrack track number and the sources reporting the track in each event's remarks, which TAK users see in the track's details.">
+        <Row label="Remarks" hint="Put the OpenTrack track number and the sources reporting the track in each event's remarks, which TAK users see in the track's details. A track with a security label always has its marking there, on or off.">
           <Toggle value={o.remarks} onChange={(remarks) => setO({ ...o, remarks })} aria-label="Remarks" />
         </Row>
 
