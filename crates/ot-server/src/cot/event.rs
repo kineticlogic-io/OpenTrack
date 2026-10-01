@@ -68,8 +68,12 @@ pub struct CotTrack {
     pub security: Option<ot_core::SecurityLabel>,
 }
 
-/// A track's CoT type: from its SIDC (the feed's 2525C, 2525D or CoT type,
-/// with an explicit affiliation applied), else from affiliation and domain.
+/// A track's CoT type: the more specific of its explicit CoT type and the one
+/// its SIDC gives (2525C, 2525D or CoT; both with an explicit affiliation
+/// applied), the explicit one on a tie, else from affiliation and domain. An
+/// entity stores both, kept in step by the editor; a 2525D SIDC gives only
+/// identity and symbol set here, so its CoT type's full function must not lose
+/// to it, nor a feed's generic CoT type to a detailed SIDC.
 /// An `a-` type always has a battle dimension (ground when unknown), so TAK
 /// can draw it: an unknown track is `a-u-G`.
 pub fn cot_type(track: &SystemTrack) -> String {
@@ -79,10 +83,19 @@ pub fn cot_type(track: &SystemTrack) -> String {
         .unwrap_or(ot_core::Affiliation::Unknown)
         .cot_atom();
     let dim = c.effective_domain().unwrap_or(Domain::Ground).cot_atom();
-    let t = c
-        .sidc_or_derived()
-        .cot_type()
-        .unwrap_or_else(|| format!("a-{aff}-{dim}"));
+    let explicit = c
+        .cot_type
+        .as_deref()
+        .is_some_and(|t| t.starts_with("a-"))
+        .then(|| c.cot_type_or_derived());
+    let from_sidc = c.sidc_or_derived().cot_type();
+    let atoms = |t: &Option<String>| t.as_deref().map_or(0, |t| t.split('-').count());
+    let t = if atoms(&from_sidc) > atoms(&explicit) {
+        from_sidc
+    } else {
+        explicit.or(from_sidc)
+    }
+    .unwrap_or_else(|| format!("a-{aff}-{dim}"));
     let mut atoms = t.split('-');
     match (atoms.next(), atoms.next(), atoms.next()) {
         (Some("a"), Some(a), None) => format!("a-{a}-{dim}"),
@@ -526,6 +539,20 @@ pub(crate) mod tests {
             (
                 serde_json::json!({"classification": {"sidc": "10061000001211000000"}}),
                 "a-h-G-U",
+            ),
+            // Both stored: the more specific, with an explicit affiliation
+            // applied; a feed's generic type does not hide a detailed SIDC.
+            (
+                serde_json::json!({"classification": {"sidc": "10031000001211000000", "cot_type": "a-f-G-U-C-I"}}),
+                "a-f-G-U-C-I",
+            ),
+            (
+                serde_json::json!({"classification": {"sidc": "10031000001211000000", "cot_type": "a-f-G-U-C-I", "affiliation": "hostile"}}),
+                "a-h-G-U-C-I",
+            ),
+            (
+                serde_json::json!({"classification": {"sidc": "SFGPUCI----", "cot_type": "a-u-G"}}),
+                "a-f-G-U-C-I",
             ),
             // A tactical graphic has no atom: affiliation and domain instead.
             (

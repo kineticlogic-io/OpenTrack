@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildSidc, parseSidc } from './sidc'
 import { entities, selectedCode, selectionFor, subtypes, symbolSets, types } from './catalog'
-import { sidcToCot } from './cot'
+import { cotForSidc as sidcToCot } from './sync'
 
 describe('symbol designer model', () => {
   it('builds and reads 2525D SIDCs', () => {

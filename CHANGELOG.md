@@ -4,6 +4,15 @@
 
 ### Added
 
+- **The entity editor keeps domain, affiliation, CoT type and SIDC in step.** Changing the
+  affiliation rewrites both codes' identity; changing the domain to another than the symbol's sets
+  that domain's generic symbol; typing (or designing) a SIDC sets the CoT type, domain and
+  affiliation, and typing a CoT type sets the SIDC (2525D), domain and affiliation, through the
+  2525C/2525D crosswalk. A 2525C SIDC is stored as its 2525D equivalent.
+  `scripts/registry/align-symbols.mts` aligns an existing registry the same way through the API
+  (a dry run unless `--apply`): it fills the missing code and makes both follow an explicit
+  domain and affiliation, never filling a blank one (blank means the feed's).
+
 - **A symbol designer** in the entity editor (Edit on a track's card, or the Registry), #80. The
   flag button beside SIDC opens it: affiliation, then symbol set, entity, type and subtype, from
   the MIL-STD-2525D catalog (the `mil-std-2525` package, as OpenStare), point symbols only, with a
@@ -19,6 +28,11 @@
   `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
 
 ### Fixed
+
+- **TAK output types** use the more specific of a track's CoT type and the one its SIDC gives
+  (the CoT type on a tie). A 2525D SIDC translates only to identity and symbol set, so an entity
+  storing both no longer loses its CoT type's function, and a feed's generic CoT type no longer
+  hides a detailed SIDC.
 
 - **Track map buttons** sit on a stareSDK `ButtonPalette` (its glass surface), stacked as
   OpenStare's map controls are, instead of floating transparent over the map.

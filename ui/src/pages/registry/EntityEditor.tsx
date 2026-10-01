@@ -17,6 +17,7 @@ import { ago, errorMessage, fmtTime, show } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 import { useCan } from '../../auth/context'
 import { SymbolDesigner } from './SymbolDesigner'
+import { syncSymbol } from '../../lib/milsym/sync'
 
 type Revision = EntityView['revisions'][number]
 type LinkedTrack = EntityView['tracks'][number]
@@ -47,13 +48,13 @@ const MINIMUM = [
     key: 'domain',
     label: 'Domain',
     options: DOMAINS,
-    info: 'Where the platform operates: air, surface, subsurface, ground or space. Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC, else published as unknown.',
+    info: 'Where the platform operates: air, surface, subsurface, ground or space. Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC, else published as unknown. Changing it to another domain than the symbol\'s sets the symbol to that domain\'s generic one.',
   },
   {
     key: 'affiliation',
     label: 'Affiliation',
     options: AFFILIATIONS,
-    info: 'The standard identity (friend, hostile, neutral, suspect, joker, faker…). Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC. With the domain it sets the OTH-GOLD force code.',
+    info: 'The standard identity (friend, hostile, neutral, suspect, joker, faker…). Blank leaves the feed\'s value; with none, it is derived from the CoT type or SIDC. With the domain it sets the OTH-GOLD force code. Changing it rewrites the symbol\'s affiliation (CoT type and SIDC).',
   },
   {
     key: 'track_type',
@@ -61,11 +62,11 @@ const MINIMUM = [
     options: TRACK_TYPES,
     info: 'Tactical: a real-world track (the default). Live training: a real unit designated for training. Simulated training: made up for an exercise. Demand entry: a real unit receivers should not filter out.',
   },
-  { key: 'cot_type', label: 'CoT type', info: 'Cursor-on-Target type, e.g. a-f-S-C-L. Sets the symbol when no SIDC is given. The symbol designer (beside SIDC) fills it with the designed symbol\'s type.' },
+  { key: 'cot_type', label: 'CoT type', info: 'Cursor-on-Target type, e.g. a-f-S-C-L. Kept in step with the SIDC: typing a CoT type sets the SIDC (its 2525D equivalent), domain and affiliation.' },
   {
     key: 'sidc',
     label: 'SIDC',
-    info: 'MIL-STD-2525 symbol code. Leave blank to derive it from the CoT type. The flag button opens the symbol designer: pick the symbol, and it fills this (a 2525D code) and the CoT type.',
+    info: 'MIL-STD-2525D symbol code, kept in step with the CoT type: typing a SIDC (a 2525C code is stored as its 2525D equivalent) sets the CoT type, domain and affiliation. The flag button opens the symbol designer.',
   },
 ] as const
 
@@ -246,7 +247,12 @@ export function EntityEditor({
     setSaved(false)
     setDraft({ ...draft, ...patch })
   }
-  const setMin = (key: keyof Draft['minimum'], v: string) => set({ minimum: { ...draft.minimum, [key]: v } })
+  // Domain, affiliation, CoT type and SIDC follow each other (lib/milsym/sync.ts).
+  const setMin = (key: keyof Draft['minimum'], v: string) => {
+    const minimum = { ...draft.minimum, [key]: v }
+    if (key === 'domain' || key === 'affiliation' || key === 'cot_type' || key === 'sidc') Object.assign(minimum, syncSymbol(minimum, key))
+    set({ minimum })
+  }
   const setIdent = (i: number, patch: Partial<Draft['identifiers'][number]>) =>
     set({ identifiers: draft.identifiers.map((x, j) => (j === i ? { ...x, ...patch } : x)) })
   const setAttr = (i: number, patch: Partial<AttrDraft>) => set({ attributes: draft.attributes.map((x, j) => (j === i ? { ...x, ...patch } : x)) })
@@ -502,8 +508,8 @@ export function EntityEditor({
           sidc={draft.minimum.sidc}
           affiliation={draft.minimum.affiliation}
           onClose={() => setDesigning(false)}
-          onUse={({ sidc, cot }) => {
-            set({ minimum: { ...draft.minimum, sidc, cot_type: cot } })
+          onUse={({ sidc }) => {
+            setMin('sidc', sidc)
             setDesigning(false)
           }}
         />

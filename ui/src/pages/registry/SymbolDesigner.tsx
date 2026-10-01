@@ -3,7 +3,7 @@ import { TbCheck } from 'react-icons/tb'
 import { Button, Label, Modal, Select } from 'staresdk'
 import { AFFILIATION_COLOR } from '../../lib/palette'
 import { symbolUrl } from '../../lib/symbol'
-import { sidcToCot } from '../../lib/milsym/cot'
+import { cotForSidc } from '../../lib/milsym/sync'
 import { buildSidc, parseSidc, type Affiliation } from '../../lib/milsym/sidc'
 import { entities, NO_SELECTION, selectedCode, selectionFor, subtypes, symbolSets, types, type CatalogOption, type Selection } from '../../lib/milsym/catalog'
 
@@ -60,7 +60,7 @@ export function SymbolDesigner({
   )
 
   const code = buildSidc(d.symbolSet, selectedCode(d.selection), d.affiliation)
-  const cot = sidcToCot(code) ?? ''
+  const cot = cotForSidc(code) ?? ''
   const preview = symbolUrl({ standard: '2525d', code }, PREVIEW_PX)
   const pick = (list: CatalogOption[], c: string | null) => list.find((o) => o.code === c) ?? null
 
