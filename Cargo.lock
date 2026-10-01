@@ -2624,6 +2624,7 @@ dependencies = [
 name = "ot-sapient"
 version = "0.4.5"
 dependencies = [
+ "chrono",
  "prost",
  "prost-reflect",
  "prost-types",
