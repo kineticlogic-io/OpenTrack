@@ -29,6 +29,14 @@
 
 ### Fixed
 
+- **A track manager's designation always applies to the track.** Saving the entity editor opened
+  from a track's card pins the entity to that track (identifier `track`), so it applies whatever
+  the feeds' reports grade as, and follows the track through merges; the track's own identifiers
+  stay on the entity for its later tracks. The editor says so before saving.
+- **ADS-B designations corroborate.** A report with no name is graded on its callsign (at the
+  default broadcast name field), so an aircraft's entity applies when its callsign matches; before,
+  every ADS-B match was stale and nothing applied.
+
 - **TAK output types** use the more specific of a track's CoT type and the one its SIDC gives
   (the CoT type on a tie). A 2525D SIDC translates only to identity and symbol set, so an entity
   storing both no longer loses its CoT type's function, and a feed's generic CoT type no longer

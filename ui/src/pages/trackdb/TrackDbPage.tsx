@@ -603,11 +603,11 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
             name: displayName(row) || null,
             domain: (row.domain !== 'unknown' ? row.domain : null) as Entity['domain'],
             affiliation: (row.affiliation !== 'unknown' ? row.affiliation : null) as Entity['affiliation'],
-            // A track no identifier names (radar, GMTI): the entity is pinned to this track.
-            identifiers: (row.identifiers ?? []).length
-              ? (row.identifiers ?? []).map((i) => ({ ...i, expected_name: row.name ?? null }))
-              : [{ scheme: 'track', value: row.track_id }],
+            // The track's identifiers, so its later tracks find the entity (graded against the name or
+            // callsign they broadcast); saving also pins the entity to this track (pinTrack).
+            identifiers: (row.identifiers ?? []).map((i) => ({ ...i, expected_name: row.name ?? row.callsign ?? null })),
           }}
+          pinTrack={row.track_id}
           open={editing}
           onClose={() => setEditing(false)}
           onSaved={() => {}}

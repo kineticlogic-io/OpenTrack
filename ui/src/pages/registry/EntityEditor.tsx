@@ -41,6 +41,9 @@ interface Draft {
 }
 
 /** The OTH-GOLD minimum an entity carries, in form order. */
+/** The identifier scheme that pins an entity to one system track (crates/ot-server/src/engine.rs). */
+const TRACK_SCHEME = 'track'
+
 const MINIMUM = [
   { key: 'name', label: 'Name', info: 'The platform name. Linked tracks publish it (in capitals) in place of the name their feed reports; blank leaves the feed\'s name.' },
   { key: 'class_name', label: 'Class name', info: 'OTH-GOLD class name, e.g. the ship or aircraft class. Published as the track class.' },
@@ -193,9 +196,13 @@ export function EntityEditor({
   open,
   onClose,
   onSaved,
+  pinTrack,
 }: {
   entityId: string | null
   seed?: Partial<Entity>
+  /** Opened from this track's card (its track number): saving pins the entity to it, so it always
+   *  applies to that track, through merges, whatever its feeds' reports grade as. */
+  pinTrack?: string
   open: boolean
   onClose: () => void
   onSaved: (entityId: string | null) => void
@@ -234,7 +241,10 @@ export function EntityEditor({
   }, [entityId, open])
 
   const baseline = useMemo(() => (view ? JSON.stringify(toDraft(view.entity)) : null), [view])
-  const dirty = draft !== null && (baseline === null || JSON.stringify(draft) !== baseline)
+  const pinned = (d: Draft) => d.identifiers.some((i) => i.scheme === TRACK_SCHEME && i.value === pinTrack)
+  // Not yet pinned to the track it was opened from: saving pins it, so Save is offered.
+  const unpinned = !!pinTrack && draft !== null && !pinned(draft)
+  const dirty = draft !== null && (baseline === null || JSON.stringify(draft) !== baseline || unpinned)
 
   if (!draft) {
     return (
@@ -261,7 +271,7 @@ export function EntityEditor({
     setSaving(true)
     setError(null)
     try {
-      const entity = fromDraft(entityId ?? '', draft)
+      const entity = fromDraft(entityId ?? '', unpinned ? { ...draft, identifiers: [...draft.identifiers, { scheme: TRACK_SCHEME, value: pinTrack, expected_name: '' }] } : draft)
       const v = entityId ? await api.saveEntity(entity) : await api.createEntity(entity)
       setView(v)
       setDraft(toDraft(v.entity))
@@ -418,7 +428,13 @@ export function EntityEditor({
           {draft.identifiers.map((i, n) => (
             <IdentifierRow key={n} i={i} n={n} onChange={setIdent} onRemove={() => set({ identifiers: draft.identifiers.filter((_, j) => j !== n) })} />
           ))}
-          {draft.identifiers.length === 0 && <span className="muted kv-empty">No identifiers: tracks cannot find this entity.</span>}
+          {draft.identifiers.length === 0 && !unpinned && <span className="muted kv-empty">No identifiers: tracks cannot find this entity.</span>}
+          {unpinned && (
+            <span className="muted">
+              Saving pins this entity to track <span className="mono">{pinTrack}</span> (identifier <span className="mono">track</span>): it then
+              applies to that track whatever reports for it, through merges.
+            </span>
+          )}
         </div>
 
         <div className="entity-section-head">
