@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.4.6 (alpha), 2026-10-01
+
+Reading a TAK Server: CoT framing and probe hints, a guided pipeline filter (to drop OpenTrack's
+own tracks read back), ranged bearings from acoustic arrays, and a clearer track map.
+
 ### Added
 
 - **A guided filter builder** in the pipeline designer's Filter stage. Keep only if and Drop if
@@ -11,10 +16,15 @@
   effect on the stored samples shows as you edit ("drops 55, e.g. tms-OTK000058833"). Edit as JSON
   switches to the raw condition; one the rows cannot show (nested groups, transformed values)
   opens there.
+- **Ranged bearings** (#74, kitplummer). A bearing observation may carry a measured range and its
+  uncertainty (`range_m`, `range_sigma_m`); a complete polar report becomes a positioned
+  observation with its covariance. SAPIENT decodes RFC 3339 protobuf timestamps. A five-array
+  SAPIENT acoustic demo (`scripts/demo-sapient-acoustic.sh`, `docs/examples/sapient-acoustic-mqtt.json`).
+- **Track map display options** (#74, kitplummer): hide the basemap; dim it; track size;
+  high-contrast tracks with a selection halo; show or hide the selected track's evidence lines,
+  sensor locations and uncertainty; fade the other tracks while one is selected. Kept per browser.
 
 ### Changed
-
-- **stareSDK** is vendored from OpenStare master (9e148d26), which adds `Select`.
 
 - **CoT sources are framed by `</event>`.** In the add-source wizard and pipeline designer,
   choosing Cursor-on-Target XML on a TCP transport (or a TCP transport for it) switches the
@@ -23,11 +33,13 @@
 - **A silent probe says why it may be.** A probe that connects but captures nothing now reports
   the bytes it read and a hint: no bytes (the feed may be idle, the port may need TLS, or it may
   only take data in, like a TAK Server input), or bytes that never made a frame (check the framing).
-
 - **Registry and Correlation panels fill the page.** The registry table, Correlation's Decisions
   and Suggestions take the height the window has instead of stopping at a fixed height; their
   tables scroll inside. Suggestions stretch beside the settings, so no gap is left above
   Decisions. A closed panel keeps its title's height.
+- **The track map** draws bearing lines to their measured range, marks the sensors, always shows
+  the selected track's error ellipse (as uncertainty), and outlines tracks in the theme's colours.
+- **stareSDK** is vendored from OpenStare master (9e148d26), which adds `Select`.
 
 ## 0.4.5 (alpha), 2026-09-30
 

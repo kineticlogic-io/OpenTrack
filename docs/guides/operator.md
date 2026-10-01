@@ -2,7 +2,7 @@
 
 For track managers and viewers: the people who watch the picture and keep it right. Installing,
 configuring and securing OpenTrack is in the [administrator guide](admin.md). Written for
-OpenTrack **0.4.5**.
+OpenTrack **0.4.6**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI can link to it (in the app:
 `#help/operator/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses: lowercase,
@@ -175,18 +175,25 @@ A selected track can also show:
 
 **Zoom to track** (History tab) moves the map to it.
 
+The two buttons at the map's top right hide or show the basemap, and open **Map display**:
+basemap dimming, track size (compact, standard, large), high-contrast tracks (an outline round
+each track and a halo round the selected one), and whether to show the selected track's evidence
+lines, its sensors' locations and its uncertainty, and whether to fade the other tracks while one
+is selected. Your choices are kept in this browser.
+
 ### Bearings and areas
 
 Passive sensors (ESM, direction finding) report a line of bearing, not a position; ELINT reports an
 area of uncertainty. OpenTrack fuses them into tracks. On the map, for the selected track only:
-- **Bearing lines:** a dashed gold line from each sensor that currently has a bearing on the track,
-  out along the bearing to the sensor's maximum range (250 km when the sensor doesn't give one),
-  inside a faint outline of its ± error wedge. The track is somewhere on or near each line: several
+- **Bearing lines:** a dashed gold line from each sensor (a gold dot) that currently has a bearing
+  on the track, out along the bearing to the range it measured, else its maximum range (250 km
+  when the sensor doesn't give one), inside a pale outline of its ± error wedge. A sensor that
+  measures range as well as bearing (an acoustic array, say) places the object itself. The track is somewhere on or near each line: several
   lines crossing at the track are a cross-fix, the sensors agreeing on where the emitter is. A line
   that passes well away from the track is weak evidence.
-- **Area:** a dashed outline in the track's colour, for the area an ELINT report gave, or for the
-  track's error ellipse when its long axis is over 2 km. The object is somewhere inside, most likely near
-  the middle.
+- **Area:** a dashed outline in the track's colour, for the area an ELINT report gave. The object
+  is somewhere inside, most likely near the middle.
+- **Uncertainty:** the track's position error ellipse, a pale dashed outline.
 
 The track card's **Bearings** row lists each bearing: sensor, bearing and its error (±), how far
 it misses the track, and any emitter identity (ELNOT). A bearing never moves a track by itself; it
