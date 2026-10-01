@@ -391,16 +391,15 @@ body {
   z-index: 2;
   top: var(--space-sm);
   right: var(--space-sm);
-  display: flex;
-  gap: var(--space-xs);
 }
 
 /* The display options panel over the map: stareSDK controls in label/control rows. */
 .track-map__menu {
   position: absolute;
   z-index: 3;
-  top: 44px;
-  right: var(--space-sm);
+  top: var(--space-sm);
+  /* Beside the palette (an xs button, 28px, plus the palette's padding). */
+  right: calc(var(--space-sm) + 48px);
   display: flex;
   width: min(260px, calc(100% - 16px));
   padding: var(--space-md);
