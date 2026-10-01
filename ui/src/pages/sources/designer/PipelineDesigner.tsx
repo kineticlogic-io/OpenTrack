@@ -5,7 +5,8 @@ import { api, type SchemaOverview, type SourceSpec } from '../../../api/client'
 import { InfoTip } from '../../../components/InfoTip'
 import { errorMessage } from '../../../lib/format'
 import { pipelineStages, DEFAULT_LINKS } from '../../../lib/pipeline'
-import { TRACED_SAMPLES } from '../../../lib/trace'
+import { filterInput, MAX_TRACED_SAMPLES, TRACED_SAMPLES } from '../../../lib/trace'
+import { sampleFields } from '../../../lib/conditions'
 import { usePreview } from '../../../lib/usePreview'
 import { MapEditor } from './MapEditor'
 import { StageSamples } from './StageSamples'
@@ -101,7 +102,8 @@ export function PipelineDesigner({
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const [capturing, setCapturing] = useState(false)
-  const { preview, error: previewError, running } = usePreview(spec, sourceId, nonce, TRACED_SAMPLES)
+  // The filter builder offers the fields of every traced sample, so it asks for as many as there are.
+  const { preview, error: previewError, running } = usePreview(spec, sourceId, nonce, stageId === 'filter' ? MAX_TRACED_SAMPLES : TRACED_SAMPLES)
 
   useEffect(() => {
     api.schema().then(setSchema, (e) => setError(errorMessage(e)))
@@ -184,7 +186,14 @@ export function PipelineDesigner({
       editor = <AffiliationForm value={p.affiliation as Obj} onChange={(affiliation) => setPipeline({ ...p, affiliation })} />
       break
     case 'filter':
-      editor = <FilterForm value={p.filter as Obj} onChange={(filter) => setPipeline({ ...p, filter })} />
+      {
+        const input = filterInput(preview?.trace)
+        const fields = sampleFields([...input.observations, ...(preview?.observations ?? [])])
+        const key = (o: unknown) => String((o as { source_track_key?: unknown }).source_track_key ?? '')
+        const examples = [...new Set(input.dropped.map(key).filter(Boolean))].slice(0, 3)
+        const effect = preview ? { dropped: preview.counts?.filtered ?? 0, examples } : null
+        editor = <FilterForm value={(p.filter as Obj) ?? {}} onChange={(filter) => setPipeline({ ...p, filter })} fields={fields} effect={effect} />
+      }
       break
     case 'tracker':
       editor = <TrackerForm value={p.tracker as Obj} onChange={(tracker) => setPipeline({ ...p, tracker })} />
