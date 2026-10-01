@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from 'react'
 import { TbAdjustmentsHorizontal, TbMap, TbMapOff } from 'react-icons/tb'
 import { AttributionControl, Map as MapLibreMap, Popup, type GeoJSONSource } from 'maplibre-gl'
-import { Button, Label, Select, Slider, themeFor, Toggle, useTheme } from 'staresdk'
+import { Button, ButtonPalette, Label, Select, Slider, themeFor, Toggle, useTheme } from 'staresdk'
 import { EVIDENCE_COLOR, UNCERTAINTY_COLOR } from '../../lib/palette'
 import {
   coordinateBounds,
@@ -333,25 +333,28 @@ export function TrackMap({
   return (
     <div className="track-map" style={{ height, ...style }}>
       <div ref={host} role="region" aria-label={ariaLabel} className="ui-map-view track-map__canvas" />
+      {/* Map buttons on a palette (its glass surface keeps them legible over the map), as OpenStare's map controls. */}
       <div className="track-map__controls">
-        <Button
-          size="xs"
-          variant="secondary"
-          icon={display.basemap ? <TbMapOff /> : <TbMap />}
-          aria-label={display.basemap ? 'Hide basemap' : 'Show basemap'}
-          title={display.basemap ? 'Hide basemap' : 'Show basemap'}
-          onClick={() => updateDisplay({ basemap: !display.basemap })}
-        />
-        <Button
-          size="xs"
-          variant="secondary"
-          icon={<TbAdjustmentsHorizontal />}
-          aria-label="Map display options"
-          title="Map display options"
-          aria-expanded={menuOpen}
-          active={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
-        />
+        <ButtonPalette orientation="vertical" ariaLabel="Map controls" gap={4}>
+          <Button
+            size="xs"
+            variant="ghost"
+            icon={display.basemap ? <TbMapOff /> : <TbMap />}
+            aria-label={display.basemap ? 'Hide basemap' : 'Show basemap'}
+            title={display.basemap ? 'Hide basemap' : 'Show basemap'}
+            onClick={() => updateDisplay({ basemap: !display.basemap })}
+          />
+          <Button
+            size="xs"
+            variant="ghost"
+            icon={<TbAdjustmentsHorizontal />}
+            aria-label="Map display options"
+            title="Map display options"
+            aria-expanded={menuOpen}
+            active={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          />
+        </ButtonPalette>
       </div>
       {menuOpen && (
         <div className="track-map__menu" role="dialog" aria-label="Map display options">

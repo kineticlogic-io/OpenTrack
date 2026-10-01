@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Track map buttons** sit on a stareSDK `ButtonPalette` (its glass surface), stacked as
+  OpenStare's map controls are, instead of floating transparent over the map.
+
 ## 0.4.6 (alpha), 2026-10-01
 
 Reading a TAK Server: CoT framing and probe hints, a guided pipeline filter (to drop OpenTrack's
