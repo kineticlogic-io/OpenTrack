@@ -2,7 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **A guided filter builder** in the pipeline designer's Filter stage. Keep only if and Drop if
+  are built from rows of field, test and value, matched all or any. Fields come from the source's
+  stored samples, with an example of each, and any other path can be typed. The tests read as
+  words (is, is one of, starts with, does not contain, is at least, is missing…). The filter's
+  effect on the stored samples shows as you edit ("drops 55, e.g. tms-OTK000058833"). Edit as JSON
+  switches to the raw condition; one the rows cannot show (nested groups, transformed values)
+  opens there.
+
 ### Changed
+
+- **stareSDK** is vendored from OpenStare master (9e148d26), which adds `Select`.
+
+- **CoT sources are framed by `</event>`.** In the add-source wizard and pipeline designer,
+  choosing Cursor-on-Target XML on a TCP transport (or a TCP transport for it) switches the
+  default line framing to the end tag `</event>`. CoT events arrive back to back, often over
+  several lines, so line framing split them.
+- **A silent probe says why it may be.** A probe that connects but captures nothing now reports
+  the bytes it read and a hint: no bytes (the feed may be idle, the port may need TLS, or it may
+  only take data in, like a TAK Server input), or bytes that never made a frame (check the framing).
 
 - **Registry and Correlation panels fill the page.** The registry table, Correlation's Decisions
   and Suggestions take the height the window has instead of stopping at a fixed height; their

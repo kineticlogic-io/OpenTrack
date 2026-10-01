@@ -311,6 +311,18 @@ export function TransportForm({
       onTransport({ ...transport, framing: structuredClone(p.framing) })
     }
   }
+  // CoT arrives as back-to-back XML events, often over several lines: framed by `</event>`, not by
+  // lines. Choosing CoT XML (or a stream transport for it) switches the default lines framing.
+  const streamed = (t: Transport) => t.type === 'tcp_client' || t.type === 'tcp_server'
+  const cotFraming = (t: Transport, codecType: unknown): Transport =>
+    codecType === 'cot_xml' && streamed(t) && (t.framing as { type?: string } | undefined)?.type === 'lines'
+      ? { ...t, framing: { type: 'end_tag', tag: '</event>' } }
+      : t
+  const chooseCodec = (id: string) => {
+    onCodec(structuredClone(CODECS[id].initial))
+    const next = cotFraming(transport, id)
+    if (next !== transport) onTransport(next)
+  }
   const [proto, setProto] = useState<ProtoDescription | null>(null)
   const grpc = transport.type === 'grpc_client' || transport.type === 'grpc_server'
   const framing = (transport.framing as Record<string, unknown> | undefined) ?? { type: 'lines' }
@@ -327,7 +339,7 @@ export function TransportForm({
           ariaLabel="Transport"
           options={TRANSPORTS}
           value={transport.type}
-          onChange={(id) => onTransport(structuredClone(TRANSPORTS[id].initial))}
+          onChange={(id) => onTransport(cotFraming(structuredClone(TRANSPORTS[id].initial), codec.type))}
         />
       </div>
       <div className="field">
@@ -335,7 +347,7 @@ export function TransportForm({
           label="Codec"
           help="How each frame becomes records. JSON: an object, or each element of an array. Cursor-on-Target: one record per <event>. XML: one record per record element. Protobuf: one message per frame, decoded with the producer's .proto files. Plugin: a codec plugin from Settings › Plugins."
         />
-        <Select ariaLabel="Codec" options={CODECS} value={codec.type} onChange={(id) => onCodec(structuredClone(CODECS[id].initial))} />
+        <Select ariaLabel="Codec" options={CODECS} value={codec.type} onChange={chooseCodec} />
       </div>
       {codec.type === 'json' && (
         <Text

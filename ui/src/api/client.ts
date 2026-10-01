@@ -939,6 +939,10 @@ export interface ProbeResult {
   frames: number
   seconds: number
   link_error: string | null
+  /** Bytes a stream transport read, framed or not. */
+  bytes_received?: number
+  /** Why no frames arrived, when no error says (connected but silent, or unframed bytes). */
+  hint?: string | null
   decode_errors: number
   last_decode_error: string | null
   records: number

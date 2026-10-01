@@ -4,6 +4,8 @@ import { Button, FieldSelect, Input, Label, Toggle } from 'staresdk'
 import { api, type EmitterMotion, type PluginInfo, type SecurityLabel } from '../../../api/client'
 import { DECODE_CODECS, DEFAULT_GRADES, DEFAULT_LINKS, describeCondition, describeValue, entityLinks, transportCodec, type EntityLink, type ValueSpec } from '../../../lib/pipeline'
 import { JsonField } from './JsonField'
+import { ConditionBuilder } from './ConditionBuilder'
+import type { SampleField } from '../../../lib/conditions'
 import { INPUT } from '../../../lib/valueSpec'
 import { ValueEditor } from './ValueEditor'
 import { InfoTip } from '../../../components/InfoTip'
@@ -287,15 +289,36 @@ export function AffiliationForm({ value, onChange }: Props) {
   )
 }
 
-export function FilterForm({ value, onChange }: Props) {
+/**
+ * Keep or drop observations, built as rows of field, test and value from the fields the samples
+ * hold at this stage. `effect`: what the dry run says the filter as edited does to the samples.
+ */
+export function FilterForm({
+  value,
+  onChange,
+  fields,
+  effect,
+}: Props & { fields: SampleField[]; effect: { dropped: number; examples: string[] } | null }) {
   return (
     <div className="stack">
-      <Row label="Keep only if" hint="Conditions over the observation (after mapping, and ext.registry.* after the entity stage), e.g. {&quot;path&quot;: &quot;classification.domain&quot;, &quot;eq&quot;: &quot;surface&quot;}. Observations that fail it are dropped and counted as filtered. Empty: keep all.">
-        <JsonField label="Keep condition" optional value={value.keep_if} onChange={(v) => onChange({ ...value, keep_if: v })} describe={(v) => `keep when ${describeCondition(v)}`} />
+      <Row
+        label="Keep only if"
+        hint="Observations that do not match are dropped and counted as filtered. Empty: keep all. Fields are the observation after mapping (and ext.registry.* after the entity stage); the list offers those in the stored samples, and Other path… takes any."
+      >
+        <ConditionBuilder label="Keep condition" verb="keep" value={value.keep_if} onChange={(v) => onChange({ ...value, keep_if: v })} fields={fields} />
       </Row>
-      <Row label="Drop if" hint="Observations matching this are dropped (counted as filtered), even when they pass Keep only if. Tests: eq, ne, in, not_in, exists, gt, gte, lt, lte, matches, starts_with, contains, bits_any; combine with all, any, not.">
-        <JsonField label="Drop condition" optional value={value.drop_if} onChange={(v) => onChange({ ...value, drop_if: v })} describe={(v) => `drop when ${describeCondition(v)}`} />
+      <Row
+        label="Drop if"
+        hint="Observations that match are dropped (counted as filtered), even when they pass Keep only if. For example, field source_track_key, starts with, tms- drops tracks OpenTrack itself sent out, read back from a TAK Server."
+      >
+        <ConditionBuilder label="Drop condition" verb="drop" value={value.drop_if} onChange={(v) => onChange({ ...value, drop_if: v })} fields={fields} />
       </Row>
+      {effect && (
+        <div className="muted">
+          On the stored samples: {effect.dropped ? `drops ${effect.dropped.toLocaleString()}` : 'drops nothing'}
+          {effect.examples.length > 0 && <> (e.g. {effect.examples.join(', ')})</>}
+        </div>
+      )}
     </div>
   )
 }

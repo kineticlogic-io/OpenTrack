@@ -113,7 +113,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
       // Adopt the detected codec settings and the suggested mapping.
       setSpec((s) => ({ ...s, pipeline: { ...s.pipeline, codec: r.codec, mapping: r.suggestion.mapping } }))
       if (r.frames === 0) {
-        toast({ variant: 'warning', message: r.link_error ?? 'No frames arrived within the probe window.' })
+        toast({ variant: 'warning', message: r.link_error ?? r.hint ?? 'No frames arrived within the probe window.' })
       }
     } catch (e) {
       toast({ variant: 'error', title: 'Probe failed', message: errorMessage(e) })
@@ -255,6 +255,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
                 )}
               </div>
               {probe.link_error && <div className="error-text">{probe.link_error}</div>}
+              {probe.hint && <div className="muted">{probe.hint}</div>}
               {probe.last_decode_error && <div className="error-text">{probe.last_decode_error}</div>}
               <h3 className="subhead">
                 Inferred fields

@@ -636,6 +636,8 @@ pub struct LinkStatus {
     pub connected: bool,
     pub connects: u64,
     pub errors: u64,
+    /// Bytes read from a stream transport (TCP, TLS, serial, files), framed or not.
+    pub bytes_in: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1370,6 +1372,7 @@ async fn read_stream(
         if n == 0 {
             return Ok(());
         }
+        set(status, |s| s.bytes_in += n as u64);
         loop {
             match framer.next(&mut buf) {
                 Ok(Some(bytes)) => {
