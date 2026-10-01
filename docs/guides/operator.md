@@ -530,7 +530,12 @@ Status:
   - **Class name:** such as the ship or aircraft class.
   - **Domain**, **Affiliation:** blank leaves the feed's value. Together they set the force code.
   - **Track type:** tactical (the default), live training, simulated training, demand entry.
-  - **CoT type**, **SIDC:** the symbol. The SIDC wins; blank, it comes from the CoT type.
+  - **CoT type**, **SIDC:** the symbol. The SIDC wins; blank, it comes from the CoT type. The
+    flag button beside SIDC opens the **symbol designer**: choose the affiliation, then the symbol
+    set, entity, type and subtype (MIL-STD-2525D point symbols; no lines or areas), with a live
+    preview. **Use symbol** fills both fields: the 2525D SIDC, and the matching CoT type (from the
+    standard's 2525C equivalent; a symbol with none, such as a control measure, gets its
+    affiliation and dimension only, `a-f-X`).
 - **Status:** active or retired.
 - **Identifiers:** scheme (`mmsi`, `imo`, `icao`, `callsign`, `hull`, `elnot`, `cot-uid`, `track`,
   or any other), value, and the **Name** the track is expected to report under it, which
