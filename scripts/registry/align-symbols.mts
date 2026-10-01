@@ -3,8 +3,9 @@
  * the entity editor keeps them by (ui/src/lib/milsym/sync.ts), through the API, so each change is
  * an ordinary audited entity revision.
  *
- * Per entity: the stored symbol fills the other code (the SIDC if it is one, else the CoT type; a
- * 2525C SIDC is stored as its 2525D equivalent), then an explicitly set domain and affiliation win
+ * Per entity: the stored symbol fills a missing code (from the SIDC if it is one, else the CoT
+ * type; a 2525C SIDC is stored as its 2525D equivalent; an existing code is never replaced, so a
+ * re-run changes nothing), then an explicitly set domain and affiliation win
  * and the codes follow them. An entity with no symbol but a domain gets the domain's generic one.
  * A blank domain or affiliation is left blank (it means "the feed's").
  *
@@ -36,9 +37,17 @@ const text = (v: unknown) => (typeof v === 'string' ? v : '')
 
 /** The aligned fields for an entity's stored ones. */
 function aligned(f: SymbolFields): SymbolFields {
-  // The SIDC when it is a code (2525D, or 2525C stored as 2525D), else the CoT type.
-  let g = syncSymbol(f, 'sidc')
-  if (!/^\d{20}$/.test(g.sidc)) g = syncSymbol(f, 'cot_type')
+  // Fill a missing code from the one there is; never replace an existing one (a CoT type can be
+  // more specific than any 2525D symbol). The SIDC first, else the CoT type; a 2525C SIDC is
+  // stored as its 2525D equivalent.
+  const fromSidc = syncSymbol(f, 'sidc')
+  const fromCot = syncSymbol(f, 'cot_type')
+  const sidcOk = /^\d{20}$/.test(fromSidc.sidc)
+  const cotOk = /^a-[a-z]-[A-Z]/.test(f.cot_type)
+  let g = { ...f }
+  if (sidcOk && cotOk) g = { ...f, sidc: fromSidc.sidc }
+  else if (sidcOk) g = fromSidc
+  else if (cotOk) g = fromCot
   // A blank domain or affiliation stays blank: it means "the feed's", which a value read off the
   // symbol would override for every linked track.
   g = { ...g, domain: f.domain, affiliation: f.affiliation }
