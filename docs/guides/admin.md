@@ -1,7 +1,7 @@
 # OpenTrack administrator guide
 
 For the people who install, configure, secure and keep OpenTrack running. The people who work on
-the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.5**.
+the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.6**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI and other documents can link to
 it (in the app: `#help/admin/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses:
@@ -948,6 +948,14 @@ revision: the source's **History** tab lists them, with who saved each and the s
 track managers, passwords, tokens, header and metadata values, credentials in URLs and API keys in
 messages show as `••••••` (`${env:…}` references stay visible). See the README, "Sources and pipelines", and `docs/examples/`.
 
+**Probing a feed.** The wizard's probe connects with the transport as set and captures what
+arrives. Choosing Cursor-on-Target XML on a TCP transport frames by the end tag `</event>` (CoT
+events arrive back to back, often over several lines). A probe that connects but captures nothing
+says why it may be: **no bytes arrived** (the feed is idle; the port needs TLS, since a TLS server
+waits silently for a handshake; or the port only takes data in, as a TAK Server input does), or
+**bytes arrived but never made a frame** (check the framing). To read a TAK Server, connect to its
+streaming port (8089) with TLS and a client certificate it issued; its input ports never send.
+
 **A listening source must authenticate its senders.** `tcp_server` needs TLS with a client CA
 (mutual TLS, a certificate required: not `client_cert_optional`); `grpc_server` needs that or a
 bearer `token`. Otherwise the source is saved and run only with the risk accepted on it,
@@ -990,6 +998,24 @@ Sample #1 is the same record at every stage. A sample dropped on the way says wh
 of a scan says it held the sample. The frames' other records are processed too (they count, and
 move the tracker and throttle) but not shown. Above the samples, one line counts what the pipeline
 did with all the stored samples (frames, records, dropped…), with any errors.
+
+**Filter** keeps or drops observations by condition, in two parts: **Keep only if** (an
+observation that does not match is dropped) and **Drop if** (one that matches is dropped, even
+when it passes Keep only if). Each is built from rows of **field**, **test** and **value**,
+matched **all** or **any**:
+- **Field:** the fields the stored samples hold at this stage, each with an example
+  (`source_track_key (e.g. tms-OTK000000123)`); **Other path…** takes any path, such as one only
+  some records carry.
+- **Test:** is, is not, is one of, is none of (values separated by commas), starts with, does not
+  start with, contains, does not contain, matches pattern, does not match pattern (a regular
+  expression), is more than, is at least, is less than, is at most, is present, is missing.
+- **Value:** saved as a number or true/false when the samples hold one at that field.
+
+Under the rows a line says the condition in words, and under both, what the filter as edited does
+to the stored samples ("drops 55 (e.g. tms-OTK000058833, …)"). **Edit as JSON** shows the
+condition as the pipeline stores it; a condition the rows cannot show (groups inside groups, a
+transformed value) opens there. For example, to stop a TAK Server source reading back the tracks
+OpenTrack itself sends to that server: **Drop if**, `source_track_key`, starts with, `tms-`.
 
 ### Output schema
 
