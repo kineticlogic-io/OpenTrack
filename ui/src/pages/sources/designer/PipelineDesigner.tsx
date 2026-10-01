@@ -120,7 +120,7 @@ export function PipelineDesigner({
     setError(null)
     try {
       const r = await api.probe({ transport: spec.transport, codec: spec.pipeline.codec, max_frames: 20, max_secs: 15, save_as: sourceId })
-      if (r.link_error && !r.frames) setError(`No frames captured: ${r.link_error}`)
+      if (!r.frames && (r.link_error || r.hint)) setError(`No frames captured: ${r.link_error ?? r.hint}`)
       setNonce((n) => n + 1)
     } catch (e) {
       setError(errorMessage(e))
