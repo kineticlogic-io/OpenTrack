@@ -7,7 +7,7 @@ import type { MapFitTo, MapLine, MapPoint } from 'staresdk/map-view'
 import { DEFAULT_BEARING_RANGE_M, bearingLine, bearingWedge } from '../../lib/geodesy'
 import { api, type Entity, type TrackRow } from '../../api/client'
 import { ago, errorMessage, fmtNum, STATE_COLOR } from '../../lib/format'
-import { affiliationColor } from '../../lib/palette'
+import { affiliationColor, EVIDENCE_COLOR, UNCERTAINTY_COLOR } from '../../lib/palette'
 import { symbolUrl } from '../../lib/symbol'
 import { EntityEditor } from '../registry/EntityEditor'
 import { InfoTip } from '../../components/InfoTip'
@@ -246,7 +246,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
           id: `sensor-${b.source_id}`,
           latitude: b.latitude,
           longitude: b.longitude,
-          color: '#ffd166',
+          color: EVIDENCE_COLOR,
           label: b.source_id,
         })
       }
@@ -254,11 +254,11 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
         uncertainty.push({
           id: `${id}-wedge`,
           coordinates: bearingWedge(b.latitude, b.longitude, b.bearing_deg, b.sigma_deg, range),
-          color: '#ffe49a',
+          color: UNCERTAINTY_COLOR,
           width: 1.25,
           opacity: 0.65,
         })
-      evidence.push({ id, coordinates: bearingLine(b.latitude, b.longitude, b.bearing_deg, range), color: '#ffd166', width: 2.5, dashed: true })
+      evidence.push({ id, coordinates: bearingLine(b.latitude, b.longitude, b.bearing_deg, range), color: EVIDENCE_COLOR, width: 2.5, dashed: true })
     }
     if (!here) return { evidence, uncertainty, sensors }
     const g = selTrack.view.geometry
@@ -269,7 +269,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       if (e) {
         const ellipse = ellipseRing(here[1], here[0], e.semi_major_m, e.semi_minor_m, e.orientation_deg)
         if (ellipse.length >= 3)
-          uncertainty.push({ id: 'position-uncertainty', coordinates: [...ellipse, ellipse[0]], color: '#ffe49a', width: 1.5, dashed: true })
+          uncertainty.push({ id: 'position-uncertainty', coordinates: [...ellipse, ellipse[0]], color: UNCERTAINTY_COLOR, width: 1.5, dashed: true })
       }
     }
     if (ring.length >= 3) evidence.push({ id: 'area', coordinates: [...ring, ring[0]], color: trailColor, width: 2, dashed: true })

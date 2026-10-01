@@ -1,7 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from 'react'
 import { TbAdjustmentsHorizontal, TbMap, TbMapOff } from 'react-icons/tb'
 import { AttributionControl, Map as MapLibreMap, Popup, type GeoJSONSource } from 'maplibre-gl'
-import { themeFor, useTheme } from 'staresdk'
+import { Button, Label, Select, Slider, themeFor, Toggle, useTheme } from 'staresdk'
+import { EVIDENCE_COLOR, UNCERTAINTY_COLOR } from '../../lib/palette'
 import {
   coordinateBounds,
   linesToGeoJSON,
@@ -70,6 +71,12 @@ function loadDisplay(): MapDisplay {
   }
 }
 
+const MARKER_SIZES = [
+  { value: 'compact', label: 'Compact' },
+  { value: 'standard', label: 'Standard' },
+  { value: 'large', label: 'Large' },
+]
+
 const pointRadius = (size: MarkerSize) => ({ compact: 4, standard: 6, large: 8 })[size]
 
 export function TrackMap({
@@ -103,7 +110,11 @@ export function TrackMap({
   const updateDisplay = (next: Partial<MapDisplay>) => {
     setDisplay((current) => {
       const updated = { ...current, ...next }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+      } catch {
+        /* storage unavailable: the choice lasts this page load */
+      }
       return updated
     })
   }
@@ -141,7 +152,7 @@ export function TrackMap({
           filter: dashed ? ['get', 'dashed'] : ['!', ['get', 'dashed']],
           layout: { 'line-join': 'round', 'line-cap': dashed ? 'butt' : 'round' },
           paint: {
-            'line-color': casing ? '#101419' : ['get', 'color'],
+            'line-color': casing ? paletteRef.current.colorBgPrimary : ['get', 'color'],
             'line-width': casing ? ['+', ['get', 'width'], 4] : ['get', 'width'],
             'line-opacity': casing ? ['*', ['get', 'opacity'], 0.95] : ['get', 'opacity'],
             ...(dashed ? { 'line-dasharray': [2, 2] } : {}),
@@ -163,7 +174,7 @@ export function TrackMap({
           'circle-color': ['get', 'color'],
           'circle-radius': 5,
           'circle-stroke-width': 2,
-          'circle-stroke-color': '#101419',
+          'circle-stroke-color': paletteRef.current.colorBgPrimary,
         },
       })
       m.addLayer({
@@ -172,10 +183,10 @@ export function TrackMap({
         source: 'points',
         filter: ['get', 'selected'],
         paint: {
-          'circle-color': '#f5f7fa',
+          'circle-color': paletteRef.current.colorTextPrimary,
           'circle-radius': 10,
           'circle-stroke-width': 2,
-          'circle-stroke-color': '#101419',
+          'circle-stroke-color': paletteRef.current.colorBgPrimary,
         },
       })
       m.addLayer({
@@ -186,7 +197,7 @@ export function TrackMap({
           'circle-color': ['get', 'color'],
           'circle-radius': ['case', ['get', 'selected'], 7, 6],
           'circle-stroke-width': 2,
-          'circle-stroke-color': '#101419',
+          'circle-stroke-color': paletteRef.current.colorBgPrimary,
         },
       })
       setReady(true)
@@ -222,6 +233,13 @@ export function TrackMap({
     m.setPaintProperty('land', 'fill-color', b.landFill)
     m.setPaintProperty('land', 'fill-opacity', b.landFillOpacity)
     m.setPaintProperty('borders', 'line-color', b.countryBorder)
+    // Outlines and the selection halo follow the theme: dark casing on dark, light on light.
+    for (const id of ['points', 'sensors', 'selected-halo']) m.setPaintProperty(id, 'circle-stroke-color', palette.colorBgPrimary)
+    m.setPaintProperty('selected-halo', 'circle-color', palette.colorTextPrimary)
+    for (const source of ['lines', 'evidence', 'uncertainty']) {
+      m.setPaintProperty(`${source}-case`, 'line-color', palette.colorBgPrimary)
+      m.setPaintProperty(`${source}-dashed-case`, 'line-color', palette.colorBgPrimary)
+    }
   }, [ready, palette])
 
   useEffect(() => {
@@ -285,7 +303,7 @@ export function TrackMap({
     const m = map.current
     if (!m || !ready) return
     ;(m.getSource('points') as GeoJSONSource).setData(pointsToGeoJSON(points, selectedId, palette.statusInfo))
-    ;(m.getSource('sensors') as GeoJSONSource).setData(pointsToGeoJSON(sensorPoints, null, '#ffd166'))
+    ;(m.getSource('sensors') as GeoJSONSource).setData(pointsToGeoJSON(sensorPoints, null, EVIDENCE_COLOR))
     if (fitted.current !== fitKey || fitted.current === null) {
       const bounds = pointBounds(points)
       if (bounds) {
@@ -299,8 +317,8 @@ export function TrackMap({
     const m = map.current
     if (!m || !ready) return
     ;(m.getSource('lines') as GeoJSONSource).setData(linesToGeoJSON(lines, palette.statusInfo))
-    ;(m.getSource('evidence') as GeoJSONSource).setData(linesToGeoJSON(evidenceLines, '#ffd166'))
-    ;(m.getSource('uncertainty') as GeoJSONSource).setData(linesToGeoJSON(uncertaintyLines, '#ffd166'))
+    ;(m.getSource('evidence') as GeoJSONSource).setData(linesToGeoJSON(evidenceLines, EVIDENCE_COLOR))
+    ;(m.getSource('uncertainty') as GeoJSONSource).setData(linesToGeoJSON(uncertaintyLines, UNCERTAINTY_COLOR))
   }, [ready, lines, evidenceLines, uncertaintyLines, palette.statusInfo])
 
   useEffect(() => {
@@ -316,42 +334,42 @@ export function TrackMap({
     <div className="track-map" style={{ height, ...style }}>
       <div ref={host} role="region" aria-label={ariaLabel} className="ui-map-view track-map__canvas" />
       <div className="track-map__controls">
-        <button
-          type="button"
-          className="track-map__button"
+        <Button
+          size="xs"
+          variant="secondary"
+          icon={display.basemap ? <TbMapOff /> : <TbMap />}
           aria-label={display.basemap ? 'Hide basemap' : 'Show basemap'}
           title={display.basemap ? 'Hide basemap' : 'Show basemap'}
           onClick={() => updateDisplay({ basemap: !display.basemap })}
-        >
-          {display.basemap ? <TbMapOff aria-hidden /> : <TbMap aria-hidden />}
-        </button>
-        <button
-          type="button"
-          className="track-map__button"
+        />
+        <Button
+          size="xs"
+          variant="secondary"
+          icon={<TbAdjustmentsHorizontal />}
           aria-label="Map display options"
           title="Map display options"
           aria-expanded={menuOpen}
+          active={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
-        >
-          <TbAdjustmentsHorizontal aria-hidden />
-        </button>
+        />
       </div>
       {menuOpen && (
         <div className="track-map__menu" role="dialog" aria-label="Map display options">
-          <strong>Map display</strong>
-          <label className="track-map__range">
-            <span>Basemap dimming</span>
-            <output>{display.dim}%</output>
-            <input type="range" min="0" max="60" step="5" value={display.dim} onChange={(event) => updateDisplay({ dim: Number(event.target.value) })} />
-          </label>
-          <label>
-            <span>Track size</span>
-            <select value={display.markerSize} onChange={(event) => updateDisplay({ markerSize: event.target.value as MarkerSize })}>
-              <option value="compact">Compact</option>
-              <option value="standard">Standard</option>
-              <option value="large">Large</option>
-            </select>
-          </label>
+          <h4 className="subhead">Map display</h4>
+          <div className="track-map__row track-map__row--stacked">
+            <Label size="sm">Basemap dimming</Label>
+            <Slider aria-label="Basemap dimming" min={0} max={60} step={5} value={display.dim} onChange={(dim) => updateDisplay({ dim })} formatValue={(v) => `${v}%`} />
+          </div>
+          <div className="track-map__row">
+            <Label size="sm">Track size</Label>
+            <Select
+              ariaLabel="Track size"
+              options={MARKER_SIZES}
+              value={display.markerSize}
+              onChange={(v) => v && updateDisplay({ markerSize: v as MarkerSize })}
+              style={{ width: 120 }}
+            />
+          </div>
           <MapToggle label="High-contrast tracks" checked={display.highContrast} onChange={(highContrast) => updateDisplay({ highContrast })} />
           <MapToggle label="Evidence lines" checked={display.evidence} onChange={(evidence) => updateDisplay({ evidence })} />
           <MapToggle label="Sensor locations" checked={display.sensors} onChange={(sensors) => updateDisplay({ sensors })} />
@@ -365,9 +383,9 @@ export function TrackMap({
 
 function MapToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <label>
-      <span>{label}</span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-    </label>
+    <div className="track-map__row">
+      <Label size="sm">{label}</Label>
+      <Toggle size="sm" aria-label={label} value={checked} onChange={onChange} />
+    </div>
   )
 }

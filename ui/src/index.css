@@ -392,87 +392,41 @@ body {
   top: var(--space-sm);
   right: var(--space-sm);
   display: flex;
-  gap: 4px;
+  gap: var(--space-xs);
 }
 
-.track-map__button {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  place-items: center;
-  color: var(--color-text-primary);
-  background: color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-standard);
-  cursor: pointer;
-}
-
-.track-map__button:hover,
-.track-map__button[aria-expanded='true'] {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
-
-.track-map__button:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-.track-map__button svg {
-  width: 18px;
-  height: 18px;
-}
-
+/* The display options panel over the map: stareSDK controls in label/control rows. */
 .track-map__menu {
   position: absolute;
   z-index: 3;
-  top: 48px;
+  top: 44px;
   right: var(--space-sm);
   display: flex;
   width: min(260px, calc(100% - 16px));
-  padding: var(--space-sm);
+  padding: var(--space-md);
   flex-direction: column;
-  gap: 8px;
-  color: var(--color-text-primary);
-  background: color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  gap: var(--space-sm);
+  background: var(--color-bg-secondary);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-deep);
 }
 
-.track-map__menu > label {
+.track-map__menu .subhead {
+  margin-bottom: 2px;
+}
+
+.track-map__row {
   display: flex;
   min-height: 26px;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
-  font-size: 12px;
 }
 
-.track-map__menu select {
-  min-width: 104px;
-  padding: 3px 6px;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-}
-
-.track-map__range {
-  display: grid !important;
-  grid-template-columns: 1fr auto;
-}
-
-.track-map__range output {
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-}
-
-.track-map__range input {
-  width: 100%;
-  grid-column: 1 / -1;
+.track-map__row--stacked {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 /* The baseball card: symbol and name over the card's tabs. */
