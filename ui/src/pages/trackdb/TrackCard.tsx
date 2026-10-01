@@ -380,6 +380,7 @@ export function TrackCard({
                     {(t.bearings ?? []).map((b) => (
                       <span key={`${b.source_id}/${b.source_track_key}`} className="mono" title={`at ${fmtTime(b.observed_at)}`}>
                         {b.source_id} {b.bearing_deg.toFixed(1)}° ±{b.sigma_deg.toFixed(1)}, misses by {Math.abs(b.residual_deg).toFixed(1)}°
+                        {b.range_m !== undefined && ` · range ${b.range_m.toFixed(0)} m${b.range_sigma_m !== undefined ? ` ±${b.range_sigma_m.toFixed(0)} m` : ''}`}
                         {(b.identifiers ?? []).map((i) => ` · ${i.scheme} ${i.value}`).join('')}
                       </span>
                     ))}

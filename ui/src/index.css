@@ -372,6 +372,63 @@ body {
   padding: 0;
 }
 
+.track-map {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+}
+
+.track-map__canvas {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
+}
+
+.track-map__controls {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* The display options panel over the map: stareSDK controls in label/control rows. */
+.track-map__menu {
+  position: absolute;
+  z-index: 3;
+  top: 44px;
+  right: var(--space-sm);
+  display: flex;
+  width: min(260px, calc(100% - 16px));
+  padding: var(--space-md);
+  flex-direction: column;
+  gap: var(--space-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-deep);
+}
+
+.track-map__menu .subhead {
+  margin-bottom: 2px;
+}
+
+.track-map__row {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.track-map__row--stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 /* The baseball card: symbol and name over the card's tabs. */
 .card-head {
   display: flex;

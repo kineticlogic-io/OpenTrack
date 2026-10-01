@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use ot_core::geometry::{bearing_to, local, offset};
-use ot_core::{BearingContact, Geometry, Observation, Uid};
+use ot_core::{BearingContact, Covariance, Geometry, Observation, Uid, Uncertainty};
 use serde_json::json;
 
 use super::{Engine, EngineCounts, tma};
@@ -54,7 +54,10 @@ struct Lob {
     obs: Observation,
     bearing: f64,
     sigma: f64,
+    measured_range: Option<f64>,
+    range_sigma: Option<f64>,
     range: f64,
+    elevation: Option<f64>,
     /// Where the tracks it passes through are, when no track took it.
     through: Vec<(f64, f64)>,
 }
@@ -65,12 +68,18 @@ impl Lob {
             Some(Geometry::Bearing {
                 bearing_deg,
                 sigma_deg,
+                range_m,
+                range_sigma_m,
                 max_range_m,
+                elevation_deg,
                 ..
             }) => Some(Self {
                 bearing: bearing_deg,
                 sigma: sigma_deg,
+                measured_range: range_m,
+                range_sigma: range_sigma_m,
                 range: max_range_m.unwrap_or(DEFAULT_RANGE_M),
+                elevation: elevation_deg,
                 through: Vec::new(),
                 obs,
             }),
@@ -85,6 +94,56 @@ impl Lob {
     /// The emitter identity it carries, e.g. `elnot:A123`.
     fn identity(&self) -> Option<String> {
         identity(&self.obs.identifiers)
+    }
+
+    /// Convert a complete polar measurement into a point report, preserving
+    /// its radial and cross-range uncertainty in north/east covariance.
+    fn ranged_point(&self) -> Option<Observation> {
+        let range = self.measured_range?;
+        let range_sigma = self.range_sigma?;
+        let elevation = self.elevation.unwrap_or(0.0).to_radians();
+        let angle_sigma = self.sigma.to_radians();
+        let horizontal = range * elevation.cos();
+        let (sin_b, cos_b) = self.bearing.to_radians().sin_cos();
+        let (lat, lon) = offset(
+            self.obs.position.latitude,
+            self.obs.position.longitude,
+            horizontal * cos_b,
+            horizontal * sin_b,
+        );
+
+        let radial_sigma =
+            (range_sigma * elevation.cos()).hypot(range * elevation.sin() * angle_sigma);
+        let cross_sigma = horizontal * angle_sigma;
+        let radial_var = radial_sigma.powi(2);
+        let cross_var = cross_sigma.powi(2);
+        let covariance = [
+            cos_b.powi(2) * radial_var + sin_b.powi(2) * cross_var,
+            sin_b * cos_b * (radial_var - cross_var),
+            sin_b.powi(2) * radial_var + cos_b.powi(2) * cross_var,
+        ];
+
+        let mut point = self.obs.clone();
+        point.position.latitude = lat;
+        point.position.longitude = lon;
+        point.position.altitude_hae_m = self
+            .obs
+            .position
+            .altitude_hae_m
+            .map(|alt| alt + range * elevation.sin());
+        point.uncertainty = Some(Uncertainty {
+            vertical_error_m: Some(
+                (range_sigma * elevation.sin()).hypot(range * elevation.cos() * angle_sigma),
+            ),
+            covariance: Some(Covariance {
+                position: covariance,
+                velocity: None,
+                cross: None,
+            }),
+            ..Uncertainty::default()
+        });
+        point.geometry = None;
+        Some(point)
     }
 }
 
@@ -478,6 +537,15 @@ impl Engine {
         let Some(mut lob) = Lob::of(obs) else {
             return Ok(());
         };
+        if let Some(point) = lob.ranged_point() {
+            let key = format!("{}/{}", point.source_id, point.source_track_key);
+            self.ingest(point, counts).await?;
+            if let Some(uid) = self.reports.get(&key).copied() {
+                self.attach(uid, &lob, 0.0);
+                self.save(uid, false).await?;
+            }
+            return Ok(());
+        }
         let member = (lob.obs.source_id.clone(), lob.obs.source_track_key.clone());
         let now = lob.obs.observed_at;
         {
@@ -561,6 +629,7 @@ impl Engine {
             "observed_at": lob.obs.observed_at,
             "latitude": lob.obs.position.latitude, "longitude": lob.obs.position.longitude,
             "bearing_deg": lob.bearing, "sigma_deg": lob.sigma,
+            "range_m": lob.measured_range, "range_sigma_m": lob.range_sigma,
             "max_range_m": (lob.range != DEFAULT_RANGE_M).then_some(lob.range),
             "identifiers": lob.obs.identifiers,
         });
@@ -883,6 +952,8 @@ impl Engine {
             longitude: olon,
             bearing_deg: lob.bearing,
             sigma_deg: lob.sigma,
+            range_m: lob.measured_range,
+            range_sigma_m: lob.range_sigma,
             max_range_m: (lob.range != DEFAULT_RANGE_M).then_some(lob.range),
             residual_deg: (residual * 100.0).round() / 100.0,
             identifiers: lob.obs.identifiers.clone(),
@@ -1085,6 +1156,33 @@ mod tests {
     }
 
     const SHIP: (f64, f64) = (50.70, -1.30);
+
+    #[test]
+    fn a_ranged_bearing_becomes_a_point_with_covariance() {
+        let obs: Observation = serde_json::from_value(json!({
+            "schema_version": 1, "source_id": "acoustic-1", "source_track_key": "drone",
+            "observed_at": "2026-09-27T12:00:00Z", "received_at": "2026-09-27T12:00:00Z",
+            "position": {"latitude": 50.0, "longitude": -1.0, "altitude_hae_m": 20.0},
+            "geometry": {"type": "bearing", "bearing_deg": 90.0, "sigma_deg": 1.0,
+                         "range_m": 1000.0, "range_sigma_m": 10.0,
+                         "max_range_m": 2000.0, "elevation_deg": 5.0}
+        }))
+        .unwrap();
+        let point = Lob::of(obs).unwrap().ranged_point().unwrap();
+        let (bearing, range) = bearing_to(
+            50.0,
+            -1.0,
+            point.position.latitude,
+            point.position.longitude,
+        );
+
+        assert!((bearing - 90.0).abs() < 0.01);
+        assert!((range - 996.2).abs() < 1.0, "{range}");
+        assert!((point.position.altitude_hae_m.unwrap() - 107.2).abs() < 1.0);
+        let [nn, ne, ee] = point.uncertainty.unwrap().position_covariance().unwrap();
+        assert!(nn > ee && ne.abs() < 1e-6, "{nn} {ne} {ee}");
+        assert!(point.geometry.is_none());
+    }
 
     #[test]
     fn crossing_bearings_fix_the_emitter_with_an_honest_error() {

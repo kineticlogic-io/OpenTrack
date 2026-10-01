@@ -23,7 +23,8 @@ An `Observation` gains one optional field, `geometry`:
 
 ```json
 "geometry": { "type": "bearing", "bearing_deg": 047.5, "sigma_deg": 2.0,
-              "max_range_m": 60000, "origin": {"latitude": 50.6, "longitude": -1.9} }
+              "range_m": 12500, "range_sigma_m": 50, "max_range_m": 60000,
+              "origin": {"latitude": 50.6, "longitude": -1.9} }
 "geometry": { "type": "area", "polygon": [[50.70, -1.30], [50.72, -1.20], [50.65, -1.18]] }
 ```
 
@@ -31,7 +32,9 @@ An `Observation` gains one optional field, `geometry`:
   - `bearing_deg` is the direction, in degrees true;
   - `sigma_deg` is one standard deviation;
   - `max_range_m` is how far the sensor could plausibly detect, if known (unset: 250 km);
-  - `elevation_deg` is optional, for air.
+  - `elevation_deg` is optional, for air;
+  - `range_m` is a measured slant range, distinct from maximum sensor reach;
+  - `range_sigma_m` is its one-sigma error. With both range fields OpenTrack converts the polar measurement to a point and propagates radial and angular error into position covariance. Range without an error remains bearing evidence rather than being treated as exact.
 - **Area.** `position` is the area's centre and `uncertainty` its covering ellipse, so everything that handles points still works. A polygon adds the exact shape, for display and for containment tests. An area given only as an ellipse needs no `geometry`: a point with a large ellipse *is* an area. What changes is how correlation treats one, below.
 - **Emitter parameters** are identifiers and attributes that already exist: the `elnot` identifier scheme, and admin-defined output schema fields for RF, PRI and so on. Nothing new in the model. What changes is that the engine uses them to decide which bearings belong together.
 - **An ELNOT is evidence, not identity.** It names a kind of emitter: every boat with the same radar model shares one, and one platform can carry several. So an ELNOT:
