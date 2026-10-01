@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:936d34e0-d41c-4b2b-a381-12bc6d7eb91f",
+  "serialNumber": "urn:uuid:77dab445-631d-4303-be5e-8e0c8eb0f4ad",
   "metadata": {
-    "timestamp": "2026-09-30T19:52:58.055259082Z",
+    "timestamp": "2026-10-01T19:19:57.727711850Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.5",
+      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6",
       "name": "ot-sapient",
-      "version": "0.4.5",
+      "version": "0.4.6",
       "description": "SAPIENT (BSI Flex 335) codec for OpenTrack",
       "scope": "required",
-      "purl": "pkg:cargo/ot-sapient@0.4.5?download_url=file://.",
+      "purl": "pkg:cargo/ot-sapient@0.4.6?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.5 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6 bin-target-0",
           "name": "ot_sapient",
-          "version": "0.4.5",
-          "purl": "pkg:cargo/ot-sapient@0.4.5?download_url=file://.#src/lib.rs"
+          "version": "0.4.6",
+          "purl": "pkg:cargo/ot-sapient@0.4.6?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -218,6 +218,40 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
+      "name": "chrono",
+      "version": "0.4.45",
+      "description": "Date and time library for Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/chrono@0.4.45",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/chrono/"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/chronotope/chrono"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/chronotope/chrono"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#either@1.18.0",
       "name": "either",
       "version": "1.18.0",
@@ -367,6 +401,33 @@
         {
           "type": "vcs",
           "url": "https://github.com/rust-random/getrandom"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#iana-time-zone@0.1.65",
+      "author": "Andrew Straw <strawman@astraw.com>, René Kijewski <rene.kijewski@fu-berlin.de>, Ryan Lopopolo <rjl@hyperbo.la>",
+      "name": "iana-time-zone",
+      "version": "0.1.65",
+      "description": "get the IANA time zone for the current system",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/iana-time-zone@0.1.65",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/strawlab/iana-time-zone"
         }
       ]
     },
@@ -1943,8 +2004,9 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.5",
+      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6",
       "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#prost-reflect@0.16.5",
         "registry+https://github.com/rust-lang/crates.io-index#sapient-rs@0.2.0",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
@@ -1976,6 +2038,14 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.5"
     },
     {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#iana-time-zone@0.1.65",
+        "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229"
+      ]
+    },
+    {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#either@1.18.0"
     },
     {
@@ -2001,6 +2071,9 @@
         "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189",
         "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.10.1"
       ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#iana-time-zone@0.1.65"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#itertools@0.14.0",
