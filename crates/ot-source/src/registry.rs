@@ -281,6 +281,10 @@ pub struct RegistryMatch {
     /// for the worker to write.
     #[serde(skip)]
     pub updates: Vec<(String, Value)>,
+    /// Track fields the entity set (entity → track links it had a value
+    /// for), so later stages leave them: the entity is the authority.
+    #[serde(skip)]
+    pub set: Vec<String>,
 }
 
 /// A feed value the entity replaced.
@@ -426,7 +430,7 @@ impl RegistryStage {
             })
             .min_by_key(|(_, _, g)| *g)?;
         let corroborated = conflicts.is_empty() && self.apply_grades.contains(&grade);
-        let (mut overrides, mut updates) = (Vec::new(), Vec::new());
+        let (mut overrides, mut updates, mut set) = (Vec::new(), Vec::new(), Vec::new());
         // Values a mapping sent to the entity (`entity.<key>`).
         let mapped = obs
             .get_mut("ext")
@@ -470,6 +474,7 @@ impl RegistryStage {
                     });
                 }
                 l.track.set(obs, v);
+                set.push(l.track.to_string());
             }
         }
         let m = RegistryMatch {
@@ -483,6 +488,7 @@ impl RegistryStage {
             conflicts,
             overrides,
             updates,
+            set,
             source_id: obs
                 .get("source_id")
                 .and_then(Value::as_str)

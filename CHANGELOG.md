@@ -29,6 +29,11 @@
 
 ### Fixed
 
+- **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after
+  the entity stage; it now leaves an affiliation the entity set (the entity is the authority), and
+  says so in the designer's trace. Before, a designated friend on a feed whose flag was in no list
+  became the lists' "otherwise" (unknown).
+
 - **A track manager's designation always applies to the track.** Saving the entity editor opened
   from a track's card pins the entity to that track (identifier `track`), so it applies whatever
   the feeds' reports grade as, and follows the track through merges; the track's own identifiers

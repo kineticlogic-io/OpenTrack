@@ -821,6 +821,11 @@ impl Pipeline {
                 f.item("registry", || obs.clone());
             }
             let grade = matched.as_ref().map_or("none", |m| m.grade.as_str());
+            // An affiliation the entity set stands: the entity is the authority
+            // over the country lists.
+            let entity_affiliation = matched
+                .as_ref()
+                .is_some_and(|m| m.set.iter().any(|f| f == "classification.affiliation"));
             if let Some(m) = matched {
                 let fresh: Vec<(String, Value)> = m
                     .updates
@@ -842,9 +847,14 @@ impl Pipeline {
             }
             *self.counts.grades.entry(grade).or_default() += 1;
             if let Some(stage) = &self.spec.affiliation {
-                stage.run(&mut obs);
+                if !entity_affiliation {
+                    stage.run(&mut obs);
+                }
                 if let Some(f) = trace.as_deref_mut() {
                     f.item("affiliation", || obs.clone());
+                    if entity_affiliation {
+                        f.note("affiliation", "kept the entity's affiliation");
+                    }
                 }
             }
             if let Some(filter) = &self.spec.filter {
@@ -982,6 +992,42 @@ mod tests {
 
     fn pos(id: u32, ts: &str, lat: f64) -> Value {
         json!({"t": "pos", "id": id, "lat": lat, "lon": -117.0, "ts": ts})
+    }
+
+    #[test]
+    fn an_affiliation_the_entity_set_outranks_the_country_lists() {
+        let spec: PipelineSpec = serde_json::from_value(json!({
+            "codec": { "type": "json" },
+            "mapping": { "rules": [ { "name": "pos", "key": "id",
+                "identifiers": [ { "scheme": "icao", "value": "id" } ],
+                "fields": { "position.latitude": "lat", "position.longitude": "lon",
+                            "callsign": "cs", "platform.flag": "flag" } } ] },
+            "registry": { "apply": { "classification.affiliation": "affiliation" } },
+            "affiliation": { "country": "platform.flag", "friendly": ["US"], "otherwise": "unknown" }
+        }))
+        .unwrap();
+        let entity = |fields: Value| RegistryEntry {
+            entity_id: "e9".into(),
+            name: Some("LOST56".into()),
+            expected_name: None,
+            fields: serde_json::from_value(fields).unwrap(),
+        };
+        let report =
+            json!({"id": "080010", "lat": 42.0, "lon": -121.0, "cs": "LOST56", "flag": "TZ"});
+        let run = |e: RegistryEntry| {
+            let reg: Reg = [(("icao".into(), "080010".into()), e)].into();
+            let mut p = Pipeline::new("adsb", spec.clone()).unwrap();
+            feed(&mut p, &reg, report.clone()).observations[0]
+                .classification
+                .affiliation
+        };
+        // The entity says friend: the country lists (TZ: unknown) leave it.
+        assert_eq!(
+            run(entity(json!({"affiliation": "friend"}))),
+            Some(ot_core::Affiliation::Friend)
+        );
+        // No affiliation on the entity: the country lists decide.
+        assert_eq!(run(entity(json!({}))), Some(ot_core::Affiliation::Unknown));
     }
 
     #[test]
