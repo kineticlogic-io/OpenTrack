@@ -14,7 +14,7 @@ import { InfoTip } from '../../components/InfoTip'
 import { GroupEditor } from './GroupEditor'
 import { TrackCard } from './TrackCard'
 import { ManagementLog } from './ManagementLog'
-import { TrackMap } from './TrackMap'
+import { TrackMap, type TrackMapPoint } from './TrackMap'
 import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
 import { useBasemapTiles } from '../../lib/basemap'
@@ -203,7 +203,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     })
   }, [all, query, state, domain, affiliation, source])
 
-  const points: MapPoint[] = useMemo(
+  const points: TrackMapPoint[] = useMemo(
     () =>
       shown.map((t) => ({
         id: t.uid,
@@ -211,6 +211,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
         longitude: t.longitude,
         color: affiliationColor(t.affiliation),
         label: `${t.track_id} ${displayName(t)}`.trim(),
+        // On the map: the name, else the track number.
+        text: displayName(t) || t.track_id,
       })),
     [shown],
   )

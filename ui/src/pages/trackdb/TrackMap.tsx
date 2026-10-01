@@ -25,10 +25,14 @@ interface MapDisplay {
   sensors: boolean
   uncertainty: boolean
   focus: boolean
+  labels: boolean
 }
 
+/** A track on the map; `text` is its label on the map (the popup shows `label`). */
+export type TrackMapPoint = MapPoint & { text?: string }
+
 interface TrackMapProps {
-  points: MapPoint[]
+  points: TrackMapPoint[]
   sensorPoints?: MapPoint[]
   lines?: MapLine[]
   evidenceLines?: MapLine[]
@@ -44,6 +48,8 @@ interface TrackMapProps {
   style?: CSSProperties
 }
 
+/** The label font: its glyph ranges are vendored by scripts/vendor-map-glyphs.sh. */
+const LABEL_FONT = 'Noto Sans Medium'
 const STORAGE_KEY = 'ot.map.track.display'
 const DEFAULT_DISPLAY: MapDisplay = {
   basemap: true,
@@ -54,6 +60,7 @@ const DEFAULT_DISPLAY: MapDisplay = {
   sensors: true,
   uncertainty: true,
   focus: true,
+  labels: true,
 }
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
 
@@ -123,7 +130,8 @@ export function TrackMap({
     if (!host.current) return
     const m = new MapLibreMap({
       container: host.current,
-      style: { version: 8, sources: {}, layers: [] },
+      // Labels are drawn from glyph ranges this server serves (ui/public/map-fonts).
+      style: { version: 8, glyphs: `${window.location.origin}/map-fonts/{fontstack}/{range}.pbf`, sources: {}, layers: [] },
       center: [0, 20],
       zoom: 0.6,
       attributionControl: false,
@@ -200,6 +208,34 @@ export function TrackMap({
           'circle-stroke-color': paletteRef.current.colorBgPrimary,
         },
       })
+      // Track labels, decluttered: a label that would collide with one already placed is left
+      // out (more fit as you zoom in). The selected track's label is its own layer, placed
+      // first and always shown, so the others make room for it.
+      const label = (id: string, selected: boolean) =>
+        m.addLayer({
+          id,
+          type: 'symbol',
+          source: 'points',
+          filter: selected ? ['get', 'selected'] : ['!', ['get', 'selected']],
+          layout: {
+            'text-field': ['get', 'text'],
+            'text-font': [LABEL_FONT],
+            'text-size': selected ? 12 : 11,
+            'text-variable-anchor': ['left', 'right', 'top', 'bottom'],
+            'text-radial-offset': 0.9,
+            'text-justify': 'auto',
+            'text-max-width': 12,
+            'text-allow-overlap': selected,
+            'text-padding': 3,
+          },
+          paint: {
+            'text-color': paletteRef.current.colorTextPrimary,
+            'text-halo-color': paletteRef.current.colorBgPrimary,
+            'text-halo-width': 1.5,
+          },
+        })
+      label('labels', false)
+      label('labels-selected', true)
       setReady(true)
     })
     m.on('click', (event) => {
@@ -236,6 +272,10 @@ export function TrackMap({
     // Outlines and the selection halo follow the theme: dark casing on dark, light on light.
     for (const id of ['points', 'sensors', 'selected-halo']) m.setPaintProperty(id, 'circle-stroke-color', palette.colorBgPrimary)
     m.setPaintProperty('selected-halo', 'circle-color', palette.colorTextPrimary)
+    for (const id of ['labels', 'labels-selected']) {
+      m.setPaintProperty(id, 'text-color', palette.colorTextPrimary)
+      m.setPaintProperty(id, 'text-halo-color', palette.colorBgPrimary)
+    }
     for (const source of ['lines', 'evidence', 'uncertainty']) {
       m.setPaintProperty(`${source}-case`, 'line-color', palette.colorBgPrimary)
       m.setPaintProperty(`${source}-dashed-case`, 'line-color', palette.colorBgPrimary)
@@ -290,6 +330,8 @@ export function TrackMap({
     m.setPaintProperty('selected-halo', 'circle-radius', radius + 5)
     m.setLayoutProperty('selected-halo', 'visibility', display.highContrast ? 'visible' : 'none')
     m.setLayoutProperty('sensors', 'visibility', display.sensors ? 'visible' : 'none')
+    for (const id of ['labels', 'labels-selected']) m.setLayoutProperty(id, 'visibility', display.labels ? 'visible' : 'none')
+    m.setPaintProperty('labels', 'text-opacity', display.focus && selectedId ? 0.35 : 1)
     for (const source of ['lines', 'evidence', 'uncertainty']) {
       const visible = source === 'evidence' ? display.evidence : source === 'uncertainty' ? display.uncertainty : true
       m.setLayoutProperty(source, 'visibility', visible ? 'visible' : 'none')
@@ -302,7 +344,10 @@ export function TrackMap({
   useEffect(() => {
     const m = map.current
     if (!m || !ready) return
-    ;(m.getSource('points') as GeoJSONSource).setData(pointsToGeoJSON(points, selectedId, palette.statusInfo))
+    const text = new Map(points.map((p) => [p.id, p.text ?? '']))
+    const data = pointsToGeoJSON(points, selectedId, palette.statusInfo)
+    for (const f of data.features) f.properties = { ...f.properties, text: text.get(String(f.properties?.id)) ?? '' }
+    ;(m.getSource('points') as GeoJSONSource).setData(data)
     ;(m.getSource('sensors') as GeoJSONSource).setData(pointsToGeoJSON(sensorPoints, null, EVIDENCE_COLOR))
     if (fitted.current !== fitKey || fitted.current === null) {
       const bounds = pointBounds(points)
@@ -373,6 +418,7 @@ export function TrackMap({
               style={{ width: 120 }}
             />
           </div>
+          <MapToggle label="Track labels" checked={display.labels} onChange={(labels) => updateDisplay({ labels })} />
           <MapToggle label="High-contrast tracks" checked={display.highContrast} onChange={(highContrast) => updateDisplay({ highContrast })} />
           <MapToggle label="Evidence lines" checked={display.evidence} onChange={(evidence) => updateDisplay({ evidence })} />
           <MapToggle label="Sensor locations" checked={display.sensors} onChange={(sensors) => updateDisplay({ sensors })} />

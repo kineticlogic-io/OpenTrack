@@ -176,7 +176,9 @@ A selected track can also show:
 **Zoom to track** (History tab) moves the map to it.
 
 The two buttons at the map's top right hide or show the basemap, and open **Map display**:
-basemap dimming, track size (compact, standard, large), high-contrast tracks (an outline round
+basemap dimming, track size (compact, standard, large), **track labels** (each track's name, or
+its track number when it has none; labels that would overlap are left out, more appear as you
+zoom in, and the selected track's is always shown), high-contrast tracks (an outline round
 each track and a halo round the selected one), and whether to show the selected track's evidence
 lines, its sensors' locations and its uncertainty, and whether to fade the other tracks while one
 is selected. Your choices are kept in this browser.
