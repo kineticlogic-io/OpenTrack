@@ -1285,7 +1285,7 @@ Each published track is one CoT event:
 | CoT | From |
 |---|---|
 | `uid` | `tms-<UID>`, the track's id on NATS too. |
-| `type` | The track's symbol: a 2525C SIDC as `a-<affiliation>-<dimension>-<function…>` (`SFSPCLDD---` is `a-f-S-C-L-D-D`; exercise identities as their real ones); a 2525D SIDC as its identity and symbol set (`a-h-G-U` for a hostile land unit, `a-f-G-E`, `a-n-G-I`, `a-f-S`; the entity code is not translated); a CoT type as it is. Without one (or for a tactical graphic or weather symbol), affiliation and domain: `a-h-A`, `a-f-S`, `a-u-G` (ground when the domain is unknown). An explicit affiliation (an entity, a track manager) overrides the symbol's. |
+| `type` | The track's symbol: a 2525C SIDC as `a-<affiliation>-<dimension>-<function…>` (`SFSPCLDD---` is `a-f-S-C-L-D-D`; exercise identities as their real ones); a 2525D SIDC as its identity and symbol set (`a-h-G-U` for a hostile land unit, `a-f-G-E`, `a-n-G-I`, `a-f-S`; the entity code is not translated); a CoT type as it is. A track with both a CoT type and a SIDC (an entity stores both) sends the more specific of the two (the CoT type on a tie). Without one (or for a tactical graphic or weather symbol), affiliation and domain: `a-h-A`, `a-f-S`, `a-u-G` (ground when the domain is unknown). An explicit affiliation (an entity, a track manager) overrides the symbol's. |
 | `how` | `m-f` (machine, fused). |
 | `time`, `start` | The track's last report (its observation time; never later than now, for a source whose clock runs ahead). Re-sending a track does not make it look newer. |
 | `stale` | `time` plus the output's stale time. A track past it is not sent (not re-sent, not in the picture a client gets on connecting) until it reports again. |

@@ -530,6 +530,10 @@ Status:
   - **Class name:** such as the ship or aircraft class.
   - **Domain**, **Affiliation:** blank leaves the feed's value. Together they set the force code.
   - **Track type:** tactical (the default), live training, simulated training, demand entry.
+  - **Domain, Affiliation, CoT type, SIDC** follow each other: change the affiliation and both
+    symbol codes take it; change the domain to another than the symbol's and the symbol becomes
+    that domain's generic one; type a SIDC (2525D; a 2525C code is stored as its 2525D equivalent)
+    or a CoT type and the other code, the domain and the affiliation follow.
   - **CoT type**, **SIDC:** the symbol. The SIDC wins; blank, it comes from the CoT type. The
     flag button beside SIDC opens the **symbol designer**: choose the affiliation, then the symbol
     set, entity, type and subtype (MIL-STD-2525D point symbols; no lines or areas), with a live
