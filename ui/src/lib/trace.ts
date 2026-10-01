@@ -97,3 +97,27 @@ export function countsLine(result: PreviewResult | null): string {
   const counts = Object.entries(result?.counts ?? {}).filter(([k]) => !k.startsWith('rejected:') && !k.startsWith('grade:'))
   return counts.map(([k, v]) => `${k} ${v}`).join(' · ')
 }
+
+/** Most samples a preview traces (crates/ot-source/src/trace.rs `MAX_SAMPLES`); the filter builder asks for them all. */
+export const MAX_TRACED_SAMPLES = 10
+
+/**
+ * The observations as they reach the filter in the traced samples (what the stage before it passed
+ * on), and those of them the filter dropped. With no filter in the pipeline yet, what the last
+ * stage before where it goes passed on, and nothing dropped.
+ */
+export function filterInput(trace: PreviewTrace | undefined): { observations: unknown[]; dropped: unknown[] } {
+  const observations: unknown[] = []
+  const dropped: unknown[] = []
+  for (const s of trace?.samples ?? []) {
+    const at = s.stages.findIndex((x) => x.id === 'filter')
+    const before = at > 0 ? s.stages[at - 1] : [...s.stages].reverse().find((x) => ['affiliation', 'registry', 'join', 'map'].includes(x.id))
+    if (!before) continue
+    observations.push(...before.items)
+    if (at > 0 && s.stages[at].dropped?.length) {
+      const kept = new Set(s.stages[at].items.map((i) => JSON.stringify(i)))
+      dropped.push(...before.items.filter((i) => !kept.has(JSON.stringify(i))))
+    }
+  }
+  return { observations, dropped }
+}
