@@ -429,10 +429,11 @@ What that changes depends on how the track finds its entity:
   track, by the identifier `track` = its number. Everything you set applies to the track at once,
   whatever reports for it, and follows it through merges. So "mark this radar track hostile" is
   **Edit**, **Affiliation: hostile**, **Save**.
-- **A track with identifiers** (AIS, ADS-B): the entity is found by those identifiers (MMSI, ICAO…),
-  and it speaks for every track that carries them. Its values replace the feed's only for the
-  fields the source's pipeline links from the entity (ask an admin which). To pin this one track
-  instead, add the identifier `track` with the track's number.
+- **A track with identifiers** (AIS, ADS-B): the entity gets those identifiers (MMSI, ICAO…) and
+  is pinned to this track as well. The pin makes it apply to this track at once, whatever its feeds
+  report. The identifiers let the same ship or aircraft's later tracks find it; there its values
+  replace the feed's when the name or callsign it broadcasts corroborates the match, and only for
+  the fields the source's pipeline links from the entity (ask an admin which).
 
 Where an entity's value replaces what a feed reports, the card shows the warning line and the
 table shows **replaced n**.

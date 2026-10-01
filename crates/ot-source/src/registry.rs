@@ -164,7 +164,8 @@ pub struct RegistryStage {
     /// resolves every identifier the observation carries, in its order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schemes: Vec<String>,
-    /// Observation field holding the broadcast name to grade.
+    /// Observation field holding the broadcast name to grade. At the default
+    /// (`name`), a report without a name is graded on its `callsign`.
     #[serde(default = "default_name_field")]
     pub broadcast_name: Path,
     /// Words that do not identify a platform (prefixes, nationalities...).
@@ -402,7 +403,18 @@ impl RegistryStage {
             .collect();
         conflicts.sort();
         conflicts.dedup();
-        let broadcast = self.broadcast_name.get(obs).map(as_string);
+        // The broadcast name: the configured field; a report without one at the
+        // default (`name`) is graded on its callsign, which is all ADS-B sends.
+        let broadcast = self
+            .broadcast_name
+            .get(obs)
+            .map(as_string)
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| {
+                (self.broadcast_name == default_name_field())
+                    .then(|| obs.get("callsign").map(as_string))
+                    .flatten()
+            });
         // Each identifier carries its own expected name: grade them all and
         // keep the strongest.
         let (id, entry, grade) = hits
@@ -568,6 +580,32 @@ mod tests {
 
         let mut miss = json!({"identifiers": [{"scheme": "mmsi", "value": "1"}]});
         assert!(stage().run(&mut miss, &reg).is_none());
+    }
+
+    #[test]
+    fn a_report_without_a_name_is_graded_on_its_callsign() {
+        // ADS-B: an ICAO address and a flight callsign, no name.
+        let lost = RegistryEntry {
+            entity_id: "e2".into(),
+            name: Some("LOST56".into()),
+            expected_name: None,
+            fields: serde_json::from_value(json!({"cot_type": "a-f-A-M-V"})).unwrap(),
+        };
+        let reg: BTreeMap<(String, String), RegistryEntry> =
+            [(("icao".to_string(), "080010".to_string()), lost)].into();
+        let report = || {
+            json!({"identifiers": [{"scheme": "icao", "value": "080010"}],
+                   "callsign": "LOST56", "classification": {"cot_type": "a-u-A-M-F"}})
+        };
+        let mut obs = report();
+        let m = stage().run(&mut obs, &reg).unwrap();
+        assert_eq!(m.grade, Grade::Name);
+        assert_eq!(obs["classification"]["cot_type"], "a-f-A-M-V");
+        // A configured name field is graded as configured: no fallback.
+        let mut s = stage();
+        s.broadcast_name = "ext.shipname".parse().unwrap();
+        let mut obs = report();
+        assert_eq!(s.run(&mut obs, &reg).unwrap().grade, Grade::Stale);
     }
 
     #[test]
