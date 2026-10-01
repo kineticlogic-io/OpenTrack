@@ -4,6 +4,14 @@
 
 ### Added
 
+- **A symbol designer** in the entity editor (Edit on a track's card, or the Registry), #80. The
+  flag button beside SIDC opens it: affiliation, then symbol set, entity, type and subtype, from
+  the MIL-STD-2525D catalog (the `mil-std-2525` package, as OpenStare), point symbols only, with a
+  live preview. **Use symbol** writes both the 2525D SIDC and the matching CoT type, taken from the
+  2525C equivalent in JMSML's 2525C/2525D crosswalk (Apache-2.0, vendored as
+  `ui/src/lib/milsym/crosswalk.json` by `scripts/vendor-symbol-crosswalk.py`). Started from
+  OpenStare's tactical symbol builder; OpenTrack's own copy, without line and area graphics.
+
 - **Track labels on the map** (#79): each track's name, or its track number when it has none.
   Labels that would overlap are left out (more fit as you zoom in); the selected track's is always
   shown. **Track labels** in Map display turns them off. The label font (Noto Sans Medium, SIL OFL

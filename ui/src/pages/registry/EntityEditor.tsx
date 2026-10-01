@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { TbPlus, TbTrash, TbX } from 'react-icons/tb'
+import { TbFlag3, TbPlus, TbTrash, TbX } from 'react-icons/tb'
 import { Badge, Button, DataTable, FieldSelect, Input, SaveButton, useToast, type DataTableColumn } from 'staresdk'
 import {
   AFFILIATIONS,
@@ -16,6 +16,7 @@ import { DetailDrawer } from '../../lib/DetailDrawer'
 import { ago, errorMessage, fmtTime, show } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 import { useCan } from '../../auth/context'
+import { SymbolDesigner } from './SymbolDesigner'
 
 type Revision = EntityView['revisions'][number]
 type LinkedTrack = EntityView['tracks'][number]
@@ -60,8 +61,12 @@ const MINIMUM = [
     options: TRACK_TYPES,
     info: 'Tactical: a real-world track (the default). Live training: a real unit designated for training. Simulated training: made up for an exercise. Demand entry: a real unit receivers should not filter out.',
   },
-  { key: 'cot_type', label: 'CoT type', info: 'Cursor-on-Target type, e.g. a-f-S-C-L. Sets the symbol when no SIDC is given.' },
-  { key: 'sidc', label: 'SIDC', info: 'MIL-STD-2525 symbol code. Leave blank to derive it from the CoT type.' },
+  { key: 'cot_type', label: 'CoT type', info: 'Cursor-on-Target type, e.g. a-f-S-C-L. Sets the symbol when no SIDC is given. The symbol designer (beside SIDC) fills it with the designed symbol\'s type.' },
+  {
+    key: 'sidc',
+    label: 'SIDC',
+    info: 'MIL-STD-2525 symbol code. Leave blank to derive it from the CoT type. The flag button opens the symbol designer: pick the symbol, and it fills this (a 2525D code) and the CoT type.',
+  },
 ] as const
 
 const TRACK_COLUMNS: DataTableColumn<LinkedTrack>[] = [
@@ -198,6 +203,7 @@ export function EntityEditor({
   const { toast, confirm } = useToast()
   const [view, setView] = useState<EntityView | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [designing, setDesigning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -347,14 +353,19 @@ export function EntityEditor({
                   style={{ width: '100%' }}
                 />
               ) : (
-                <Input
-                  id={`entity-${m.key}`}
-                  style={{ ...INPUT, width: '100%', fontFamily: m.key === 'name' ? undefined : 'var(--font-mono)' }}
-                  value={draft.minimum[m.key]}
-                  onChange={(e) => setMin(m.key, e.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
+                <div className="value-row" style={{ flexWrap: 'nowrap' }}>
+                  <Input
+                    id={`entity-${m.key}`}
+                    style={{ ...INPUT, width: '100%', fontFamily: m.key === 'name' ? undefined : 'var(--font-mono)' }}
+                    value={draft.minimum[m.key]}
+                    onChange={(e) => setMin(m.key, e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {m.key === 'sidc' && (
+                    <Button size="xs" variant="secondary" icon={<TbFlag3 />} aria-label="Design the symbol" title="Design the symbol" onClick={() => setDesigning(true)} />
+                  )}
+                </div>
               )}
             </div>
           ))}
@@ -486,6 +497,17 @@ export function EntityEditor({
           </>
         )}
       </div>
+      {designing && (
+        <SymbolDesigner
+          sidc={draft.minimum.sidc}
+          affiliation={draft.minimum.affiliation}
+          onClose={() => setDesigning(false)}
+          onUse={({ sidc, cot }) => {
+            set({ minimum: { ...draft.minimum, sidc, cot_type: cot } })
+            setDesigning(false)
+          }}
+        />
+      )}
     </DetailDrawer>
   )
 }
