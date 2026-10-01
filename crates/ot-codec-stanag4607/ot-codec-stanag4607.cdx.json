@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:5ccd6096-d467-442b-890c-7229c70680d7",
+  "serialNumber": "urn:uuid:cd0293df-de38-4f5d-8ac4-91da800d1d75",
   "metadata": {
-    "timestamp": "2026-09-28T03:43:55.433996293Z",
+    "timestamp": "2026-10-01T19:19:57.696559848Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack-fips/crates/ot-codec-stanag4607#0.3.4",
+      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6",
       "name": "ot-codec-stanag4607",
-      "version": "0.3.4",
+      "version": "0.4.6",
       "description": "STANAG 4607 (Edition 3) GMTI decoder: packets, segments and flattened target records",
       "scope": "required",
-      "purl": "pkg:cargo/ot-codec-stanag4607@0.3.4?download_url=file://.",
+      "purl": "pkg:cargo/ot-codec-stanag4607@0.4.6?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack-fips/crates/ot-codec-stanag4607#0.3.4 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6 bin-target-0",
           "name": "ot_codec_stanag4607",
-          "version": "0.3.4",
-          "purl": "pkg:cargo/ot-codec-stanag4607@0.3.4?download_url=file://.#src/lib.rs"
+          "version": "0.4.6",
+          "purl": "pkg:cargo/ot-codec-stanag4607@0.4.6?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -583,7 +583,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack-fips/crates/ot-codec-stanag4607#0.3.4",
+      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
