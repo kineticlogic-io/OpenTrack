@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **Track labels on the map** (#79): each track's name, or its track number when it has none.
+  Labels that would overlap are left out (more fit as you zoom in); the selected track's is always
+  shown. **Track labels** in Map display turns them off. The label font (Noto Sans Medium, SIL OFL
+  1.1) is served by OpenTrack itself as glyph ranges (`ui/public/map-fonts`, vendored by
+  `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
+
 ### Fixed
 
 - **Track map buttons** sit on a stareSDK `ButtonPalette` (its glass surface), stacked as
