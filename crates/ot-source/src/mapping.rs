@@ -153,6 +153,8 @@ const TARGETS: &[(&str, FieldType)] = &[
     // one-sigma error, and the sensor's range, all optional but the first.
     ("geometry.bearing_deg", FieldType::Number),
     ("geometry.sigma_deg", FieldType::Number),
+    ("geometry.range_m", FieldType::Number),
+    ("geometry.range_sigma_m", FieldType::Number),
     ("geometry.max_range_m", FieldType::Number),
     ("geometry.elevation_deg", FieldType::Number),
     // An area of uncertainty; with no position mapped, its centre is.
@@ -643,6 +645,8 @@ mod tests {
             Some(ot_core::Geometry::Bearing {
                 bearing_deg: 47.5,
                 sigma_deg: 2.0,
+                range_m: None,
+                range_sigma_m: None,
                 max_range_m: None,
                 elevation_deg: None
             })

@@ -5284,6 +5284,8 @@ mod tests {
         o.geometry = Some(ot_core::Geometry::Bearing {
             bearing_deg: b,
             sigma_deg: 1.0,
+            range_m: None,
+            range_sigma_m: None,
             max_range_m: None,
             elevation_deg: None,
         });
@@ -5623,6 +5625,8 @@ mod tests {
                     o.geometry = Some(ot_core::Geometry::Bearing {
                         bearing_deg: (b + 1.5 * normal(&mut unit)).rem_euclid(360.0),
                         sigma_deg: 1.5,
+                        range_m: None,
+                        range_sigma_m: None,
                         max_range_m: Some(60_000.0),
                         elevation_deg: None,
                     });
@@ -6009,6 +6013,8 @@ mod tests {
                 o.geometry = Some(ot_core::Geometry::Bearing {
                     bearing_deg: (b + 2.0 * normal(&mut unit)).rem_euclid(360.0),
                     sigma_deg: 2.0,
+                    range_m: None,
+                    range_sigma_m: None,
                     max_range_m: Some(ESM_RANGE),
                     elevation_deg: None,
                 });

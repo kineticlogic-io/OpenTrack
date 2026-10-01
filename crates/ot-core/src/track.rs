@@ -61,6 +61,10 @@ pub struct BearingContact {
     pub bearing_deg: f64,
     pub sigma_deg: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_sigma_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_range_m: Option<f64>,
     /// Measured bearing minus the bearing to the track, degrees.
     pub residual_deg: f64,
