@@ -3,7 +3,7 @@ import { TbArrowMerge, TbLink, TbLinkOff, TbSearch, TbTrash, TbUsersGroup, TbX }
 import { setWorkerUrl } from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { Badge, Button, CollapsiblePanel, DataTable, FieldSelect, Input, Modal, useToast, type DataTableColumn } from 'staresdk'
-import { MapView, type MapFitTo, type MapLine, type MapPoint } from 'staresdk/map-view'
+import type { MapFitTo, MapLine, MapPoint } from 'staresdk/map-view'
 import { DEFAULT_BEARING_RANGE_M, bearingLine, bearingWedge } from '../../lib/geodesy'
 import { api, type Entity, type TrackRow } from '../../api/client'
 import { ago, errorMessage, fmtNum, STATE_COLOR } from '../../lib/format'
@@ -14,6 +14,7 @@ import { InfoTip } from '../../components/InfoTip'
 import { GroupEditor } from './GroupEditor'
 import { TrackCard } from './TrackCard'
 import { ManagementLog } from './ManagementLog'
+import { TrackMap } from './TrackMap'
 import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
 import { useBasemapTiles } from '../../lib/basemap'
@@ -228,43 +229,56 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, trailOn, trail, here?.[0], here?.[1]])
   const trailColor = row ? affiliationColor(row.affiliation) : undefined
-  // Non-point evidence of the selected track: each bearing as a dashed line
-  // from its sensor out to its maximum range (the track is somewhere on or near
-  // it) with a faint outline of its ±σ wedge, and the outline of its area.
-  const evidence: MapLine[] = useMemo(() => {
-    if (!selTrack || selTrack.uid !== selected) return []
-    const out: MapLine[] = []
+  // Non-point evidence of the selected track, split so operators can independently
+  // hide evidence, sensor positions, and uncertainty.
+  const mapEvidence = useMemo(() => {
+    const evidence: MapLine[] = []
+    const uncertainty: MapLine[] = []
+    const sensors: MapPoint[] = []
+    if (!selTrack || selTrack.uid !== selected) return { evidence, uncertainty, sensors }
+    const sensorIds = new Set<string>()
     for (const b of selTrack.bearings ?? []) {
-      const range = b.max_range_m ?? DEFAULT_BEARING_RANGE_M
+      const range = b.range_m ?? b.max_range_m ?? DEFAULT_BEARING_RANGE_M
       const id = `bearing-${b.source_id}-${b.source_track_key}`
+      if (!sensorIds.has(b.source_id)) {
+        sensorIds.add(b.source_id)
+        sensors.push({
+          id: `sensor-${b.source_id}`,
+          latitude: b.latitude,
+          longitude: b.longitude,
+          color: '#ffd166',
+          label: b.source_id,
+        })
+      }
       if (b.sigma_deg > 0)
-        out.push({
+        uncertainty.push({
           id: `${id}-wedge`,
           coordinates: bearingWedge(b.latitude, b.longitude, b.bearing_deg, b.sigma_deg, range),
-          color: '#d4a017',
-          width: 1,
-          opacity: 0.35,
+          color: '#ffe49a',
+          width: 1.25,
+          opacity: 0.65,
         })
-      out.push({ id, coordinates: bearingLine(b.latitude, b.longitude, b.bearing_deg, range), color: '#d4a017', width: 1.5, dashed: true })
+      evidence.push({ id, coordinates: bearingLine(b.latitude, b.longitude, b.bearing_deg, range), color: '#ffd166', width: 2.5, dashed: true })
     }
-    if (!here) return out
+    if (!here) return { evidence, uncertainty, sensors }
     const g = selTrack.view.geometry
     let ring: [number, number][] = []
     if (g?.type === 'area') ring = g.polygon.map(([lat, lon]): [number, number] => [lon, lat])
     else {
       const e = selTrack.view.uncertainty?.ellipse
-      if (e && e.semi_major_m > 2000) ring = ellipseRing(here[1], here[0], e.semi_major_m, e.semi_minor_m, e.orientation_deg)
+      if (e) {
+        const ellipse = ellipseRing(here[1], here[0], e.semi_major_m, e.semi_minor_m, e.orientation_deg)
+        if (ellipse.length >= 3)
+          uncertainty.push({ id: 'position-uncertainty', coordinates: [...ellipse, ellipse[0]], color: '#ffe49a', width: 1.5, dashed: true })
+      }
     }
-    if (ring.length >= 3) out.push({ id: 'area', coordinates: [...ring, ring[0]], color: trailColor, width: 1.5, dashed: true })
-    return out
+    if (ring.length >= 3) evidence.push({ id: 'area', coordinates: [...ring, ring[0]], color: trailColor, width: 2, dashed: true })
+    return { evidence, uncertainty, sensors }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selTrack, selected, here?.[0], here?.[1], trailColor])
   const lines: MapLine[] = useMemo(
-    () => [
-      ...(trailCoords.length >= 2 ? [{ id: 'history', coordinates: trailCoords, color: trailColor, width: 2.5 }] : []),
-      ...evidence,
-    ],
-    [trailCoords, trailColor, evidence],
+    () => (trailCoords.length >= 2 ? [{ id: 'history', coordinates: trailCoords, color: trailColor, width: 3 }] : []),
+    [trailCoords, trailColor],
   )
   const fitTo: MapFitTo | undefined = useMemo(() => {
     if (!zoom || zoom.uid !== selected) return undefined
@@ -366,10 +380,13 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
       <div className="workspace">
         <CollapsiblePanel title="Track map" badge={rows ? `${points.length.toLocaleString()} shown` : undefined} persistKey="ot.panel.trackmap">
           <div className="workspace-body map">
-            <MapView
+            <TrackMap
               aria-label="Live tracks"
               points={points}
+              sensorPoints={mapEvidence.sensors}
               lines={lines}
+              evidenceLines={mapEvidence.evidence}
+              uncertaintyLines={mapEvidence.uncertainty}
               selectedId={selected || null}
               onSelect={select}
               outlines={OUTLINES}

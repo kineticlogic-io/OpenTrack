@@ -43,6 +43,8 @@ export interface BearingContact {
   longitude: number
   bearing_deg: number
   sigma_deg: number
+  range_m?: number
+  range_sigma_m?: number
   max_range_m?: number
   residual_deg: number
   identifiers?: { scheme: string; value: string }[]
@@ -50,7 +52,15 @@ export interface BearingContact {
 
 /** A bearing or an area instead of a point. */
 export type Geometry =
-  | { type: 'bearing'; bearing_deg: number; sigma_deg: number; max_range_m?: number; elevation_deg?: number }
+  | {
+      type: 'bearing'
+      bearing_deg: number
+      sigma_deg: number
+      range_m?: number
+      range_sigma_m?: number
+      max_range_m?: number
+      elevation_deg?: number
+    }
   | { type: 'area'; polygon: [number, number][] }
 
 export interface Observation {
