@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use ot_source::codec::{Codec, CodecConfig};
 use ot_source::frame::Frame;
 use ot_source::probe::{infer, suggest, suggest_records_path};
-use ot_source::transport::{self, SharedStatus, TransportConfig};
+use ot_source::transport::{self, LinkStatus, SharedStatus, TransportConfig};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -86,7 +86,7 @@ async fn capture(
     proto: Option<transport::ProtoContext>,
     max_frames: usize,
     max_secs: f64,
-) -> (Vec<Frame>, Option<String>) {
+) -> (Vec<Frame>, Option<String>, LinkStatus) {
     let (tx, mut rx) = mpsc::channel::<Frame>(max_frames.max(1));
     let status = SharedStatus::default();
     let t = t.clone();
@@ -110,8 +110,38 @@ async fn capture(
     } else {
         task.abort();
     }
-    let last_error = ended.or_else(|| status.lock().ok().and_then(|s| s.last_error.clone()));
-    (frames, last_error)
+    let link = status.lock().map(|s| s.clone()).unwrap_or_default();
+    let last_error = ended.or_else(|| link.last_error.clone());
+    (frames, last_error, link)
+}
+
+/// What to tell the user when a probe captured no frames and no error explains why.
+fn no_frames_hint(t: &TransportConfig, link: &LinkStatus, secs: f64) -> Option<String> {
+    let stream = matches!(
+        t,
+        TransportConfig::TcpClient { .. } | TransportConfig::TcpServer { .. }
+    );
+    if link.bytes_in > 0 {
+        return Some(format!(
+            "Received {} bytes in {secs:.0} s but no complete frame: check the framing \
+             (Cursor-on-Target streams are framed by the end tag </event>).",
+            link.bytes_in
+        ));
+    }
+    if !link.connected && link.connects == 0 {
+        return Some(format!("Never connected in {secs:.0} s."));
+    }
+    match t {
+        TransportConfig::TcpClient { tls: None, .. } => Some(format!(
+            "Connected, but nothing arrived in {secs:.0} s. The feed may be idle; the port may \
+             need TLS (a TLS server waits silently for a handshake); or it may only take data in \
+             (a TAK Server input port never sends)."
+        )),
+        _ if stream || link.connected => Some(format!(
+            "Connected, but nothing arrived in {secs:.0} s: the feed may be idle, or may only take data in."
+        )),
+        _ => None,
+    }
 }
 
 /// Where a transport reads from, for the audit record (credentials in
@@ -170,8 +200,13 @@ pub async fn probe(
         Ok(p) => p,
         Err(e) => return Err(ApiError::unprocessable(format!("protobuf: {e}"))),
     };
-    let (frames, link_error) = capture(&req.transport, proto, max_frames, max_secs).await;
+    let (frames, link_error, link) = capture(&req.transport, proto, max_frames, max_secs).await;
     let elapsed = started.elapsed().as_secs_f64();
+    let hint = if frames.is_empty() && link_error.is_none() {
+        no_frames_hint(&req.transport, &link, elapsed)
+    } else {
+        None
+    };
     audit_probe(
         &s,
         &admin,
@@ -260,6 +295,8 @@ pub async fn probe(
         "frames": frames.len(),
         "seconds": (elapsed * 10.0).round() / 10.0,
         "link_error": link_error,
+        "bytes_received": link.bytes_in,
+        "hint": hint,
         "decode_errors": decode_errors,
         "last_decode_error": last_decode_error,
         "records": records.len(),
@@ -302,6 +339,42 @@ pub async fn samples(
 mod tests {
     use super::*;
 
+    fn tcp(tls: bool) -> TransportConfig {
+        serde_json::from_value(json!({"type": "tcp_client", "host": "h", "port": 1,
+            "tls": if tls { json!({}) } else { Value::Null }}))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_silent_probe_says_why_it_may_be() {
+        let connected = LinkStatus {
+            connected: true,
+            connects: 1,
+            ..Default::default()
+        };
+        let plain = no_frames_hint(&tcp(false), &connected, 10.0).unwrap();
+        assert!(
+            plain.contains("need TLS") && plain.contains("TAK Server input"),
+            "{plain}"
+        );
+        let tls = no_frames_hint(&tcp(true), &connected, 10.0).unwrap();
+        assert!(
+            tls.starts_with("Connected, but nothing arrived") && !tls.contains("TLS"),
+            "{tls}"
+        );
+        let unframed = LinkStatus {
+            bytes_in: 512,
+            ..connected.clone()
+        };
+        let hint = no_frames_hint(&tcp(false), &unframed, 10.0).unwrap();
+        assert!(
+            hint.contains("512 bytes") && hint.contains("</event>"),
+            "{hint}"
+        );
+        let never = no_frames_hint(&tcp(false), &LinkStatus::default(), 10.0).unwrap();
+        assert_eq!(never, "Never connected in 10 s.");
+    }
+
     #[tokio::test]
     async fn capture_stops_at_the_frame_limit() {
         let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -321,7 +394,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         });
-        let (frames, err) = capture(&t, None, 5, 10.0).await;
+        let (frames, err, _) = capture(&t, None, 5, 10.0).await;
         sender.abort();
         assert_eq!(frames.len(), 5);
         assert!(err.is_none());
@@ -336,7 +409,7 @@ mod tests {
             send_on_connect: None,
             tls: None,
         };
-        let (frames, err) = capture(&t, None, 5, 2.0).await;
+        let (frames, err, _) = capture(&t, None, 5, 2.0).await;
         assert!(frames.is_empty());
         assert!(err.unwrap().contains("connecting"));
     }

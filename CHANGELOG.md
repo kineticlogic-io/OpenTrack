@@ -4,6 +4,14 @@
 
 ### Changed
 
+- **CoT sources are framed by `</event>`.** In the add-source wizard and pipeline designer,
+  choosing Cursor-on-Target XML on a TCP transport (or a TCP transport for it) switches the
+  default line framing to the end tag `</event>`. CoT events arrive back to back, often over
+  several lines, so line framing split them.
+- **A silent probe says why it may be.** A probe that connects but captures nothing now reports
+  the bytes it read and a hint: no bytes (the feed may be idle, the port may need TLS, or it may
+  only take data in, like a TAK Server input), or bytes that never made a frame (check the framing).
+
 - **Registry and Correlation panels fill the page.** The registry table, Correlation's Decisions
   and Suggestions take the height the window has instead of stopping at a fixed height; their
   tables scroll inside. Suggestions stretch beside the settings, so no gap is left above
