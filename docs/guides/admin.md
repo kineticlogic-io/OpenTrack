@@ -1,7 +1,7 @@
 # OpenTrack administrator guide
 
 For the people who install, configure, secure and keep OpenTrack running. The people who work on
-the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.6**.
+the picture day to day have the [operator guide](operator.md). Written for OpenTrack **0.4.7**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI and other documents can link to
 it (in the app: `#help/admin/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses:

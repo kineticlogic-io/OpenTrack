@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.7 (alpha), 2026-10-02
+
+Accreditation POA&M P-32 is closed, so the ASD STIG has no open findings: outbound connections
+log their destination. Non-point contacts close their known limits where an ELNOT links them, and
+acoustic arrays fuse (#27, correlation `correlation-6`). A symbol designer in the entity editor,
+with domain, affiliation, CoT type and SIDC kept in step; track labels on the map; Track
+Management and Sources panels fill the page; and a track manager's designation always applies.
+
 ### Added
 
 - **The entity editor keeps domain, affiliation, CoT type and SIDC in step.** Changing the
@@ -12,7 +20,6 @@
   `scripts/registry/align-symbols.mts` aligns an existing registry the same way through the API
   (a dry run unless `--apply`): it fills the missing code and makes both follow an explicit
   domain and affiliation, never filling a blank one (blank means the feed's).
-
 - **A symbol designer** in the entity editor (Edit on a track's card, or the Registry), #80. The
   flag button beside SIDC opens it: affiliation, then symbol set, entity, type and subtype, from
   the MIL-STD-2525D catalog (the `mil-std-2525` package, as OpenStare), point symbols only, with a
@@ -20,7 +27,6 @@
   2525C equivalent in JMSML's 2525C/2525D crosswalk (Apache-2.0, vendored as
   `ui/src/lib/milsym/crosswalk.json` by `scripts/vendor-symbol-crosswalk.py`). Started from
   OpenStare's tactical symbol builder; OpenTrack's own copy, without line and area graphics.
-
 - **Track labels on the map** (#79): each track's name, or its track number when it has none.
   Labels that would overlap are left out (more fit as you zoom in); the selected track's is always
   shown. **Track labels** in Map display turns them off. The label font (Noto Sans Medium, SIL OFL
@@ -40,14 +46,12 @@
   and ghost fixes from 3 to 0; with ELINT also on five AIS ships, from 7 to 2. No area pairs with
   another object. An emitter whose lines carry no ELNOT, known otherwise only by an ELINT area,
   still keeps two tracks. See `docs/non-point-contacts.md`.
-
 - **Acoustic arrays fuse.** A bearing-only report goes to the track its sensor track's own ranged
   reports are on: an array that measures range now and then has already said which object the
   report is. A new scenario, `acoustic-arrays`, runs the five arrays of the SAPIENT demo against
   five drones (two in formation 80 m apart, one also on radar): every ranged and bearing-only
   report lands on its own drone's track (before: 1,596 of 4,545 ranged reports and 598 of 1,548
   bearings on a track also holding another drone), one track per drone.
-
 - **Track Management and Sources panels fill the page.** The track map and track card stretch side
   by side and share the window's height with the track table, which scrolls inside; the track
   management log follows a scroll below. On Sources, the sources table takes the height the
@@ -69,13 +73,10 @@
 - **The SAPIENT acoustic example no longer maps the node's object id as an identifier.** Each array
   numbers the objects it hears itself, so as an identifier the ids vetoed pairing one drone's
   tracks from several arrays (up to five tracks per drone). It stays the source track key.
-
-
 - **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after
   the entity stage; it now leaves an affiliation the entity set (the entity is the authority), and
   says so in the designer's trace. Before, a designated friend on a feed whose flag was in no list
   became the lists' "otherwise" (unknown).
-
 - **A track manager's designation always applies to the track.** Saving the entity editor opened
   from a track's card pins the entity to that track (identifier `track`), so it applies whatever
   the feeds' reports grade as, and follows the track through merges; the track's own identifiers
@@ -83,12 +84,10 @@
 - **ADS-B designations corroborate.** A report with no name is graded on its callsign (at the
   default broadcast name field), so an aircraft's entity applies when its callsign matches; before,
   every ADS-B match was stale and nothing applied.
-
 - **TAK output types** use the more specific of a track's CoT type and the one its SIDC gives
   (the CoT type on a tie). A 2525D SIDC translates only to identity and symbol set, so an entity
   storing both no longer loses its CoT type's function, and a feed's generic CoT type no longer
   hides a detailed SIDC.
-
 - **Track map buttons** sit on a stareSDK `ButtonPalette` (its glass surface), stacked as
   OpenStare's map controls are, instead of floating transparent over the map.
 
