@@ -283,6 +283,12 @@ impl AppSettings {
     }
 }
 
+/// Whether the notice-and-consent warning is on (and has text).
+pub(crate) async fn warning_enabled(s: &AppState) -> Result<bool, ApiError> {
+    let w = load(s).await?.warning;
+    Ok(w.enabled && !w.text.trim().is_empty())
+}
+
 async fn load(s: &AppState) -> Result<AppSettings, ApiError> {
     let v = s.with_db(|db| db.app_settings()).await?;
     let mut settings: AppSettings = serde_json::from_value(v)
@@ -333,6 +339,7 @@ async fn put_settings(
         actor(&headers),
     );
     s.with_db(move |db| db.put_app_settings(&v, &who)).await?;
+    s.auth.consent.setting_changed();
     get_settings(State(s), u).await
 }
 
@@ -382,7 +389,10 @@ fn stamp() -> String {
 }
 
 /// Every live system track as published (the GOLD fields and attributes),
-/// as GeoJSON or CSV.
+/// as GeoJSON or CSV, marked (see `crate::marking`): GeoJSON with a
+/// top-level `security.marking` and each labelled feature's `marking`
+/// beside its `security` label; CSV with the marking on its first line and
+/// each track's in a `classification` column (empty when unlabelled).
 async fn export_tracks(
     State(s): State<AppState>,
     Query(q): Query<ExportQuery>,
@@ -396,6 +406,10 @@ async fn export_tracks(
             (t, m)
         })
         .collect();
+    // The file's marking: its highest track label, else the banner's.
+    let marking = crate::marking::Marker::load(&s)
+        .await?
+        .file(messages.iter().map(|(t, _)| t.view.security.as_ref()));
     match q.format.as_str() {
         "geojson" => {
             let features: Vec<Value> = messages
@@ -405,6 +419,9 @@ async fn export_tracks(
                     if let Some(p) = props.as_object_mut() {
                         p.remove("lat");
                         p.remove("lon");
+                        if let Some(l) = &t.view.security {
+                            p.insert("marking".into(), json!(l.marking()));
+                        }
                         p.insert("state".into(), json!(t.state));
                         p.insert("confidence".into(), json!(t.confidence()));
                         p.insert(
@@ -423,7 +440,8 @@ async fn export_tracks(
                 })
                 .collect();
             let body = serde_json::to_vec_pretty(
-                &json!({"type": "FeatureCollection", "features": features}),
+                &json!({"type": "FeatureCollection", "security": {"marking": marking},
+                        "features": features}),
             )
             .map_err(|e| ApiError::internal(e.to_string()))?;
             download(
@@ -433,8 +451,14 @@ async fn export_tracks(
             )
         }
         "csv" => {
-            let mut w = csv::Writer::from_writer(Vec::new());
+            let mut w = csv::WriterBuilder::new()
+                .flexible(true)
+                .from_writer(Vec::new());
+            // The file's marking on a line of its own, above the header.
+            w.write_record([&marking])
+                .map_err(|e| ApiError::internal(e.to_string()))?;
             let header = [
+                "classification",
                 "track_id",
                 "name",
                 "class",
@@ -460,6 +484,11 @@ async fn export_tracks(
                     other => other.to_string(),
                 };
                 w.write_record([
+                    t.view
+                        .security
+                        .as_ref()
+                        .map(ot_core::SecurityLabel::marking)
+                        .unwrap_or_default(),
                     m.track_id.clone(),
                     m.name.clone(),
                     m.class.clone(),

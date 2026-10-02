@@ -364,6 +364,87 @@ impl Db {
     }
 }
 
+/// A peer's pinned public key (see `sync_peer_keys`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PeerKey {
+    pub site: String,
+    /// `ed25519:<base64>`, checked by the caller.
+    pub public_key: String,
+    pub pinned_by: String,
+    pub pinned_at_ms: i64,
+}
+
+impl Db {
+    /// Every pinned peer key, by site code.
+    pub fn sync_peer_keys(&self) -> Result<Vec<PeerKey>> {
+        let mut stmt = self.connection().prepare(
+            "SELECT site, public_key, pinned_by, pinned_at_ms FROM sync_peer_keys ORDER BY site",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PeerKey {
+                site: r.get(0)?,
+                public_key: r.get(1)?,
+                pinned_by: r.get(2)?,
+                pinned_at_ms: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Pin (or replace) a peer's key, recorded as a decision with the key
+    /// it replaced.
+    pub fn sync_pin_key(&mut self, site: SiteCode, public_key: &str, actor: &str) -> Result<i64> {
+        self.write(|tx| {
+            let now = now_ms();
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT public_key FROM sync_peer_keys WHERE site = ?1",
+                    [site.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let d = crate::sqlite::Decision::new(actor, "sync_key_pin")
+                .evidence(serde_json::json!({ "site": site.as_str() }))
+                .before(serde_json::json!({ "public_key": before }))
+                .after(serde_json::json!({ "public_key": public_key }));
+            let id = crate::sqlite::record_decision(tx, &d, now)?;
+            tx.execute(
+                "INSERT INTO sync_peer_keys (site, public_key, pinned_by, pinned_at_ms) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(site) DO UPDATE SET public_key = excluded.public_key,
+                     pinned_by = excluded.pinned_by, pinned_at_ms = excluded.pinned_at_ms",
+                params![site.as_str(), public_key, actor, now],
+            )?;
+            Ok(id)
+        })
+    }
+
+    /// Remove a peer's key: its messages are refused from then on. `None`
+    /// when it had none.
+    pub fn sync_unpin_key(&mut self, site: SiteCode, actor: &str) -> Result<Option<i64>> {
+        self.write(|tx| {
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT public_key FROM sync_peer_keys WHERE site = ?1",
+                    [site.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(before) = before else {
+                return Ok(None);
+            };
+            let d = crate::sqlite::Decision::new(actor, "sync_key_remove")
+                .evidence(serde_json::json!({ "site": site.as_str() }))
+                .before(serde_json::json!({ "public_key": before }));
+            let id = crate::sqlite::record_decision(tx, &d, now_ms())?;
+            tx.execute(
+                "DELETE FROM sync_peer_keys WHERE site = ?1",
+                [site.as_str()],
+            )?;
+            Ok(Some(id))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -469,5 +550,30 @@ mod tests {
             Some((id, Some("AAA000000002".to_owned())))
         );
         assert_eq!(db.sync_of_decision(tagged[1] + 1).unwrap(), None);
+    }
+
+    #[test]
+    fn peer_keys_are_pinned_replaced_and_removed_as_decisions() {
+        let mut db = Db::open_in_memory().unwrap();
+        let bbb: SiteCode = "BBB".parse().unwrap();
+        assert!(db.sync_peer_keys().unwrap().is_empty());
+        db.sync_pin_key(bbb, "ed25519:one", "admin").unwrap();
+        db.sync_pin_key(bbb, "ed25519:two", "admin2").unwrap();
+        let keys = db.sync_peer_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].public_key, "ed25519:two");
+        assert_eq!(keys[0].pinned_by, "admin2");
+        assert!(db.sync_unpin_key(bbb, "admin").unwrap().is_some());
+        assert!(db.sync_unpin_key(bbb, "admin").unwrap().is_none());
+        assert!(db.sync_peer_keys().unwrap().is_empty());
+        let ops: Vec<String> = db
+            .connection()
+            .prepare("SELECT op FROM decisions WHERE op LIKE 'sync_key%' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(ops, ["sync_key_pin", "sync_key_pin", "sync_key_remove"]);
     }
 }

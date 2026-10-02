@@ -9,10 +9,23 @@ This covers what goes into an OpenTrack build and how that is checked.
 | Rust crates | `Cargo.lock`, built with `--locked` |
 | UI packages | `ui/package-lock.json`, installed with `npm ci`; the stareSDK tarball is vendored in `ui/vendor` |
 | Forked crates | `third_party/samael` (SAML) and `third_party/rumqttc` (MQTT; FIPS patch). Each has a note on what differs from upstream |
-| Base images | Pinned by digest in the `Dockerfile` |
+| Base images | Pinned by digest in the `Dockerfile` (below) and, for Redis and the development NATS, in `docker-compose.yml` |
 | Go (FIPS module build) | Version and SHA-256 checked in the `Dockerfile` |
 | OpenSSL FIPS provider | Release 3.0.9 source, SHA-256 checked in the `Dockerfile` |
 | CI actions | Pinned by commit SHA in `.github/workflows/*.yml` |
+
+**Base images** (`Dockerfile`):
+
+| Image | Stage | What it is for |
+|---|---|---|
+| `node:22-bookworm-slim` | `ui` | Builds the UI; nothing of it ships |
+| `debian:bookworm-slim` | `openssl-fips` | Builds the OpenSSL 3.0.9 FIPS provider; only `fips.so` and `fipsmodule.cnf` ship |
+| `rust:1-bookworm` | `server` | Builds the binary |
+| `debian:bookworm-slim` | `runtime-libs` | Supplies the shared libraries the binary needs that the runtime base lacks (found with `ldd`: libxmlsec1, libxmlsec1-openssl, libxml2, libxslt, ICU, zlib, liblzma), with their dpkg records and copyright files |
+| `gcr.io/distroless/cc-debian12:nonroot` | runtime | The image itself: glibc, libgcc, libstdc++, OpenSSL 3 (`libssl3`), CA certificates, tzdata. No shell, no package manager |
+
+The libraries copied in keep their Debian package records (`/var/lib/dpkg/status.d/`, as distroless
+records its own), so an image scanner and the SBOM still list them by package and version.
 
 **Moving a base image:** run
 `docker buildx imagetools inspect <image>:<tag>` and replace the digest after
@@ -53,9 +66,12 @@ Publishing a GitHub release runs `.github/workflows/release.yml`, which:
 
 1. Builds the image with BuildKit's SLSA provenance (`mode=max`) and SBOM attestations attached.
 2. Pushes it to the private package `ghcr.io/phornstein/opentrack:<tag>`.
-3. Signs its digest with the project's cosign key. The signature goes to no public transparency
-   log, because the repository is private and a public entry would name it;
-   `.github/cosign/signing-config.json` lists no log. The workflow then verifies the signature.
+3. Signs its digest with `scripts/release/sign-image`: cosign makes the payload, the **OpenSSL
+   3.0.9 FIPS provider** (CMVP #4282, built from the Dockerfile's `openssl-fips` stage) signs it
+   with the project key (ECDSA P-256, SHA-256), and cosign attaches the signature. cosign's own
+   cryptography never touches the key (SC-13). The signature goes to no public transparency log,
+   because the repository is private and a public entry would name it. The script then verifies
+   the signature.
 4. Attaches the two SBOMs and `image-digest.txt` to the release.
 
 **Verify an image:**
@@ -66,13 +82,20 @@ docker buildx imagetools inspect ghcr.io/phornstein/opentrack@<digest> --format 
 ```
 
 **The key:**
-- The public key is `cosign.pub` in the repository.
-- The private key and its password are the repository secrets `COSIGN_PRIVATE_KEY` and
-  `COSIGN_PASSWORD`. The maintainer keeps a backup readable only by them, outside the repository.
-- **Rotate it:** `cosign generate-key-pair`, replace both secrets, commit the new `cosign.pub`,
-  and re-sign the images still supported.
+- The public key is `cosign.pub` in the repository. Releases up to 0.4.4 were signed with an
+  earlier key made by cosign itself: verify those with `cosign-2026-09.pub`.
+- The private key was made inside the FIPS provider (`scripts/release/new-signing-key`) and is
+  kept as encrypted PKCS#8 (AES-256-CBC, PBKDF2-HMAC-SHA-256). It and its password are the
+  repository secrets `RELEASE_SIGNING_KEY` and `RELEASE_SIGNING_PASSWORD`; the maintainer keeps a
+  backup readable only by them, outside the repository.
+- **Rotate it:** `scripts/release/new-signing-key <key.pem> <password-file> cosign.pub`, replace
+  both secrets, keep the old public key beside it for the releases it signed, and re-sign the
+  images still supported with `scripts/release/sign-image`.
 
-The operating-system packages in the image come from Debian bookworm. Scan each release image with
+The operating-system packages in the image come from Debian 12 (bookworm): the distroless base's
+own, and the libraries `runtime-libs` copies in. Rebuild to pick up Debian security updates: the
+`runtime-libs` stage installs the current packages, and moving the distroless digest updates the
+rest. Scan each release image with
 the scanner your accreditation uses (for example `grype` or `trivy`) and keep the report with the
 release.
 

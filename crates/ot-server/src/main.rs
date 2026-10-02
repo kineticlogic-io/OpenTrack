@@ -13,6 +13,7 @@ mod audit_api;
 mod auth;
 mod basemap;
 mod bridge;
+mod cert_status;
 mod config;
 mod config_backup;
 mod control;
@@ -26,7 +27,9 @@ mod history_api;
 mod https;
 mod link;
 mod manage_api;
+mod marking;
 mod metrics;
+mod ocsp;
 mod plugin_cli;
 mod plugins;
 mod plugins_api;
@@ -38,6 +41,7 @@ mod settings_api;
 mod sources;
 mod sync_api;
 mod synthetic;
+mod telemetry;
 mod user_cli;
 mod writer;
 
@@ -190,11 +194,92 @@ struct ServeArgs {
         value_delimiter = ','
     )]
     tls_client_crl: Vec<String>,
+    /// With a client CA: the OCSP responder to ask about client
+    /// certificates instead of the one each names (its authority
+    /// information access URL). Without an answer the CRLs decide; without
+    /// either the certificate is refused.
+    #[arg(long, env = "OT_TLS_CLIENT_OCSP_URL", requires = "tls_client_ca")]
+    tls_client_ocsp_url: Option<String>,
     /// Browsers reach this server over TLS that a proxy in front of it ends
     /// (`1`): session cookies are `Secure` and HSTS is sent, as when this
     /// server serves TLS itself.
     #[arg(long, env = "OT_PUBLIC_TLS", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
     public_tls: bool,
+    /// Also listen here, and serve the admin routes (accounts, settings,
+    /// sources and every other admin change or read) only here: the main
+    /// listener answers them 404. For a management network or loopback.
+    #[arg(long, env = "OT_ADMIN_BIND")]
+    admin_bind: Option<String>,
+    /// The admin listener's own TLS certificate and key (else the main
+    /// listener's).
+    #[arg(long, env = "OT_ADMIN_TLS_CERT")]
+    admin_tls_cert: Option<String>,
+    #[arg(long, env = "OT_ADMIN_TLS_KEY")]
+    admin_tls_key: Option<String>,
+    /// The admin listener's own client CA (else the main listener's). The
+    /// client CRLs are the same for both.
+    #[arg(long, env = "OT_ADMIN_TLS_CLIENT_CA")]
+    admin_tls_client_ca: Option<String>,
+}
+
+/// The admin listener's address and TLS, when `OT_ADMIN_BIND` is set:
+/// checked, with the main listener's certificate, key and client CA for
+/// what it does not set. Call with empty variables already made unset.
+fn admin_listener(
+    args: &ServeArgs,
+    crls: &[String],
+) -> anyhow::Result<Option<(SocketAddr, Option<ot_source::tls::ServerTls>)>> {
+    let Some(bind) = &args.admin_bind else {
+        anyhow::ensure!(
+            args.admin_tls_cert.is_none()
+                && args.admin_tls_key.is_none()
+                && args.admin_tls_client_ca.is_none(),
+            "OT_ADMIN_TLS_CERT, OT_ADMIN_TLS_KEY and OT_ADMIN_TLS_CLIENT_CA need OT_ADMIN_BIND"
+        );
+        return Ok(None);
+    };
+    let bind: SocketAddr = bind
+        .trim()
+        .parse()
+        .with_context(|| format!("OT_ADMIN_BIND {bind:?} is not an address and port"))?;
+    anyhow::ensure!(
+        bind != args.bind,
+        "OT_ADMIN_BIND is the same address as OT_BIND"
+    );
+    anyhow::ensure!(
+        args.admin_tls_cert.is_some() == args.admin_tls_key.is_some(),
+        "OT_ADMIN_TLS_CERT and OT_ADMIN_TLS_KEY go together"
+    );
+    let (cert, key) = match (&args.admin_tls_cert, &args.admin_tls_key) {
+        (Some(c), Some(k)) => (Some(c), Some(k)),
+        _ => (args.tls_cert.as_ref(), args.tls_key.as_ref()),
+    };
+    let client_ca = args
+        .admin_tls_client_ca
+        .clone()
+        .or_else(|| args.tls_client_ca.clone());
+    let tls = match (cert, key) {
+        (Some(cert), Some(key)) => Some(ot_source::tls::ServerTls {
+            cert_file: cert.clone(),
+            key_file: key.clone(),
+            client_ca_file: client_ca,
+            client_cert_optional: true,
+            client_crl_files: if args.tls_client_ca.is_some() || args.admin_tls_client_ca.is_some()
+            {
+                crls.to_vec()
+            } else {
+                Vec::new()
+            },
+        }),
+        _ => {
+            anyhow::ensure!(
+                args.admin_tls_client_ca.is_none(),
+                "OT_ADMIN_TLS_CLIENT_CA needs TLS (OT_ADMIN_TLS_CERT or OT_TLS_CERT)"
+            );
+            None
+        }
+    };
+    Ok(Some((bind, tls)))
 }
 
 #[derive(Debug, Clone, Args)]
@@ -243,16 +328,79 @@ impl EngineArgs {
     }
 }
 
+impl Command {
+    /// The role, as telemetry names it.
+    fn role(&self) -> &'static str {
+        match self {
+            Command::Migrate => "migrate",
+            Command::Serve(_) => "serve",
+            Command::Writer(_) => "writer",
+            Command::Cot(_) => "cot",
+            Command::Sources => "sources",
+            Command::Engine(_) => "engine",
+            Command::Link(_) => "link",
+            Command::Bridge(_) => "bridge",
+            Command::All { .. } => "all",
+            Command::Synthetic(_) => "synthetic",
+            Command::Bench(_) => "bench",
+            Command::Plugin(_) => "plugin",
+            Command::User(_) => "user",
+            Command::Config(_) => "config",
+            Command::Health { .. } => "health",
+            Command::Retire { .. } => "retire",
+        }
+    }
+
+    /// Whether it is a long-running server role (the rest are one-off
+    /// commands, which log to standard error: their output is on
+    /// standard output).
+    fn is_server(&self) -> bool {
+        matches!(
+            self,
+            Command::Serve(_)
+                | Command::Writer(_)
+                | Command::Cot(_)
+                | Command::Sources
+                | Command::Engine(_)
+                | Command::Link(_)
+                | Command::Bridge(_)
+                | Command::All { .. }
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     metrics::mark_start();
-    init_tracing();
-    // FIPS 140-3: the validated module, or nothing runs.
+    // FIPS 140-3: the validated module, or nothing runs. First, so every TLS
+    // connection (OTLP export included) uses it.
     fips::init()?;
+    let cli = Cli::parse();
+    let role = cli.command.role();
+    let telemetry = telemetry::init(role, !cli.command.is_server(), &cli.common);
+    // A site's own list of common passwords sits beside the database.
+    if let Some(dir) = cli.common.sqlite.parent() {
+        auth::password::set_site_dir(if dir.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            dir
+        });
+    }
     tracing::debug!("cryptography: AWS-LC FIPS module in FIPS mode");
     #[cfg(feature = "saml")]
     auth::openssl_fips();
-    let cli = Cli::parse();
+    if cli.command.is_server() {
+        telemetry.report(cli.common.clone());
+    }
+    let result = run(cli).await;
+    if let Err(e) = &result {
+        tracing::error!(role, error = format!("{e:#}"), "stopped");
+    }
+    telemetry.shutdown().await;
+    result
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let common = cli.common;
     match cli.command {
         Command::Migrate => {
@@ -343,15 +491,25 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         &mut args.tls_cert,
         &mut args.tls_key,
         &mut args.tls_client_ca,
+        &mut args.tls_client_ocsp_url,
         &mut args.public_url,
         &mut args.admin_email,
         &mut args.admin_password,
         &mut args.session_secret,
+        &mut args.admin_bind,
+        &mut args.admin_tls_cert,
+        &mut args.admin_tls_key,
+        &mut args.admin_tls_client_ca,
     ] {
         if v.as_deref().is_some_and(|s| s.trim().is_empty()) {
             *v = None;
         }
     }
+    let crls: Vec<String> = std::mem::take(&mut args.tls_client_crl)
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
+    let admin = admin_listener(&args, &crls)?;
     let mut db = common.open_new_db()?;
     plugins::start(&common).await;
     let disabled = args.auth == "off";
@@ -388,32 +546,80 @@ async fn serve(common: Common, mut args: ServeArgs) -> anyhow::Result<()> {
         )),
         common,
     };
-    let listener = tokio::net::TcpListener::bind(args.bind)
-        .await
-        .with_context(|| format!("binding {}", args.bind))?;
     tokio::spawn(metrics::run_sampler(state.clone()));
     tokio::spawn(auth::maintenance::run(state.clone()));
+    let audit_state = state.clone();
     let app = control::router(state, Some(args.ui_dir));
-    if let (Some(cert), Some(key)) = (args.tls_cert, args.tls_key) {
-        let tls = ot_source::tls::ServerTls {
+    let tls = match (args.tls_cert, args.tls_key) {
+        (Some(cert), Some(key)) => Some(ot_source::tls::ServerTls {
             cert_file: cert,
             key_file: key,
             client_ca_file: args.tls_client_ca,
             client_cert_optional: true,
-            client_crl_files: args
-                .tls_client_crl
-                .into_iter()
-                .filter(|p| !p.trim().is_empty())
-                .collect(),
+            client_crl_files: crls,
+        }),
+        _ => None,
+    };
+    // Client certificates' status (OCSP, else the CRLs) is checked after
+    // the handshake, and audited (cert_status).
+    let sink: cert_status::AuditSink = Arc::new(move |e| {
+        let s = audit_state.clone();
+        tokio::spawn(async move { auth::access::audit(&s, e).await });
+    });
+    let ocsp = args.tls_client_ocsp_url;
+    let Some((admin_bind, admin_tls)) = admin else {
+        return listen(args.bind, app, tls, (ocsp, sink), "control plane").await;
+    };
+    // The main listener answers the admin routes 404 (SC-7, SC-2); the
+    // admin listener serves everything.
+    let main = app.clone().layer(axum::Extension(auth::AdminElsewhere));
+    tokio::try_join!(
+        listen(
+            args.bind,
+            main,
+            tls,
+            (ocsp.clone(), sink.clone()),
+            "control plane"
+        ),
+        listen(admin_bind, app, admin_tls, (ocsp, sink), "admin listener"),
+    )?;
+    Ok(())
+}
+
+/// Serve `app` on `bind`, over TLS when `tls` is given (with a client CA,
+/// each client certificate's status checked after the handshake, the
+/// CRLs reloaded when they change), until shutdown.
+async fn listen(
+    bind: SocketAddr,
+    app: axum::Router,
+    tls: Option<ot_source::tls::ServerTls>,
+    (ocsp_url, sink): (Option<String>, cert_status::AuditSink),
+    what: &'static str,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("binding {bind}"))?;
+    if let Some(tls) = tls {
+        // The handshake checks a client certificate's path only; its
+        // status (OCSP, else the CRLs) is checked after (cert_status).
+        let acceptor = https::Acceptor::new(cert_status::handshake_tls(&tls).acceptor()?);
+        let status = match tls.client_ca_file {
+            Some(_) => Some(Arc::new(cert_status::CertStatus::new(
+                &tls,
+                ocsp_url,
+                Some(sink),
+            )?)),
+            None => None,
         };
-        let acceptor = https::Acceptor::new(tls.acceptor()?);
-        if !tls.client_crl_files.is_empty() {
-            tokio::spawn(https::reload_on_crl_change(tls, acceptor.clone()));
+        if let Some(status) = &status
+            && !tls.client_crl_files.is_empty()
+        {
+            tokio::spawn(https::reload_on_crl_change(tls, status.clone()));
         }
-        tracing::info!(addr = %args.bind, "control plane listening (TLS)");
-        return https::serve(listener, app, acceptor, shutdown_signal()).await;
+        tracing::info!(addr = %bind, "{what} listening (TLS)");
+        return https::serve(listener, app, acceptor, status, shutdown_signal()).await;
     }
-    tracing::info!(addr = %args.bind, "control plane listening");
+    tracing::info!(addr = %bind, "{what} listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -496,17 +702,6 @@ fn health(bind: SocketAddr, tls: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_env("OT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if std::env::var("OT_LOG_FORMAT").as_deref() == Ok("json") {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -527,5 +722,86 @@ mod tests {
             panic!("not the health command");
         };
         assert_eq!(tls_cert.as_deref(), Some(""));
+    }
+
+    fn serve_args(args: &[&str]) -> crate::ServeArgs {
+        use clap::Parser;
+        let cli =
+            crate::Cli::try_parse_from(["opentrack", "serve"].iter().chain(args).copied()).unwrap();
+        let crate::Command::Serve(mut a) = cli.command else {
+            panic!("not the serve command");
+        };
+        // As `serve` does: an empty variable is unset.
+        for v in [
+            &mut a.admin_bind,
+            &mut a.admin_tls_cert,
+            &mut a.admin_tls_key,
+            &mut a.admin_tls_client_ca,
+        ] {
+            if v.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                *v = None;
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn the_admin_listener_is_optional_and_checked() {
+        let crls = ["crl.pem".to_owned()];
+        // Empty, as docker compose passes unset variables: no admin listener.
+        let a = serve_args(&["--admin-bind=", "--admin-tls-cert=", "--admin-tls-key="]);
+        assert!(crate::admin_listener(&a, &crls).unwrap().is_none());
+        // Plain, like the main listener.
+        let a = serve_args(&["--admin-bind=127.0.0.1:8091"]);
+        let (bind, tls) = crate::admin_listener(&a, &crls).unwrap().unwrap();
+        assert_eq!(bind.to_string(), "127.0.0.1:8091");
+        assert!(tls.is_none());
+        // The main listener's TLS, CA and CRLs, unless it has its own.
+        let main_tls = [
+            "--tls-cert=m.crt",
+            "--tls-key=m.key",
+            "--tls-client-ca=m-ca.pem",
+            "--admin-bind=127.0.0.1:8091",
+        ];
+        let tls = crate::admin_listener(&serve_args(&main_tls), &crls)
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(tls.cert_file, "m.crt");
+        assert_eq!(tls.client_ca_file.as_deref(), Some("m-ca.pem"));
+        assert_eq!(tls.client_crl_files, crls);
+        let own: Vec<&str> = main_tls
+            .iter()
+            .copied()
+            .chain(["--admin-tls-cert=a.crt", "--admin-tls-key=a.key"])
+            .collect();
+        let tls = crate::admin_listener(&serve_args(&own), &crls)
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(
+            (tls.cert_file.as_str(), tls.key_file.as_str()),
+            ("a.crt", "a.key")
+        );
+        assert_eq!(tls.client_ca_file.as_deref(), Some("m-ca.pem"));
+        // Refused: the main listener's address, a lone certificate, TLS
+        // settings without the listener, a client CA without TLS.
+        for bad in [
+            &["--admin-bind=0.0.0.0:8090"][..],
+            &["--admin-bind=not an address"],
+            &["--admin-bind=127.0.0.1:8091", "--admin-tls-cert=a.crt"],
+            &["--admin-tls-cert=a.crt", "--admin-tls-key=a.key"],
+            &[
+                "--admin-bind=127.0.0.1:8091",
+                "--admin-tls-client-ca=ca.pem",
+            ],
+        ] {
+            assert!(
+                crate::admin_listener(&serve_args(bad), &crls).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 }

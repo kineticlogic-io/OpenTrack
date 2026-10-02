@@ -2,6 +2,291 @@
 
 ## Unreleased
 
+### Added
+
+- **The entity editor keeps domain, affiliation, CoT type and SIDC in step.** Changing the
+  affiliation rewrites both codes' identity; changing the domain to another than the symbol's sets
+  that domain's generic symbol; typing (or designing) a SIDC sets the CoT type, domain and
+  affiliation, and typing a CoT type sets the SIDC (2525D), domain and affiliation, through the
+  2525C/2525D crosswalk. A 2525C SIDC is stored as its 2525D equivalent.
+  `scripts/registry/align-symbols.mts` aligns an existing registry the same way through the API
+  (a dry run unless `--apply`): it fills the missing code and makes both follow an explicit
+  domain and affiliation, never filling a blank one (blank means the feed's).
+
+- **A symbol designer** in the entity editor (Edit on a track's card, or the Registry), #80. The
+  flag button beside SIDC opens it: affiliation, then symbol set, entity, type and subtype, from
+  the MIL-STD-2525D catalog (the `mil-std-2525` package, as OpenStare), point symbols only, with a
+  live preview. **Use symbol** writes both the 2525D SIDC and the matching CoT type, taken from the
+  2525C equivalent in JMSML's 2525C/2525D crosswalk (Apache-2.0, vendored as
+  `ui/src/lib/milsym/crosswalk.json` by `scripts/vendor-symbol-crosswalk.py`). Started from
+  OpenStare's tactical symbol builder; OpenTrack's own copy, without line and area graphics.
+
+- **Track labels on the map** (#79): each track's name, or its track number when it has none.
+  Labels that would overlap are left out (more fit as you zoom in); the selected track's is always
+  shown. **Track labels** in Map display turns them off. The label font (Noto Sans Medium, SIL OFL
+  1.1) is served by OpenTrack itself as glyph ranges (`ui/public/map-fonts`, vendored by
+  `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
+
+### Fixed
+
+- **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after
+  the entity stage; it now leaves an affiliation the entity set (the entity is the authority), and
+  says so in the designer's trace. Before, a designated friend on a feed whose flag was in no list
+  became the lists' "otherwise" (unknown).
+
+- **A track manager's designation always applies to the track.** Saving the entity editor opened
+  from a track's card pins the entity to that track (identifier `track`), so it applies whatever
+  the feeds' reports grade as, and follows the track through merges; the track's own identifiers
+  stay on the entity for its later tracks. The editor says so before saving.
+- **ADS-B designations corroborate.** A report with no name is graded on its callsign (at the
+  default broadcast name field), so an aircraft's entity applies when its callsign matches; before,
+  every ADS-B match was stale and nothing applied.
+
+- **TAK output types** use the more specific of a track's CoT type and the one its SIDC gives
+  (the CoT type on a tie). A 2525D SIDC translates only to identity and symbol set, so an entity
+  storing both no longer loses its CoT type's function, and a feed's generic CoT type no longer
+  hides a detailed SIDC.
+
+- **Track map buttons** sit on a stareSDK `ButtonPalette` (its glass surface), stacked as
+  OpenStare's map controls are, instead of floating transparent over the map.
+
+## 0.4.6 (alpha), 2026-10-01
+
+Reading a TAK Server: CoT framing and probe hints, a guided pipeline filter (to drop OpenTrack's
+own tracks read back), ranged bearings from acoustic arrays, and a clearer track map.
+
+### Added
+
+- **A guided filter builder** in the pipeline designer's Filter stage. Keep only if and Drop if
+  are built from rows of field, test and value, matched all or any. Fields come from the source's
+  stored samples, with an example of each, and any other path can be typed. The tests read as
+  words (is, is one of, starts with, does not contain, is at least, is missing…). The filter's
+  effect on the stored samples shows as you edit ("drops 55, e.g. tms-OTK000058833"). Edit as JSON
+  switches to the raw condition; one the rows cannot show (nested groups, transformed values)
+  opens there.
+- **Ranged bearings** (#74, kitplummer). A bearing observation may carry a measured range and its
+  uncertainty (`range_m`, `range_sigma_m`); a complete polar report becomes a positioned
+  observation with its covariance. SAPIENT decodes RFC 3339 protobuf timestamps. A five-array
+  SAPIENT acoustic demo (`scripts/demo-sapient-acoustic.sh`, `docs/examples/sapient-acoustic-mqtt.json`).
+- **Track map display options** (#74, kitplummer): hide the basemap; dim it; track size;
+  high-contrast tracks with a selection halo; show or hide the selected track's evidence lines,
+  sensor locations and uncertainty; fade the other tracks while one is selected. Kept per browser.
+
+### Changed
+
+- **CoT sources are framed by `</event>`.** In the add-source wizard and pipeline designer,
+  choosing Cursor-on-Target XML on a TCP transport (or a TCP transport for it) switches the
+  default line framing to the end tag `</event>`. CoT events arrive back to back, often over
+  several lines, so line framing split them.
+- **A silent probe says why it may be.** A probe that connects but captures nothing now reports
+  the bytes it read and a hint: no bytes (the feed may be idle, the port may need TLS, or it may
+  only take data in, like a TAK Server input), or bytes that never made a frame (check the framing).
+- **Registry and Correlation panels fill the page.** The registry table, Correlation's Decisions
+  and Suggestions take the height the window has instead of stopping at a fixed height; their
+  tables scroll inside. Suggestions stretch beside the settings, so no gap is left above
+  Decisions. A closed panel keeps its title's height.
+- **The track map** draws bearing lines to their measured range, marks the sensors, always shows
+  the selected track's error ellipse (as uncertainty), and outlines tracks in the theme's colours.
+- **stareSDK** is vendored from OpenStare master (9e148d26), which adds `Select`.
+
+## 0.4.5 (alpha), 2026-09-30
+
+The rest of the accreditation POA&M (#64): the ASD STIG is down to one open item (P-32,
+outbound destination logging), the Container Platform SRG to none.
+
+### Upgrade notes
+
+- **Nodes sign their sync messages** (ICD version 2): 0.4.5 nodes don't talk to earlier ones.
+  Upgrade a swarm together, then pin each peer's public key in Settings → Nodes on every node.
+  Back up `sync.key` (beside the database) with the database.
+- **Listening sources must authenticate their senders**, or carry `"unauthenticated": "accepted"`
+  (every UDP source needs it). An enabled listener without either doesn't start.
+- **External plugins need a secret** (a mutual HMAC handshake); update the plugin to the current
+  SDK, generate a secret in Settings → Plugins, restart the plugin with it. Without a secret only a
+  Unix socket under the data directory is used.
+- **Client certificates are checked by OCSP**, falling back to `OT_TLS_CLIENT_CRL`; with
+  neither, a certificate is refused. Sites whose certificates name no OCSP responder set
+  `OT_TLS_CLIENT_OCSP_URL` or `OT_TLS_CLIENT_CRL`.
+- **Changes made from a browser must come from OpenTrack's page** (CSRF). Behind a proxy that
+  rewrites `Host`, send `X-Forwarded-Host` or set `OT_PUBLIC_URL`.
+- The track CSV export starts with a marking line and a `classification` column.
+- Release images are signed with a new key made in the FIPS module: verify 0.4.5 and later with
+  `cosign.pub`, earlier releases with `cosign-2026-09.pub`.
+
+### Security
+
+- **Markings (P-10):** each labelled track has one portion marking, e.g. `(S//REL TO USA, GBR)`.
+  TAK events carry a `<__security …/>` detail element and remarks that start with it; track, audit,
+  registry and configuration exports are marked; the UI shows each track's marking. Nothing is
+  withheld by clearance.
+- **Listening sources (P-16):** `tcp_server` by mutual TLS, `grpc_server` by mutual TLS or a
+  token, or an explicit, audited risk acceptance shown in red.
+- **FIPS release signing (P-17):** the OpenSSL 3.0.9 FIPS provider signs the cosign payload
+  (`scripts/release/sign-image`).
+- **Admin listener (P-18):** `OT_ADMIN_BIND` serves every admin function on its own address only.
+- **IPv6 multicast (P-19)** for UDP sources and the TAK multicast output.
+- **No inline styles (P-25):** the CSP drops `'unsafe-inline'`; each page gets a style nonce.
+- **OCSP (P-26, #21)** for control-plane client certificates, with the CRLs as fallback.
+- **External plugins (P-28)** prove a shared secret each way on every connection.
+- **Bridge TLS and credentials (P-29)** for `opentrack bridge`.
+- **Signed sync messages (P-30):** Ed25519, keys pinned in Settings → Nodes, replays refused.
+- **CSRF and rate limit (P-31):** a header and Origin check on changes; 20 requests a second
+  (bursts of 100) per account, token or address, 429 beyond.
+
+## 0.4.4 (alpha), 2026-09-30
+
+Closing the accreditation POA&M's 0.4 items (#64): the ASD STIG is down to 7 open items (all
+planned for 0.5.0), the Container Platform SRG to none, and the POA&M to 13 items, four of them
+new from the threat model (P-28 to P-31: external plugin channel, bridge TLS, sync site-code
+trust, CSRF token and API rate limit).
+
+### Upgrade notes
+
+- **`docker-compose.yml` changed** (bridge network, named volume, its own Redis). A node that
+  used host networking follows "Upgrading a host-network deployment" in the admin guide, or keeps
+  host networking with the override it gives.
+- **The image has no shell**: run tools as `docker compose exec opentrack opentrack ...`.
+- New passwords that are common, or built from a common one, are refused.
+
+### Accounts and audit
+
+Closing the accreditation POA&M's account and audit items (#64):
+- **Temporary accounts:** **Temporary** in Settings → Users (or `opentrack user add --temporary`)
+  makes an account that is turned off 72 hours after it is made (fixed), with its sessions and
+  API tokens, audited as `account_disabled` reason `expired` (P-13).
+- **Common passwords refused:** a new password that is one of the 100,000 most common, or whose
+  letters spell one, is refused; a site can add its own list as `common-passwords.txt` in the
+  data directory (P-15).
+- **More in the audit record:** a credential that identifies no one (`access_refused`), a role
+  refusal (`access_denied`), a refused change (`change_refused`), an admin reading accounts,
+  tokens, sign-in settings, the configuration export or the audit record
+  (`read_security_object`), and the first use in an hour of each API token, client certificate
+  and OpenStare identity (`login`). Decisions' audit rows carry the client address (P-01 to P-03).
+- **Access log:** every API request is logged with target `access` (account, method, path,
+  status, address, user agent, referrer, forwarded-for, duration), on standard output and over
+  OpenTelemetry.
+- Scheduled scanning (P-23) is accepted as release-time only: every release image is scanned
+  when it is built.
+
+### Security documentation
+
+The development-process documents the accreditation review found missing (POA&M P-20, P-24,
+P-27):
+- **`SECURITY.md`**: how to report a vulnerability, supported versions (the latest 0.4.x),
+  response targets, and how fixes and advisories are published.
+- **`docs/security/scm-plan.md`**: software configuration management plan: configuration items,
+  branches and branch protection (and the admin bypass while there is one maintainer and no
+  GitHub Actions minutes), versions, the release process, change control, deployed nodes, roles.
+- **`docs/security/threat-model.md`**: STRIDE per interface and trust boundary, with mitigations,
+  residual risk and POA&M items, a data-flow diagram, and a criticality analysis; reviewed each
+  minor release.
+- **`docs/security/coding-standards.md`**: the rules the tools enforce and those checked in review.
+- **Ports, protocols and services**: one table in the admin guide for PPSM registration, linked
+  from the hardening checklist.
+- **Test coverage**: `scripts/coverage.sh` (cargo-llvm-cov over the workspace); the summary is
+  attached to each release. The Rust workspace at 0.4.3: 83.2% of lines, 80.6% of functions.
+- Accreditation package: ASD STIG V-222632, V-222649, V-222653, V-222655, V-222657 and V-222670
+  are not a finding (171 not a finding, 21 open); SSP RA-5(11), SA-4(9), SA-15(3) and CM-9
+  implemented; the POA&M is down to 15 items.
+
+### Deployment
+
+- **The image runs on distroless Debian 12** (`gcr.io/distroless/cc-debian12`, non-root, pinned
+  by digest): no shell and no package manager, and of Debian only glibc, OpenSSL 3, CA
+  certificates and the libraries the binary loads, each still listed by package for scanners.
+  FIPS is unchanged. Command-line tools run as the binary: `docker compose exec opentrack
+  opentrack ...` (POA&M P-22).
+- **`docker-compose.yml` is hardened** (POA&M P-21): a bridge network with only 8090 published
+  (`OT_BIND_PORT`), a named volume for `/data`, memory, CPU and process limits (`OT_MEM_LIMIT`,
+  `OT_CPUS`, `OT_PIDS_LIMIT`), its own Redis on an internal network, and NATS on the host through
+  `host.docker.internal` (`OT_NATS_URL` defaults to `nats://host.docker.internal:4222`).
+- **Upgrading a host-network node:** move `./data` into the volume, drop `OT_BIND`,
+  `OT_DATA_DIR` and `OT_REDIS_URL` from `.env`, and point a `127.0.0.1` NATS URL at
+  `host.docker.internal`. The steps, and an override that keeps host networking, are in the
+  administrator guide under "Upgrading a host-network deployment".
+
+## 0.4.3 (alpha), 2026-09-30
+
+A security release: the fixes from the accreditation review, OpenTelemetry export, and the
+accreditation package.
+
+### Upgrade notes
+
+- **Lockout holds until an admin unlocks the account** (was 15 minutes). If every admin is locked
+  out, run `opentrack user unlock <email>` on the server.
+- **The notice-and-consent warning is enforced by the server**: while it is on, every sign-in
+  must accept it before the API answers (API tokens are not asked). Scripts that sign in with a
+  password should use an API token.
+- **File sources read only under the data directory** (`/data` in the image). A file source that
+  points elsewhere is refused when saved or probed, and doesn't start: move its files under the
+  data directory and edit its path.
+- **Signing out, or closing the browser, ends the session**: the session cookie no longer outlives
+  the browser.
+
+### Security fixes
+
+- Viewers and track managers could list account, API token and sign-in decisions through
+  `/api/v1/decisions`; those are an admin's now (#57).
+- The SAML assertion consumer refuses responses with a DTD or over 256 KB before parsing, and
+  libxml2 parses strictly: no recovery from malformed XML, no network (#58).
+- The session cookie is a browser-session cookie: no `Max-Age` (#59).
+- The notice-and-consent banner: acceptance is kept and enforced on the server and audited
+  (`consent_accepted`); the admins' **Go to Settings** way round it is gone (#60).
+- Server errors answer with a reference and log their detail, instead of returning database and
+  file-system text; `/api/v1/status` gives non-admins up or down only (#61).
+- Source changes are recorded in the decision log and audit record with their credentials masked
+  (the source's revisions keep them) (#62).
+- File transports read only under the data directory, when saved, probed, imported or started;
+  every probe is audited (`probe_source`) (#63).
+- A locked account stays locked until an admin unlocks it (Container Platform SRG AC-7).
+- Signing out says so on the sign-in page.
+- The secret-masking rules moved to `ot-core` (`ot_source::secrets` re-exports them).
+
+The accreditation package is re-evaluated: ASD STIG 165 not a finding, 27 open; Container
+Platform SRG 100 and 21; POA&M 18 items (#64).
+
+### Accreditation package
+
+A generic DoD RMF package for sites taking OpenTrack to an ATO (#20), in `docs/security/ato/`:
+- **SSP narratives** for all 287 NIST SP 800-53 Rev 5 Moderate controls (status and
+  responsibility: OpenTrack, Shared or Site; `[[SITE: ...]]` placeholders).
+- **STIG checklists** (`.ckl`) for the ASD STIG V6R4 (286 rules) and the Container Platform SRG
+  V2R4 (188), every rule evaluated with evidence; site items left Not Reviewed with who answers.
+- **Image scans** per release (`scripts/ato/scan`: Trivy and Grype), starting with v0.4.2.
+- **POA&M** (27 items, Markdown and a CSV with the DoD template's columns).
+- Generated from reviewed sources (`evaluations/`, `ssp/controls.json`, `poam.json`) by
+  `scripts/ato/{checklist,ssp,poam}`.
+- `stig-mapping.md` brought in line with the evaluation: AU-2/3/12, IA-5(1), SC-18, SA-11/RA-5
+  are Partial. Admin guide and hardening guide corrections (API tokens after turning an account
+  off, the first admin's password).
+
+### OpenTelemetry
+
+OpenTrack hands its logs, the audit record included, its traces and its metrics to the
+deployment's OpenTelemetry collector (#50). It is a track management tool: storing, searching
+and alerting on logs belong to the collector and the SIEM behind it.
+
+- **OTLP export**, over gRPC or HTTP, configured with the standard `OTEL_*` variables (endpoint,
+  protocol, CA and client certificate, headers, sampler, export interval, per-signal switches).
+  Off until `OTEL_EXPORTER_OTLP_ENDPOINT` is set; TLS on the FIPS module.
+- **Logs:** every log line, with its fields as attributes. Audit records are log events named
+  `audit.record` (scope `audit`). The audit table, its hash chain, `/api/v1/audit` and
+  `/audit/verify` stay as they are.
+- **Traces:** API requests, source processing and writes, engine batches, writer publishes.
+- **Metrics:** every Overview counter and gauge as `opentrack.<name>`.
+- **Collector outages don't stop anything:** the role logs the failure once and the recovery,
+  `/api/v1/status` gains `telemetry` (not counted in its 503) and **Overview → System status**
+  a Telemetry row. A sign-in that can't be written to the audit table is still refused.
+- The one-off commands (`migrate`, `user`, `config`, `plugin`, `retire`, …) log to standard
+  error, so their output can be piped (#46).
+- Docs: admin guide (OpenTelemetry), `stig-mapping.md` (AU-4, AU-5, AU-6, AU-9(2), AU-11),
+  `hardening.md`.
+
+### Fixes
+
+- A static report that changes a vessel's details ships once `min_interval_secs` allows, not at
+  the next heartbeat (#53).
+
 ## 0.4.2 (alpha), 2026-09-29
 
 ### TAK output

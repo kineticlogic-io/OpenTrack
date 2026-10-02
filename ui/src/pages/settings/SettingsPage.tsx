@@ -8,7 +8,7 @@ import { PluginsSection } from './PluginsPanel'
 import { SecurityPanel } from './SecurityPanel'
 import { TakPanel } from './TakPanel'
 import { UsersPanel } from './UsersPanel'
-import { useCan } from '../../auth/context'
+import { useAuth, useCan } from '../../auth/context'
 import { errorMessage } from '../../lib/format'
 import { INPUT } from '../../lib/valueSpec'
 
@@ -62,6 +62,9 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const admin = useCan('admin')
+  const { user } = useAuth()
+  // An admin on an address that doesn't serve the admin routes (OT_ADMIN_BIND).
+  const adminElsewhere = user?.role === 'admin' && user.admin_api === false
   const [importStatus, setImportStatus] = useState<ConfigImportStatus | null>(null)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
@@ -131,7 +134,19 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
   return (
     <div className="stack">
-      <CollapsiblePanel title="General" persistKey="ot.panel.settings.instance" actions={admin && <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />}>
+      <CollapsiblePanel title="General" persistKey="ot.panel.settings.instance"
+        actions={
+          admin ? (
+            <SaveButton size="sm" dirty={dirty} saving={saving} saved={saved} onSave={save} />
+          ) : (
+            adminElsewhere && (
+              <InfoTip label="Admin address">
+                Admin changes and reads (accounts, security, sources, settings) are made on the admin address, not this one. Your administrator has it.
+              </InfoTip>
+            )
+          )
+        }
+      >
         <div className="panel-body">
           <Row label="Site name" hint="A name for this instance, up to 64 characters, shown in the header and browser tab as OpenTrack · name. Display only: track numbers use the site code.">
             <div className="num-row">
@@ -214,7 +229,7 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
 
       <CollapsiblePanel title="Data" persistKey="ot.panel.settings.data">
         <div className="panel-body">
-          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources.">
+          <Row label="Live tracks" hint="Every live track as published: the GOLD fields, attributes, state, confidence and sources. Each file is marked with the highest security label in it (the banner's classification when none has one), and each labelled track with its own marking.">
             <div className="num-row">
               <Button size="sm" variant="ghost" icon={<TbDownload />} onClick={() => window.open(api.exportUrl('tracks.geojson'), '_self')}>
                 GeoJSON

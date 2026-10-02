@@ -9,7 +9,7 @@
 //! The worker feeds frames in and ships observations out; everything here is
 //! deterministic given its inputs, so it can be replayed in tests and probes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -170,13 +170,15 @@ struct LastWrite {
 }
 
 impl ThrottleSpec {
-    fn due(&self, last: Option<&LastWrite>, obs: &Observation) -> bool {
+    /// `changed`: a static report changed the track's joined details since
+    /// the last write, so it ships as soon as the minimum interval allows.
+    fn due(&self, last: Option<&LastWrite>, obs: &Observation, changed: bool) -> bool {
         let Some(last) = last else { return true };
         let dt = (obs.observed_at - last.at).num_milliseconds() as f64 / 1000.0;
         if dt < self.min_interval_secs {
             return false;
         }
-        if dt >= self.heartbeat_secs {
+        if changed || dt >= self.heartbeat_secs {
             return true;
         }
         self.min_move_m > 0.0
@@ -306,6 +308,8 @@ pub struct Pipeline {
     codec: Codec,
     statics: HashMap<String, StaticEntry>,
     throttle: HashMap<String, LastWrite>,
+    /// Source tracks whose static details changed since their last write.
+    details_changed: HashSet<String>,
     /// Extension field types for the mapping's schema version.
     schema: Option<crate::schema::ExtensionSchema>,
     pub counts: Counts,
@@ -368,6 +372,7 @@ impl Pipeline {
             spec,
             statics: HashMap::new(),
             throttle: HashMap::new(),
+            details_changed: HashSet::new(),
             schema: None,
             counts: Counts::default(),
             default_registry: RegistryStage::default(),
@@ -636,16 +641,18 @@ impl Pipeline {
     fn emit(&mut self, obs: Observation, out: &mut Output, trace: Option<&mut SampleTrace>) {
         if obs.state == Some(ot_core::TrackState::Dropped) {
             self.throttle.remove(&obs.source_track_key);
+            self.details_changed.remove(&obs.source_track_key);
         } else if let Some(t) = &self.spec.throttle {
             let key = obs.source_track_key.clone();
             let last = self.throttle.get(&key);
-            if !t.due(last, &obs) {
+            if !t.due(last, &obs, self.details_changed.contains(&key)) {
                 self.counts.throttled += 1;
                 if let Some(f) = trace {
                     f.dropped("throttle", t.why_not(last, &obs));
                 }
                 return;
             }
+            self.details_changed.remove(&key);
             self.throttle.insert(
                 key,
                 LastWrite {
@@ -735,6 +742,8 @@ impl Pipeline {
                     identifiers: Vec::new(),
                     updated_at: received_at,
                 });
+            let before = entry.fields.clone();
+            let ids_before = entry.identifiers.len();
             merge_over(&mut entry.fields, &m.fields);
             for id in &m.identifiers {
                 if !entry.identifiers.contains(id) {
@@ -742,6 +751,9 @@ impl Pipeline {
                 }
             }
             entry.updated_at = received_at;
+            if entry.fields != before || entry.identifiers.len() != ids_before {
+                self.details_changed.insert(m.key.clone());
+            }
             out.statics.push((m.key.clone(), entry.clone()));
         }
         for m in mapped.into_iter().filter(|m| m.kind.reports()) {
@@ -809,6 +821,11 @@ impl Pipeline {
                 f.item("registry", || obs.clone());
             }
             let grade = matched.as_ref().map_or("none", |m| m.grade.as_str());
+            // An affiliation the entity set stands: the entity is the authority
+            // over the country lists.
+            let entity_affiliation = matched
+                .as_ref()
+                .is_some_and(|m| m.set.iter().any(|f| f == "classification.affiliation"));
             if let Some(m) = matched {
                 let fresh: Vec<(String, Value)> = m
                     .updates
@@ -830,9 +847,14 @@ impl Pipeline {
             }
             *self.counts.grades.entry(grade).or_default() += 1;
             if let Some(stage) = &self.spec.affiliation {
-                stage.run(&mut obs);
+                if !entity_affiliation {
+                    stage.run(&mut obs);
+                }
                 if let Some(f) = trace.as_deref_mut() {
                     f.item("affiliation", || obs.clone());
+                    if entity_affiliation {
+                        f.note("affiliation", "kept the entity's affiliation");
+                    }
                 }
             }
             if let Some(filter) = &self.spec.filter {
@@ -973,6 +995,42 @@ mod tests {
     }
 
     #[test]
+    fn an_affiliation_the_entity_set_outranks_the_country_lists() {
+        let spec: PipelineSpec = serde_json::from_value(json!({
+            "codec": { "type": "json" },
+            "mapping": { "rules": [ { "name": "pos", "key": "id",
+                "identifiers": [ { "scheme": "icao", "value": "id" } ],
+                "fields": { "position.latitude": "lat", "position.longitude": "lon",
+                            "callsign": "cs", "platform.flag": "flag" } } ] },
+            "registry": { "apply": { "classification.affiliation": "affiliation" } },
+            "affiliation": { "country": "platform.flag", "friendly": ["US"], "otherwise": "unknown" }
+        }))
+        .unwrap();
+        let entity = |fields: Value| RegistryEntry {
+            entity_id: "e9".into(),
+            name: Some("LOST56".into()),
+            expected_name: None,
+            fields: serde_json::from_value(fields).unwrap(),
+        };
+        let report =
+            json!({"id": "080010", "lat": 42.0, "lon": -121.0, "cs": "LOST56", "flag": "TZ"});
+        let run = |e: RegistryEntry| {
+            let reg: Reg = [(("icao".into(), "080010".into()), e)].into();
+            let mut p = Pipeline::new("adsb", spec.clone()).unwrap();
+            feed(&mut p, &reg, report.clone()).observations[0]
+                .classification
+                .affiliation
+        };
+        // The entity says friend: the country lists (TZ: unknown) leave it.
+        assert_eq!(
+            run(entity(json!({"affiliation": "friend"}))),
+            Some(ot_core::Affiliation::Friend)
+        );
+        // No affiliation on the entity: the country lists decide.
+        assert_eq!(run(entity(json!({}))), Some(ot_core::Affiliation::Unknown));
+    }
+
+    #[test]
     fn join_registry_affiliation_filter_and_throttle() {
         let reg = reg();
         let mut p = Pipeline::new("ais", spec()).unwrap();
@@ -1045,6 +1103,79 @@ mod tests {
         assert_eq!(c.statics, 1);
         assert_eq!(c.grades.get("exact"), Some(&5));
         assert_eq!(c.grades.get("none"), Some(&1));
+    }
+
+    #[test]
+    fn changed_static_details_ship_before_the_heartbeat() {
+        let reg = reg();
+        let mut p = Pipeline::new("ais", spec()).unwrap();
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:00:00Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        // The same static report again changes nothing: stationary, not due.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE"}),
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:02:00Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        // A new destination: the next report ships, once.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "OAKLAND"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:02:20Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:20Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        // Another change inside the 30 s floor waits for it.
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "SEATTLE"}),
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:40Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
+        feed(
+            &mut p,
+            &reg,
+            json!({"t": "static", "id": 1, "name": "EXAMPLE", "dest": "OAKLAND"}),
+        );
+        assert!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:03:50Z", 32.0))
+                .observations
+                .is_empty()
+        );
+        assert_eq!(
+            feed(&mut p, &reg, pos(1, "2026-09-24T12:04:10Z", 32.0))
+                .observations
+                .len(),
+            1
+        );
     }
 
     #[test]

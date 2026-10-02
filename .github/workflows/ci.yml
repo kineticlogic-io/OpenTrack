@@ -21,6 +21,9 @@ jobs:
       OT_TEST_REDIS_URL: redis://127.0.0.1:6379
       OT_TEST_NATS_URL: nats://127.0.0.1:4222
       OT_TEST_MQTT_URL: mqtt://127.0.0.1:1883
+      # Full debug info for both clippy and test artifacts exhausts the hosted runner disk.
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # samael (SAML SSO) binds to libxmlsec1 at build time.

@@ -6,6 +6,10 @@ const ORDER: Role[] = ['viewer', 'track_manager', 'admin']
 /** Whether `role` is at least `min` (viewer < track manager < admin). */
 export const roleAtLeast = (role: Role | undefined, min: Role) => role != null && ORDER.indexOf(role) >= ORDER.indexOf(min)
 
+/** Whether `user` can do what needs `min` here: the role, and for admin work an address that serves the admin routes. */
+export const canHere = (user: Pick<Me, 'role' | 'admin_api'> | null | undefined, min: Role) =>
+  roleAtLeast(user?.role, min) && !(min === 'admin' && user?.admin_api === false)
+
 export const ROLE_LABEL: Record<Role, string> = { viewer: 'Viewer', track_manager: 'Track manager', admin: 'Admin' }
 
 export interface AuthState {
@@ -35,9 +39,6 @@ export function useAuth(): AuthState {
 export function useCan(min: Role): boolean {
   return useAuth().hasRole(min)
 }
-
-/** sessionStorage key for "accepted the warning" (per account, cleared on sign-out). */
-export const ackKey = (userId: string) => `ot.warn.ack.${userId}`
 
 /** A return path that stays on this site (no scheme, no protocol-relative URL, never /login). */
 export function safeReturnPath(raw: string | null): string {

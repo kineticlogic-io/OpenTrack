@@ -4,10 +4,11 @@
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::auth::{AuthUser, Role};
 use crate::control::{ApiError, AppState};
 
 pub fn routes() -> Router<AppState> {
@@ -23,8 +24,53 @@ struct ListQuery {
     limit: Option<usize>,
 }
 
+/// Decisions any role may list: the picture and its curation, and the
+/// configuration's revisions (sources, schema, correlation, settings; their
+/// secrets are masked for non-admins). Accounts, API tokens, sign-in and
+/// configuration import/export are an admin's: they name accounts and
+/// sessions (ASD V-222500). An operation not listed here is an admin's.
+const TRACK_OPS: &[&str] = &[
+    "create_source",
+    "update_source",
+    "delete_source",
+    "app_settings",
+    "update_settings",
+    "correlation_settings",
+    "publish_schema",
+    "edit_schema_draft",
+    "discard_schema_draft",
+    "registry_import",
+    "create_entity",
+    "import_tracker_profile",
+    "delete_tracker_profile",
+    "configure_plugin",
+    "update_plugin",
+    "delete_plugin",
+    "purge_track_history",
+    "note",
+    "pair_tracks",
+    "unpair_tracks",
+    "delete_track",
+    "merge",
+    "split",
+    "reject_split",
+    "do_not_pair",
+    "create_group",
+    "update_group",
+    "group_members",
+    "dissolve_group",
+    "undo",
+    "delete_history_point",
+    "create_system_track",
+    "retire_system_track",
+    "stale_tracks_deleted",
+    "update_entity",
+    "delete_entity",
+];
+
 async fn list(
     State(s): State<AppState>,
+    user: Option<Extension<AuthUser>>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = q.limit.unwrap_or(100).min(1000);
@@ -34,6 +80,12 @@ async fn list(
             .filter(|o| !o.is_empty())
             .map(str::to_owned)
             .collect();
+    let admin = user.is_none_or(|u| u.role == Role::Admin);
+    if !admin && let Some(op) = ops.iter().find(|o| !TRACK_OPS.contains(&o.as_str())) {
+        return Err(ApiError::forbidden(format!(
+            "only an admin may list `{op}` decisions"
+        )));
+    }
     let rows = s
         .with_db(move |db| {
             let ops: Vec<&str> = ops.iter().map(String::as_str).collect();

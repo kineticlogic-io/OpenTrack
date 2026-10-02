@@ -88,6 +88,7 @@ pub fn export(
     f.site_code = common.site.to_string();
     f.exported_by = actor.into();
     f.notice = NOTICE.into();
+    f.marking = marking(&f);
     f.tracker_profiles = crate::profiles::list(common)
         .0
         .into_iter()
@@ -100,6 +101,24 @@ pub fn export(
             .evidence(json!({ "counts": f.counts() })),
     )?;
     Ok(f)
+}
+
+/// The file's marking (see `crate::marking`): its sources' labels, the
+/// highest of them, with the banner's text standing for an unlabelled
+/// source; the banner's text alone when no source has a label.
+fn marking(f: &ConfigFile) -> String {
+    let labels: Vec<Option<ot_core::SecurityLabel>> = f
+        .sources
+        .iter()
+        .map(|s| {
+            s.spec
+                .get("security")
+                .cloned()
+                .and_then(|l| serde_json::from_value(l).ok())
+        })
+        .collect();
+    crate::marking::Marker::from_saved(&f.app_settings, f.correlation_settings.as_ref())
+        .file(labels.iter().map(Option::as_ref))
 }
 
 /// What configuration this node holds, one line each; empty when it may
@@ -271,6 +290,10 @@ fn check(common: &Common, f: &mut ConfigFile) -> Vec<String> {
         };
         if spec.id != s.id {
             p.push(format!("{at}: its spec's id is {:?}", spec.id));
+            continue;
+        }
+        if let Err(e) = crate::probe::file_allowed(common, &spec.transport) {
+            p.push(format!("{at}: {e}"));
             continue;
         }
         let schema = schemas.get(&spec.pipeline.mapping.schema_version);
@@ -740,7 +763,7 @@ pub fn run(common: &Common, cmd: ConfigCommand) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ot_store::{Db, Decision, PluginWrite, SourceWrite};
 
@@ -748,7 +771,7 @@ mod tests {
     const SCHEMA: &str = include_str!("../../../docs/examples/schema.json");
     const PASSWORD: &str = "correct horse battery";
 
-    fn common(dir: &Path) -> Common {
+    pub(crate) fn common(dir: &Path) -> Common {
         Common {
             sqlite: dir.join("ot.db"),
             redis: "redis://127.0.0.1:9".into(),
@@ -865,6 +888,7 @@ mod tests {
                 wasm: Some((&wasm, &sha)),
                 address: None,
                 grants: &json!({}),
+                secret: None,
             },
             "op:test",
         )
@@ -898,6 +922,29 @@ mod tests {
 
     fn exported(c: &Common, db: &mut Db) -> Vec<u8> {
         serde_json::to_vec_pretty(&export(db, c, "ann@example.org").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_export_is_marked_by_its_sources_labels_else_the_banner() {
+        crate::fips::init().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let c = common(dir.path());
+        let mut db = configured(&c);
+        let mut f = export(&mut db, &c, "ann@example.org").unwrap();
+        // No labels, no banner saved: the default banner text.
+        assert_eq!(f.marking, "UNCLASSIFIED");
+        f.app_settings = json!({"banner": {"text": "CONFIDENTIAL"}});
+        assert_eq!(marking(&f), "CONFIDENTIAL");
+        f.sources[0].spec["security"] = json!({"classification": "SECRET", "sharing": "USA, GBR"});
+        assert_eq!(marking(&f), "(S//REL TO USA, GBR)");
+        let mut second = f.sources[0].clone();
+        second.spec.as_object_mut().unwrap().remove("security");
+        f.sources.push(second);
+        // An unlabelled source counts as the banner's classification.
+        f.app_settings = json!({"banner": {"text": "TOP SECRET"}});
+        f.correlation_settings =
+            Some(json!({"labels": {"classification_order": ["U", "S", "TS"]}}));
+        assert_eq!(marking(&f), "(TS//REL TO USA, GBR)");
     }
 
     #[test]

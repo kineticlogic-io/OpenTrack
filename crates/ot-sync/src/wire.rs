@@ -3,7 +3,8 @@
 //!
 //! Every message is one envelope: who sent it, their clock, and one kind of
 //! body. Integers are big-endian. A message is at most [`MAX_MESSAGE`]
-//! bytes; bodies that hold many items (reports, decisions) are split over
+//! bytes once signed ([`crate::sign`] appends [`crate::sign::TRAILER`]
+//! bytes); bodies that hold many items (reports, decisions) are split over
 //! several messages by the `encode_*` helpers.
 
 use ot_core::{Domain, SiteCode, TrackState, Uid};
@@ -14,9 +15,12 @@ use crate::{Entry, Hlc};
 /// First two bytes of every message.
 pub const MAGIC: [u8; 2] = *b"OT";
 /// Format version; a node drops messages of a version it does not know.
-pub const VERSION: u8 = 1;
-/// Largest message a node sends, in bytes.
+/// Version 2 is version 1 signed (see [`crate::sign`]).
+pub const VERSION: u8 = 2;
+/// Largest message a node sends, signature included, in bytes.
 pub const MAX_MESSAGE: usize = 1024;
+/// Largest message before it is signed.
+pub const MAX_UNSIGNED: usize = MAX_MESSAGE - crate::sign::TRAILER;
 /// Envelope: magic, version, kind, site, clock.
 pub const HEADER: usize = 2 + 1 + 1 + 3 + 8;
 /// A report without its optional parts.
@@ -302,8 +306,8 @@ impl Message {
         Self { site, hlc, body }
     }
 
-    /// The message's bytes. A body may come out larger than
-    /// [`MAX_MESSAGE`]; use the `encode_*` helpers to split long ones.
+    /// The message's bytes, unsigned. A body may come out larger than
+    /// [`MAX_UNSIGNED`]; use the `encode_*` helpers to split long ones.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = W(Vec::with_capacity(128));
         w.0.extend_from_slice(&MAGIC);
@@ -448,7 +452,24 @@ impl Message {
     }
 }
 
-/// Reports in as few messages of at most [`MAX_MESSAGE`] bytes as fit.
+/// The sending site of a signed message, read from its envelope before the
+/// signature is checked (to find the key to check it with). Only magic and
+/// version are checked here.
+pub fn sender(bytes: &[u8]) -> Result<SiteCode, WireError> {
+    let mut r = R(bytes);
+    if r.take(2)? != MAGIC {
+        return Err(WireError::Magic);
+    }
+    let version = r.u8()?;
+    if version != VERSION {
+        return Err(WireError::Version(version));
+    }
+    r.u8()?;
+    r.site()
+}
+
+/// Reports in as few messages as fit in [`MAX_UNSIGNED`] bytes each (so
+/// in [`MAX_MESSAGE`] once signed).
 pub fn encode_reports(site: SiteCode, hlc: Hlc, reports: &[Report]) -> Vec<Vec<u8>> {
     chunks(reports, HEADER + 1, 255, |r| {
         let mut w = W(Vec::new());
@@ -484,7 +505,7 @@ fn chunks<T>(items: &[T], header: usize, most: usize, size: impl Fn(&T) -> usize
     let (mut start, mut len) = (0, header);
     for (i, item) in items.iter().enumerate() {
         let s = size(item);
-        if i > start && (len + s > MAX_MESSAGE || i - start == most) {
+        if i > start && (len + s > MAX_UNSIGNED || i - start == most) {
             out.push(&items[start..i]);
             start = i;
             len = header;
@@ -666,7 +687,7 @@ mod tests {
         assert_eq!(msgs.len(), 4);
         let mut back = Vec::new();
         for m in &msgs {
-            assert!(m.len() <= MAX_MESSAGE, "{}", m.len());
+            assert!(m.len() <= MAX_UNSIGNED, "{}", m.len());
             match Message::decode(m).unwrap().body {
                 Body::Reports(r) => back.extend(r),
                 other => panic!("{other:?}"),

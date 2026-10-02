@@ -6,6 +6,8 @@ import { api, type FieldStat, type ProbeResult, type SourceSpec } from '../../ap
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
 import { MappingStudio } from './MappingStudio'
+import { needsAcceptance } from '../../lib/senderAuth'
+import { SenderAuth } from './SenderAuth'
 import { TransportForm } from './TransportForm'
 
 const STEPS = [
@@ -69,6 +71,7 @@ function connectProblems(spec: SourceSpec): string[] {
     if (!/^https?:\/\/./.test(String(t.url ?? '').trim())) p.push('a URL (http:// or https://)')
     if (!String(t.method ?? '').trim()) p.push('the method to call')
   }
+  if (needsAcceptance(spec)) p.push(t.type === 'udp' ? 'the acceptance of unauthenticated senders (UDP)' : 'sender authentication, or its risk accepted')
   return p
 }
 
@@ -110,7 +113,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
       // Adopt the detected codec settings and the suggested mapping.
       setSpec((s) => ({ ...s, pipeline: { ...s.pipeline, codec: r.codec, mapping: r.suggestion.mapping } }))
       if (r.frames === 0) {
-        toast({ variant: 'warning', message: r.link_error ?? 'No frames arrived within the probe window.' })
+        toast({ variant: 'warning', message: r.link_error ?? r.hint ?? 'No frames arrived within the probe window.' })
       }
     } catch (e) {
       toast({ variant: 'error', title: 'Probe failed', message: errorMessage(e) })
@@ -189,6 +192,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
             onTransport={(transport) => setSpec({ ...spec, transport })}
             onCodec={(codec) => setSpec({ ...spec, pipeline: { ...spec.pipeline, codec } })}
           />
+          <SenderAuth spec={spec} onChange={setSpec} />
           {problems.length > 0 && <span className="muted">Still needed: {problems.join(', ')}.</span>}
         </div>
       )}
@@ -251,6 +255,7 @@ export function AddSourceWizard({ onDone, onCancel }: { onDone: (id: string) => 
                 )}
               </div>
               {probe.link_error && <div className="error-text">{probe.link_error}</div>}
+              {probe.hint && <div className="muted">{probe.hint}</div>}
               {probe.last_decode_error && <div className="error-text">{probe.last_decode_error}</div>}
               <h3 className="subhead">
                 Inferred fields

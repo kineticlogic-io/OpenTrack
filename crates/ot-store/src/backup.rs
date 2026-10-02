@@ -5,8 +5,8 @@
 //! The document carries everything an admin configured here, secrets
 //! included: sources (as stored), output schema versions, correlation,
 //! instance and sign-in settings, accounts with their password hashes and
-//! history, API token records, the registry, plugins (components
-//! included), the track number counters, and (filled by the server, which
+//! history, API token records, the registry, plugins (components and
+//! external plugins' secrets included), the track number counters, and (filled by the server, which
 //! keeps them as files) the tracker profiles imported here. It never
 //! carries the session signing key, sessions, the audit record, the
 //! decision log, the track graph or anything in Redis.
@@ -48,6 +48,10 @@ pub struct ConfigFile {
     /// A reminder that the file holds secrets.
     #[serde(default)]
     pub notice: String,
+    /// The file's security marking: the highest of its sources' labels,
+    /// else the classification banner's text (set by the server).
+    #[serde(default)]
+    pub marking: String,
     pub sources: Vec<SourceEntry>,
     pub schema_versions: Vec<SchemaEntry>,
     /// The saved correlation settings (`null`: never saved, the defaults).
@@ -147,6 +151,9 @@ pub struct Account {
     pub active_since_ms: Option<i64>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
+    /// A temporary account: turned off when this passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
 }
 
 /// An earlier password hash (a new password cannot repeat a recent one).
@@ -201,6 +208,9 @@ pub struct PluginEntry {
     /// Where an external plugin listens.
     #[serde(default)]
     pub address: Option<String>,
+    /// The secret an external plugin shares (or a `${env:NAME}` reference).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
     pub grants: Value,
     pub enabled: bool,
     #[serde(default)]
@@ -380,7 +390,7 @@ impl Db {
                 "SELECT id, email, name, role, active, origin, password_hash,
                         password_changed_at_ms, must_change_password, created_at_ms,
                         updated_at_ms, last_login_at_ms, tokens_valid_from_ms,
-                        locked_until_ms, active_since_ms, disabled_reason
+                        locked_until_ms, active_since_ms, disabled_reason, expires_at_ms
                  FROM users ORDER BY email",
             )?
             .query_map([], |r| {
@@ -402,6 +412,7 @@ impl Db {
                     locked_until_ms: r.get(13)?,
                     active_since_ms: r.get(14)?,
                     disabled_reason: r.get(15)?,
+                    expires_at_ms: r.get(16)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -447,7 +458,7 @@ impl Db {
         let plugins = conn
             .prepare(
                 "SELECT name, runtime, version, manifest, wasm, sha256, address, grants, enabled,
-                        created_at_ms, updated_at_ms
+                        created_at_ms, updated_at_ms, secret
                  FROM plugins ORDER BY name",
             )?
             .query_map([], |r| {
@@ -461,6 +472,7 @@ impl Db {
                     wasm: r.get(4)?,
                     sha256: r.get(5)?,
                     address: r.get(6)?,
+                    secret: r.get(11)?,
                     grants: serde_json::from_str(&grants).unwrap_or_else(|_| json!({})),
                     enabled: r.get(8)?,
                     created_at_ms: r.get(9)?,
@@ -485,6 +497,7 @@ impl Db {
             exported_at: Utc::now(),
             exported_by: String::new(),
             notice: String::new(),
+            marking: String::new(),
             sources,
             schema_versions,
             correlation_settings: self.correlation_settings()?,
@@ -555,8 +568,8 @@ impl Db {
                     "INSERT INTO users (id, email, name, role, active, password_hash, origin,
                          created_at_ms, updated_at_ms, last_login_at_ms, tokens_valid_from_ms,
                          password_changed_at_ms, must_change_password, locked_until_ms,
-                         active_since_ms, disabled_reason)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                         active_since_ms, disabled_reason, expires_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         a.id,
                         a.email.trim(),
@@ -574,6 +587,7 @@ impl Db {
                         a.locked_until_ms,
                         a.active_since_ms,
                         a.disabled_reason,
+                        a.expires_at_ms,
                     ],
                 )?;
                 for h in &a.password_history {
@@ -691,8 +705,8 @@ impl Db {
             for p in &f.plugins {
                 tx.execute(
                     "INSERT INTO plugins (name, runtime, version, manifest, wasm, sha256, address,
-                         grants, enabled, created_at_ms, updated_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         grants, enabled, created_at_ms, updated_at_ms, secret)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         p.name,
                         p.runtime,
@@ -705,6 +719,7 @@ impl Db {
                         p.enabled,
                         if p.created_at_ms > 0 { p.created_at_ms } else { now },
                         now,
+                        p.secret,
                     ],
                 )?;
             }
@@ -792,6 +807,7 @@ mod tests {
                 wasm: Some((b"\0asm", "abc")),
                 address: None,
                 grants: &json!({"memory_mb": 64}),
+                secret: None,
             },
             "op:test",
         )

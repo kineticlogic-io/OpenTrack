@@ -1,4 +1,6 @@
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, Value};
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, Kind, MessageDescriptor, ReflectMessage, Value,
+};
 use serde_json::{Map, Value as JsonValue};
 
 use crate::error::SapientError;
@@ -49,6 +51,10 @@ impl Default for Decoder {
 }
 
 fn message_to_json(msg: &DynamicMessage) -> JsonValue {
+    if msg.descriptor().full_name() == "google.protobuf.Timestamp" {
+        return timestamp_to_json(msg);
+    }
+
     let mut obj = Map::new();
     for (field, val) in msg.fields() {
         let kind = field.kind();
@@ -64,6 +70,27 @@ fn message_to_json(msg: &DynamicMessage) -> JsonValue {
         obj.insert(key.to_owned(), value_to_json(val, &kind));
     }
     JsonValue::Object(obj)
+}
+
+fn timestamp_to_json(msg: &DynamicMessage) -> JsonValue {
+    let Some(seconds_field) = msg.descriptor().get_field_by_name("seconds") else {
+        return JsonValue::Null;
+    };
+    let Some(nanos_field) = msg.descriptor().get_field_by_name("nanos") else {
+        return JsonValue::Null;
+    };
+    let seconds = msg.get_field(&seconds_field);
+    let Value::I64(seconds) = seconds.as_ref() else {
+        return JsonValue::Null;
+    };
+    let nanos = msg.get_field(&nanos_field);
+    let Value::I32(nanos) = nanos.as_ref() else {
+        return JsonValue::Null;
+    };
+
+    chrono::DateTime::from_timestamp(*seconds, (*nanos).max(0) as u32)
+        .map(|timestamp| JsonValue::String(timestamp.to_rfc3339()))
+        .unwrap_or(JsonValue::Null)
 }
 
 fn value_to_json(val: &Value, kind: &Kind) -> JsonValue {
@@ -203,6 +230,11 @@ mod tests {
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         let obj = rec.as_object().unwrap();
+
+        assert_eq!(
+            obj.get("timestamp"),
+            Some(&JsonValue::String("2024-01-15T10:30:00+00:00".into()))
+        );
 
         assert_eq!(
             obj.get("node_id"),

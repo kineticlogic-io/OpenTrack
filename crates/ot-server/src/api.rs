@@ -82,6 +82,7 @@ async fn parse_spec(
 ) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
     let spec: SourceSpec = serde_json::from_value(body)
         .map_err(|e| ApiError::unprocessable(format!("invalid source spec: {e}")))?;
+    crate::probe::file_allowed(&s.common, &spec.transport).map_err(ApiError::unprocessable)?;
     let schema = published_schema(s, spec.pipeline.mapping.schema_version).await?;
     spec.validate_against(schema.as_ref())
         .map_err(|e| ApiError::unprocessable(e.to_string()))?;
@@ -180,6 +181,11 @@ async fn save(
     normalised: Value,
     actor: String,
 ) -> Result<SourceRow, ApiError> {
+    if spec.unauthenticated.is_some() {
+        // The decision records the acceptance; the log says it plainly.
+        tracing::warn!(source = %spec.id, transport = spec.transport.kind(), %actor,
+            "listening source saved with unauthenticated senders accepted");
+    }
     s.with_db(move |db| {
         db.put_source(
             &SourceWrite {
@@ -581,6 +587,7 @@ async fn list_tracks(
                 "state": t.state,
                 "class": m.class,
                 "gold_name": m.name,
+                "marking": t.view.security.as_ref().map(ot_core::SecurityLabel::marking),
                 "domain": m.domain,
                 "affiliation": m.affiliation,
                 "force_code": m.force_code,
@@ -899,6 +906,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_listener_needs_authentication_or_a_recorded_acceptance() {
+        let Some((app, _redis)) = app().await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        publish_example_schema(&app).await;
+        let mut spec: Value =
+            serde_json::from_str(include_str!("../../../docs/examples/gps-udp.json")).unwrap();
+        spec["id"] = json!("udp-auth");
+        let accepted = spec.clone();
+        spec.as_object_mut().unwrap().remove("unauthenticated");
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("UDP cannot carry TLS"),
+            "{body}"
+        );
+        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(accepted)).await;
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        // Moved to mutual TLS, the acceptance goes: a decision whose before
+        // and after (the two revisions) show the change.
+        spec["transport"] = json!({"type": "tcp_server", "bind": "127.0.0.1:0",
+            "tls": {"cert_file": "s.pem", "key_file": "s.key", "client_ca_file": "ca.pem"}});
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/udp-auth", Some(spec)).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let (_, revs) = call(&app, "GET", "/api/v1/sources/udp-auth/revisions", None).await;
+        let rev = |n: i64| {
+            revs["revisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["revision"] == n)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(rev(1)["spec"]["unauthenticated"], "accepted", "{revs}");
+        assert!(rev(2)["spec"].get("unauthenticated").is_none(), "{revs}");
+        assert!(rev(2)["decision_id"].is_i64(), "{revs}");
+        let (_, d) = call(&app, "GET", "/api/v1/decisions?op=update_source", None).await;
+        assert_eq!(d["decisions"][0]["evidence"]["source"], "udp-auth", "{d}");
+    }
+
+    #[tokio::test]
     async fn source_lifecycle_through_the_api() {
         let Some((app, redis)) = app().await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
@@ -1092,7 +1145,7 @@ mod tests {
         // Dry run: a CoT event carrying an ELNOT resolves through the registry.
         let spec = json!({
             "id": "cot-test", "name": "CoT test",
-            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"}, "unauthenticated": "accepted",
             "pipeline": {
                 "codec": {"type": "cot_xml"},
                 "mapping": {"rules": [{"name": "event", "key": "event.@uid",
@@ -1131,7 +1184,7 @@ mod tests {
         };
         let spec = json!({
             "id": "trace-test", "name": "Trace test",
-            "transport": {"type": "udp", "bind": "127.0.0.1:0"},
+            "transport": {"type": "udp", "bind": "127.0.0.1:0"}, "unauthenticated": "accepted",
             "pipeline": {
                 "codec": {"type": "json"},
                 "mapping": {"rules": [{"name": "pos", "key": "id",
@@ -1356,13 +1409,77 @@ mod tests {
         );
         for (uri, starts) in [
             ("/api/v1/export/tracks?format=geojson", "{"),
-            ("/api/v1/export/tracks?format=csv", "track_id,"),
+            (
+                "/api/v1/export/tracks?format=csv",
+                "SECRET\nclassification,track_id,",
+            ),
             ("/api/v1/export/config", "{"),
+            ("/api/v1/audit?format=csv", "SECRET\nseq,"),
+            ("/api/v1/registry/export?format=csv", "SECRET\nentity_id,"),
         ] {
             let (st, bytes) = call_raw(&app, "GET", uri, Vec::new()).await;
             assert_eq!(st, StatusCode::OK, "{uri}");
-            assert!(String::from_utf8_lossy(&bytes).starts_with(starts), "{uri}");
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(text.starts_with(starts), "{uri}: {text}");
         }
+        // A labelled track and an unlabelled one (the banner's SECRET):
+        // the file takes the highest, and each labelled track its own.
+        let track = |n: u64, security: Value| {
+            let t: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+            let obs = serde_json::from_value(json!({
+                "schema_version": 1, "source_id": "ais", "source_track_key": format!("k{n}"),
+                "observed_at": t, "received_at": t, "security": security,
+                "position": { "latitude": 32.68, "longitude": -117.23 }
+            }))
+            .unwrap();
+            let uid = ot_core::Uid::new(ot_core::SiteCode::new("TST").unwrap(), n).unwrap();
+            ot_core::SystemTrack::from_first_observation(uid, obs)
+        };
+        let labelled = track(
+            1,
+            json!({"classification": "UNCLASSIFIED", "restrictions": ["FOUO"], "sharing": "GBR, USA"}),
+        );
+        _redis.put_system_track(&labelled, true).await.unwrap();
+        _redis
+            .put_system_track(&track(2, Value::Null), true)
+            .await
+            .unwrap();
+        let (_, bytes) =
+            call_raw(&app, "GET", "/api/v1/export/tracks?format=csv", Vec::new()).await;
+        let text = String::from_utf8(bytes).unwrap();
+        let mut r = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(text.as_bytes());
+        let rows: Vec<Vec<String>> = r
+            .records()
+            .map(|x| x.unwrap().iter().map(str::to_owned).collect())
+            .collect();
+        assert_eq!(rows[0], ["(S//FOUO/REL TO USA, GBR)"], "{text}");
+        assert_eq!(rows[1][0], "classification");
+        let mut marks: Vec<&str> = rows[2..].iter().map(|r| r[0].as_str()).collect();
+        marks.sort();
+        assert_eq!(marks, ["", "(U//FOUO/REL TO USA, GBR)"]);
+        let (_, bytes) = call_raw(
+            &app,
+            "GET",
+            "/api/v1/export/tracks?format=geojson",
+            Vec::new(),
+        )
+        .await;
+        let g: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(g["security"]["marking"], "(S//FOUO/REL TO USA, GBR)");
+        let f = g["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == labelled.uid.doc_id())
+            .unwrap();
+        assert_eq!(f["properties"]["marking"], "(U//FOUO/REL TO USA, GBR)");
+        assert_eq!(
+            f["properties"]["security"]["classification"],
+            "UNCLASSIFIED"
+        );
         let (st, _) = call(
             &app,
             "POST",

@@ -159,6 +159,7 @@ pub(crate) async fn command_waiting(
     );
     cmd["id"] = json!(id);
     cmd["actor"] = json!(actor(headers));
+    cmd["ip"] = json!(crate::auth::access::current_ip());
     s.redis
         .push_command(&cmd)
         .await

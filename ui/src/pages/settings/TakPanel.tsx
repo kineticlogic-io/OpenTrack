@@ -95,7 +95,7 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
             <span className="muted">s</span>
           </div>
         </Row>
-        <Row label="Remarks" hint="Put the OpenTrack track number and the sources reporting the track in each event's remarks, which TAK users see in the track's details.">
+        <Row label="Remarks" hint="Put the OpenTrack track number and the sources reporting the track in each event's remarks, which TAK users see in the track's details. A track with a security label always has its marking there, on or off.">
           <Toggle value={o.remarks} onChange={(remarks) => setO({ ...o, remarks })} aria-label="Remarks" />
         </Row>
 
@@ -137,17 +137,17 @@ function OutputEditor({ initial, others, onClose, onApply }: { initial: TakOutpu
 
         {d.kind === 'multicast' && (
           <>
-            <Row label="Group" hint="The multicast group, 239.2.3.1 for TAK's SA multicast by default. A unicast IPv4 address also works (one receiver, such as a TAK Server's UDP input). Multicast is never encrypted: anyone on the network can read it.">
+            <Row label="Group" hint="The multicast group: 239.2.3.1 for TAK's SA multicast by default, or an IPv6 group such as ff15::6969. A unicast address works too (one receiver, such as a TAK Server's UDP input). Multicast is never encrypted: anyone on the network can read it.">
               <TextInput label="Group" value={d.group} onChange={(group) => setD({ group })} width={160} />
             </Row>
             <Row label="Port" hint="UDP port, 6969 for TAK's SA multicast.">
               <NumberInput label="Port" value={d.port} onChange={(port) => setD({ port })} min={1} max={65535} />
             </Row>
-            <Row label="TTL" hint="How many routers the datagrams may cross, 1 to 255; 1 keeps them on this network.">
+            <Row label="TTL" hint="How many routers the datagrams may cross, 1 to 255 (the hop limit for IPv6); 1 keeps them on this network.">
               <NumberInput label="TTL" value={d.ttl} onChange={(ttl) => setD({ ttl })} min={1} max={255} width={70} />
             </Row>
-            <Row label="Interface" hint="IPv4 address of this node's network interface to send from, when it has several. Empty: the system's choice (its default route).">
-              <TextInput label="Interface" value={d.interface} onChange={(i) => setD({ interface: i })} placeholder="e.g. 192.168.1.20" width={160} />
+            <Row label="Interface" hint="This node's network interface to send from, when it has several: its IPv4 address for an IPv4 group, its name (eth0) or index for an IPv6 group. Empty: the system's choice (its default route).">
+              <TextInput label="Interface" value={d.interface} onChange={(i) => setD({ interface: i })} placeholder="e.g. 192.168.1.20 or eth0" width={160} />
             </Row>
           </>
         )}

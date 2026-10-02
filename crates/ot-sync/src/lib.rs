@@ -12,6 +12,7 @@ mod hlc;
 mod log;
 mod quality;
 pub mod r2;
+pub mod sign;
 pub mod wire;
 
 pub use hlc::{Clock, Hlc};

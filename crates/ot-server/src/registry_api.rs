@@ -205,8 +205,12 @@ async fn export(
 ) -> Result<Response, ApiError> {
     let format = format_of(&q)?;
     let (all, _) = s.with_db(|db| db.list_entities("", usize::MAX, 0)).await?;
+    // Marked with the banner's text: entities carry no labels.
+    let marking = crate::marking::Marker::load(&s).await?.file([]);
     let bytes = tokio::task::spawn_blocking(move || {
-        registry_sheet::write(&registry_sheet::export(&all), format)
+        let mut sheet = registry_sheet::export(&all);
+        sheet.marking = Some(marking);
+        registry_sheet::write(&sheet, format)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))?

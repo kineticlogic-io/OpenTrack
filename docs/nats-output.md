@@ -167,6 +167,7 @@ Two optional fields carry evidence that isn't a point (see [non-point-contacts.m
 - **`bearings`**: lines of bearing that point at the track, the latest from each sensor. Each gives:
   - the sensor's position (`latitude`, `longitude`);
   - `bearing_deg` (degrees true) and `sigma_deg` (one standard deviation);
+  - measured `range_m` and `range_sigma_m`, if known;
   - `max_range_m`, if known;
   - `residual_deg`: how far the line misses the track;
   - the emitter's `identifiers`, such as an ELNOT.

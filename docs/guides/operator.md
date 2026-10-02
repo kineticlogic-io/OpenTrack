@@ -2,7 +2,7 @@
 
 For track managers and viewers: the people who watch the picture and keep it right. Installing,
 configuring and securing OpenTrack is in the [administrator guide](admin.md). Written for
-OpenTrack **0.4.2**.
+OpenTrack **0.4.6**.
 
 Every section has a short, stable anchor, so the ⓘ tips in the UI can link to it (in the app:
 `#help/operator/<anchor>`). An anchor is the heading's slug, by the rule GitHub uses: lowercase,
@@ -175,18 +175,27 @@ A selected track can also show:
 
 **Zoom to track** (History tab) moves the map to it.
 
+The two buttons at the map's top right hide or show the basemap, and open **Map display**:
+basemap dimming, track size (compact, standard, large), **track labels** (each track's name, or
+its track number when it has none; labels that would overlap are left out, more appear as you
+zoom in, and the selected track's is always shown), high-contrast tracks (an outline round
+each track and a halo round the selected one), and whether to show the selected track's evidence
+lines, its sensors' locations and its uncertainty, and whether to fade the other tracks while one
+is selected. Your choices are kept in this browser.
+
 ### Bearings and areas
 
 Passive sensors (ESM, direction finding) report a line of bearing, not a position; ELINT reports an
 area of uncertainty. OpenTrack fuses them into tracks. On the map, for the selected track only:
-- **Bearing lines:** a dashed gold line from each sensor that currently has a bearing on the track,
-  out along the bearing to the sensor's maximum range (250 km when the sensor doesn't give one),
-  inside a faint outline of its ± error wedge. The track is somewhere on or near each line: several
+- **Bearing lines:** a dashed gold line from each sensor (a gold dot) that currently has a bearing
+  on the track, out along the bearing to the range it measured, else its maximum range (250 km
+  when the sensor doesn't give one), inside a pale outline of its ± error wedge. A sensor that
+  measures range as well as bearing (an acoustic array, say) places the object itself. The track is somewhere on or near each line: several
   lines crossing at the track are a cross-fix, the sensors agreeing on where the emitter is. A line
   that passes well away from the track is weak evidence.
-- **Area:** a dashed outline in the track's colour, for the area an ELINT report gave, or for the
-  track's error ellipse when its long axis is over 2 km. The object is somewhere inside, most likely near
-  the middle.
+- **Area:** a dashed outline in the track's colour, for the area an ELINT report gave. The object
+  is somewhere inside, most likely near the middle.
+- **Uncertainty:** the track's position error ellipse, a pale dashed outline.
 
 The track card's **Bearings** row lists each bearing: sensor, bearing and its error (±), how far
 it misses the track, and any emitter identity (ELNOT). A bearing never moves a track by itself; it
@@ -219,7 +228,8 @@ Tick tracks to act on them ([Managing tracks](#managing-tracks)). **Select shown
 
 ### Track card
 
-The selected track's card. Its head shows the symbol, name and number, and badges:
+The selected track's card. Its head shows the symbol, name and number (after the track's marking,
+when it has one), and badges:
 - **FILTERED** or **NOT PUBLISHED** when consumers don't get it ([Not published](#not-published));
 - its state.
 
@@ -233,6 +243,7 @@ What the track publishes:
 
 | Field | |
 |---|---|
+| Marking | The track's security marking, when its sources carry a label ([Markings](#markings)). |
 | Class-name | The OTH-GOLD class and name, as published. |
 | Force code | The two-digit OTH-GOLD force code, with the domain and affiliation it comes from. |
 | Track type | tactical, live training, simulated training or demand entry. |
@@ -418,10 +429,11 @@ What that changes depends on how the track finds its entity:
   track, by the identifier `track` = its number. Everything you set applies to the track at once,
   whatever reports for it, and follows it through merges. So "mark this radar track hostile" is
   **Edit**, **Affiliation: hostile**, **Save**.
-- **A track with identifiers** (AIS, ADS-B): the entity is found by those identifiers (MMSI, ICAO…),
-  and it speaks for every track that carries them. Its values replace the feed's only for the
-  fields the source's pipeline links from the entity (ask an admin which). To pin this one track
-  instead, add the identifier `track` with the track's number.
+- **A track with identifiers** (AIS, ADS-B): the entity gets those identifiers (MMSI, ICAO…) and
+  is pinned to this track as well. The pin makes it apply to this track at once, whatever its feeds
+  report. The identifiers let the same ship or aircraft's later tracks find it; there its values
+  replace the feed's when the name or callsign it broadcasts corroborates the match, and only for
+  the fields the source's pipeline links from the entity (ask an admin which).
 
 Where an entity's value replaces what a feed reports, the card shows the warning line and the
 table shows **replaced n**.
@@ -461,6 +473,23 @@ The **Track management log** lists track management decisions, newest first: num
 reason, and its status (**undone by #n**, or **undoes #n**). It refreshes every 15 seconds; the
 refresh button reloads it now.
 
+### Markings
+
+A source can carry a security label, and the tracks it reports carry it too. The track card and
+the track table's **Marking** column show it as a portion marking, such as `(U//FOUO)` or
+`(S//ORCON/REL TO USA, GBR)`:
+- the classification (`U`, `C`, `S`, `TS`, or as written, such as `CUI`);
+- after `//`, its restrictions (dissemination controls), separated by `/`;
+- `REL TO` and the countries and organisations it may be released to; `NOFORN` when none.
+
+A track reported by several labelled sources takes the highest classification, every
+restriction, and only the countries all of them release to. No marking means the track's sources
+carry no label: treat it as the system's classification, on the banner.
+
+OpenTrack does not hide tracks by clearance: everyone signed in sees every track. Handle each one
+as its marking says. TAK shows the same marking at the start of the track's remarks, and exported
+files carry it.
+
 ## Export
 
 Anyone can download the picture. **Settings → Data → Live tracks**:
@@ -468,7 +497,11 @@ Anyone can download the picture. **Settings → Data → Live tracks**:
   state, confidence and source tracks.
 - **CSV:** one row per track: track id, name, class, domain, affiliation, force code, track type,
   SIDC, time, latitude, longitude, state, confidence, whether it is published, sources, and the
-  attributes as JSON.
+  attributes as JSON, with each track's marking in a `classification` column first.
+
+Each file is marked: the CSV's first line, above the header, and the GeoJSON's `security.marking`.
+It is the highest marking of the tracks in it, or the banner's classification when none has a
+label. Keep the file as its marking says.
 
 Both include tracks that aren't published (see the `published` column). The registry exports from
 the Registry tab ([Spreadsheets](#spreadsheets)).
@@ -498,7 +531,16 @@ Status:
   - **Class name:** such as the ship or aircraft class.
   - **Domain**, **Affiliation:** blank leaves the feed's value. Together they set the force code.
   - **Track type:** tactical (the default), live training, simulated training, demand entry.
-  - **CoT type**, **SIDC:** the symbol. The SIDC wins; blank, it comes from the CoT type.
+  - **Domain, Affiliation, CoT type, SIDC** follow each other: change the affiliation and both
+    symbol codes take it; change the domain to another than the symbol's and the symbol becomes
+    that domain's generic one; type a SIDC (2525D; a 2525C code is stored as its 2525D equivalent)
+    or a CoT type and the other code, the domain and the affiliation follow.
+  - **CoT type**, **SIDC:** the symbol. The SIDC wins; blank, it comes from the CoT type. The
+    flag button beside SIDC opens the **symbol designer**: choose the affiliation, then the symbol
+    set, entity, type and subtype (MIL-STD-2525D point symbols; no lines or areas), with a live
+    preview. **Use symbol** fills both fields: the 2525D SIDC, and the matching CoT type (from the
+    standard's 2525C equivalent; a symbol with none, such as a control measure, gets its
+    affiliation and dimension only, `a-f-X`).
 - **Status:** active or retired.
 - **Identifiers:** scheme (`mmsi`, `imo`, `icao`, `callsign`, `hull`, `elnot`, `cot-uid`, `track`,
   or any other), value, and the **Name** the track is expected to report under it, which
@@ -562,7 +604,8 @@ appear in TAK (ATAK, WinTAK, iTAK, and TAK Server's users), as the same tracks O
   symbol, an unknown track with no domain an unknown ground symbol. Designating a track here
   changes its symbol in TAK within a few seconds.
 - Its details show course and speed, the position error as its circular error, and (when the admin
-  turned remarks on) the track number and the sources reporting it.
+  turned remarks on) the track number and the sources reporting it. A track with a security label
+  always has its marking at the start of its remarks ([Markings](#markings)).
 - It moves as OpenTrack updates it (at most every few seconds). A track that ends, is deleted or
   merged away, or stops being published disappears from TAK at once. A track that stops
   reporting goes stale in TAK a minute (by default) after its last report and disappears, even

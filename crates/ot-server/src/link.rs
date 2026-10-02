@@ -10,12 +10,20 @@
 //! decisions it holds from each site (`summary`), and a node that hears of
 //! decisions it lacks asks whoever said so (`want`), whichever node made
 //! them.
+//!
+//! Every message is signed with this node's key (`sync.key`, beside the
+//! database) and accepted only if it verifies with the key an admin pinned
+//! for the sender's site code in Settings → Nodes (`docs/sync-icd.md`,
+//! *Signature*). A signed message is accepted once, and only while its clock
+//! is within [`FRESH`] of this node's, so a recorded one cannot be replayed.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use ot_core::SiteCode;
+use ot_sync::sign::{NodeKey, PublicKey, SignError};
 use ot_sync::wire::{self, Body, Kind, Message, Summary, Want};
 use ot_sync::{Entry, Hlc};
 use serde_json::json;
@@ -61,7 +69,23 @@ pub struct LinkCounts {
     pub decisions_out: u64,
     pub wants_in: u64,
     pub wants_out: u64,
+    /// From a trusted site with no key pinned for it.
+    pub no_key: u64,
+    /// Signed with another key, or the signature does not verify.
+    pub bad_signature: u64,
+    /// Clock further than [`FRESH`] from this node's.
+    pub stale: u64,
+    /// Already accepted once.
+    pub replayed: u64,
 }
+
+/// How far a message's clock may be from this node's for it to be
+/// accepted. Nodes' clocks must agree to within this (NTP, GPS); a message
+/// delayed longer is dropped, and what matters is asked for again.
+pub const FRESH: Duration = Duration::from_secs(300);
+/// Refused messages are logged (and, for a bad signature, audited) at most
+/// this often per site.
+const REPORT_EVERY: Duration = Duration::from_secs(60);
 
 /// The link's state, apart from NATS.
 pub struct Link {
@@ -78,6 +102,79 @@ pub struct Link {
     identity: HashMap<(SiteCode, ot_core::Uid), Identity>,
     pub counts: LinkCounts,
     redis: Option<ot_store::RedisStore>,
+    /// This node's signing key.
+    key: NodeKey,
+    /// The keys pinned for peers (Settings → Nodes).
+    keys: HashMap<SiteCode, PublicKey>,
+    /// Signatures accepted within the last [`FRESH`] × 2, when.
+    seen: HashMap<[u8; 16], Instant>,
+    /// When each site's refusals were last logged, and how many since.
+    refused: HashMap<SiteCode, (Instant, u64)>,
+    /// When a bad signature from each site was last audited.
+    audited: HashMap<SiteCode, Instant>,
+}
+
+/// Where this node's signing key lives: `sync.key` beside the database.
+pub fn key_path(common: &Common) -> PathBuf {
+    common
+        .sqlite
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .join("sync.key")
+}
+
+/// This node's signing key, made on first use (in the FIPS module) and kept
+/// in `sync.key`, readable by its owner only. A damaged file is an error,
+/// never silently replaced: that would change the node's identity.
+pub fn load_node_key(common: &Common) -> anyhow::Result<NodeKey> {
+    use anyhow::Context;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as B64;
+    let path = key_path(common);
+    let read = |path: &Path| -> anyhow::Result<NodeKey> {
+        let text = std::fs::read_to_string(path)?;
+        let der = B64
+            .decode(text.trim())
+            .map_err(|_| SignError::BadPrivateKey)?;
+        Ok(NodeKey::from_pkcs8(&der)?)
+    };
+    match read(&path) {
+        Ok(k) => return Ok(k),
+        Err(e)
+            if e.downcast_ref::<std::io::Error>()
+                .is_none_or(|e| e.kind() != std::io::ErrorKind::NotFound) =>
+        {
+            return Err(e).with_context(|| format!("reading {}", path.display()));
+        }
+        Err(_) => {}
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let der = NodeKey::generate()?;
+    // Two roles may start together: only one makes the file, the other
+    // reads it.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    match opts.open(&path) {
+        Ok(mut f) => {
+            use std::io::Write;
+            f.write_all(format!("{}\n", B64.encode(&der)).as_bytes())
+                .with_context(|| format!("writing {}", path.display()))?;
+            tracing::info!(path = %path.display(), "made the sync signing key");
+            Ok(NodeKey::from_pkcs8(&der)?)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            read(&path).with_context(|| format!("reading {}", path.display()))
+        }
+        Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -93,8 +190,8 @@ impl Link {
     pub async fn new(common: Common) -> anyhow::Result<Self> {
         let site = common.site;
         let c = common.clone();
-        let sent = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
-            Ok(c.open_db()?.sync_next_seq(site)? - 1)
+        let (sent, key) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok((c.open_db()?.sync_next_seq(site)? - 1, load_node_key(&c)?))
         })
         .await??;
         let mut link = Self {
@@ -106,6 +203,11 @@ impl Link {
             identity: HashMap::new(),
             counts: LinkCounts::default(),
             redis: None,
+            key,
+            keys: HashMap::new(),
+            seen: HashMap::new(),
+            refused: HashMap::new(),
+            audited: HashMap::new(),
         };
         link.refresh().await?;
         Ok(link)
@@ -127,11 +229,40 @@ impl Link {
         .await?
     }
 
-    /// Reload the settings (peers, on or off).
+    /// Reload the settings (peers, on or off) and the pinned keys.
     pub async fn refresh(&mut self) -> anyhow::Result<()> {
-        let saved = self.db(|db| db.app_settings()).await?;
+        let (saved, pinned) = self
+            .db(|db| Ok((db.app_settings()?, db.sync_peer_keys()?)))
+            .await?;
         self.settings = sync_settings(&saved);
+        self.keys = pinned
+            .into_iter()
+            .filter_map(|k| {
+                let key = k.public_key.parse().ok();
+                if key.is_none() {
+                    tracing::warn!(site = %k.site, "the key pinned for this site is not a key");
+                }
+                Some((k.site.parse().ok()?, key?))
+            })
+            .collect();
+        let now = Instant::now();
+        self.seen
+            .retain(|_, at| now.duration_since(*at) < FRESH * 2);
         Ok(())
+    }
+
+    /// This node's signing key.
+    pub fn key(&self) -> &NodeKey {
+        &self.key
+    }
+
+    /// A message to send, signed: once, whoever it is for.
+    fn out(&self, kind: Kind, to: Option<SiteCode>, bytes: Vec<u8>) -> Out {
+        Out {
+            kind,
+            to,
+            bytes: self.key.sign(bytes),
+        }
     }
 
     async fn redis(&mut self) -> anyhow::Result<ot_store::RedisStore> {
@@ -150,11 +281,7 @@ impl Link {
             let n = batch.len();
             outs.extend(batch.into_iter().filter_map(|bytes| {
                 let kind = bytes.get(3).copied().and_then(kind_of)?;
-                Some(Out {
-                    kind,
-                    to: None,
-                    bytes,
-                })
+                Some(self.out(kind, None, bytes))
             }));
             if n < 500 {
                 return Ok(outs);
@@ -181,11 +308,7 @@ impl Link {
         self.counts.decisions_out += entries.len() as u64;
         Ok(wire::encode_decisions(site, self.now_hlc(), &entries)
             .into_iter()
-            .map(|bytes| Out {
-                kind: Kind::Decision,
-                to: None,
-                bytes,
-            })
+            .map(|bytes| self.out(Kind::Decision, None, bytes))
             .collect())
     }
 
@@ -216,17 +339,42 @@ impl Link {
                 reporting: 0,
             }),
         );
-        Ok(Out {
-            kind: Kind::Summary,
-            to: None,
-            bytes: m.encode(),
-        })
+        Ok(self.out(Kind::Summary, None, m.encode()))
     }
 
     /// Handle a message another node sent; returns what to send back.
     pub async fn handle(&mut self, bytes: &[u8]) -> anyhow::Result<Vec<Out>> {
         self.counts.received += 1;
-        let m = match Message::decode(bytes) {
+        let site = match wire::sender(bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                self.counts.unreadable += 1;
+                tracing::debug!(error = %e, "unreadable sync message");
+                return Ok(Vec::new());
+            }
+        };
+        if site == self.common.site {
+            return Ok(Vec::new());
+        }
+        if !self.trusted(site) {
+            self.counts.untrusted += 1;
+            return Ok(Vec::new());
+        }
+        let Some(key) = self.keys.get(&site).copied() else {
+            self.counts.no_key += 1;
+            self.refuse(site, "no key is pinned for this site in Settings → Nodes");
+            return Ok(Vec::new());
+        };
+        let plain = match key.verify(bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                self.counts.bad_signature += 1;
+                self.refuse(site, &e.to_string());
+                self.audit_bad_signature(site, &e).await;
+                return Ok(Vec::new());
+            }
+        };
+        let m = match Message::decode(plain) {
             Ok(m) => m,
             Err(e) => {
                 self.counts.unreadable += 1;
@@ -234,11 +382,17 @@ impl Link {
                 return Ok(Vec::new());
             }
         };
-        if m.site == self.common.site {
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        if m.hlc.ms().abs_diff(now_ms) > FRESH.as_millis() as u64 {
+            self.counts.stale += 1;
+            self.refuse(site, "its clock is more than 5 minutes from this node's");
             return Ok(Vec::new());
         }
-        if !self.trusted(m.site) {
-            self.counts.untrusted += 1;
+        let sig: [u8; 16] = bytes[bytes.len() - ot_sync::sign::SIGNATURE..][..16]
+            .try_into()
+            .expect("verified messages carry a signature");
+        if self.seen.insert(sig, Instant::now()).is_some() {
+            self.counts.replayed += 1;
             return Ok(Vec::new());
         }
         let returning = self
@@ -248,22 +402,54 @@ impl Link {
         let mut outs = Vec::new();
         if returning {
             // A node new to this one (or back): ask for its whole picture.
-            outs.push(Out {
-                kind: Kind::Want,
-                to: Some(m.site),
-                bytes: Message::new(
-                    self.common.site,
-                    self.now_hlc(),
-                    Body::Want(Want {
-                        decisions: Vec::new(),
-                        snapshot: true,
-                    }),
-                )
-                .encode(),
-            });
+            let want = Message::new(
+                self.common.site,
+                self.now_hlc(),
+                Body::Want(Want {
+                    decisions: Vec::new(),
+                    snapshot: true,
+                }),
+            );
+            outs.push(self.out(Kind::Want, Some(m.site), want.encode()));
         }
         outs.extend(self.dispatch(m).await?);
         Ok(outs)
+    }
+
+    /// Log a refused message, at most every [`REPORT_EVERY`] per site.
+    fn refuse(&mut self, site: SiteCode, why: &str) {
+        let now = Instant::now();
+        let (at, n) = self.refused.entry(site).or_insert((now - REPORT_EVERY, 0));
+        *n += 1;
+        if now.duration_since(*at) >= REPORT_EVERY {
+            tracing::warn!(site = %site, refused = *n, reason = why, "sync messages refused");
+            *at = now;
+            *n = 0;
+        }
+    }
+
+    /// A trusted site's message that fails its signature may be someone
+    /// else using its name: audit it, at most every [`REPORT_EVERY`].
+    async fn audit_bad_signature(&mut self, site: SiteCode, e: &SignError) {
+        if self
+            .audited
+            .get(&site)
+            .is_some_and(|at| at.elapsed() < REPORT_EVERY)
+        {
+            return;
+        }
+        self.audited.insert(site, Instant::now());
+        let event =
+            ot_store::audit::AuditEvent::new(format!("sync:{site}"), "sync_signature_refused")
+                .failure()
+                .detail(json!({
+                    "site": site.as_str(),
+                    "error": e.to_string(),
+                    "refused_so_far": self.counts.bad_signature,
+                }));
+        if let Err(err) = self.db(move |db| db.audit(&event)).await {
+            tracing::warn!(error = %format!("{err:#}"), "refused sync message not audited");
+        }
     }
 
     async fn dispatch(&mut self, m: Message) -> anyhow::Result<Vec<Out>> {
@@ -421,11 +607,7 @@ impl Link {
                 snapshot: false,
             }),
         );
-        Ok(vec![Out {
-            kind: Kind::Want,
-            to: Some(from),
-            bytes: m.encode(),
-        }])
+        Ok(vec![self.out(Kind::Want, Some(from), m.encode())])
     }
 
     /// Send `to` the decisions it asked for that this node holds.
@@ -441,11 +623,7 @@ impl Link {
         Ok(
             wire::encode_decisions(self.common.site, self.now_hlc(), &entries)
                 .into_iter()
-                .map(|bytes| Out {
-                    kind: Kind::Decision,
-                    to: Some(to),
-                    bytes,
-                })
+                .map(|bytes| self.out(Kind::Decision, Some(to), bytes))
                 .collect(),
         )
     }
@@ -489,7 +667,12 @@ pub async fn run(
         .subscribe(format!("{}.in.>", args.sync_prefix))
         .await?;
     let mut link = Link::new(common).await?;
-    tracing::info!(prefix = %args.sync_prefix, enabled = link.enabled(), "link running");
+    tracing::info!(
+        prefix = %args.sync_prefix,
+        enabled = link.enabled(),
+        key = %link.key().public().fingerprint_text(),
+        "link running"
+    );
     let send = |outs: Vec<Out>| {
         let client = client.clone();
         let prefix = args.sync_prefix.clone();
@@ -562,4 +745,127 @@ pub async fn run(
     let _ = tokio::time::timeout(Duration::from_secs(2), client.flush()).await;
     tracing::info!(counts = ?link.counts, "link stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A link for site `site` on a throwaway database (no Redis: summaries
+    /// need only the database), trusting `peers`.
+    async fn link(site: &str, peers: &[&str]) -> (Link, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut common = crate::config_backup::tests::common(dir.path());
+        common.site = site.parse().unwrap();
+        let v = json!({ "sync": { "enabled": true, "peers": peers } });
+        common
+            .open_db()
+            .unwrap()
+            .put_app_settings(&v, "test")
+            .unwrap();
+        (Link::new(common).await.unwrap(), dir)
+    }
+
+    fn pin(to: &Link, site: &str, key: &PublicKey) {
+        let site: SiteCode = site.parse().unwrap();
+        to.common
+            .open_db()
+            .unwrap()
+            .sync_pin_key(site, &key.to_string(), "admin")
+            .unwrap();
+    }
+
+    fn audited(l: &Link) -> i64 {
+        l.common
+            .open_db()
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM audit WHERE op = 'sync_signature_refused'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_key_is_made_once_and_kept_private() {
+        let (a, _d) = link("AAA", &[]).await;
+        let again = load_node_key(&a.common).unwrap();
+        assert_eq!(again.public(), a.key().public());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(key_path(&a.common))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A damaged key is an error, not a new identity.
+        std::fs::write(key_path(&a.common), "not a key").unwrap();
+        assert!(load_node_key(&a.common).is_err());
+    }
+
+    #[tokio::test]
+    async fn only_signed_fresh_messages_from_pinned_keys_are_accepted() {
+        let (a, _da) = link("AAA", &["BBB"]).await;
+        let (mut b, _db) = link("BBB", &["AAA", "CCC"]).await;
+        let (c, _dc) = link("CCC", &["BBB"]).await;
+        let summary = a.summary().await.unwrap();
+
+        // Trusted, but no key pinned yet (as after an upgrade).
+        b.handle(&summary.bytes).await.unwrap();
+        assert_eq!(b.counts.no_key, 1);
+
+        // Pinned: accepted, and B (new to A) asks for A's picture.
+        pin(&b, "AAA", &a.key().public());
+        pin(&b, "CCC", &c.key().public());
+        b.refresh().await.unwrap();
+        let back = b.handle(&summary.bytes).await.unwrap();
+        assert_eq!(back.len(), 1);
+        assert!(b.heard.contains_key(&"AAA".parse().unwrap()));
+
+        // The same message again is a replay.
+        assert!(b.handle(&summary.bytes).await.unwrap().is_empty());
+        assert_eq!(b.counts.replayed, 1);
+
+        // A changed byte, or C claiming to be A: refused and audited once.
+        let mut tampered = a.summary().await.unwrap().bytes;
+        tampered[16] ^= 1;
+        b.handle(&tampered).await.unwrap();
+        let mut forged = c.summary().await.unwrap().bytes;
+        forged[4..7].copy_from_slice(b"AAA");
+        b.handle(&forged).await.unwrap();
+        assert_eq!(b.counts.bad_signature, 2);
+        assert_eq!(audited(&b), 1);
+
+        // A site not trusted at all, and a message with no signature.
+        let (d, _dd) = link("DDD", &[]).await;
+        b.handle(&d.summary().await.unwrap().bytes).await.unwrap();
+        assert_eq!(b.counts.untrusted, 1);
+        let plain = Message::new(
+            a.common.site,
+            a.now_hlc(),
+            Body::Summary(Summary::default()),
+        )
+        .encode();
+        b.handle(&plain).await.unwrap();
+        assert_eq!(b.counts.bad_signature, 3);
+
+        // Signed properly but recorded long ago: stale.
+        let old = Message::new(
+            a.common.site,
+            Hlc::new(a.now_hlc().ms() - 600_000, 0),
+            Body::Summary(Summary::default()),
+        );
+        b.handle(&a.key().sign(old.encode())).await.unwrap();
+        assert_eq!(b.counts.stale, 1);
+
+        // Version 1 (unsigned, from before the upgrade) is unreadable.
+        let mut v1 = plain.clone();
+        v1[2] = 1;
+        b.handle(&v1).await.unwrap();
+        assert_eq!(b.counts.unreadable, 1);
+    }
 }

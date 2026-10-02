@@ -5,6 +5,7 @@ import type { SourceRow } from '../api/client'
 export function sourceState(s: SourceRow): { label: string; color: BadgeColor } {
   if (!s.enabled) return { label: 'disabled', color: 'grey' }
   if (!s.status) return { label: 'starting', color: 'warning' }
+  if (s.status.not_started) return { label: 'not started', color: 'danger' }
   if (s.status.link.connected) return { label: 'running', color: 'success' }
   return { label: s.status.link.errors > 0 ? 'failing' : 'connecting', color: s.status.link.errors > 0 ? 'danger' : 'warning' }
 }
@@ -12,7 +13,8 @@ export function sourceState(s: SourceRow): { label: string; color: BadgeColor } 
 /** What each source state means, for an info tip. */
 export const SOURCE_STATES_INFO =
   'disabled: switched off, not running. starting: enabled, its worker has not reported yet. running: connected (or listening) and reading. ' +
-  'connecting: not connected yet, no errors so far. failing: not connected and its link has hit errors; it keeps retrying. See the error on its Status tab.'
+  'connecting: not connected yet, no errors so far. failing: not connected and its link has hit errors; it keeps retrying. ' +
+  'not started: the worker refuses to run it as configured (a listener that does not authenticate its senders, say). See the error on its Status tab.'
 
 /** What each pipeline counter means, for an info tip. */
 export const PIPELINE_COUNTS_INFO =

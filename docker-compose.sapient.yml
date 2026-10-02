@@ -3,13 +3,13 @@
 #
 # Usage:
 #   docker compose -f docker-compose.sapient.yml up -d
-#   # Wait ~10s for OpenTrack API, then:
-#   ./scripts/demo-sapient.sh
+#   ./scripts/demo-sapient-acoustic.sh
 #
 # OpenTrack UI: http://localhost:8090. Sign-in is on: sign in as the first admin
-# (admin@opentrack.local) with the temporary password in data-sapient/initial-admin.txt,
-# then choose a new one.
-# SAPIENT source appears in Sources; detections flow in every 2s.
+# (admin@opentrack.local) with the temporary password in
+# data-sapient-acoustic/initial-admin.txt, then choose a new one.
+# Five SAPIENT acoustic sources appear in Sources; OpenTrack positions their
+# ranged detections and retains the original bearing evidence.
 
 services:
   mosquitto:

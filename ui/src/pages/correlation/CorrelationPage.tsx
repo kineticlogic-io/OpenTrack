@@ -7,6 +7,7 @@ import { errorMessage, fmtTime } from '../../lib/format'
 import { SettingsForm } from './SettingsForm'
 import { InfoTip } from '../../components/InfoTip'
 import { useCan } from '../../auth/context'
+import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
 
 const REFRESH_MS = 5000
 const STATUSES = [{ name: 'open' }, { name: 'accepted' }, { name: 'rejected' }, { name: 'expired' }, { name: 'all' }]
@@ -34,6 +35,9 @@ const OP_COLOR: Record<string, 'blue' | 'success' | 'warning' | 'danger' | 'grey
   correlation_settings: 'blue',
 }
 
+// A closed panel in the top row keeps its title's height instead of stretching to its neighbour.
+const CLOSED_IN_ROW = { alignSelf: 'start' } as const
+
 /**
  * Correlation: the engine's pairing and split suggestions for an operator to accept or reject,
  * the settings it correlates with, and the decisions it and operators have made.
@@ -53,6 +57,9 @@ export default function CorrelationPage() {
   const [saved, setSaved] = useState(false)
   const [decisions, setDecisions] = useState<DecisionRow[] | null>(null)
   const [picked, setPicked] = useState<number | null>(null)
+  const [suggestionsOpen, setSuggestionsOpen] = usePanelOpen('ot.panel.suggestions')
+  const [settingsOpen, setSettingsOpen] = usePanelOpen('ot.panel.correlationSettings')
+  const [decisionsOpen, setDecisionsOpen] = usePanelOpen('ot.panel.correlationDecisions')
 
   const loadSuggestions = useCallback(
     () => api.suggestions(status).then((r) => setSuggestions(r.suggestions), (e) => toast({ variant: 'error', title: 'Suggestions', message: errorMessage(e) })),
@@ -195,12 +202,14 @@ export default function CorrelationPage() {
   const open = suggestions?.filter((s) => s.status === 'open').length ?? 0
 
   return (
-    <div className="panels tight">
+    <div className="panels tight fill-page">
       <div className="correlation-top">
         <CollapsiblePanel
           title="Suggestions"
           badge={status === 'open' && open ? String(open) : undefined}
-          persistKey="ot.panel.suggestions"
+          open={suggestionsOpen}
+          onOpenChange={setSuggestionsOpen}
+          style={suggestionsOpen ? undefined : CLOSED_IN_ROW}
           titleActions={
             <div className="title-tools">
               <FieldSelect ariaLabel="Suggestion status" fields={STATUSES} value={status} onChange={(v) => setStatus(v ?? 'open')} style={{ width: 120 }} />
@@ -213,13 +222,13 @@ export default function CorrelationPage() {
             </div>
           }
         >
-          <div className="panel-body">
+          <div className="panel-body fill">
             <DataTable
               aria-label="Suggestions"
               columns={columns}
               rows={suggestions ?? []}
               rowKey={(s) => String(s.id)}
-              maxHeight={420}
+              maxHeight="none"
               empty={
                 suggestions === null
                   ? 'LOADING…'
@@ -232,7 +241,9 @@ export default function CorrelationPage() {
         </CollapsiblePanel>
         <CollapsiblePanel
           title="Settings"
-          persistKey="ot.panel.correlationSettings"
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          style={settingsOpen ? undefined : CLOSED_IN_ROW}
           titleActions={
             <div className="title-tools">
               {version && <span className="mono muted">{version}</span>}
@@ -262,7 +273,9 @@ export default function CorrelationPage() {
       </div>
       <CollapsiblePanel
         title="Decisions"
-        persistKey="ot.panel.correlationDecisions"
+        open={decisionsOpen}
+        onOpenChange={setDecisionsOpen}
+        style={decisionsOpen ? FILL_PANEL : undefined}
         titleActions={
           <InfoTip label="Decisions">
             The latest 200 correlation decisions, by the engine or an operator; click one for its evidence. pair: a source track joined a
@@ -272,7 +285,7 @@ export default function CorrelationPage() {
           </InfoTip>
         }
       >
-        <div className="panel-body">
+        <div className="panel-body fill">
           <DataTable
             aria-label="Correlation decisions"
             columns={decisionColumns}
@@ -280,7 +293,7 @@ export default function CorrelationPage() {
             rowKey={(d) => String(d.id)}
             selectedKey={picked === null ? null : String(picked)}
             onRowClick={(d) => setPicked(d.id === picked ? null : d.id)}
-            maxHeight={360}
+            maxHeight="none"
             empty={decisions === null ? 'LOADING…' : 'No correlation decisions yet.'}
           />
           {pickedDecision && (

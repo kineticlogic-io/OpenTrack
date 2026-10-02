@@ -1,5 +1,6 @@
 /target
 /data
+/data-sapient*/
 node_modules
 /ui/dist
 *.db

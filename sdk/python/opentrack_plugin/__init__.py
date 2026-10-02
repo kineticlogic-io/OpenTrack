@@ -24,9 +24,9 @@ Subclass the kinds you provide and describe them in a Plugin:
 Then either run it as an external plugin, with whatever it imports (numpy,
 Stone Soup, a GPU):
 
-    python nearest.py serve --address 127.0.0.1:47300
+    OT_PLUGIN_SECRET=<secret> python nearest.py serve --address 127.0.0.1:47300
 
-and add `127.0.0.1:47300` in Settings -> Plugins; or, if it is plain
+and add `127.0.0.1:47300` with that secret in Settings -> Plugins; or, if it is plain
 Python, build it into a WebAssembly component that runs sandboxed inside
 OpenTrack:
 
@@ -204,14 +204,18 @@ def main(plugin: Plugin, argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve", help="serve the plugin over a socket (an external plugin)")
     s.add_argument("--address", default="127.0.0.1:47300", help="host:port or unix:/path")
+    s.add_argument(
+        "--secret-file",
+        help="a file holding the secret shared with OpenTrack (default: the OT_PLUGIN_SECRET variable)",
+    )
     sub.add_parser("describe", help="print the manifest")
     b = sub.add_parser("build", help="build a WebAssembly component (plain Python only)")
     b.add_argument("-o", "--output", required=True)
     args = ap.parse_args(argv)
     if args.cmd == "serve":
-        from opentrack_plugin.external import serve
+        from opentrack_plugin.external import load_secret, serve
 
-        serve(plugin, args.address)
+        serve(plugin, args.address, load_secret(args.secret_file))
     elif args.cmd == "describe":
         print(json.dumps(plugin.describe(), indent=2))
     else:

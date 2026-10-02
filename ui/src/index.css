@@ -330,6 +330,30 @@ body {
   align-items: start;
 }
 
+/* A page whose panels take the height left over (Registry, Correlation): an open panel with
+   FILL_PANEL grows, and its body (.panel-body.fill) gives the space to its table, which scrolls.
+   A short window scrolls the page instead of squeezing the table below its minimum. */
+.fill-page {
+  min-height: 100%;
+}
+
+.panel-body.fill {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* The table's rows never size the panel: it takes the body's height and scrolls inside. */
+.panel-body.fill > .ui-data-table {
+  flex: 1 1 0;
+  min-height: 120px;
+  contain: size;
+}
+
+/* Anything under the table (a note, a decision's evidence) keeps its own height. */
+.panel-body.fill > :not(.ui-data-table) {
+  flex-shrink: 0;
+}
+
 /* A denser page (Track Database, on operator direction): panels 8px apart instead of 16. */
 .panels.tight,
 .panels.tight .workspace {
@@ -346,6 +370,62 @@ body {
 .workspace-body.map {
   overflow: hidden;
   padding: 0;
+}
+
+.track-map {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+}
+
+.track-map__canvas {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
+}
+
+.track-map__controls {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-sm);
+  right: var(--space-sm);
+}
+
+/* The display options panel over the map: stareSDK controls in label/control rows. */
+.track-map__menu {
+  position: absolute;
+  z-index: 3;
+  top: var(--space-sm);
+  /* Beside the palette (an xs button, 28px, plus the palette's padding). */
+  right: calc(var(--space-sm) + 48px);
+  display: flex;
+  width: min(260px, calc(100% - 16px));
+  padding: var(--space-md);
+  flex-direction: column;
+  gap: var(--space-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-deep);
+}
+
+.track-map__menu .subhead {
+  margin-bottom: 2px;
+}
+
+.track-map__row {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.track-map__row--stacked {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 /* The baseball card: symbol and name over the card's tabs. */
@@ -592,7 +672,12 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 440px);
   gap: var(--space-sm);
-  align-items: start;
+  /* Suggestions stretch to the settings beside them (a closed panel keeps its title's height). */
+  align-items: stretch;
+}
+
+.correlation-top .panel-body.fill {
+  min-height: 280px;
 }
 
 @media (max-width: 1100px) {
@@ -792,3 +877,33 @@ body {
 /* Settings → Security labels: the classification order, dragged into place. */
 .label-order { display: flex; flex-direction: column; gap: var(--space-sm); max-width: 420px; }
 .label-rank { width: 1.5em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* The filter builder's rows: field, test, value, remove. */
+.condition-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: var(--space-xs);
+  align-items: center;
+}
+
+.condition-match {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* The symbol designer's preview: the symbol over its 2525D SIDC and CoT type. */
+.symbol-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
+}
+
+.symbol-designer {
+  gap: var(--space-md);
+}

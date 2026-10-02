@@ -4,6 +4,7 @@
   "description": "A surveillance radar's plots, one frame per scan, formed into tracks by the tracker stage. The scenario builder sets the tracker.",
   "reports": "detections",
   "transport": {"type": "udp", "bind": "127.0.0.1:47101"},
+  "unauthenticated": "accepted",
   "pipeline": {
     "codec": {"type": "json", "records": "plots"},
     "mapping": {

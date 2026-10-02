@@ -8,6 +8,7 @@
 pub mod geometry;
 pub mod gold;
 pub mod schema;
+pub mod secrets;
 pub mod sidc;
 pub mod track;
 pub mod uid;

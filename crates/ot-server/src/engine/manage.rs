@@ -334,8 +334,12 @@ impl Engine {
         f: impl FnOnce(&mut ot_store::Db) -> ot_store::sqlite::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
         let c = self.common.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<T> { Ok(f(&mut *c.open_db()?)?) })
-            .await?
+        let ip = crate::auth::access::current_ip().filter(|ip| !ip.is_empty());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<T> {
+            let mut db = c.open_db()?;
+            Ok(ot_store::audit::with_client(ip, || f(&mut db))?)
+        })
+        .await?
     }
 
     fn group_spec(cmd: &Value) -> anyhow::Result<GroupSpec> {

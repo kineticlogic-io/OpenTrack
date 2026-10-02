@@ -249,6 +249,25 @@ struct Logged {
 }
 
 thread_local! {
+    /// The client address of the request this thread works for, stamped on
+    /// the audit copy of each decision it records (AU-3).
+    static CLIENT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `ip` as the client address of the decisions it records.
+pub fn with_client<R>(ip: Option<String>, f: impl FnOnce() -> R) -> R {
+    let before = CLIENT.with(|c| c.replace(ip));
+    let r = f();
+    CLIENT.with(|c| *c.borrow_mut() = before);
+    r
+}
+
+/// The client address set by [`with_client`] on this thread.
+pub(crate) fn client() -> Option<String> {
+    CLIENT.with(|c| c.borrow().clone())
+}
+
+thread_local! {
     /// Rows appended in the transaction running on this thread.
     static PENDING: std::cell::RefCell<Vec<Logged>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -272,14 +291,18 @@ fn log_detail(detail: &str, decision_id: Option<i64>) -> String {
 
 /// After a transaction: every audit row it appended goes to the server
 /// log (target `audit`) when it committed, and is forgotten when not. The
-/// log then carries the whole record for a SIEM (`OT_LOG_FORMAT=json`).
+/// log then carries the whole record for a SIEM: on standard output
+/// (`OT_LOG_FORMAT=json`) and over OTLP, event name `audit.record`.
 pub(crate) fn log_pending(committed: bool) {
     let rows = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if !committed {
         return;
     }
     for r in rows {
+        // Named, so an OpenTelemetry collector can route audit records
+        // (the log record's event name) apart from the other logs.
         tracing::info!(
+            name: "audit.record",
             target: "audit",
             seq = r.seq,
             actor = %r.actor,

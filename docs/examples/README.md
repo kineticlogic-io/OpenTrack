@@ -10,6 +10,7 @@ any feed is built into OpenTrack; each is reproduced from these files alone.
 | [`stanag4607.json`](stanag4607.json) | TCP client, framed by a length field in the packet header | STANAG 4607 codec plugin | Real GMTI: every dwell target a detection with a ground error ellipse from the radar geometry, a GNN tracker timed by the revisit rate it measures (`auto_timing`) with an existence model, the sensor platform as its own friendly track (a `track` rule that bypasses the tracker, symbol from the platform type). Stream recordings with `scripts/benchmark/replay/gmti-rebroadcast.py` |
 | [`gps-udp.json`](gps-udp.json) | UDP | JSON | A GPS track feed (live training), as `scripts/benchmark/replay/gmti-gps-replay.py` sends an exercise's GPS logs alongside its GMTI |
 | [`autoferry/`](autoferry) | UDP | JSON | The Autoferry demo: a vessel track feed and lidar and radar detections through GNN and MHT trackers (`scripts/benchmark/replay/autoferry-replay.py`) |
+| [`sapient-acoustic-mqtt.json`](sapient-acoustic-mqtt.json) | MQTT subscriber | SAPIENT BSI Flex 335 v2.0 protobuf | One fixed acoustic array; `scripts/demo-sapient-acoustic.sh` creates all five sources and maps their ranged detections, with bearings-only reports left available for cross-fixing |
 
 ## Using them
 

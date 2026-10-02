@@ -54,6 +54,9 @@ impl Format {
 /// Rows of text under a header.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Sheet {
+    /// The file's marking, on a row of its own above the header (see
+    /// `crate::marking`); read back when a sheet has one.
+    pub marking: Option<String>,
     pub header: Vec<String>,
     pub rows: Vec<Vec<String>>,
 }
@@ -142,14 +145,23 @@ pub fn export(entities: &[Entity]) -> Sheet {
             row
         })
         .collect();
-    Sheet { header, rows }
+    Sheet {
+        marking: None,
+        header,
+        rows,
+    }
 }
 
 /// Write a sheet as a file of `format`.
 pub fn write(sheet: &Sheet, format: Format) -> Result<Vec<u8>, String> {
     match format {
         Format::Csv => {
-            let mut w = csv::Writer::from_writer(Vec::new());
+            let mut w = csv::WriterBuilder::new()
+                .flexible(true)
+                .from_writer(Vec::new());
+            if let Some(m) = &sheet.marking {
+                w.write_record([m]).map_err(|e| e.to_string())?;
+            }
             w.write_record(&sheet.header).map_err(|e| e.to_string())?;
             for row in &sheet.rows {
                 w.write_record(row).map_err(|e| e.to_string())?;
@@ -162,19 +174,29 @@ pub fn write(sheet: &Sheet, format: Format) -> Result<Vec<u8>, String> {
             let ws = book.add_worksheet();
             ws.set_name(SHEET_NAME).map_err(|e| e.to_string())?;
             let bold = Style::new().set_bold();
+            let mut top = 0;
+            if let Some(m) = &sheet.marking {
+                // In the sheet, and at the top and bottom of every printed page.
+                ws.write_string_with_format(0, 0, m, &bold)
+                    .map_err(|e| e.to_string())?;
+                let print = format!("&C{}", m.replace('&', "&&"));
+                ws.set_header(&print);
+                ws.set_footer(&print);
+                top = 1;
+            }
             for (c, h) in sheet.header.iter().enumerate() {
-                ws.write_string_with_format(0, c as u16, h, &bold)
+                ws.write_string_with_format(top, c as u16, h, &bold)
                     .map_err(|e| e.to_string())?;
             }
             for (r, row) in sheet.rows.iter().enumerate() {
                 for (c, v) in row.iter().enumerate() {
                     // Everything as text: identifiers such as MMSIs must keep
                     // their digits exactly.
-                    ws.write_string((r + 1) as u32, c as u16, v)
+                    ws.write_string(top + 1 + r as u32, c as u16, v)
                         .map_err(|e| e.to_string())?;
                 }
             }
-            ws.set_freeze_panes(1, 0).map_err(|e| e.to_string())?;
+            ws.set_freeze_panes(top + 1, 0).map_err(|e| e.to_string())?;
             ws.autofit();
             book.save_to_buffer().map_err(|e| e.to_string())
         }
@@ -228,12 +250,27 @@ pub fn read(bytes: &[u8], format: Format) -> Result<Sheet, String> {
     if rows.is_empty() {
         return Err("the sheet is empty".into());
     }
+    // A marking row (one cell, above a header) as OpenTrack writes it.
+    let marking = (rows.len() > 1 && is_marking_row(&rows[0])).then(|| rows.remove(0)[0].clone());
     let header = rows
         .remove(0)
         .into_iter()
         .map(|h| h.trim().to_owned())
         .collect();
-    Ok(Sheet { header, rows })
+    Ok(Sheet {
+        marking,
+        header,
+        rows,
+    })
+}
+
+/// A row holding only a marking: one cell, the first, and not a column
+/// name a header could start with.
+fn is_marking_row(row: &[String]) -> bool {
+    let first = row.first().map(|c| c.trim()).unwrap_or("");
+    !first.is_empty()
+        && row[1..].iter().all(|c| c.trim().is_empty())
+        && !matches!(first.to_ascii_lowercase().as_str(), "entity_id" | "id")
 }
 
 /// What an import does with one row.
@@ -361,7 +398,8 @@ pub fn plan(
     let mut rows_of_entity: HashMap<String, usize> = HashMap::new();
     let mut rows_of_identifier: HashMap<String, usize> = HashMap::new();
     for (i, row) in sheet.rows.iter().enumerate() {
-        let number = i + 2;
+        // The header is row 1, or 2 under a marking row.
+        let number = i + 2 + usize::from(sheet.marking.is_some());
         let cell = |c: usize| row.get(c).map(|s| s.trim()).unwrap_or("");
         let (mut id, mut name, mut status) = (String::new(), None, None);
         // Only a sheet with the column changes the override (empty: automatic).
@@ -622,6 +660,31 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_sheet_reads_back_and_numbers_rows_from_its_header() {
+        let mut sheet = export(&[ted()]);
+        sheet.marking = Some("SECRET//REL TO USA & GBR".into());
+        let csv = String::from_utf8(write(&sheet, Format::Csv).unwrap()).unwrap();
+        assert!(
+            csv.starts_with("SECRET//REL TO USA & GBR\nentity_id,"),
+            "{csv}"
+        );
+        for format in [Format::Csv, Format::Xlsx] {
+            let back = read(&write(&sheet, format).unwrap(), format).unwrap();
+            assert_eq!(back, sheet, "{format:?}");
+            let mut bad = back.clone();
+            bad.rows[0][2] = "nonsense".into();
+            // The header is row 2 under the marking, so the entity is row 3.
+            assert_eq!(run(&bad)[0].row, 3, "{format:?}");
+        }
+        // A header with entity_id first alone is a header, not a marking.
+        let one = read(b"entity_id\nent-ted\n", Format::Csv).unwrap();
+        assert_eq!(
+            (one.marking, one.header),
+            (None, vec!["entity_id".to_owned()])
+        );
+    }
+
+    #[test]
     fn the_publish_override_goes_out_and_comes_back() {
         let mut e = ted();
         e.publish = Some(ot_store::registry::Publish::Never);
@@ -666,6 +729,7 @@ mod tests {
 
     fn sheet(header: &[&str], rows: &[&[&str]]) -> Sheet {
         Sheet {
+            marking: None,
             header: header.iter().map(|s| s.to_string()).collect(),
             rows: rows
                 .iter()

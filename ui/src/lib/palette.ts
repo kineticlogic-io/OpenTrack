@@ -21,3 +21,8 @@ export function affiliationColor(affiliation: string | undefined, cotType?: stri
   const byAtom: Record<string, string> = { f: 'friend', a: 'friend', h: 'hostile', s: 'hostile', n: 'neutral', u: 'unknown', p: 'pending' }
   return AFFILIATION_COLOR[byAtom[atom ?? ''] ?? 'none']
 }
+
+/** Non-point evidence on the track map (theme-invariant data colours): bearing lines and sensor
+ *  positions, and the paler uncertainty (bearing wedges, position ellipses). */
+export const EVIDENCE_COLOR = '#ffd166'
+export const UNCERTAINTY_COLOR = '#ffe49a'

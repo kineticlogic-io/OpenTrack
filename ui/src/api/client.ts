@@ -25,6 +25,13 @@ export interface ServerStatus {
     stream_messages?: number
     stream_bytes?: number
   }
+  /** OpenTelemetry export of logs, traces and metrics (not counted in the 503). */
+  telemetry?: DependencyStatus & {
+    /** Whether any running role exports (an OTEL_EXPORTER_OTLP_*ENDPOINT is set). */
+    configured: boolean
+    /** "<protocol> <endpoint>" of each exported signal. */
+    endpoints?: string[]
+  }
 }
 
 /** A line of bearing on a track (docs/non-point-contacts.md). */
@@ -36,6 +43,8 @@ export interface BearingContact {
   longitude: number
   bearing_deg: number
   sigma_deg: number
+  range_m?: number
+  range_sigma_m?: number
   max_range_m?: number
   residual_deg: number
   identifiers?: { scheme: string; value: string }[]
@@ -43,7 +52,15 @@ export interface BearingContact {
 
 /** A bearing or an area instead of a point. */
 export type Geometry =
-  | { type: 'bearing'; bearing_deg: number; sigma_deg: number; max_range_m?: number; elevation_deg?: number }
+  | {
+      type: 'bearing'
+      bearing_deg: number
+      sigma_deg: number
+      range_m?: number
+      range_sigma_m?: number
+      max_range_m?: number
+      elevation_deg?: number
+    }
   | { type: 'area'; polygon: [number, number][] }
 
 export interface Observation {
@@ -114,6 +131,8 @@ export interface SystemTrack {
 export interface TrackResponse {
   /** Probability that the track is a real object (its sources' existence and pairing confidences). */
   confidence?: number
+  /** The track's security label as a portion marking, e.g. `(S//REL TO USA, GBR)`; absent when it has none. */
+  marking?: string | null
   track: SystemTrack
   /** The `opentrack.track.v2` message as published. */
   message: TrackMessage
@@ -283,6 +302,8 @@ export interface TrackRow {
   state: SystemTrack['state']
   class: string
   gold_name: string
+  /** The track's security label as a portion marking; null when it has none. */
+  marking?: string | null
   domain: string
   affiliation: string
   force_code: number
@@ -376,11 +397,26 @@ export class ApiError extends Error {
 /** Who the API records as the acting operator until authentication exists. */
 const ACTOR = 'op:ui'
 
+/**
+ * Every API request says it comes from OpenTrack's own page. The server refuses a change made with
+ * the session cookie that lacks it (cross-site request forgery): another site's form or script
+ * cannot set it.
+ */
+export const CSRF_HEADER = 'x-opentrack-csrf'
+
+/** `init` with the CSRF header added. */
+export function withCsrf(input: RequestInfo | URL, init: RequestInit | undefined): RequestInit {
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  headers.set(CSRF_HEADER, '1')
+  return { ...init, headers }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     headers: {
       'x-opentrack-actor': ACTOR,
+      [CSRF_HEADER]: '1',
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -532,6 +568,23 @@ export interface SyncStatus {
   engine?: { at: string; reporting: number; shared: number; from_other_nodes: number } | null
 }
 
+/** A peer's public key, pinned by an admin: sync messages from its site must verify with it. */
+export interface PinnedKey {
+  site: string
+  public_key: string
+  fingerprint: string | null
+  pinned_by: string
+  pinned_at: string | null
+}
+
+/** This node's public key (sync messages it sends are signed with it) and the keys pinned for peers. */
+export interface SyncKeys {
+  site: string
+  public_key: string
+  fingerprint: string
+  peers: PinnedKey[]
+}
+
 // --- Sign-in ---------------------------------------------------------------------------------
 
 export const ROLES = ['viewer', 'track_manager', 'admin'] as const
@@ -551,10 +604,14 @@ export interface Me {
   /** Minutes without use that end this session, in ms. */
   idle_timeout_ms?: number
   password_policy?: PasswordPolicy
+  /** The notice-and-consent warning is on and this sign-in hasn't accepted it (the API refuses until it does). */
+  consent_required?: boolean
   /** This session's id. */
   session?: string
   /** The previous good sign-in and the failed ones since, as they stood at this sign-in. */
   last_login?: { previous_at_ms: number | null; failed_attempts: number }
+  /** False when this address does not serve the admin routes: with OT_ADMIN_BIND they are only on the admin listener. */
+  admin_api?: boolean
 }
 
 /** What the sign-in page offers. */
@@ -587,6 +644,8 @@ export interface Account {
   active_since_ms: number | null
   /** Why it was turned off automatically (`inactivity`). */
   disabled_reason: string | null
+  /** A temporary account: turned off when this passes (72 hours after it was made). */
+  expires_at_ms?: number | null
 }
 
 /** A browser session (one sign-in). */
@@ -650,6 +709,8 @@ export interface PasswordPolicy {
   min_changed_chars: number
   min_age_hours: number
   max_age_days: number
+  /** Commonly used passwords, and ones built from them, are refused. */
+  refuse_common?: boolean
 }
 
 /** The password rules in words, for a password field's ⓘ. */
@@ -665,6 +726,7 @@ export function describePolicy(p: PasswordPolicy | undefined): string {
     `At least ${p.min_length} characters` +
     (classes.length ? `, with ${classes.join(', ')}` : '') +
     (p.history > 0 ? `; not one of the last ${p.history}` : '') +
+    (p.refuse_common ? '; not a commonly used password or one built from it' : '') +
     '.'
   )
 }
@@ -734,6 +796,8 @@ export interface PluginInfo {
   sha256?: string | null
   size?: number | null
   address?: string | null
+  /** An external plugin: whether it has a secret (the secret is never returned). */
+  secret_set?: boolean
   grants?: PluginGrants
   updated_at_ms?: number
   used_by: { source?: string; name?: string; as: PluginKind; enabled?: boolean; correlation?: boolean }[]
@@ -784,6 +848,8 @@ export interface SourceSpec {
   confirm_after?: number
   /** Security label for everything the source reports (OpenStare's `stare-security` shape). */
   security?: SecurityLabel
+  /** A listener that does not authenticate its senders runs only with this risk acceptance recorded (UDP always needs it). */
+  unauthenticated?: 'accepted'
   /** For a source reporting lines of bearing: how the emitters it hears may move (unset: 0.1 m/s², 30 m/s). */
   emitter_motion?: EmitterMotion
 }
@@ -810,6 +876,8 @@ export interface SourceStatus {
   transport: string
   link: LinkStatus
   last_error: string | null
+  /** Set when the worker refuses to start the source, saying why (e.g. a listener without sender authentication). */
+  not_started?: string
   totals_since_start: Record<string, number>
   /** The windows a tracker with auto timing chose from the sensor's revisit rate. */
   tracker_timing?: {
@@ -871,6 +939,10 @@ export interface ProbeResult {
   frames: number
   seconds: number
   link_error: string | null
+  /** Bytes a stream transport read, framed or not. */
+  bytes_received?: number
+  /** Why no frames arrived, when no error says (connected but silent, or unframed bytes). */
+  hint?: string | null
   decode_errors: number
   last_decode_error: string | null
   records: number
@@ -1067,6 +1139,9 @@ export const api = {
     return parsed as ServerStatus
   },
   syncStatus: () => get<SyncStatus>('/sync/status'),
+  syncKeys: () => get<SyncKeys>('/sync/keys'),
+  pinSyncKey: (site: string, publicKey: string) => request<SyncKeys>('PUT', `/sync/keys/${enc(site)}`, { public_key: publicKey }),
+  removeSyncKey: (site: string) => request<SyncKeys>('DELETE', `/sync/keys/${enc(site)}`),
   takStatus: () => get<TakStatus>('/tak/status'),
   describeProtobuf: (files: Record<string, string>) => request<ProtoDescription>('POST', '/protobuf/describe', { files }),
   systemMetrics: (minutes = 60) => get<SystemMetrics>(`/metrics?minutes=${minutes}`),
@@ -1121,7 +1196,7 @@ export const api = {
   addPluginWasm: async (file: File, replace = false): Promise<PluginInfo> => {
     const res = await fetch(`/api/v1/plugins${replace ? '?replace=true' : ''}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/wasm' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/wasm' },
       body: file,
     })
     const text = await res.text()
@@ -1129,9 +1204,11 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText)
     return parsed as PluginInfo
   },
-  addPluginExternal: (address: string, replace = false) =>
-    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address }),
-  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants }) =>
+  addPluginExternal: (address: string, secret: string, replace = false) =>
+    request<PluginInfo>('POST', `/plugins${replace ? '?replace=true' : ''}`, { address, ...(secret ? { secret } : {}) }),
+  /** A new external-plugin secret from the server's FIPS DRBG; not stored, shown once. */
+  newPluginSecret: () => request<{ secret: string }>('POST', '/plugins/secret'),
+  configurePlugin: (name: string, body: { enabled?: boolean; grants?: PluginGrants; secret?: string }) =>
     request<PluginInfo>('PUT', `/plugins/${enc(name)}`, body),
   deletePlugin: (name: string, force = false) => request<unknown>('DELETE', `/plugins/${enc(name)}${force ? '?force=true' : ''}`),
   checkPlugin: (name: string) => request<PluginCheck>('POST', `/plugins/${enc(name)}/check`),
@@ -1162,10 +1239,12 @@ export const api = {
   me: () => get<Me>('/auth/me'),
   login: (email: string, password: string) => request<Me>('POST', '/auth/login', { email, password }),
   logout: () => request<unknown>('POST', '/auth/logout'),
+  /** Accept the notice-and-consent warning, for this sign-in (recorded and audited on the server). */
+  acceptConsent: () => request<{ consent_required: boolean }>('POST', '/auth/consent'),
   changePassword: (current: string, next: string) => request<Me>('POST', '/auth/password', { current, new: next }),
   users: () => get<{ users: Account[] }>('/auth/users').then((r) => r.users),
-  createUser: (u: { email: string; name: string; role: Role; password?: string }) => request<Account>('POST', '/auth/users', u),
-  updateUser: (id: string, change: { name?: string; role?: Role; active?: boolean }) => request<Account>('PUT', `/auth/users/${enc(id)}`, change),
+  createUser: (u: { email: string; name: string; role: Role; password?: string; temporary?: boolean }) => request<Account>('POST', '/auth/users', u),
+  updateUser: (id: string, change: { name?: string; role?: Role; active?: boolean; temporary?: boolean }) => request<Account>('PUT', `/auth/users/${enc(id)}`, change),
   deleteUser: (id: string) => request<unknown>('DELETE', `/auth/users/${enc(id)}`),
   /** Set a new password, or with `null` remove it (single sign-on only). */
   resetPassword: (id: string, password: string | null) => request<unknown>('POST', `/auth/users/${enc(id)}/password`, { password }),
@@ -1192,7 +1271,7 @@ export const api = {
   importConfig: async (file: File): Promise<ConfigImported> => {
     const res = await fetch('/api/v1/import/config', {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR, 'content-type': 'application/json' },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1', 'content-type': 'application/json' },
       body: file,
     })
     const text = await res.text()
@@ -1226,7 +1305,7 @@ export const api = {
     const format = file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx'
     const res = await fetch(`/api/v1/registry/import-sheet?format=${format}&apply=${apply}&label=${enc(file.name)}`, {
       method: 'POST',
-      headers: { 'x-opentrack-actor': ACTOR },
+      headers: { 'x-opentrack-actor': ACTOR, [CSRF_HEADER]: '1' },
       body: file,
     })
     const parsed = JSON.parse((await res.text()) || '{}')

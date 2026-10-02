@@ -5,6 +5,12 @@
 # is the AWS-LC FIPS module (built here, which needs Go and CMake), and
 # OpenSSL, which SAML signatures go through, runs with only its validated
 # 3.0.9 FIPS provider.
+#
+# The runtime is distroless Debian 12 (gcr.io/distroless/cc-debian12): glibc,
+# OpenSSL 3, CA certificates and nothing else: no shell, no package manager.
+# The `runtime-libs` stage adds only the shared libraries the binary loads
+# (SAML's libxmlsec1 and libxml2 and what they need), each with its Debian
+# package record so image scanners still see them (docs/security/hardening.md).
 
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS ui
 WORKDIR /ui
@@ -38,6 +44,12 @@ RUN curl -fsSLo openssl.tar.gz \
     && cp /opt/ossl/lib*/ossl-modules/fips.so /out/fips.so \
     && cp /opt/ossl/ssl/fipsmodule.cnf /out/fipsmodule.cnf
 
+# Only the provider and its configuration: `--target openssl-fips-out
+# --output type=local,dest=DIR` gives the release signing script
+# (scripts/release/sign-image) the same validated module.
+FROM scratch AS openssl-fips-out
+COPY --from=openssl-fips /out/ /
+
 FROM rust:1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS server
 # SAML single sign-on signs and checks XML with libxmlsec1; the AWS-LC FIPS
 # module builds with CMake and Go.
@@ -62,11 +74,44 @@ COPY crates ./crates
 COPY wit ./wit
 RUN cargo build --release --locked --bin opentrack
 
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+# The runtime base: distroless Debian 12, the non-root variant (OpenTrack
+# runs as uid 1000, below, so volumes written by earlier images still fit).
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime-base
+
+# Collects what the runtime base lacks, into /out: the shared libraries the
+# binary needs (ldd, which follows libxmlsec1-openssl too; Debian builds
+# xmlsec with its OpenSSL engine linked, not loaded by name, and it is listed
+# explicitly anyway), their dpkg records and copyright files, and the
+# opentrack user.
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime-libs
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libxmlsec1 libxmlsec1-openssl libxml2 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --uid 1000 --create-home opentrack
+    && apt-get install -y --no-install-recommends libxmlsec1 libxmlsec1-openssl libxml2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=runtime-base / /base/
+COPY --from=server /src/target/release/opentrack /usr/local/bin/opentrack
+RUN set -eu; \
+    engine="$(dpkg -L libxmlsec1-openssl | grep '/libxmlsec1-openssl\.so\.1$')"; \
+    mkdir -p /out/etc /out/var/lib/dpkg/status.d; \
+    for lib in $(ldd /usr/local/bin/opentrack "$engine" | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' | sort -u); do \
+        name="$(basename "$lib")"; triplet="$(basename "$(dirname "$lib")")"; \
+        if [ -e "/base/lib/$triplet/$name" ] || [ -e "/base/usr/lib/$triplet/$name" ]; then continue; fi; \
+        mkdir -p "/out/usr/lib/$triplet"; \
+        cp -L "$lib" "/out/usr/lib/$triplet/$name"; \
+        pkg="$(dpkg-query -S "*/$(basename "$(realpath "$lib")")" | head -n1 | cut -d: -f1)"; \
+        dpkg-query -s "$pkg" > "/out/var/lib/dpkg/status.d/$pkg"; \
+        if [ -f "/usr/share/doc/$pkg/copyright" ]; then \
+            mkdir -p "/out/usr/share/doc/$pkg" && cp "/usr/share/doc/$pkg/copyright" "/out/usr/share/doc/$pkg/"; \
+        fi; \
+        echo "runtime library: $name ($pkg)"; \
+    done; \
+    cp /base/etc/passwd /out/etc/passwd; cp /base/etc/group /out/etc/group; \
+    echo 'opentrack:x:1000:1000:opentrack:/home/opentrack:/sbin/nologin' >> /out/etc/passwd; \
+    echo 'opentrack:x:1000:' >> /out/etc/group; \
+    mkdir -p /owned/data /owned/home/opentrack
+
+FROM runtime-base
+COPY --from=runtime-libs /out/ /
+COPY --from=runtime-libs --chown=1000:1000 /owned/ /
 COPY --from=openssl-fips /out/fips.so /opt/opentrack/ossl-modules/fips.so
 COPY --from=openssl-fips /out/fipsmodule.cnf /etc/opentrack/fipsmodule.cnf
 COPY docker/openssl-fips.cnf /etc/opentrack/openssl-fips.cnf
@@ -77,8 +122,9 @@ ENV OT_UI_DIR=/opt/opentrack/ui \
     OT_PROFILES_DIR=/opt/opentrack/profiles/trackers \
     OT_SQLITE_PATH=/data/opentrack.db \
     OPENSSL_CONF=/etc/opentrack/openssl-fips.cnf \
-    OPENSSL_MODULES=/opt/opentrack/ossl-modules
-USER opentrack
+    OPENSSL_MODULES=/opt/opentrack/ossl-modules \
+    HOME=/home/opentrack
+USER 1000:1000
 WORKDIR /home/opentrack
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["opentrack", "health"]
 VOLUME /data

@@ -42,6 +42,7 @@ use ot_core::{Contributor, Domain, Observation, PairingType, SystemTrack, TrackS
 use ot_source::schema::{ExtensionSchema, resolve_attributes};
 use ot_store::{Decision, RedisStore};
 use serde_json::{Map, Value, json};
+use tracing::Instrument;
 
 use crate::config::Common;
 
@@ -951,6 +952,16 @@ impl Engine {
         if batch.is_empty() {
             return Ok(0);
         }
+        let span = tracing::info_span!("engine.batch", observations = batch.len());
+        self.process_batch(batch).instrument(span).await
+    }
+
+    /// Correlate one batch read from the observation streams, write what
+    /// changed and acknowledge it.
+    async fn process_batch(
+        &mut self,
+        batch: Vec<(String, String, Result<Observation, String>)>,
+    ) -> anyhow::Result<usize> {
         let read = batch.len();
         let mut counts = EngineCounts::default();
         let mut acks: HashMap<String, Vec<String>> = HashMap::new();
@@ -1895,7 +1906,12 @@ impl Engine {
     async fn process_commands(&mut self) -> anyhow::Result<()> {
         for cmd in self.redis.pop_commands(20).await? {
             let id = cmd["id"].as_str().unwrap_or_default().to_owned();
-            let result = match self.command(&cmd).await {
+            // The decisions it records carry the operator's address.
+            let ip = cmd["ip"].as_str().unwrap_or_default().to_owned();
+            let result = match crate::auth::access::CLIENT_IP
+                .scope(ip, self.command(&cmd))
+                .await
+            {
                 Ok(v) => json!({ "ok": true, "result": v }),
                 Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
             };
@@ -4854,6 +4870,24 @@ mod tests {
             .unwrap();
     }
 
+    /// Pin every link's public key on every other node (Settings → Nodes).
+    async fn introduce(nodes: &mut [(&Engine, &mut crate::link::Link)]) {
+        let keys: Vec<_> = nodes
+            .iter()
+            .map(|(e, l)| (e.common.site, l.key().public().to_string()))
+            .collect();
+        for (e, l) in nodes.iter_mut() {
+            for (site, key) in keys.clone() {
+                if site != e.common.site {
+                    e.db(move |db| db.sync_pin_key(site, &key, "test"))
+                        .await
+                        .unwrap();
+                }
+            }
+            l.refresh().await.unwrap();
+        }
+    }
+
     /// Deliver `outs` from one link to another, as a networking package
     /// would (addressed messages only to their node), and let the receiving
     /// engine apply what arrived. Returns the receiver's answers.
@@ -4887,6 +4921,7 @@ mod tests {
         let mut la = crate::link::Link::new(a.common.clone()).await.unwrap();
         let mut lb = crate::link::Link::new(b.common.clone()).await.unwrap();
         let mut lc = crate::link::Link::new(c.common.clone()).await.unwrap();
+        introduce(&mut [(&a, &mut la), (&b, &mut lb), (&c, &mut lc)]).await;
 
         for s in 0..3 {
             feed(
@@ -5083,6 +5118,10 @@ mod tests {
         let b = node("BBB", &["radar"], &["AAA", "CCC"]).await.unwrap();
         let c = node("CCC", &[], &["AAA", "BBB"]).await.unwrap();
         let mut nodes = [a, b, c];
+        {
+            let [a, b, c] = &mut nodes;
+            introduce(&mut [(&a.e, &mut a.l), (&b.e, &mut b.l), (&c.e, &mut c.l)]).await;
+        }
         // A ship: A's AIS sees it first, B's radar a little later.
         for s in 0..40 {
             let lat = 32.0 + 0.00001 * s as f64;
@@ -5160,8 +5199,10 @@ mod tests {
             bytes += exchange(&mut nodes).await;
         }
         eprintln!("60 s of a still ship: {bytes} bytes of reports");
+        // Each message carries a 68-byte signature trailer as well.
+        let per = 64 + ot_sync::sign::TRAILER;
         assert!(
-            (64..=6 * 64).contains(&bytes),
+            (per..=6 * per).contains(&bytes),
             "60 s of a still ship cost {bytes} bytes"
         );
 
@@ -5243,6 +5284,8 @@ mod tests {
         o.geometry = Some(ot_core::Geometry::Bearing {
             bearing_deg: b,
             sigma_deg: 1.0,
+            range_m: None,
+            range_sigma_m: None,
             max_range_m: None,
             elevation_deg: None,
         });
@@ -5582,6 +5625,8 @@ mod tests {
                     o.geometry = Some(ot_core::Geometry::Bearing {
                         bearing_deg: (b + 1.5 * normal(&mut unit)).rem_euclid(360.0),
                         sigma_deg: 1.5,
+                        range_m: None,
+                        range_sigma_m: None,
                         max_range_m: Some(60_000.0),
                         elevation_deg: None,
                     });
@@ -5968,6 +6013,8 @@ mod tests {
                 o.geometry = Some(ot_core::Geometry::Bearing {
                     bearing_deg: (b + 2.0 * normal(&mut unit)).rem_euclid(360.0),
                     sigma_deg: 2.0,
+                    range_m: None,
+                    range_sigma_m: None,
                     max_range_m: Some(ESM_RANGE),
                     elevation_deg: None,
                 });

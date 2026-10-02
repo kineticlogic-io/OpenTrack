@@ -17,6 +17,7 @@ use rustls::pki_types::{
     CertificateDer, CertificateRevocationListDer, PrivateKeyDer, ServerName, UnixTime,
 };
 use rustls::server::WebPkiClientVerifier;
+use rustls::server::danger::ClientCertVerifier;
 use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use serde::{Deserialize, Serialize};
 
@@ -180,29 +181,11 @@ impl ServerTls {
             .as_deref()
             .filter(|p| !p.trim().is_empty())
         {
-            Some(path) => {
-                let verifier = WebPkiClientVerifier::builder_with_provider(
-                    Arc::new(roots("tls.client_ca_file", path)?),
-                    provider,
-                );
-                let verifier = if self.client_cert_optional {
-                    verifier.allow_unauthenticated()
-                } else {
-                    verifier
-                };
-                let crls = crls(&self.client_crl_files)?;
-                let verifier = if crls.is_empty() {
-                    verifier
-                } else {
-                    // The end certificate's status must be known and its
-                    // issuer's list current: fail closed.
-                    verifier
-                        .with_crls(crls)
-                        .only_check_end_entity_revocation()
-                        .enforce_revocation_expiration()
-                };
-                builder.with_client_cert_verifier(verifier.build()?)
-            }
+            Some(path) => builder.with_client_cert_verifier(self.client_verifier(
+                path,
+                provider,
+                crls(&self.client_crl_files)?,
+            )?),
             None => builder.with_no_client_auth(),
         };
         let config = builder
@@ -212,6 +195,67 @@ impl ServerTls {
             )
             .context("tls.cert_file / tls.key_file: the key does not fit the certificate")?;
         Ok(config)
+    }
+}
+
+impl ServerTls {
+    fn client_verifier(
+        &self,
+        ca_path: &str,
+        provider: Arc<CryptoProvider>,
+        crls: Vec<CertificateRevocationListDer<'static>>,
+    ) -> anyhow::Result<Arc<dyn ClientCertVerifier>> {
+        let verifier = WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots("tls.client_ca_file", ca_path)?),
+            provider,
+        );
+        let verifier = if self.client_cert_optional {
+            verifier.allow_unauthenticated()
+        } else {
+            verifier
+        };
+        let verifier = if crls.is_empty() {
+            verifier
+        } else {
+            // The end certificate's status must be known and its
+            // issuer's list current: fail closed.
+            verifier
+                .with_crls(crls)
+                .only_check_end_entity_revocation()
+                .enforce_revocation_expiration()
+        };
+        Ok(verifier.build()?)
+    }
+
+    /// The client certificate verifier with the revocation lists, as the
+    /// handshake uses it: for a status check made after the handshake (the
+    /// control plane asks OCSP first and falls back to this). `None`
+    /// without a client CA or without lists.
+    pub fn client_crl_verifier(&self) -> anyhow::Result<Option<Arc<dyn ClientCertVerifier>>> {
+        let Some(path) = self
+            .client_ca_file
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        let crls = crls(&self.client_crl_files)?;
+        if crls.is_empty() {
+            return Ok(None);
+        }
+        self.client_verifier(path, provider(), crls).map(Some)
+    }
+
+    /// The client CA certificates (`client_ca_file`); none without one.
+    pub fn client_ca_certs(&self) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+        match self
+            .client_ca_file
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+        {
+            Some(path) => certs("tls.client_ca_file", path),
+            None => Ok(Vec::new()),
+        }
     }
 }
 

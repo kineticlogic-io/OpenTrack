@@ -1,8 +1,8 @@
 //! Non-point contacts (see `docs/non-point-contacts.md`): a line of bearing
-//! (a direction from the sensor, no range) or an area of uncertainty (a
-//! polygon the object is somewhere inside). An observation that carries one
-//! keeps a `position` all the same: a bearing's is the sensor's position,
-//! where the line starts; an area's is its centre.
+//! (a direction from the sensor, optionally with measured range) or an area of
+//! uncertainty (a polygon the object is somewhere inside). An observation that
+//! carries one keeps a `position` all the same: a bearing's is the sensor's
+//! position, where the line starts; an area's is its centre.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,12 @@ pub enum Geometry {
         bearing_deg: f64,
         /// One standard deviation, degrees.
         sigma_deg: f64,
+        /// Measured slant range to the object, metres, if known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range_m: Option<f64>,
+        /// One standard deviation of the measured range, metres.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range_sigma_m: Option<f64>,
         /// How far the sensor could have detected it, metres, if known.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_range_m: Option<f64>,
@@ -35,6 +41,8 @@ impl Geometry {
             Geometry::Bearing {
                 bearing_deg,
                 sigma_deg,
+                range_m,
+                range_sigma_m,
                 max_range_m,
                 elevation_deg,
             } => {
@@ -46,6 +54,20 @@ impl Geometry {
                 }
                 if max_range_m.is_some_and(|r| !(r.is_finite() && r > 0.0)) {
                     return Err("max_range_m must be a positive number".into());
+                }
+                if range_m.is_some_and(|r| !(r.is_finite() && r > 0.0)) {
+                    return Err("range_m must be a positive number".into());
+                }
+                if range_sigma_m.is_some_and(|r| !(r.is_finite() && r > 0.0)) {
+                    return Err("range_sigma_m must be a positive number".into());
+                }
+                if range_sigma_m.is_some() && range_m.is_none() {
+                    return Err("range_sigma_m requires range_m".into());
+                }
+                if let (Some(range), Some(max)) = (range_m, max_range_m)
+                    && range > max
+                {
+                    return Err("range_m cannot exceed max_range_m".into());
                 }
                 if elevation_deg.is_some_and(|e| !(e.is_finite() && (-90.0..=90.0).contains(&e))) {
                     return Err("elevation_deg is outside [-90, 90]".into());
@@ -162,12 +184,32 @@ mod tests {
         assert!(bad(Geometry::Bearing {
             bearing_deg: 400.0,
             sigma_deg: 1.0,
+            range_m: None,
+            range_sigma_m: None,
             max_range_m: None,
             elevation_deg: None
         }));
         assert!(bad(Geometry::Bearing {
             bearing_deg: 10.0,
             sigma_deg: 0.0,
+            range_m: None,
+            range_sigma_m: None,
+            max_range_m: None,
+            elevation_deg: None
+        }));
+        assert!(bad(Geometry::Bearing {
+            bearing_deg: 10.0,
+            sigma_deg: 1.0,
+            range_m: Some(100.0),
+            range_sigma_m: None,
+            max_range_m: Some(50.0),
+            elevation_deg: None
+        }));
+        assert!(bad(Geometry::Bearing {
+            bearing_deg: 10.0,
+            sigma_deg: 1.0,
+            range_m: None,
+            range_sigma_m: Some(5.0),
             max_range_m: None,
             elevation_deg: None
         }));

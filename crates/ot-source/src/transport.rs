@@ -8,7 +8,7 @@
 //! [`crate::tls`]).
 
 use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,6 +27,122 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use crate::frame::{Frame, Framer, Framing};
 use crate::path::Path;
 pub use crate::tls::{ClientTls, ServerTls};
+
+/// The local interface a multicast group is joined (or sent) on. IPv4
+/// names it by one of its addresses; IPv6 by index, so a name is looked up
+/// when the socket opens (a missing interface is then a source error, not a
+/// bad setting). In JSON it is a string: `"192.0.2.10"`, `"eth0"` or `"2"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum MulticastInterface {
+    /// An IPv4 address of this host (IPv4 groups).
+    Address(Ipv4Addr),
+    /// An interface index (IPv6 groups; 0: the system's choice).
+    Index(u32),
+    /// An interface name such as `eth0` (IPv6 groups).
+    Name(String),
+}
+
+impl MulticastInterface {
+    /// The index an IPv6 join or send needs, looking a name up now.
+    pub fn index(&self) -> anyhow::Result<u32> {
+        match self {
+            MulticastInterface::Index(i) => Ok(*i),
+            MulticastInterface::Name(name) => interface_index(name),
+            MulticastInterface::Address(a) => {
+                bail!("an IPv6 group needs an interface name or index, not the address {a}")
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn interface_index(name: &str) -> anyhow::Result<u32> {
+    nix::net::if_::if_nametoindex(name).with_context(|| format!("no network interface {name:?}"))
+}
+
+#[cfg(not(unix))]
+fn interface_index(name: &str) -> anyhow::Result<u32> {
+    bail!("interface names are not supported on this platform; give {name:?}'s index")
+}
+
+impl std::str::FromStr for MulticastInterface {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if let Ok(a) = s.parse::<Ipv4Addr>() {
+            return Ok(MulticastInterface::Address(a));
+        }
+        if let Ok(i) = s.parse::<u32>() {
+            return Ok(MulticastInterface::Index(i));
+        }
+        if s.parse::<Ipv6Addr>().is_ok() {
+            return Err(format!(
+                "multicast interface {s:?}: IPv6 joins by interface name or index, not address"
+            ));
+        }
+        // Linux allows 15 bytes; names never hold spaces, '/' or ':'
+        // (an IPv6 address was caught above).
+        let ok = !s.is_empty()
+            && s.len() <= 15
+            && s.bytes()
+                .all(|b| b.is_ascii_graphic() && !b"/:%".contains(&b));
+        if !ok {
+            return Err(format!(
+                "multicast interface {s:?}: an IPv4 address, an interface name or an index"
+            ));
+        }
+        Ok(MulticastInterface::Name(s.to_string()))
+    }
+}
+
+impl TryFrom<String> for MulticastInterface {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, String> {
+        s.parse()
+    }
+}
+
+impl From<MulticastInterface> for String {
+    fn from(i: MulticastInterface) -> String {
+        i.to_string()
+    }
+}
+
+impl std::fmt::Display for MulticastInterface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MulticastInterface::Address(a) => a.fmt(f),
+            MulticastInterface::Index(i) => i.fmt(f),
+            MulticastInterface::Name(n) => f.write_str(n),
+        }
+    }
+}
+
+/// Settings of a multicast join or send the types alone cannot catch: the
+/// group is multicast, and the interface is given the way its family
+/// needs. Shared with the TAK output.
+pub fn check_multicast(
+    group: IpAddr,
+    interface: Option<&MulticastInterface>,
+) -> Result<(), String> {
+    if !group.is_multicast() {
+        return Err(format!("{group} is not a multicast group"));
+    }
+    match (group, interface) {
+        (IpAddr::V4(_), Some(i @ (MulticastInterface::Index(_) | MulticastInterface::Name(_)))) => {
+            Err(format!(
+                "an IPv4 group is joined by an interface address of this host, not {i:?}"
+            ))
+        }
+        (IpAddr::V6(_), Some(MulticastInterface::Address(a))) => Err(format!(
+            "an IPv6 group is joined by interface name or index, not the address {a}"
+        )),
+        _ => Ok(()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -57,12 +173,14 @@ pub enum TransportConfig {
     /// One frame per datagram.
     Udp {
         bind: String,
-        /// Join this IPv4 multicast group.
+        /// Join this multicast group (IPv4 or IPv6, the bind's family).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        multicast_group: Option<Ipv4Addr>,
-        /// Interface address for the multicast join (default any).
+        multicast_group: Option<IpAddr>,
+        /// Where to join it: an interface address for an IPv4 group, an
+        /// interface name or index for an IPv6 one (default: the system's
+        /// choice).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        multicast_interface: Option<Ipv4Addr>,
+        multicast_interface: Option<MulticastInterface>,
     },
     /// Poll an HTTP endpoint; one frame per response body.
     HttpPoll {
@@ -297,6 +415,22 @@ impl TransportConfig {
                 t.check()?;
             }
             TransportConfig::GrpcServer { tls: Some(t), .. } => t.check()?,
+            TransportConfig::Udp {
+                bind,
+                multicast_group: Some(group),
+                multicast_interface,
+            } => {
+                check_multicast(*group, multicast_interface.as_ref())?;
+                // `${env:…}` binds are checked when the source starts.
+                if let Ok(addr) = bind.trim().parse::<SocketAddr>()
+                    && addr.is_ipv4() != group.is_ipv4()
+                {
+                    return Err(format!(
+                        "multicast group {group} and bind {addr} are different IP versions \
+                         (bind 0.0.0.0:port for IPv4, [::]:port for IPv6)"
+                    ));
+                }
+            }
             _ => {}
         }
         match self {
@@ -502,6 +636,8 @@ pub struct LinkStatus {
     pub connected: bool,
     pub connects: u64,
     pub errors: u64,
+    /// Bytes read from a stream transport (TCP, TLS, serial, files), framed or not.
+    pub bytes_in: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -756,7 +892,7 @@ pub async fn run(
             let addr: SocketAddr = resolve_env(bind)?
                 .parse()
                 .context("udp bind must be ip:port")?;
-            let socket = udp_socket(addr, *multicast_group, *multicast_interface)?;
+            let socket = udp_socket(addr, *multicast_group, multicast_interface.as_ref())?;
             connected(&status);
             let mut buf = vec![0u8; 65_536];
             loop {
@@ -1236,6 +1372,7 @@ async fn read_stream(
         if n == 0 {
             return Ok(());
         }
+        set(status, |s| s.bytes_in += n as u64);
         loop {
             match framer.next(&mut buf) {
                 Ok(Some(bytes)) => {
@@ -1258,8 +1395,8 @@ async fn read_stream(
 
 fn udp_socket(
     addr: SocketAddr,
-    group: Option<Ipv4Addr>,
-    interface: Option<Ipv4Addr>,
+    group: Option<IpAddr>,
+    interface: Option<&MulticastInterface>,
 ) -> anyhow::Result<tokio::net::UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
@@ -1268,8 +1405,24 @@ fn udp_socket(
     socket.set_recv_buffer_size(4 * 1024 * 1024).ok();
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
-    if let Some(g) = group {
-        socket.join_multicast_v4(&g, &interface.unwrap_or(Ipv4Addr::UNSPECIFIED))?;
+    match group {
+        Some(IpAddr::V4(g)) => {
+            let at = match interface {
+                None => Ipv4Addr::UNSPECIFIED,
+                Some(MulticastInterface::Address(a)) => *a,
+                Some(other) => bail!("an IPv4 group needs an interface address, not {other}"),
+            };
+            socket
+                .join_multicast_v4(&g, &at)
+                .with_context(|| format!("joining multicast group {g}"))?;
+        }
+        Some(IpAddr::V6(g)) => {
+            let index = interface.map(MulticastInterface::index).transpose()?;
+            socket
+                .join_multicast_v6(&g, index.unwrap_or(0))
+                .with_context(|| format!("joining multicast group {g}"))?;
+        }
+        None => {}
     }
     Ok(tokio::net::UdpSocket::from_std(socket.into())?)
 }
@@ -1368,6 +1521,166 @@ mod tests {
             }
         };
         assert_eq!(&frame.bytes[..], b"{\"id\":1}");
+        task.abort();
+    }
+
+    #[test]
+    fn udp_multicast_settings() {
+        let udp = |v: serde_json::Value| -> TransportConfig {
+            let mut t = serde_json::json!({"type": "udp", "bind": "0.0.0.0:6969"});
+            t.as_object_mut()
+                .unwrap()
+                .extend(v.as_object().unwrap().clone());
+            serde_json::from_value(t).unwrap()
+        };
+        // An IPv4 source saved before IPv6 reads and writes back the same.
+        let old = serde_json::json!({
+            "type": "udp", "bind": "0.0.0.0:6969",
+            "multicast_group": "239.2.3.1", "multicast_interface": "10.0.0.2"
+        });
+        let t: TransportConfig = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(
+            t,
+            TransportConfig::Udp {
+                bind: "0.0.0.0:6969".into(),
+                multicast_group: Some("239.2.3.1".parse().unwrap()),
+                multicast_interface: Some(MulticastInterface::Address(Ipv4Addr::new(10, 0, 0, 2))),
+            }
+        );
+        assert_eq!(serde_json::to_value(&t).unwrap(), old);
+        assert_eq!(t.check(), Ok(()));
+
+        // The interface: an IPv4 address, an index or a name.
+        assert_eq!("7".parse(), Ok(MulticastInterface::Index(7)));
+        assert_eq!(
+            " eth0 ".parse(),
+            Ok(MulticastInterface::Name("eth0".into()))
+        );
+        assert_eq!(
+            "br-8e120e2d3abd".parse(),
+            Ok(MulticastInterface::Name("br-8e120e2d3abd".into()))
+        );
+        for bad in ["", "fe80::1", "eth 0", "a/b", "sixteen-letters!"] {
+            assert!(bad.parse::<MulticastInterface>().is_err(), "{bad:?}");
+        }
+        assert!(
+            serde_json::from_value::<TransportConfig>(serde_json::json!({
+                "type": "udp", "bind": "[::]:6969", "multicast_interface": "fe80::1"
+            }))
+            .is_err()
+        );
+
+        let v6 = udp(serde_json::json!({"bind": "[::]:6969", "multicast_group": "ff15::6969"}));
+        assert_eq!(v6.check(), Ok(()));
+        for iface in ["eth0", "3", "0"] {
+            let t = udp(serde_json::json!({
+                "bind": "[::]:6969", "multicast_group": "ff15::6969", "multicast_interface": iface
+            }));
+            assert_eq!(t.check(), Ok(()), "{iface}");
+            assert_eq!(
+                serde_json::to_value(&t).unwrap()["multicast_interface"],
+                iface
+            );
+        }
+        // A bind from the environment is checked when the source starts.
+        assert_eq!(
+            udp(serde_json::json!({"bind": "${env:BIND}", "multicast_group": "ff15::6969"}))
+                .check(),
+            Ok(())
+        );
+        // An interface alone was accepted (and ignored) before; still is.
+        assert_eq!(
+            udp(serde_json::json!({"multicast_interface": "10.0.0.2"})).check(),
+            Ok(())
+        );
+
+        for (bad, why) in [
+            (
+                serde_json::json!({"multicast_group": "10.0.0.1"}),
+                "not multicast",
+            ),
+            (
+                serde_json::json!({"bind": "[::]:6969", "multicast_group": "2001:db8::1"}),
+                "not multicast",
+            ),
+            (
+                serde_json::json!({"multicast_group": "ff15::6969"}),
+                "IPv4 bind, IPv6 group",
+            ),
+            (
+                serde_json::json!({"bind": "[::]:6969", "multicast_group": "239.2.3.1"}),
+                "IPv6 bind, IPv4 group",
+            ),
+            (
+                serde_json::json!({"multicast_group": "239.2.3.1", "multicast_interface": "eth0"}),
+                "IPv4 group by name",
+            ),
+            (
+                serde_json::json!({"bind": "[::]:6969", "multicast_group": "ff15::6969", "multicast_interface": "10.0.0.2"}),
+                "IPv6 group by IPv4 address",
+            ),
+        ] {
+            assert!(udp(bad).check().is_err(), "{why}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interface_names_are_looked_up_when_the_source_starts() {
+        assert_eq!(MulticastInterface::Name("lo".into()).index().unwrap(), 1);
+        assert_eq!(MulticastInterface::Index(4).index().unwrap(), 4);
+        let missing = MulticastInterface::Name("no-such-if0".into());
+        assert!(missing.index().is_err());
+        let group = Some("ff02::6969:98".parse().unwrap());
+        let err = udp_socket("[::]:0".parse().unwrap(), group, Some(&missing)).unwrap_err();
+        assert!(format!("{err:#}").contains("no-such-if0"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn udp_joins_an_ipv6_multicast_group() {
+        // Link-local scope on the system's default interface. Hosts without
+        // IPv6 multicast (no IPv6, no route, no loopback of multicast)
+        // skip.
+        let group: Ipv6Addr = "ff02::6969:97".parse().unwrap();
+        let Ok(probe) = std::net::UdpSocket::bind("[::]:0") else {
+            eprintln!("skipped: no IPv6 here");
+            return;
+        };
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let config = TransportConfig::Udp {
+            bind: format!("[::]:{port}"),
+            multicast_group: Some(IpAddr::V6(group)),
+            multicast_interface: None,
+        };
+        assert_eq!(config.check(), Ok(()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let task =
+            tokio::spawn(async move { run(&config, None, tx, SharedStatus::default()).await });
+        let sender = std::net::UdpSocket::bind("[::]:0").unwrap();
+        let dest = SocketAddr::from((group, port));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let frame = loop {
+            if task.is_finished() {
+                let e = task.await.unwrap().unwrap_err();
+                eprintln!("skipped: cannot join an IPv6 group here ({e:#})");
+                return;
+            }
+            if let Err(e) = sender.send_to(b"{\"id\":6}", dest) {
+                eprintln!("skipped: no IPv6 multicast route here ({e})");
+                task.abort();
+                return;
+            }
+            if let Ok(Some(f)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                break f;
+            }
+            if tokio::time::Instant::now() > deadline {
+                eprintln!("skipped: IPv6 multicast is not looped back here");
+                task.abort();
+                return;
+            }
+        };
+        assert_eq!(&frame.bytes[..], b"{\"id\":6}");
         task.abort();
     }
 

@@ -1,15 +1,34 @@
 import { useEffect, useState } from 'react'
 import { Badge, CollapsiblePanel } from 'staresdk'
 import { api, type DependencyStatus, type ServerStatus } from '../api/client'
+import { InfoTip } from '../components/InfoTip'
 
 const REFRESH_MS = 5000
 
-function Dependency({ name, dep, detail }: { name: string; dep?: DependencyStatus; detail: string }) {
+function Dependency({
+  name,
+  dep,
+  detail,
+  off,
+  tip,
+}: {
+  name: string
+  dep?: DependencyStatus
+  detail: string
+  /** Not set up (shown grey, not as a failure). */
+  off?: boolean
+  tip?: React.ReactNode
+}) {
   return (
     <div className="dep">
-      <span className="name">{name}</span>
+      <span className="name">
+        {name}
+        {tip && <InfoTip label={name}>{tip}</InfoTip>}
+      </span>
       {dep === undefined ? (
         <Badge color="grey" uppercase>checking</Badge>
+      ) : off ? (
+        <Badge color="grey" uppercase>off</Badge>
       ) : dep.ok ? (
         <Badge color="success" uppercase>up</Badge>
       ) : (
@@ -65,7 +84,7 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
       <Dependency
         name="SQLite"
         dep={status?.sqlite}
-        detail={status ? `schema v${status.sqlite.schema_version} · ${status.sqlite.path}` : ''}
+        detail={status ? [`schema v${status.sqlite.schema_version}`, status.sqlite.path].filter(Boolean).join(' · ') : ''}
       />
       <Dependency
         name="Redis"
@@ -77,8 +96,27 @@ export function StatusPanel({ onStatus }: { onStatus?: (s: ServerStatus | null) 
         dep={status?.nats}
         detail={
           status?.nats.ok
-            ? `${status.nats.server_name} · stream ${status.nats.stream} (${status.nats.stream_messages ?? 0} msgs) · ${status.nats.tracks_subject}.>`
+            ? [status.nats.server_name, `stream ${status.nats.stream}` + (status.nats.stream_messages != null ? ` (${status.nats.stream_messages} msgs)` : ''), `${status.nats.tracks_subject}.>`]
+                .filter(Boolean)
+                .join(' · ')
             : ''
+        }
+      />
+      <Dependency
+        name="Telemetry"
+        dep={status ? (status.telemetry ?? { ok: true, configured: false }) : undefined}
+        off={status ? !status.telemetry?.configured : false}
+        detail={
+          status?.telemetry?.configured
+            ? ['OTLP', ...(status.telemetry.endpoints ?? [])].join(' · ')
+            : 'not exported: logs on standard output only'
+        }
+        tip={
+          <>
+            Logs (the audit record included), traces and metrics sent over OpenTelemetry to your collector, set with the OTEL_EXPORTER_OTLP_* variables on each
+            role. Red when a role cannot reach the collector: OpenTrack keeps working, records are dropped from the export until it recovers, standard output
+            keeps every log line and the audit table every audit record. See Help → Admin guide → OpenTelemetry.
+          </>
         }
       />
       </div>

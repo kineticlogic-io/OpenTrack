@@ -4,9 +4,11 @@ multi-measurement initiation. It needs numpy, scipy and Stone Soup, so it
 runs as its own program rather than as WebAssembly:
 
     pip install stonesoup
-    python stonesoup_tracker.py serve --address 127.0.0.1:47310
+    python stonesoup_tracker.py serve --address 127.0.0.1:47310 --secret-file plugin.secret
 
-Then add 127.0.0.1:47310 in Settings -> Plugins and give a source's tracker
+(the secret it shares with OpenTrack: Settings -> Plugins makes one; or set
+OT_PLUGIN_SECRET). Then add 127.0.0.1:47310 with that secret in Settings ->
+Plugins and give a source's tracker
 stage {"algorithm": "plugin", "plugin": "stonesoup-gnn", "options": {...}}.
 Plots with the same time are one scan. Positions are tracked in a flat
 east/north frame around the first plot.

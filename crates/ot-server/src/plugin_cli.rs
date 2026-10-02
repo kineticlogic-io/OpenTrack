@@ -23,6 +23,10 @@ pub enum PluginCommand {
         /// Grants to check it with (JSON), e.g. '{"memory_mb": 512}'.
         #[arg(long)]
         grants: Option<String>,
+        /// A file holding the secret an external plugin shares (else
+        /// `OT_PLUGIN_SECRET`); never on the command line.
+        #[arg(long)]
+        secret_file: Option<PathBuf>,
     },
     /// Add a plugin (or, with --replace, a new build of one), as Settings →
     /// Plugins does.
@@ -30,6 +34,10 @@ pub enum PluginCommand {
         plugin: String,
         #[arg(long)]
         grants: Option<String>,
+        /// A file holding the secret an external plugin shares (else
+        /// `OT_PLUGIN_SECRET`); it is stored with the plugin.
+        #[arg(long)]
+        secret_file: Option<PathBuf>,
         #[arg(long)]
         replace: bool,
     },
@@ -37,8 +45,24 @@ pub enum PluginCommand {
     List,
 }
 
-/// A plugin argument: a file that exists is a component, anything else an address.
-pub fn source_arg(arg: &str) -> anyhow::Result<Source> {
+/// An external plugin's secret: from `--secret-file`, else `OT_PLUGIN_SECRET`.
+pub(crate) fn secret_arg(file: Option<&std::path::Path>) -> anyhow::Result<Option<String>> {
+    let s = match file {
+        Some(f) => {
+            Some(std::fs::read_to_string(f).map_err(|e| anyhow::anyhow!("{}: {e}", f.display()))?)
+        }
+        None => std::env::var("OT_PLUGIN_SECRET").ok(),
+    };
+    let s = s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    if let Some(s) = &s {
+        ot_plugin::handshake::check_secret(s).map_err(anyhow::Error::msg)?;
+    }
+    Ok(s)
+}
+
+/// A plugin argument: a file that exists is a component, anything else an
+/// address (reached with `secret`).
+pub fn source_arg(common: &Common, arg: &str, secret: Option<String>) -> anyhow::Result<Source> {
     let path = PathBuf::from(arg);
     if path.is_file() {
         return Ok(Source::Wasm(std::fs::read(&path)?));
@@ -46,7 +70,7 @@ pub fn source_arg(arg: &str) -> anyhow::Result<Source> {
     if arg.ends_with(".wasm") {
         anyhow::bail!("{arg}: no such file");
     }
-    Ok(Source::External(arg.to_owned()))
+    Ok(crate::plugins::external(common, arg, secret))
 }
 
 fn grants_arg(raw: Option<&str>) -> anyhow::Result<Grants> {
@@ -95,8 +119,16 @@ pub fn smoke(source: &Source, grants: &Grants) -> Value {
 
 pub fn run(common: &Common, cmd: PluginCommand) -> anyhow::Result<()> {
     match cmd {
-        PluginCommand::Check { plugin, grants } => {
-            let report = smoke(&source_arg(&plugin)?, &grants_arg(grants.as_deref())?);
+        PluginCommand::Check {
+            plugin,
+            grants,
+            secret_file,
+        } => {
+            let secret = secret_arg(secret_file.as_deref())?;
+            let report = smoke(
+                &source_arg(common, &plugin, secret)?,
+                &grants_arg(grants.as_deref())?,
+            );
             println!("{}", serde_json::to_string_pretty(&report)?);
             if report["ok"] != true {
                 std::process::exit(1);
@@ -105,9 +137,11 @@ pub fn run(common: &Common, cmd: PluginCommand) -> anyhow::Result<()> {
         PluginCommand::Add {
             plugin,
             grants,
+            secret_file,
             replace,
         } => {
-            let source = source_arg(&plugin)?;
+            let secret = secret_arg(secret_file.as_deref())?;
+            let source = source_arg(common, &plugin, secret.clone())?;
             let grants = grants_arg(grants.as_deref())?;
             let p = ot_plugin::load(&source, &grants)?;
             let m = p.manifest().clone();
@@ -121,7 +155,7 @@ pub fn run(common: &Common, cmd: PluginCommand) -> anyhow::Result<()> {
             };
             let (wasm, address) = match &source {
                 Source::Wasm(b) => (Some(b.as_slice()), None),
-                Source::External(a) => (None, Some(a.as_str())),
+                Source::External(e) => (None, Some(e.address.as_str())),
             };
             let row = db.put_plugin(
                 &ot_store::PluginWrite {
@@ -131,6 +165,7 @@ pub fn run(common: &Common, cmd: PluginCommand) -> anyhow::Result<()> {
                     wasm: wasm.zip(sha.as_deref()),
                     address,
                     grants: &serde_json::to_value(&grants)?,
+                    secret: secret.as_deref(),
                 },
                 "cli",
             )?;
