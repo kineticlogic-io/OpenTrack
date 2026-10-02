@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:9f688fc9-9468-4435-9755-7fef08991aeb",
+  "serialNumber": "urn:uuid:74602b54-a4f2-4673-8402-426e3268f8ea",
   "metadata": {
-    "timestamp": "2026-10-01T19:19:57.744816758Z",
+    "timestamp": "2026-10-02T02:12:57.180125660Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-store#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-store#0.4.7",
       "name": "ot-store",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack storage: SQLite (decisions, configuration, track graph) and Redis (live state, streams)",
       "scope": "required",
-      "purl": "pkg:cargo/ot-store@0.4.6?download_url=file://.",
+      "purl": "pkg:cargo/ot-store@0.4.7?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-store#0.4.6 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-store#0.4.7 bin-target-0",
           "name": "ot_store",
-          "version": "0.4.6",
-          "purl": "pkg:cargo/ot-store@0.4.6?download_url=file://.#src/lib.rs"
+          "version": "0.4.7",
+          "purl": "pkg:cargo/ot-store@0.4.7?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -40,21 +40,21 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "name": "ot-core",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack core types: the authoritative track schema, system track UIDs and the published track message",
       "scope": "required",
-      "purl": "pkg:cargo/ot-core@0.4.6?download_url=file://../ot-core"
+      "purl": "pkg:cargo/ot-core@0.4.7?download_url=file://../ot-core"
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sync#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-sync#0.4.7",
       "name": "ot-sync",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack between nodes: the replicated decision log, its clock and conflict rules",
       "scope": "required",
-      "purl": "pkg:cargo/ot-sync@0.4.6?download_url=file://../ot-sync"
+      "purl": "pkg:cargo/ot-sync@0.4.7?download_url=file://../ot-sync"
     },
     {
       "type": "library",
@@ -4324,7 +4324,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -4334,14 +4334,14 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-store#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-store#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#aws-lc-rs@1.18.1",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#opentelemetry@0.33.0",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-sync#0.4.6",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-sync#0.4.7",
         "registry+https://github.com/rust-lang/crates.io-index#redis@1.7.0",
         "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.40.2",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -4352,11 +4352,11 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sync#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-sync#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#aws-lc-rs@1.18.1",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21"
