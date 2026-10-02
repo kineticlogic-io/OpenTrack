@@ -11,7 +11,7 @@ the tools do not enforce, it says so.
 
 ## Configuration items
 
-Everything below is in the Git repository `phornstein/OpenTrack` (private, on GitHub) and changes
+Everything below is in the Git repository `kineticlogic-io/OpenTrack` (private, on GitHub) and changes
 only through [change control](#change-control), except the released artefacts, which are built
 from a tagged commit.
 
@@ -42,7 +42,7 @@ from a tagged commit.
 
 | Artefact | Where |
 |---|---|
-| Container image | `ghcr.io/phornstein/opentrack:v<version>`, identified by its digest, signed, with SLSA provenance and SBOM attestations |
+| Container image | `ghcr.io/kineticlogic-io/opentrack:v<version>`, identified by its digest, signed, with SLSA provenance and SBOM attestations |
 | `image-digest.txt`, `opentrack.cdx.json`, `opentrack-ui.cdx.json` | Attached to the GitHub release |
 | Release notes | The GitHub release: the version's CHANGELOG section |
 | Vulnerability scan | `docs/security/ato/scans/v<version>/` (`scan.md`, `trivy.json`, `grype.json`) |
@@ -99,7 +99,7 @@ A release is prepared on a `release-<version>` branch and published from `main`:
 4. **Publish a GitHub pre-release** for the tag, titled `<version> — <summary>`, with the
    CHANGELOG section as its notes. Publishing runs `.github/workflows/release.yml`, which:
    builds the image with BuildKit's SLSA provenance (`mode=max`) and SBOM attestations, pushes it
-   to `ghcr.io/phornstein/opentrack:v<version>`, signs its digest with the project's cosign key
+   to `ghcr.io/kineticlogic-io/opentrack:v<version>`, signs its digest with the project's cosign key
    (no public transparency log: the repository is private), verifies the signature, and attaches
    the SBOMs (`scripts/security/sbom.py`) and `image-digest.txt` to the release.
    **While GitHub Actions is unavailable**, the maintainer does the same on the test server: build
@@ -107,7 +107,7 @@ A release is prepared on a `release-<version>` branch and published from `main`:
    OpenSSL FIPS provider signs the cosign payload with the project key), `cosign verify --key cosign.pub
    --insecure-ignore-tlog=true`, then `scripts/security/sbom.py` and `gh release upload` for the
    SBOMs and `image-digest.txt`. v0.4.2 and v0.4.3 were released this way.
-5. **Scan** the pushed image: `scripts/ato/scan ghcr.io/phornstein/opentrack:v<version>`. Commit
+5. **Scan** the pushed image: `scripts/ato/scan ghcr.io/kineticlogic-io/opentrack:v<version>`. Commit
    the scan to `docs/security/ato/scans/v<version>/` and carry its Critical and High findings
    into the POA&M, in a follow-up pull request.
 6. **Attach the coverage summary** (`target/coverage/summary.txt`, renamed

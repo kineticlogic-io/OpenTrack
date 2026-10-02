@@ -24,7 +24,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/phornstein/opentrack
+  IMAGE: ghcr.io/kineticlogic-io/opentrack
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:

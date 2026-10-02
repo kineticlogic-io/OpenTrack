@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- **The repository moved to `kineticlogic-io/OpenTrack`** (a GitHub transfer: issues, pull
+  requests, releases and collaborators kept; the old URL redirects). Release images from the next
+  release on are `ghcr.io/kineticlogic-io/opentrack`; v0.4.7 and earlier stay at
+  `ghcr.io/phornstein/opentrack`, signed with the same key.
+
 ## 0.4.7 (alpha), 2026-10-02
 
 Accreditation POA&M P-32 is closed, so the ASD STIG has no open findings: outbound connections

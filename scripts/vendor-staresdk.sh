@@ -22,5 +22,5 @@ rm -f "$root"/ui/vendor/staresdk-*.tgz
 cp "$work"/staresdk-*.tgz "$root/ui/vendor/"
 sha="$(git -C "$src" rev-parse --short HEAD)"
 tgz="$(basename "$work"/staresdk-*.tgz)"
-echo "$tgz built from phornstein/openstare@$sha stareSDK/ on $(date -u +%F)" > "$root/ui/vendor/STARESDK_SOURCE"
+echo "$tgz built from kineticlogic-io/OpenStare@$sha stareSDK/ on $(date -u +%F)" > "$root/ui/vendor/STARESDK_SOURCE"
 echo "vendored $tgz; now run: (cd ui && npm install ./vendor/$tgz)"
