@@ -1,0 +1,52 @@
+OpenTrack Proprietary License
+
+Copyright (c) 2026 Parker Hornstein. All rights reserved.
+
+1. Ownership. OpenTrack, including all source code, object code, container
+   images, documentation, designs, data schemas, and interface control
+   documents in this repository and any derivative of them (the "Software"),
+   is the exclusive property of Parker Hornstein (the "Licensor"). The
+   Licensor retains all right, title, and interest in the Software,
+   including all intellectual property rights.
+
+2. No license without a written agreement. No right or license to use,
+   copy, modify, merge, publish, distribute, sublicense, sell, host, or
+   create derivative works of the Software is granted by this notice, by
+   access to the Software, or by implication, estoppel, or otherwise. Any
+   such right exists only under a separate written license agreement signed
+   by the Licensor (a "License Agreement"), and only to the extent that
+   agreement states. Commercial, government, evaluation, and other licenses
+   are available only from the Licensor.
+
+3. Restrictions. Except as a License Agreement expressly permits, you may
+   not: (a) use, run, or deploy the Software; (b) copy or distribute the
+   Software or any part of it; (c) modify, translate, or create derivative
+   works of it; (d) reverse engineer, decompile, or disassemble it, except
+   to the extent applicable law expressly permits despite this restriction;
+   (e) remove or alter any proprietary notice; or (f) provide the Software
+   to any third party, including as a hosted or managed service.
+
+4. Confidentiality. The Software's source code is confidential information
+   of the Licensor. Anyone given access to it must protect it with at least
+   reasonable care and use it only as a License Agreement permits.
+
+5. Third-party components. The Software includes or depends on third-party
+   components licensed by their own authors under their own terms. Those
+   terms govern those components, and nothing in this notice restricts
+   rights granted by those terms.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT, UNLESS A
+   LICENSE AGREEMENT STATES OTHERWISE.
+
+7. Limitation of liability. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE
+   LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+   CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF DATA, PROFITS, OR
+   REVENUE, ARISING FROM ACCESS TO OR USE OF THE SOFTWARE, UNLESS A LICENSE
+   AGREEMENT STATES OTHERWISE.
+
+8. Termination. Any access or use not authorized by a License Agreement is
+   unauthorized and must stop immediately on notice from the Licensor.
+
+Licensing inquiries: https://github.com/phornstein

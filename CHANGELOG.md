@@ -4,6 +4,9 @@
 
 ### Changed
 
+- **OpenTrack is licensed under the OpenTrack Proprietary License** (`LICENSE`, the same terms
+  as OpenStare): no right to use, copy, modify or distribute it without a written license
+  agreement with the Licensor. The image carries it at `/opt/opentrack/LICENSE`.
 - **The repository moved to `kineticlogic-io/OpenTrack`** (a GitHub transfer: issues, pull
   requests, releases and collaborators kept; the old URL redirects). Release images from the next
   release on are `ghcr.io/kineticlogic-io/opentrack`; v0.4.7 and earlier stay at

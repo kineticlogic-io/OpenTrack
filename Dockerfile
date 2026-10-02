@@ -118,6 +118,7 @@ COPY docker/openssl-fips.cnf /etc/opentrack/openssl-fips.cnf
 COPY --from=server /src/target/release/opentrack /usr/local/bin/opentrack
 COPY --from=ui /ui/dist /opt/opentrack/ui
 COPY profiles /opt/opentrack/profiles
+COPY LICENSE /opt/opentrack/LICENSE
 ENV OT_UI_DIR=/opt/opentrack/ui \
     OT_PROFILES_DIR=/opt/opentrack/profiles/trackers \
     OT_SQLITE_PATH=/data/opentrack.db \
