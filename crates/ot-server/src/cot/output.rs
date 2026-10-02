@@ -495,6 +495,7 @@ async fn tak_server(host: String, port: u16, tls: Option<ot_source::tls::ClientT
             .await
             .map_err(|_| anyhow::anyhow!("connecting to {peer} timed out"))??;
             tcp.set_nodelay(true).ok();
+            let peer_addr = tcp.peer_addr().map(|a| a.to_string());
             match &tls {
                 Some(t) => {
                     let name = match t.server_name()? {
@@ -508,11 +509,11 @@ async fn tak_server(host: String, port: u16, tls: Option<ot_source::tls::ClientT
                             .map_err(|_| {
                                 anyhow::anyhow!("TLS handshake with {peer} timed out")
                             })??;
-                    connected(&ctx, &peer, &mut backoff);
+                    connected(&ctx, &peer, &peer_addr, &mut backoff);
                     serve_stream(stream, peer.clone(), ctx.clone()).await
                 }
                 None => {
-                    connected(&ctx, &peer, &mut backoff);
+                    connected(&ctx, &peer, &peer_addr, &mut backoff);
                     serve_stream(tcp, peer.clone(), ctx.clone()).await
                 }
             }
@@ -538,8 +539,14 @@ fn server_name(host: &str) -> anyhow::Result<rustls::pki_types::ServerName<'stat
         .map_err(|_| anyhow::anyhow!("{host:?} is not a valid TLS server name"))
 }
 
-fn connected(ctx: &Ctx, peer: &str, backoff: &mut Duration) {
-    tracing::info!(output = %ctx.id, %peer, "connected to TAK Server; sending the picture");
+/// `peer` is the configured host:port; `peer_addr` the address the socket
+/// actually reached (ASD STIG V-222470).
+fn connected(ctx: &Ctx, peer: &str, peer_addr: &std::io::Result<String>, backoff: &mut Duration) {
+    let peer_addr = match peer_addr {
+        Ok(a) => a.clone(),
+        Err(e) => format!("unknown ({e})"),
+    };
+    tracing::info!(output = %ctx.id, component = "tak_server", %peer, %peer_addr, "connected to TAK Server; sending the picture");
     ctx.counters.set_state("connected");
     *backoff = Duration::from_secs(1);
 }
@@ -606,6 +613,7 @@ async fn multicast(group: String, port: u16, ttl: u32, interface: Option<String>
                 .map_err(anyhow::Error::msg)?;
             let dest = SocketAddr::new(ip, port);
             let socket = udp_socket(dest, ttl, iface.as_ref())?;
+            tracing::info!(output = %ctx.id, component = "cot_multicast", peer_addr = %dest, "sending to the multicast group");
             let mut queue = ctx.register(&dest.to_string());
             let _connected = Connected::new(&ctx.counters);
             ctx.counters.set_state("sending");

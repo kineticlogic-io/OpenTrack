@@ -163,24 +163,39 @@ struct Conn {
 
 impl Conn {
     fn open(address: &str, timeout: Duration) -> anyhow::Result<Self> {
-        let (reader, writer): (Box<dyn Read + Send>, Box<dyn Write + Send>) =
-            if let Some(path) = address.strip_prefix("unix:") {
-                let s = UnixStream::connect(path).with_context(|| format!("connect {address}"))?;
-                s.set_read_timeout(Some(timeout))?;
-                (Box::new(s.try_clone()?), Box::new(s))
-            } else {
-                let hostport = address.strip_prefix("tcp://").unwrap_or(address);
-                let addr = hostport
-                    .to_socket_addrs()
-                    .with_context(|| format!("resolve {address}"))?
-                    .next()
-                    .with_context(|| format!("resolve {address}"))?;
-                let s = TcpStream::connect_timeout(&addr, CONNECT)
-                    .with_context(|| format!("connect {address}"))?;
-                s.set_read_timeout(Some(timeout))?;
-                s.set_nodelay(true)?;
-                (Box::new(s.try_clone()?), Box::new(s))
-            };
+        let (reader, writer): (Box<dyn Read + Send>, Box<dyn Write + Send>) = if let Some(path) =
+            address.strip_prefix("unix:")
+        {
+            let s = UnixStream::connect(path).with_context(|| format!("connect {address}"))?;
+            s.set_read_timeout(Some(timeout))?;
+            tracing::info!(
+                component = "plugin",
+                address,
+                peer_addr = path,
+                "external plugin connected"
+            );
+            (Box::new(s.try_clone()?), Box::new(s))
+        } else {
+            let hostport = address.strip_prefix("tcp://").unwrap_or(address);
+            let addr = hostport
+                .to_socket_addrs()
+                .with_context(|| format!("resolve {address}"))?
+                .next()
+                .with_context(|| format!("resolve {address}"))?;
+            let s = TcpStream::connect_timeout(&addr, CONNECT)
+                .with_context(|| format!("connect {address}"))?;
+            s.set_read_timeout(Some(timeout))?;
+            s.set_nodelay(true)?;
+            match s.peer_addr() {
+                Ok(peer) => {
+                    tracing::info!(component = "plugin", address, peer_addr = %peer, "external plugin connected")
+                }
+                Err(e) => {
+                    tracing::info!(component = "plugin", address, error = %e, "external plugin connected; peer address unknown")
+                }
+            }
+            (Box::new(s.try_clone()?), Box::new(s))
+        };
         Ok(Self {
             reader: BufReader::new(reader),
             writer,

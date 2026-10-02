@@ -252,6 +252,14 @@ where
     )
     .await
     .map_err(|_| anyhow::anyhow!("connecting to {host}:{port} timed out"))??;
+    match tcp.peer_addr() {
+        Ok(peer) => {
+            tracing::info!(component = "grpc", destination = %format!("{host}:{port}"), peer_addr = %peer, "connected")
+        }
+        Err(e) => {
+            tracing::info!(component = "grpc", destination = %format!("{host}:{port}"), error = %e, "connected; peer address unknown")
+        }
+    }
     tcp.set_nodelay(true)?;
     let mut builder = hyper::client::conn::http2::Builder::new(TokioExecutor::new());
     builder.timer(TokioTimer::new());

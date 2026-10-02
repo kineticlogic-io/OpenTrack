@@ -453,9 +453,9 @@ OpenTrack records sign-in success and failure (reason, address), the first use e
 
 **Status:** Implemented · **Responsibility:** OpenTrack
 
-Each audit record carries what happened (op), when (UTC ms), where (the client address, on decisions too), the source (actor, and via for tokens, certificates and OpenStare), the outcome and the detail (method, path, status, reason, before/after with secrets masked); the access log adds User-Agent, Referer and X-Forwarded-For. Records are hash-chained.
+Each audit record carries what happened (op), when (UTC ms), where (the client address, on decisions too), the source (actor, and via for tokens, certificates and OpenStare), the outcome and the detail (method, path, status, reason, before/after with secrets masked); the access log adds User-Agent, Referer and X-Forwarded-For. Records are hash-chained. Outbound connections log their destination: each connect and reconnect (feeds, TAK Server, NATS, Redis, OTLP, OCSP, OpenStare, external plugins) logs the component and the resolved remote address (peer_addr) at INFO.
 
-*Evidence:* crates/ot-store/src/audit.rs (with_client); crates/ot-server/src/auth/access.rs
+*Evidence:* crates/ot-store/src/audit.rs (with_client); crates/ot-server/src/auth/access.rs; crates/ot-core/src/netlog.rs and its callers (ASD V-222470)
 
 *Site:* POA&M: record the client address on decision rows.
 

@@ -9,6 +9,8 @@ import { SourceDetail } from './SourceDetail'
 import { UnauthenticatedBadge } from './SenderAuth'
 import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
+import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
+import { FILL_TABLE, useFillHeight } from '../../lib/fillHeight'
 
 // React Flow loads only with the Sources page's topology.
 const Topology = lazy(() => import('./Topology'))
@@ -65,6 +67,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   const [adding, setAdding] = useState(false)
   // The drawer keeps showing the last source while it slides closed.
   const [shownId, setShownId] = useState(selected)
+  const [listOpen, setListOpen] = usePanelOpen('ot.panel.sources')
+  const [listFill, listHeight] = useFillHeight()
 
   const load = useCallback(() => {
     api.sources().then(
@@ -105,7 +109,7 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   const shown = sources?.find((s) => s.id === (selected || shownId)) ?? null
   const open = !!selected && !!shown
   return (
-    <div className="panels">
+    <div className="panels fill-page">
       <CollapsiblePanel
         title="Topology"
         persistKey="ot.panel.topology"
@@ -126,7 +130,9 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
       <CollapsiblePanel
         title="Sources"
         badge={sources ? String(sources.length) : undefined}
-        persistKey="ot.panel.sources"
+        open={listOpen}
+        onOpenChange={setListOpen}
+        style={listOpen ? FILL_PANEL : undefined}
         titleActions={
           <InfoTip label="Sources columns">
             Source: an UNAUTHENTICATED badge marks a listener that runs without authenticating its senders, with that risk accepted on the
@@ -135,7 +141,7 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
           </InfoTip>
         }
       >
-        <div className="panel-body">
+        <div className="panel-body fill" ref={listFill}>
           <div className="toolbar">
             <span className="muted">Feeds OpenTrack ingests. Select one to see its status, transport, pipeline and history.</span>
             <span className="spacer" />
@@ -151,6 +157,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
             rowKey={(s) => s.id}
             selectedKey={open ? shown?.id : null}
             onRowClick={(s) => select(s.id)}
+            maxHeight={listHeight ?? 'none'}
+            style={FILL_TABLE}
             empty={sources ? 'No sources yet. Add one to start onboarding a feed.' : 'LOADING…'}
           />
         </div>
