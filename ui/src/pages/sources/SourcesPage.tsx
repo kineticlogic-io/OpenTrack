@@ -10,6 +10,7 @@ import { UnauthenticatedBadge } from './SenderAuth'
 import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
 import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
+import { FILL_TABLE, useFillHeight } from '../../lib/fillHeight'
 
 // React Flow loads only with the Sources page's topology.
 const Topology = lazy(() => import('./Topology'))
@@ -67,6 +68,7 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
   // The drawer keeps showing the last source while it slides closed.
   const [shownId, setShownId] = useState(selected)
   const [listOpen, setListOpen] = usePanelOpen('ot.panel.sources')
+  const [listFill, listHeight] = useFillHeight()
 
   const load = useCallback(() => {
     api.sources().then(
@@ -139,7 +141,7 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
           </InfoTip>
         }
       >
-        <div className="panel-body fill">
+        <div className="panel-body fill" ref={listFill}>
           <div className="toolbar">
             <span className="muted">Feeds OpenTrack ingests. Select one to see its status, transport, pipeline and history.</span>
             <span className="spacer" />
@@ -155,7 +157,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
             rowKey={(s) => s.id}
             selectedKey={open ? shown?.id : null}
             onRowClick={(s) => select(s.id)}
-            maxHeight="none"
+            maxHeight={listHeight ?? 'none'}
+            style={FILL_TABLE}
             empty={sources ? 'No sources yet. Add one to start onboarding a feed.' : 'LOADING…'}
           />
         </div>

@@ -33,6 +33,7 @@
   by side and share the window's height with the track table, which scrolls inside; the track
   management log follows a scroll below. On Sources, the sources table takes the height the
   topology leaves. A closed panel keeps its title's height, and a short window scrolls the page.
+  A filled table renders rows for its whole height, however many tracks it lists.
 
 ### Fixed
 

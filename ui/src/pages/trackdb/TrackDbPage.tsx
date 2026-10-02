@@ -19,6 +19,7 @@ import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
 import { useBasemapTiles } from '../../lib/basemap'
 import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
+import { FILL_TABLE, useFillHeight } from '../../lib/fillHeight'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
 setWorkerUrl(maplibreWorkerUrl)
@@ -175,6 +176,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const [mapOpen, setMapOpen] = usePanelOpen('ot.panel.trackmap')
   const [cardOpen, setCardOpen] = usePanelOpen('ot.panel.trackcard')
   const [tableOpen, setTableOpen] = usePanelOpen('ot.panel.tracktable')
+  const [tableFill, tableHeight] = useFillHeight()
 
   useEffect(() => {
     let cancelled = false
@@ -493,7 +495,7 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
             </>
           }
         >
-          <div className="panel-fill">
+          <div className="panel-fill" ref={tableFill}>
             <div className="selection-bar">
               {ticked.length === 0 ? (
                 <>
@@ -567,7 +569,8 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
             selectedKey={selected || null}
             onRowClick={(t) => select(t.uid)}
             defaultSort={{ key: 'last', direction: 'desc' }}
-            maxHeight="none"
+            maxHeight={tableHeight ?? 'none'}
+            style={FILL_TABLE}
             empty={rows === null ? 'LOADING…' : filtered ? 'No track matches.' : 'No live tracks. Enable a source to start ingesting.'}
           />
           </div>
