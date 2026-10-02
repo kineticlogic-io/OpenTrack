@@ -155,6 +155,8 @@ pub struct Auth {
     pub public_url: Option<String>,
     settings: RwLock<AuthSettings>,
     http: reqwest::Client,
+    /// The address OpenStare was last reached at, logged when it changes.
+    openstare_peer: ot_core::netlog::PeerLog,
     openstare_cache: Mutex<HashMap<String, (Instant, Option<AuthUser>)>>,
     attempts: Mutex<HashMap<IpAddr, (f64, Instant)>>,
     /// When each session was last used, saved in batches.
@@ -191,6 +193,7 @@ impl Auth {
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap_or_default(),
+            openstare_peer: Default::default(),
             openstare_cache: Mutex::new(HashMap::new()),
             attempts: Mutex::new(HashMap::new()),
             activity: sessions::Activity::default(),

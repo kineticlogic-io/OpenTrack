@@ -64,6 +64,11 @@ async fn ask(s: &AppState, cookie: Option<&str>, bearer: Option<&str>) -> Option
             return None;
         }
     };
+    if let Some(peer) = resp.remote_addr()
+        && s.auth.openstare_peer.changed(&settings.api_url, peer)
+    {
+        tracing::info!(component = "openstare", api = %ot_core::secrets::redact_url(&settings.api_url), peer_addr = %peer, "OpenStare reached");
+    }
     if !resp.status().is_success() {
         return None;
     }

@@ -142,6 +142,71 @@ pub struct RedisTls {
     pub client: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+/// The server a Redis client dials: host and port, or a Unix socket path.
+#[derive(Debug, Clone, PartialEq)]
+enum RedisDestination {
+    Tcp(String, u16),
+    Unix(String),
+}
+
+fn redis_destination(addr: &redis::ConnectionAddr) -> RedisDestination {
+    match addr {
+        redis::ConnectionAddr::Tcp(host, port)
+        | redis::ConnectionAddr::TcpTls { host, port, .. } => {
+            RedisDestination::Tcp(host.clone(), *port)
+        }
+        redis::ConnectionAddr::Unix(path) => RedisDestination::Unix(path.display().to_string()),
+        other => RedisDestination::Unix(other.to_string()),
+    }
+}
+
+/// Log where Redis is (ASD STIG V-222470). The connection manager keeps its
+/// socket to itself, so this is what the configured host resolves to now.
+async fn log_redis_destination(dest: &RedisDestination, message: &str) {
+    match dest {
+        RedisDestination::Tcp(host, port) => {
+            let peer_addr = match tokio::net::lookup_host((host.as_str(), *port)).await {
+                Ok(addrs) => ot_core::netlog::addr_list(addrs),
+                Err(e) => format!("unresolved ({e})"),
+            };
+            tracing::info!(component = "redis", server = %format!("{host}:{port}"), %peer_addr, "{message}");
+        }
+        RedisDestination::Unix(path) => {
+            tracing::info!(component = "redis", server = %path, peer_addr = %path, "{message}");
+        }
+    }
+}
+
+/// How often the reconnect watcher pings Redis.
+const WATCH_EVERY: Duration = Duration::from_secs(30);
+
+/// The connection manager reconnects on its own and says nothing, so ping
+/// it now and then and log the destination again when it comes back.
+fn watch_reconnects(conn: ConnectionManager, dest: RedisDestination) {
+    tokio::spawn(async move {
+        let mut up = true;
+        let mut tick = tokio::time::interval(WATCH_EVERY);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let ok = redis::cmd("PING")
+                .query_async::<String>(&mut conn.clone())
+                .await
+                .is_ok();
+            match (up, ok) {
+                (true, false) => {
+                    tracing::warn!(component = "redis", server = ?dest, "Redis unreachable");
+                }
+                (false, true) => {
+                    log_redis_destination(&dest, "Redis reconnected (resolved address)").await
+                }
+                _ => {}
+            }
+            up = ok;
+        }
+    });
+}
+
 impl RedisStore {
     pub async fn connect(url: &str, keys: Keys) -> Result<Self> {
         Self::connect_tls(url, keys, None).await
@@ -168,7 +233,10 @@ impl RedisStore {
         // XREADGROUP, which would then fail every idle poll.
         let config = redis::aio::ConnectionManagerConfig::new()
             .set_response_timeout(Some(Duration::from_secs(15)));
+        let destination = redis_destination(client.get_connection_info().addr());
         let conn = ConnectionManager::new_with_config(client, config).await?;
+        log_redis_destination(&destination, "Redis connected (resolved address)").await;
+        watch_reconnects(conn.clone(), destination);
         Ok(Self {
             conn,
             keys,

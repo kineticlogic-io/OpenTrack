@@ -7,6 +7,7 @@
 
 pub mod geometry;
 pub mod gold;
+pub mod netlog;
 pub mod schema;
 pub mod secrets;
 pub mod sidc;
