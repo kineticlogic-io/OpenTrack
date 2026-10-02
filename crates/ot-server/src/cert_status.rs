@@ -74,6 +74,8 @@ pub struct CertStatus {
     /// Responders that recently failed to answer.
     down: Mutex<HashMap<String, Instant>>,
     http: reqwest::Client,
+    /// The address each responder was last reached at, logged when it changes.
+    peers: ot_core::netlog::PeerLog,
     algs: &'static [&'static dyn SignatureVerificationAlgorithm],
     audit: Option<AuditSink>,
 }
@@ -125,6 +127,7 @@ impl CertStatus {
             flights: Mutex::default(),
             down: Mutex::default(),
             http: http_client(),
+            peers: Default::default(),
             algs: provider.signature_verification_algorithms.all,
             audit,
         })
@@ -283,6 +286,11 @@ impl CertStatus {
             .send()
             .await
             .map_err(down)?;
+        if let Some(peer) = resp.remote_addr()
+            && self.peers.changed(url, peer)
+        {
+            tracing::info!(component = "ocsp", responder = %ot_core::secrets::redact_url(url), peer_addr = %peer, "OCSP responder reached");
+        }
         if !resp.status().is_success() {
             return Err(NoAnswer::Down(format!("HTTP {}", resp.status().as_u16())));
         }

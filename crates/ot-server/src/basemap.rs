@@ -115,6 +115,13 @@ async fn tile(
             return Ok(fail(reason, None));
         }
     };
+    // The tile server's address, logged when it changes (ASD STIG V-222470).
+    static PEERS: OnceLock<ot_core::netlog::PeerLog> = OnceLock::new();
+    if let Some(peer) = res.remote_addr()
+        && PEERS.get_or_init(Default::default).changed(&host, peer)
+    {
+        tracing::info!(component = "basemap", %host, peer_addr = %peer, "tile server reached");
+    }
     let status = res.status();
     if status == StatusCode::NOT_FOUND {
         return Err(ApiError::not_found("no such tile"));

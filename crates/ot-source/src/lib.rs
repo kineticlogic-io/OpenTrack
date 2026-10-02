@@ -9,6 +9,7 @@ pub mod expr;
 pub mod frame;
 pub mod grpc;
 pub mod mapping;
+pub mod netlog;
 pub mod path;
 pub mod pipeline;
 pub mod plugin;

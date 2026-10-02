@@ -837,6 +837,7 @@ pub async fn run(
                 .await
                 .with_context(|| format!("connecting to {host}:{port}"))?;
             let origin = format!("{host}:{port}");
+            log_peer("tcp", &origin, stream.peer_addr());
             let line = send_on_connect.as_deref().map(resolve_env).transpose()?;
             match tls {
                 Some((connector, name)) => {
@@ -933,6 +934,9 @@ pub async fn run(
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Extra wait while the server is rate limiting or overloaded.
             let mut backoff = Duration::ZERO;
+            // Logged when the polled address changes, not on every poll.
+            let mut last_peer = crate::netlog::LastPeer::default();
+            let shown = redact(&url);
             loop {
                 ticker.tick().await;
                 if !backoff.is_zero() {
@@ -944,6 +948,11 @@ pub async fn run(
                 }
                 let res = async {
                     let resp = req.send().await?;
+                    if let Some(peer) = resp.remote_addr()
+                        && last_peer.changed(peer)
+                    {
+                        tracing::info!(component = "http_poll", url = %shown, peer_addr = %peer, "polling");
+                    }
                     let code = resp.status();
                     if code == reqwest::StatusCode::TOO_MANY_REQUESTS
                         || code == reqwest::StatusCode::SERVICE_UNAVAILABLE
@@ -974,7 +983,7 @@ pub async fn run(
                             Some(secs) => Duration::from_secs_f64(secs.clamp(0.0, 3600.0)),
                             None => (backoff * 2).max(interval).min(Duration::from_secs(300)),
                         };
-                        tracing::warn!(%url, %code, ?backoff, "poll rate limited; backing off");
+                        tracing::warn!(url = %shown, %code, ?backoff, "poll rate limited; backing off");
                         set(&status, |s| {
                             s.connected = false;
                             s.errors += 1;
@@ -984,7 +993,8 @@ pub async fn run(
                     }
                     Err(e) => {
                         // A failed poll is not fatal; count it and poll again.
-                        tracing::warn!(%url, error = %e, "poll failed");
+                        tracing::warn!(url = %shown, error = %e, "poll failed");
+                        last_peer.reset();
                         set(&status, |s| {
                             s.connected = false;
                             s.errors += 1;
@@ -1018,6 +1028,12 @@ pub async fn run(
                 tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
                     .await
                     .with_context(|| format!("connecting to {}", redact(&url)))?;
+            let peer = match ws.get_ref() {
+                tokio_tungstenite::MaybeTlsStream::Plain(s) => s.peer_addr(),
+                tokio_tungstenite::MaybeTlsStream::Rustls(s) => s.get_ref().0.peer_addr(),
+                _ => Err(std::io::ErrorKind::Unsupported.into()),
+            };
+            log_peer("websocket", &redact(&url), peer);
             if let Some(sub) = subscribe {
                 let text = match resolve_value(sub)? {
                     Value::String(s) => s,
@@ -1225,6 +1241,10 @@ async fn run_mqtt(
             .with_context(|| format!("MQTT {origin}"))?;
         match event {
             Event::Incoming(Packet::ConnAck(_)) => {
+                // rumqttc keeps the socket to itself: log what the broker
+                // host resolves to as the session opens.
+                let peer_addr = crate::netlog::resolve(&host, port).await;
+                tracing::info!(component = "mqtt", destination = %origin, %peer_addr, "connected (resolved address)");
                 for f in &filters {
                     client.subscribe(f.clone(), qos).await?;
                 }
@@ -1274,6 +1294,16 @@ fn connected(status: &SharedStatus) {
         }
         s.connected = true;
     });
+}
+
+/// Log an outbound connection's remote address (ASD STIG V-222470).
+fn log_peer(component: &str, destination: &str, peer: std::io::Result<SocketAddr>) {
+    match peer {
+        Ok(peer) => tracing::info!(component, destination, peer_addr = %peer, "connected"),
+        Err(e) => {
+            tracing::info!(component, destination, error = %e, "connected; peer address unknown")
+        }
+    }
 }
 
 /// Hide query strings, which often carry keys, in logs.
