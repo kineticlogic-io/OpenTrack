@@ -2694,6 +2694,7 @@ impl Engine {
             .as_ref()
             .and_then(|u| u.position_covariance())
             .is_some_and(|[nn, _, ee]| (nn + ee).sqrt() > 2000.0);
+        let mut by_emitter = None;
         if polygon.is_some() || large {
             if let Some(poly) = polygon {
                 compared.retain(|(other, _)| {
@@ -2706,6 +2707,7 @@ impl Engine {
                     })
                 });
             }
+            by_emitter = self.area_emitter(uid, obs, &compared);
             if compared.iter().filter(|(_, k)| k.pass).count() > 1 {
                 compared.clear();
             }
@@ -2775,6 +2777,14 @@ impl Engine {
         let window = chrono::Duration::milliseconds((s.window_secs * 1000.0) as i64);
         self.candidates
             .retain(|_, p| p.last().is_some_and(|l| obs.observed_at - l <= window));
+        // An area whose emitter identity was found on one track (see
+        // `area_emitter`) pairs with it on that.
+        let rule = if ready.is_none() && by_emitter.is_some() {
+            "area-emitter"
+        } else {
+            "kinematic"
+        };
+        let ready = ready.or(by_emitter.map(|(other, k, share)| (other, k, share, 2)));
         let Some((other, k, p, of)) = ready else {
             return Ok(());
         };
@@ -2786,7 +2796,7 @@ impl Engine {
             .filter_map(|o| o.provenance.tracker.as_deref())
             .collect();
         let evidence = json!({
-            "rule": "kinematic",
+            "rule": rule,
             "trackers": trackers,
             "approach": self.settings.correlation.approach,
             "probability": p, "comparisons": of,
@@ -2796,12 +2806,24 @@ impl Engine {
                 "plugin": plugin, "evidence": by.get(&other).cloned().unwrap_or(Value::Null),
             })),
         });
-        let reason = format!(
-            "{} and {} agreed kinematically: probability {p:.3} of the same object over {of} comparisons ({})",
-            from.doc_id(),
-            into.doc_id(),
-            describe(&k)
-        );
+        let reason = if rule == "area-emitter" {
+            format!(
+                "{} and {} carry the same emitter: an area holding it fits {} clearly best, \
+                 {:.0}% of the likelihood, on {of} successive reports ({})",
+                from.doc_id(),
+                into.doc_id(),
+                other.doc_id(),
+                100.0 * p,
+                describe(&k)
+            )
+        } else {
+            format!(
+                "{} and {} agreed kinematically: probability {p:.3} of the same object over {of} comparisons ({})",
+                from.doc_id(),
+                into.doc_id(),
+                describe(&k)
+            )
+        };
         if self.settings.correlation.mode == Mode::Suggest {
             if self
                 .suggest("pair", into, Some(from), None, evidence, reason)
@@ -5295,6 +5317,175 @@ mod tests {
         o
     }
 
+    /// An ELINT area beside a ship at open-water density: its position
+    /// alone never says which of the ships in its gate it is, but the ELNOT
+    /// found on one ship's own lines does.
+    #[tokio::test]
+    async fn an_area_pairs_with_the_ship_its_elnot_lines_are_on() {
+        let sources = ["ais", "esm-a", "esm-b", "esm-c", "elint"];
+        let Some((mut e, _d)) = engine_at("TST", &sources).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        e.settings.correlation.kinematic.object_density_per_km2 = 0.02;
+        let ship = (50.70, -1.30);
+        let other = ot_core::geometry::offset(ship.0, ship.1, 0.0, 3200.0);
+        let sensors = [
+            ("esm-a", 50.68, -1.33),
+            ("esm-b", 50.72, -1.32),
+            ("esm-c", 50.69, -1.27),
+        ];
+        let at = ot_core::geometry::offset(ship.0, ship.1, 0.0, -1000.0);
+        let area = |key: &str, s: i64, elnot: &str| {
+            let mut o = report("elint", key, s, at.0, at.1, None);
+            o.uncertainty = serde_json::from_value(json!({"ellipse": {
+                "semi_major_m": 3000.0, "semi_minor_m": 3000.0, "orientation_deg": 0.0}}))
+            .unwrap();
+            o.identifiers = vec![ot_core::schema::Identifier::new("elnot", elnot)];
+            o
+        };
+        for s in 0..60 {
+            let mut batch = vec![
+                report("ais", "1", s, ship.0, ship.1, Some("235000001")),
+                report("ais", "2", s, other.0, other.1, Some("235000002")),
+            ];
+            if s % 5 == 0 {
+                batch.extend(
+                    sensors
+                        .iter()
+                        .map(|(src, lat, lon)| lob(src, "s", s, *lat, *lon, ship, Some("E1"))),
+                );
+            }
+            if s == 30 || s == 50 {
+                batch.push(area("x", s, "E1"));
+                batch.push(area("y", s, "E9"));
+            }
+            feed(&mut e, &batch).await;
+            if s == 30 {
+                // Both ships are inside the area's gate: one report is
+                // not enough.
+                assert_ne!(track_of(&e, "elint", "x"), track_of(&e, "ais", "1"));
+            }
+        }
+        let ship_uid = track_of(&e, "ais", "1");
+        assert!(
+            e.tracks[&ship_uid]
+                .bearings
+                .iter()
+                .any(|b| b.identifiers.iter().any(|i| i.value == "E1")),
+            "the ship's lines carry its ELNOT"
+        );
+        assert_eq!(track_of(&e, "elint", "x"), ship_uid, "paired on the ELNOT");
+        assert_ne!(track_of(&e, "elint", "x"), track_of(&e, "ais", "2"));
+        // An area whose ELNOT no track carries stays alone.
+        let y = track_of(&e, "elint", "y");
+        assert_ne!(y, ship_uid);
+        assert_ne!(y, track_of(&e, "ais", "2"));
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// A sensor that measures range now and then (an acoustic array) has
+    /// said which object its bearing-only reports are: the same key as its
+    /// ranged ones. One such line goes to that track; a line of another key
+    /// through it waits.
+    #[tokio::test]
+    async fn a_bearing_goes_to_its_sensor_tracks_own_ranged_track() {
+        let Some((mut e, _d)) = engine_at("TST", &["acoustic-1"]).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let array = (51.5, -0.1);
+        let drone = ot_core::geometry::offset(array.0, array.1, 300.0, 200.0);
+        let (b, d) = ot_core::geometry::bearing_to(array.0, array.1, drone.0, drone.1);
+        let line = |key: &str, s: i64, range: Option<f64>| {
+            let mut o = report("acoustic-1", key, s, array.0, array.1, None);
+            o.geometry = Some(ot_core::Geometry::Bearing {
+                bearing_deg: b,
+                sigma_deg: 2.0,
+                range_m: range,
+                range_sigma_m: range.map(|_| 10.0),
+                max_range_m: Some(1000.0),
+                elevation_deg: None,
+            });
+            o
+        };
+        for s in 0..3 {
+            feed(&mut e, &[line("k", s, Some(d))]).await;
+        }
+        let uid = track_of(&e, "acoustic-1", "k");
+        feed(&mut e, &[line("k", 3, None), line("j", 3, None)]).await;
+        let t = &e.tracks[&uid];
+        assert!(
+            t.bearings
+                .iter()
+                .any(|b| b.source_track_key == "k" && b.range_m.is_none()),
+            "the bearing-only report joined its own track"
+        );
+        assert!(t.bearings.iter().all(|b| b.source_track_key == "k"));
+        assert_eq!(e.tracks.len(), 1);
+        e.redis.purge_namespace().await.unwrap();
+    }
+
+    /// An emitter's lines fix it into a track of their own; once a ship
+    /// turns up there and the lines are found pointing at it, the fix track
+    /// joins the ship's rather than lingering beside it until it is stale.
+    #[tokio::test]
+    async fn a_fix_track_joins_the_track_its_lines_went_to() {
+        let sources = ["ais", "esm-a", "esm-b", "esm-c"];
+        let Some((mut e, _d)) = engine_at("TST", &sources).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        let emitter = (50.90, -1.30);
+        let sensors = [
+            ("esm-a", 50.60, -1.60),
+            ("esm-b", 51.05, -1.55),
+            ("esm-c", 50.95, -1.00),
+        ];
+        let lines = |s: i64| -> Vec<Observation> {
+            sensors
+                .iter()
+                .map(|(src, lat, lon)| lob(src, "n", s, *lat, *lon, emitter, None))
+                .collect()
+        };
+        for s in 0..6 {
+            feed(&mut e, &lines(s)).await;
+        }
+        let fix = e
+            .tracks
+            .values()
+            .find(|t| t.contributors.iter().all(|c| c.source_id == "fix"))
+            .map(|t| t.uid)
+            .expect("a track from the fixes");
+        for s in 6..14 {
+            let mut batch = lines(s);
+            batch.push(report(
+                "ais",
+                "9",
+                s,
+                emitter.0,
+                emitter.1,
+                Some("235000009"),
+            ));
+            feed(&mut e, &batch).await;
+        }
+        let ship = track_of(&e, "ais", "9");
+        assert!(
+            e.tracks[&ship]
+                .contributors
+                .iter()
+                .any(|c| c.source_id == "fix"),
+            "the fix track joined the ship's"
+        );
+        assert!(!e.tracks.contains_key(&fix) || fix == ship);
+        assert_eq!(
+            e.tracks.values().filter(|t| t.kind.is_track()).count(),
+            1,
+            "one track"
+        );
+        e.redis.purge_namespace().await.unwrap();
+    }
+
     #[tokio::test]
     async fn bearings_go_to_the_track_they_point_at_or_cross_into_a_track() {
         let Some((mut e, _d)) = engine_at("TST", &["ais", "esm-a", "esm-b", "esm-c"]).await else {
@@ -5520,10 +5711,89 @@ mod tests {
     /// the truth with the design's gates.
     #[tokio::test]
     async fn esm_crossfix_scenario_meets_its_gates() {
-        let sources = ["ais", "esm-1", "esm-2", "esm-3", "esm-4", "elint"];
-        let Some((mut e, _d)) = engine_at("TST", &sources).await else {
+        let Some(score) = esm_crossfix(false).await else {
             eprintln!("skipped: OT_TEST_REDIS_URL not set");
             return;
+        };
+        let Some(s) = score else {
+            return; // OT_ESM_NAIVE: measured, not gated
+        };
+        assert!(
+            s.precision() >= 0.95,
+            "bearing association precision {:.3}",
+            s.precision()
+        );
+        assert!(
+            s.non_ais_found >= 9,
+            "emitters without AIS tracked: {}/10",
+            s.non_ais_found
+        );
+        assert!(s.fixes > 0);
+        // Left with two tracks: an emitter whose lines carry no ELNOT,
+        // known otherwise only by a kilometres-wide ELINT area (nothing but
+        // position links them).
+        assert!(s.duplicates <= 1, "{} ships with two tracks", s.duplicates);
+        assert_eq!(s.areas.1, 0, "areas paired with another object");
+        // The ELNOT ships' areas pair with their fix tracks.
+        assert!(
+            s.joined.0 >= 30,
+            "areas on their ship's fix track: {}",
+            s.joined.0
+        );
+        assert!(
+            s.ghosts as f64 <= 0.02 * s.fixes as f64,
+            "{} ghost fixes of {}",
+            s.ghosts,
+            s.fixes
+        );
+        assert!(
+            s.within as f64 >= 0.9 * s.fixes as f64,
+            "{}/{} fixes within 2 sigma",
+            s.within,
+            s.fixes
+        );
+    }
+
+    /// The `esm-crossfix` scenario's results.
+    #[derive(Debug, Default)]
+    struct CrossfixScore {
+        /// Bearings on tracks: right, wrong.
+        assigned: (usize, usize),
+        non_ais_found: usize,
+        fixes: usize,
+        ghosts: usize,
+        within: usize,
+        /// Ships with more than one confirmed track at the end.
+        duplicates: usize,
+        /// ELINT area reports: paired right, wrong, alone.
+        areas: (usize, usize, usize),
+        /// The same, for the areas of ships that also report AIS.
+        ais_areas: (usize, usize, usize),
+        /// Area reports on one track with another source's track of their
+        /// ship (AIS, or a fix): of ships without AIS, of ships with it.
+        joined: (usize, usize),
+    }
+
+    impl CrossfixScore {
+        fn precision(&self) -> f64 {
+            self.assigned.0 as f64 / (self.assigned.0 + self.assigned.1).max(1) as f64
+        }
+    }
+
+    /// Run the `esm-crossfix` scenario; with `elint_on_ais`, the ELINT
+    /// source also reports areas for five of the AIS ships (0 to 4: three
+    /// whose bearings carry their ELNOT, two whose bearings are anonymous),
+    /// from a generator of their own so the rest of the scenario is
+    /// unchanged. `None` without Redis; `Some(None)` with OT_ESM_NAIVE.
+    async fn esm_crossfix(elint_on_ais: bool) -> Option<Option<CrossfixScore>> {
+        let sources = ["ais", "esm-1", "esm-2", "esm-3", "esm-4", "elint"];
+        let (mut e, _d) = engine_at("TST", &sources).await?;
+        let mut extra_seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut extra = move || {
+            extra_seed ^= extra_seed << 13;
+            extra_seed ^= extra_seed >> 7;
+            extra_seed ^= extra_seed << 17;
+            (extra_seed >> 11) as f64 / (1u64 << 53) as f64
         };
         // A small deterministic generator and normal noise.
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
@@ -5582,7 +5852,10 @@ mod tests {
             ships.iter().map(|s| pos(s.n, s.e)).collect()
         }
         let mut per_ship = [0usize; 20];
+        let mut at_end: Vec<Vec<String>> = vec![Vec::new(); 20];
         let mut areas = (0usize, 0usize, 0usize); // right, wrong, alone
+        let mut ais_areas = (0usize, 0usize, 0usize);
+        let mut joined = (0usize, 0usize);
         for step in 0..120i64 {
             let secs = step * 5;
             for s in &mut ships {
@@ -5638,11 +5911,10 @@ mod tests {
                     }
                     batch.push(o);
                 }
-                if i >= 15 && step % 6 == 0 {
-                    let (n, e) = (
-                        s.n + 1500.0 * normal(&mut unit),
-                        s.e + 1500.0 * normal(&mut unit),
-                    );
+                let on_ais = elint_on_ais && i < 5;
+                if (i >= 15 || on_ais) && step % 6 == 0 {
+                    let rng: &mut dyn FnMut() -> f64 = if on_ais { &mut extra } else { &mut unit };
+                    let (n, e) = (s.n + 1500.0 * normal(rng), s.e + 1500.0 * normal(rng));
                     let (alat, alon) = pos(n, e);
                     let mut o = report("elint", &format!("x{i}"), secs, alat, alon, None);
                     o.uncertainty = serde_json::from_value(json!({"ellipse": {"semi_major_m": 3000.0, "semi_minor_m": 3000.0, "orientation_deg": 0.0}})).unwrap();
@@ -5664,10 +5936,24 @@ mod tests {
             for o in batch.iter().filter(|o| o.source_id == "elint") {
                 let i: usize = o.source_track_key.trim_start_matches('x').parse().unwrap();
                 let key = format!("elint/{}", o.source_track_key);
-                match area_pairing(&e, &key, i, &object) {
-                    None => areas.2 += 1,
-                    Some(true) => areas.0 += 1,
-                    Some(false) => areas.1 += 1,
+                let tally = if i < 10 { &mut ais_areas } else { &mut areas };
+                let right = area_pairing(&e, &key, i, &object);
+                match right {
+                    None => tally.2 += 1,
+                    Some(true) => tally.0 += 1,
+                    Some(false) => tally.1 += 1,
+                }
+                let with_other = e
+                    .reports
+                    .get(&key)
+                    .and_then(|u| e.tracks.get(u))
+                    .is_some_and(|t| t.contributors.iter().any(|c| c.source_id != "elint"));
+                if right == Some(true) && with_other {
+                    if i < 10 {
+                        joined.1 += 1;
+                    } else {
+                        joined.0 += 1;
+                    }
                 }
             }
             // Which emitter each live track is (the nearest within 2 km).
@@ -5710,6 +5996,19 @@ mod tests {
                 {
                     if let Some(i) = nearest(t) {
                         per_ship[i] += 1;
+                        let sources: Vec<String> = t
+                            .contributors
+                            .iter()
+                            .map(|c| {
+                                let m = if c.source_id == "fix" {
+                                    e.fix_members(&c.source_track_key).join(",")
+                                } else {
+                                    String::new()
+                                };
+                                format!("{}/{}{{{m}}}", c.source_id, c.source_track_key)
+                            })
+                            .collect();
+                        at_end[i].push(format!("{} [{}]", t.uid.doc_id(), sources.join(" ")));
                     }
                 }
             }
@@ -5778,9 +6077,13 @@ mod tests {
         // Duplicates: ships with more than one confirmed track at the end.
         let duplicates = per_ship.iter().filter(|&&n| n > 1).count();
         eprintln!("tracks per ship at the end: {per_ship:?} ({duplicates} with two)");
+        for (i, tracks) in at_end.iter().enumerate().filter(|(_, t)| t.len() > 1) {
+            eprintln!("  ship {i}: {}", tracks.join(" | "));
+        }
         eprintln!(
-            "esm-crossfix areas: {} paired right, {} wrong, {} alone",
-            areas.0, areas.1, areas.2
+            "esm-crossfix areas: {} paired right, {} wrong, {} alone; beside AIS ships: \
+             {} right, {} wrong, {} alone; on the ship's track: {} without AIS, {} with",
+            areas.0, areas.1, areas.2, ais_areas.0, ais_areas.1, ais_areas.2, joined.0, joined.1
         );
         let precision = assigned.0 as f64 / (assigned.0 + assigned.1).max(1) as f64;
         let non_ais_found = (10..20).filter(|&i| seen_at[i].is_some()).count();
@@ -5803,39 +6106,384 @@ mod tests {
             let lines: Vec<String> = frames.iter().map(|v| v.to_string()).collect();
             std::fs::write(format!("{dir}/{name}.jsonl"), lines.join("\n") + "\n").unwrap();
         }
-        if naive {
-            e.redis.purge_namespace().await.unwrap();
-            return;
-        }
-        assert!(
-            precision >= 0.95,
-            "bearing association precision {precision:.3}"
-        );
-        assert!(
-            non_ais_found >= 9,
-            "emitters without AIS tracked: {non_ais_found}/10"
-        );
-        assert!(fixes > 0);
-        // Left with two tracks: an emitter only two sensors see beside its
-        // AIS ship, one with a close neighbour, one known only by a
-        // kilometres-wide ELINT area.
-        assert!(duplicates <= 3, "{duplicates} ships with two tracks");
-
-        assert!(
-            areas.0 as f64 >= 0.95 * (areas.0 + areas.1) as f64,
-            "areas paired right {}/{}",
-            areas.0,
-            areas.0 + areas.1
-        );
-        assert!(
-            ghosts as f64 <= 0.02 * fixes as f64,
-            "{ghosts} ghost fixes of {fixes}"
-        );
-        assert!(
-            within as f64 >= 0.9 * fixes as f64,
-            "{within}/{fixes} fixes within 2 sigma"
-        );
         e.redis.purge_namespace().await.unwrap();
+        if naive {
+            return Some(None);
+        }
+        Some(Some(CrossfixScore {
+            assigned,
+            non_ais_found,
+            fixes,
+            ghosts,
+            within,
+            duplicates,
+            areas,
+            ais_areas,
+            joined,
+        }))
+    }
+
+    /// `esm-crossfix` with ELINT areas on five AIS ships as well: an area
+    /// beside a ship that reports AIS pairs only with that ship, never with
+    /// another object.
+    #[tokio::test]
+    async fn esm_crossfix_elint_beside_ais_ships() {
+        let Some(Some(s)) = esm_crossfix(true).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set, or OT_ESM_NAIVE");
+            return;
+        };
+        assert_eq!(
+            s.areas.1 + s.ais_areas.1,
+            0,
+            "areas paired with another object"
+        );
+        assert!(s.precision() >= 0.95);
+        // The areas of the AIS ships whose lines carry their ELNOT pair with
+        // them; those of the two whose lines are anonymous stay alone.
+        assert!(
+            s.joined.1 >= 50,
+            "areas on their AIS ship's track: {}",
+            s.joined.1
+        );
+        assert!(s.duplicates <= 2, "{} ships with two tracks", s.duplicates);
+    }
+
+    /// The `acoustic-arrays` scenario's results.
+    #[derive(Debug, Default)]
+    struct AcousticScore {
+        /// Ranged reports (a point each): on a track with only their own
+        /// object, on a track with another object, alone.
+        ranged: (usize, usize, usize),
+        /// Bearing-only reports on tracks: right object, wrong object.
+        lines: (usize, usize),
+        /// Fixes made, and how many had no object within 3 sigma (ghosts).
+        fixes: usize,
+        ghosts: usize,
+        /// Lines in fixes: of the fix's main object, of another.
+        fix_lines: (usize, usize),
+        /// Seconds from start to each object's first confirmed track.
+        first_seen: Vec<Option<i64>>,
+        /// Confirmed tracks per object at the end, and how far each
+        /// object's best track is from it.
+        per_object: Vec<usize>,
+        error_m: Vec<Option<f64>>,
+        /// Live tracks holding reports of more than one object, at the end.
+        mixed: usize,
+    }
+
+    /// The `acoustic-arrays` scenario (docs/non-point-contacts.md): the
+    /// five fixed acoustic arrays of the SAPIENT demo
+    /// (`scripts/demo-sapient-acoustic.sh`), up to 280 m apart, hearing
+    /// five small drones for five minutes. Each array reports each drone
+    /// it hears (inside 700 m) every second, under its own key: a bearing
+    /// (2 degrees) and elevation (1 degree), and on 70% of reports a range
+    /// (3%, at least 3 m). One drone is also a radar's point track (10 m).
+    /// Two fly in formation 80 m apart; two orbit through the field in
+    /// opposite directions. `ranged_share` sets how many reports carry a
+    /// range (0: bearings only, cross-fixed).
+    async fn acoustic_arrays(ranged_share: f64) -> Option<AcousticScore> {
+        let arrays = [
+            (51.5000, -0.1020, 18.0),
+            (51.5000, -0.0980, 20.0),
+            (51.5025, -0.1000, 16.0),
+            (51.4975, -0.1000, 22.0),
+            (51.5000, -0.1000, 19.0),
+        ];
+        let sources = [
+            "acoustic-1",
+            "acoustic-2",
+            "acoustic-3",
+            "acoustic-4",
+            "acoustic-5",
+            "radar",
+        ];
+        let (mut e, _d) = engine_at("TST", &sources).await?;
+        let mut seed = 0x51A9_1E57_AC0D_5EEDu64;
+        let mut unit = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let normal = |u: &mut dyn FnMut() -> f64| {
+            (-2.0 * u().max(1e-12).ln()).sqrt() * (2.0 * std::f64::consts::PI * u()).cos()
+        };
+        let (lat0, lon0) = (51.5, -0.1);
+        // Where drone i is at t seconds: north, east, altitude (m).
+        let truth = |i: usize, t: f64| -> (f64, f64, f64) {
+            let orbit = |cn: f64, ce: f64, r: f64, v: f64, dir: f64, phase: f64| {
+                let a = phase + dir * v * t / r;
+                (cn + r * a.cos(), ce + r * a.sin())
+            };
+            match i {
+                // Orbits the field, a radar's track too.
+                0 => {
+                    let (n, e) = orbit(0.0, 0.0, 450.0, 12.0, 1.0, 0.0);
+                    (n, e, 80.0)
+                }
+                // A tighter orbit the other way, crossing the first's path.
+                1 => {
+                    let (n, e) = orbit(150.0, -100.0, 250.0, 8.0, -1.0, 1.0);
+                    (n, e, 50.0)
+                }
+                // A pair in formation, 80 m apart across their path.
+                2 | 3 => {
+                    let a = 10.0 * t / 300.0 + 2.0;
+                    let (n, e) = (-200.0 + 350.0 * a.cos(), 250.0 + 200.0 * a.sin());
+                    let (dn, de) = (-350.0 * a.sin(), 200.0 * a.cos());
+                    let k = if i == 2 { 40.0 } else { -40.0 } / dn.hypot(de);
+                    (n - de * k, e + dn * k, if i == 2 { 60.0 } else { 65.0 })
+                }
+                // Loiters slowly to the north-east.
+                _ => (
+                    500.0 + 60.0 * (t / 90.0).sin(),
+                    400.0 + 60.0 * (t / 70.0).cos(),
+                    30.0,
+                ),
+            }
+        };
+        let objects = 5;
+        let object = |_: &str, key: &str| -> Option<usize> {
+            key.rsplit_once('o').and_then(|(_, i)| i.parse().ok())
+        };
+        // The objects a track holds: its source tracks', the lines in its
+        // fixes', its bearings'.
+        let content = |e: &Engine, t: &SystemTrack| -> Vec<Option<usize>> {
+            let mut v: Vec<Option<usize>> = t
+                .contributors
+                .iter()
+                .flat_map(|c| {
+                    if c.source_id == "fix" {
+                        e.fix_members(&c.source_track_key)
+                            .iter()
+                            .map(|k| object("", k))
+                            .collect()
+                    } else {
+                        vec![object(&c.source_id, &c.source_track_key)]
+                    }
+                })
+                .collect();
+            v.extend(
+                t.bearings
+                    .iter()
+                    .map(|b| object(&b.source_id, &b.source_track_key)),
+            );
+            v
+        };
+        let mut s = AcousticScore {
+            first_seen: vec![None; objects],
+            ..Default::default()
+        };
+        let steps = 300i64;
+        for secs in 0..steps {
+            let now = t0() + chrono::Duration::seconds(secs);
+            let mut batch = Vec::new();
+            for i in 0..objects {
+                let (n, east, alt) = truth(i, secs as f64);
+                let (lat, lon) = ot_core::geometry::offset(lat0, lon0, n, east);
+                for (k, (alat, alon, aalt)) in arrays.iter().enumerate() {
+                    let (b, d) = ot_core::geometry::bearing_to(*alat, *alon, lat, lon);
+                    if d > 700.0 {
+                        continue;
+                    }
+                    let elevation = (alt - aalt).atan2(d).to_degrees();
+                    let slant = d.hypot(alt - aalt);
+                    let ranged = unit() < ranged_share;
+                    let range_sigma = (0.03 * slant).max(3.0);
+                    let range = slant + range_sigma * normal(&mut unit);
+                    let mut o: Observation = serde_json::from_value(json!({
+                        "schema_version": 1, "source_id": format!("acoustic-{}", k + 1),
+                        "source_track_key": format!("a{}o{i}", k + 1),
+                        "observed_at": now, "received_at": now,
+                        "position": {"latitude": alat, "longitude": alon, "altitude_hae_m": aalt},
+                        "classification": {"domain": "air"},
+                    }))
+                    .unwrap();
+                    o.geometry = Some(ot_core::Geometry::Bearing {
+                        bearing_deg: (b + 2.0 * normal(&mut unit)).rem_euclid(360.0),
+                        sigma_deg: 2.0,
+                        range_m: ranged.then_some(range),
+                        range_sigma_m: ranged.then_some(range_sigma),
+                        max_range_m: Some(1000.0),
+                        elevation_deg: Some(elevation + normal(&mut unit)),
+                    });
+                    batch.push(o);
+                }
+                if i == 0 && secs % 2 == 0 {
+                    let (rlat, rlon) = ot_core::geometry::offset(
+                        lat0,
+                        lon0,
+                        n + 10.0 * normal(&mut unit),
+                        east + 10.0 * normal(&mut unit),
+                    );
+                    let o: Observation = serde_json::from_value(json!({
+                        "schema_version": 1, "source_id": "radar", "source_track_key": "r-o0",
+                        "observed_at": now, "received_at": now,
+                        "position": {"latitude": rlat, "longitude": rlon, "altitude_hae_m": alt},
+                        "uncertainty": {"circular_error_m": 10.0},
+                        "classification": {"domain": "air"},
+                    }))
+                    .unwrap();
+                    batch.push(o);
+                }
+            }
+            feed(&mut e, &batch).await;
+            // Where each report went.
+            for o in &batch {
+                let Some(ot_core::Geometry::Bearing { range_m, .. }) = &o.geometry else {
+                    continue;
+                };
+                let i = object("", &o.source_track_key).unwrap();
+                let key = format!("{}/{}", o.source_id, o.source_track_key);
+                if range_m.is_some() {
+                    match area_pairing(&e, &key, i, &object) {
+                        None => s.ranged.2 += 1,
+                        Some(true) => s.ranged.0 += 1,
+                        Some(false) => s.ranged.1 += 1,
+                    }
+                    continue;
+                }
+                let on = e.tracks.values().find(|t| {
+                    t.bearings.iter().any(|b| {
+                        b.source_id == o.source_id
+                            && b.source_track_key == o.source_track_key
+                            && b.observed_at == now
+                            && b.range_m.is_none()
+                    })
+                });
+                if let Some(t) = on {
+                    let others: Vec<Option<usize>> = content(&e, t)
+                        .into_iter()
+                        .filter(|x| *x != Some(i))
+                        .collect();
+                    if others.is_empty() {
+                        s.lines.0 += 1;
+                    } else {
+                        s.lines.1 += 1;
+                    }
+                }
+            }
+            for t in e
+                .tracks
+                .values()
+                .filter(|t| t.state == TrackState::Confirmed && t.kind.is_track())
+            {
+                let c = content(&e, t);
+                if let Some(Some(i)) = c.first()
+                    && c.iter().all(|x| *x == Some(*i))
+                    && s.first_seen[*i].is_none()
+                {
+                    s.first_seen[*i] = Some(secs);
+                }
+            }
+        }
+        // Fixes against where the drones were then.
+        for t in e
+            .trace
+            .iter()
+            .filter(|t| t["kind"] == "report" && t["source"] == "fix")
+        {
+            let at: DateTime<Utc> = serde_json::from_value(t["t"].clone()).unwrap();
+            let secs = (at - t0()).num_seconds() as f64;
+            let (lat, lon) = (t["lat"].as_f64().unwrap(), t["lon"].as_f64().unwrap());
+            let sigma = t["sigma"].as_f64().unwrap_or(50.0);
+            let best = (0..objects)
+                .map(|i| {
+                    let (n, east, _) = truth(i, secs);
+                    let (tl, tn) = ot_core::geometry::offset(lat0, lon0, n, east);
+                    ot_core::geometry::bearing_to(tl, tn, lat, lon).1
+                })
+                .fold(f64::INFINITY, f64::min);
+            s.fixes += 1;
+            if best > 3.0 * sigma.max(20.0) {
+                s.ghosts += 1;
+            }
+        }
+        for f in e.trace.iter().filter(|t| t["kind"] == "fix") {
+            let held: Vec<usize> = f["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| object("", m.as_str().unwrap()))
+                .collect();
+            let main = (0..objects)
+                .max_by_key(|i| held.iter().filter(|h| *h == i).count())
+                .unwrap();
+            let right = held.iter().filter(|h| **h == main).count();
+            s.fix_lines.0 += right;
+            s.fix_lines.1 += held.len() - right;
+        }
+        // The picture at the end: each live confirmed track is the object
+        // whose reports it holds (all of them), else the nearest within 100 m.
+        s.per_object = vec![0; objects];
+        s.error_m = vec![None; objects];
+        let end = (steps - 1) as f64;
+        for t in e
+            .tracks
+            .values()
+            .filter(|t| t.state == TrackState::Confirmed && t.kind.is_track())
+        {
+            let c = content(&e, t);
+            let mut held: Vec<usize> = c.iter().flatten().copied().collect();
+            held.sort_unstable();
+            held.dedup();
+            if held.len() > 1 {
+                s.mixed += 1;
+            }
+            let distance = |i: usize| {
+                let (n, east, _) = truth(i, end);
+                let (tl, tn) = ot_core::geometry::offset(lat0, lon0, n, east);
+                ot_core::geometry::bearing_to(
+                    tl,
+                    tn,
+                    t.view.position.latitude,
+                    t.view.position.longitude,
+                )
+                .1
+            };
+            let i = match held.as_slice() {
+                [i] => Some(*i),
+                _ => (0..objects)
+                    .map(|i| (distance(i), i))
+                    .filter(|(d, _)| *d < 100.0)
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, i)| i),
+            };
+            if let Some(i) = i {
+                s.per_object[i] += 1;
+                let d = distance(i);
+                s.error_m[i] = Some(s.error_m[i].map_or(d, |x: f64| x.min(d)));
+            }
+        }
+        e.redis.purge_namespace().await.unwrap();
+        eprintln!("acoustic-arrays (ranged share {ranged_share}): {s:?}");
+        Some(s)
+    }
+
+    #[tokio::test]
+    async fn acoustic_arrays_fuse_without_wrong_pairings() {
+        let Some(s) = acoustic_arrays(0.7).await else {
+            eprintln!("skipped: OT_TEST_REDIS_URL not set");
+            return;
+        };
+        assert_eq!(s.ranged.1, 0, "ranged reports on another drone's track");
+        assert_eq!(s.lines.1, 0, "bearings on another drone's track");
+        assert_eq!(s.mixed, 0, "tracks holding two drones");
+        assert_eq!(s.per_object, vec![1; 5], "one track per drone");
+        assert!(s.first_seen.iter().all(Option::is_some));
+        // Bearings only: the arrays cross-fix. The formation pair, 80 m
+        // apart, often lies nearly in line from the middle array, whose two
+        // lines to them then fit either fix and can swap.
+        let Some(s) = acoustic_arrays(0.0).await else {
+            return;
+        };
+        assert_eq!(s.lines.1, 0, "bearings on another drone's track");
+        assert_eq!(s.per_object, vec![1; 5], "one track per drone");
+        assert!(
+            s.fix_lines.1 as f64 <= 0.1 * (s.fix_lines.0 + s.fix_lines.1) as f64,
+            "lines in fixes of another drone: {:?}",
+            s.fix_lines
+        );
     }
 
     /// The `esm-patrol` scenario: one maritime patrol aircraft carrying an

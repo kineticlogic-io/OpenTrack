@@ -31,12 +31,6 @@
             "exists": true
           },
           "key": "detection_report.object_id",
-          "identifiers": [
-            {
-              "scheme": "sapient-object",
-              "value": "detection_report.object_id"
-            }
-          ],
           "fields": {
             "name": "detection_report.id",
             "observed_at": {
