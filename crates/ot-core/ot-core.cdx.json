@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:91f3b79a-f9f0-493e-9cad-8ff4f0ebdf9c",
+  "serialNumber": "urn:uuid:4c30af82-42df-4e13-b2ce-253d6f9106f6",
   "metadata": {
-    "timestamp": "2026-10-01T19:19:57.700707216Z",
+    "timestamp": "2026-10-02T02:12:57.129848611Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "name": "ot-core",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack core types: the authoritative track schema, system track UIDs and the published track message",
       "scope": "required",
-      "purl": "pkg:cargo/ot-core@0.4.6?download_url=file://.",
+      "purl": "pkg:cargo/ot-core@0.4.7?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7 bin-target-0",
           "name": "ot_core",
-          "version": "0.4.6",
-          "purl": "pkg:cargo/ot-core@0.4.6?download_url=file://.#src/lib.rs"
+          "version": "0.4.7",
+          "purl": "pkg:cargo/ot-core@0.4.7?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -1419,7 +1419,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",

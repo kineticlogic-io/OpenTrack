@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:ed6ced19-bbdd-453b-acfb-e0ad94d439d3",
+  "serialNumber": "urn:uuid:2c8904bc-8aeb-4af3-a9d8-0bb608349903",
   "metadata": {
-    "timestamp": "2026-10-01T19:19:57.706161892Z",
+    "timestamp": "2026-10-02T02:12:57.136705297Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-nats#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-nats#0.4.7",
       "name": "ot-nats",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack NATS output: JetStream publisher for system tracks",
       "scope": "required",
-      "purl": "pkg:cargo/ot-nats@0.4.6?download_url=file://.",
+      "purl": "pkg:cargo/ot-nats@0.4.7?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-nats#0.4.6 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-nats#0.4.7 bin-target-0",
           "name": "ot_nats",
-          "version": "0.4.6",
-          "purl": "pkg:cargo/ot-nats@0.4.6?download_url=file://.#src/lib.rs"
+          "version": "0.4.7",
+          "purl": "pkg:cargo/ot-nats@0.4.7?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -5146,7 +5146,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-nats#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-nats#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#async-nats@0.50.0",
         "registry+https://github.com/rust-lang/crates.io-index#aws-lc-rs@1.18.1",

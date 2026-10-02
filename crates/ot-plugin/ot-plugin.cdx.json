@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:2ba23e41-248b-4ad0-9e88-2b1f73150792",
+  "serialNumber": "urn:uuid:7a0c488f-cade-4fa6-9599-65e843854fdc",
   "metadata": {
-    "timestamp": "2026-10-01T19:19:57.714487785Z",
+    "timestamp": "2026-10-02T02:12:57.146205955Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -14,19 +14,19 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-plugin#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-plugin#0.4.7",
       "name": "ot-plugin",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack plugin hosts: WebAssembly components and external plugins over a socket",
       "scope": "required",
-      "purl": "pkg:cargo/ot-plugin@0.4.6?download_url=file://.",
+      "purl": "pkg:cargo/ot-plugin@0.4.7?download_url=file://.",
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-plugin#0.4.6 bin-target-0",
+          "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-plugin#0.4.7 bin-target-0",
           "name": "ot_plugin",
-          "version": "0.4.6",
-          "purl": "pkg:cargo/ot-plugin@0.4.6?download_url=file://.#src/lib.rs"
+          "version": "0.4.7",
+          "purl": "pkg:cargo/ot-plugin@0.4.7?download_url=file://.#src/lib.rs"
         }
       ]
     },
@@ -40,43 +40,43 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-codec-stanag4607#0.4.7",
       "name": "ot-codec-stanag4607",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "STANAG 4607 (Edition 3) GMTI decoder: packets, segments and flattened target records",
       "scope": "required",
-      "purl": "pkg:cargo/ot-codec-stanag4607@0.4.6?download_url=file://../ot-codec-stanag4607"
+      "purl": "pkg:cargo/ot-codec-stanag4607@0.4.7?download_url=file://../ot-codec-stanag4607"
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "name": "ot-core",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack core types: the authoritative track schema, system track UIDs and the published track message",
       "scope": "required",
-      "purl": "pkg:cargo/ot-core@0.4.6?download_url=file://../ot-core"
+      "purl": "pkg:cargo/ot-core@0.4.7?download_url=file://../ot-core"
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-sapient#0.4.7",
       "name": "ot-sapient",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "SAPIENT (BSI Flex 335) codec for OpenTrack",
       "scope": "required",
-      "purl": "pkg:cargo/ot-sapient@0.4.6?download_url=file://../ot-sapient"
+      "purl": "pkg:cargo/ot-sapient@0.4.7?download_url=file://../ot-sapient"
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-source#0.4.6",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-source#0.4.7",
       "name": "ot-source",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "description": "OpenTrack source framework: transports, framing, codecs, mapping, enrich, filter and throttle",
       "scope": "required",
-      "purl": "pkg:cargo/ot-source@0.4.6?download_url=file://../ot-source"
+      "purl": "pkg:cargo/ot-source@0.4.7?download_url=file://../ot-source"
     },
     {
       "type": "library",
-      "bom-ref": "path+file:///home/openstare_admin/OpenTrack/third_party/rumqttc#0.25.1",
+      "bom-ref": "path+file:///home/openstare_admin/OT-scan047/third_party/rumqttc#0.25.1",
       "author": "tekjar <raviteja@bytebeam.io>",
       "name": "rumqttc",
       "version": "0.25.1",
@@ -9485,7 +9485,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-codec-stanag4607#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -9494,7 +9494,7 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -9504,14 +9504,14 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-plugin#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-plugin#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#aws-lc-rs@1.18.1",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.22.1",
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-source#0.4.6",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-source#0.4.7",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
@@ -9520,7 +9520,7 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-sapient#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#chrono@0.4.45",
         "registry+https://github.com/rust-lang/crates.io-index#prost-reflect@0.16.5",
@@ -9530,7 +9530,7 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/crates/ot-source#0.4.6",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/crates/ot-source#0.4.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
@@ -9544,16 +9544,16 @@
         "registry+https://github.com/rust-lang/crates.io-index#hyper-util@0.1.21",
         "registry+https://github.com/rust-lang/crates.io-index#miette@7.6.0",
         "registry+https://github.com/rust-lang/crates.io-index#nix@0.30.1",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-codec-stanag4607#0.4.6",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-core#0.4.6",
-        "path+file:///home/openstare_admin/OpenTrack/crates/ot-sapient#0.4.6",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-codec-stanag4607#0.4.7",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-core#0.4.7",
+        "path+file:///home/openstare_admin/OT-scan047/crates/ot-sapient#0.4.7",
         "registry+https://github.com/rust-lang/crates.io-index#prost@0.14.4",
         "registry+https://github.com/rust-lang/crates.io-index#prost-reflect@0.16.5",
         "registry+https://github.com/rust-lang/crates.io-index#protox@0.9.1",
         "registry+https://github.com/rust-lang/crates.io-index#quick-xml@0.42.0",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
-        "path+file:///home/openstare_admin/OpenTrack/third_party/rumqttc#0.25.1",
+        "path+file:///home/openstare_admin/OT-scan047/third_party/rumqttc#0.25.1",
         "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
         "registry+https://github.com/rust-lang/crates.io-index#rustls-native-certs@0.8.4",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -9568,7 +9568,7 @@
       ]
     },
     {
-      "ref": "path+file:///home/openstare_admin/OpenTrack/third_party/rumqttc#0.25.1",
+      "ref": "path+file:///home/openstare_admin/OT-scan047/third_party/rumqttc#0.25.1",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
         "registry+https://github.com/rust-lang/crates.io-index#fixedbitset@0.5.7",
