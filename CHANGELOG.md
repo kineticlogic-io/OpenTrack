@@ -27,6 +27,14 @@
   1.1) is served by OpenTrack itself as glyph ranges (`ui/public/map-fonts`, vendored by
   `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
 
+### Changed
+
+- **Track Management and Sources panels fill the page.** The track map and track card stretch side
+  by side and share the window's height with the track table, which scrolls inside; the track
+  management log follows a scroll below. On Sources, the sources table takes the height the
+  topology leaves. A closed panel keeps its title's height, and a short window scrolls the page.
+  A filled table renders rows for its whole height, however many tracks it lists.
+
 ### Fixed
 
 - **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after
