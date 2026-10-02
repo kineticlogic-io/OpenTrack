@@ -194,7 +194,9 @@ area of uncertainty. OpenTrack fuses them into tracks. On the map, for the selec
   lines crossing at the track are a cross-fix, the sensors agreeing on where the emitter is. A line
   that passes well away from the track is weak evidence.
 - **Area:** a dashed outline in the track's colour, for the area an ELINT report gave. The object
-  is somewhere inside, most likely near the middle.
+  is somewhere inside, most likely near the middle. An area joins a ship's or a fix's track when
+  that track carries the area's emitter identity (ELNOT), on its own lines say, and fits it clearly
+  best; a wide area in open water with nothing but its position to go on stays a track of its own.
 - **Uncertainty:** the track's position error ellipse, a pale dashed outline.
 
 The track card's **Bearings** row lists each bearing: sensor, bearing and its error (±), how far

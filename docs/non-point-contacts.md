@@ -1,6 +1,6 @@
 # Non-point contacts: design
 
-Status: **built** (2026-09-27), all six steps, plus single-sensor location (2026-09-28); both scenarios meet their gates (below).
+Status: **built** (2026-09-27), all six steps, plus single-sensor location (2026-09-28); the known limits closed where an emitter identity links the contacts, and acoustic arrays (2026-10-02, `correlation-6`). Every scenario meets its gates (below).
 
 ## What this adds
 
@@ -52,7 +52,8 @@ An `Observation` gains one optional field, `geometry`:
 
 The comparison is a chi-square gate with one degree of freedom. A track beyond `max_range_m`, or behind the sensor, is out.
 
-A bearing then **reports for** a track, the way a detection's plot does, in either of two cases:
+A bearing then **reports for** a track, the way a detection's plot does, in any of three cases:
+- **Its sensor track's own positioned reports are on the track.** A sensor that measures range now and then (an acoustic array) has already said which object a bearing-only report is, by reporting it under the same key as its ranged ones. Such a line goes to that track while it passes the gate, before any other rule.
 - **Its ELNOT matches one the track carries,** and the track fits clearly better than any other: a likelihood ratio above 10, the ELNOT counting 10:1. A different ELNOT counts for nothing.
 - **Its emitter was found on the track.** Either:
   - lines from three or more sensors, fixed together, all point at the track's own position within their errors and the track's. The track must be clearly the likeliest of all the tracks they could point at, of any kind: their fix is weighed against each track's position with both errors, and the best must beat the next by 10. A kilometres-wide ELINT area fits loosely and so scores low, while a precise AIS ship the lines pass right through scores high. Only a track at least as precise as the lines can bind them, and two lines always meet somewhere, so two aren't enough;
@@ -72,6 +73,13 @@ Two consequences:
 
 **An area and a track.** The existing kinematic gate already copes with a large ellipse. The addition is the **same ambiguity rule**: an area containing several tracks pairs with none of them until one clearly fits best. That happens as the tracks move and the areas are updated. A polygon also has to contain the track's predicted position. An area that pairs with nothing becomes a track of its own, published with its area.
 
+Position alone rarely settles it at open-water density. A 3 km area holds another object about as likely as the track (0.02 per km² over its 1σ circle of 28 km² is about one), so each report is no evidence either way, and kinematic pairing never reaches its threshold. What links an area to a track is its **emitter identity**, the same way it links a bearing:
+- the track carries the area's ELNOT, on its own identifiers or on bearings reporting for it (a ship whose ESM lines were found pointing at it, or the fix those lines made);
+- among the tracks in the area's gate (and polygon), it fits clearly best: its likelihood at least 10 times any other's, the shared ELNOT counting 10:1;
+- and two successive reports of the area find it so. One report could be chance.
+
+The area then pairs with that track (merge evidence `rule: area-emitter`). An area whose ELNOT no track carries, or whose emitter's lines are anonymous, still pairs only on position, which in open water means it stays a track of its own.
+
 ## Cross-fixing: positions from bearings
 
 The engine keeps the bearings no track took, for a window: by default 60 s, and never longer than an object could move across the fix's error.
@@ -84,7 +92,8 @@ It looks for bearings **from different sensor positions** that agree on a point:
    - **Otherwise, consensus.** Without identity, a fix needs **three or more sensors** agreeing:
      - the set passes a chi-square test at 99%;
      - each line agrees with the fix of the others (so a line from another emitter passing close by can't hide by dragging the fix towards itself);
-     - it doesn't split sensor tracks whose emitters already fixed apart.
+     - it doesn't split sensor tracks whose emitters already fixed apart;
+     - it doesn't join a sensor track to a fix that already holds another track of the same sensor. The sensor tracks them as two objects, so they are two, however their lines fit. This keeps apart two ships in line from one sensor, whose lines to them coincide.
    - **Twice.** Every set, ELNOT or anonymous, fixes only the second time the same sensor tracks cross where the first crossing could have moved to (40 m/s). Three unrelated lines meeting once is chance; twice is not.
    - **Not already explained.** A set whose every line passes through some other track is rejected: each line is accounted for, and their crossing is a ghost of those tracks' lines.
    - **Otherwise, no fix.** Two anonymous lines are the ghost case itself, so they wait for a third sensor, or for the window to pass.
@@ -95,6 +104,7 @@ It looks for bearings **from different sensor positions** that agree on a point:
    - otherwise it starts a track, tentative until confirmed like any sensor's (default 3 reports).
 
    The bearings it came from are marked used, so they don't also make other fixes.
+5. **When the emitter turns up on another track.** A fix track is its lines' estimate of where their emitter is. Once every sensor track whose lines made it reports for another track instead (their lines were found pointing at it together, or it carries their ELNOT), the fix track joins that track (merge evidence `rule: fix-lines`) rather than lingering beside it until it goes stale (15 minutes for a surface track).
 
 ## Single-sensor location
 
@@ -128,14 +138,16 @@ Scenario `esm-patrol` (`esm_patrol_intercept_converges` in `crates/ot-server/src
 
 | Measure | Result |
 |---|---|
-| ESM first hears the boat | 225 s |
-| A track from the ESM alone | 285 s |
-| ELINT joins that track | 460 s, 100 s after its first report (position plus ELNOT evidence) |
-| Video joins it | 810 s, 15 s after the video starts |
-| The boat's bearings on its track | 402 of 423 |
-| The cargo ship's bearings on the boat's track | 0 (its own ESM location pairs with its AIS track) |
-| Tracks at the boat at the end | 1: ESM location, ELINT and video, 20 m from the truth, one track number throughout |
-| ELINT areas paired with the boat's track | 101 of 102 (1 alone, none with another object) |
+| Measure | `correlation-5` | `correlation-6` |
+|---|---|---|
+| ESM first hears the boat | 225 s | 225 s |
+| A track from the ESM alone | 285 s | 285 s |
+| ELINT joins that track | 460 s, 100 s after its first report | 370 s, 10 s after its first report (on the ELNOT the boat's track carries) |
+| Video joins it | 810 s, 15 s after the video starts | 780 s, 20 s after the video starts |
+| The boat's bearings on its track | 402 of 423 | 394 of 423 |
+| The cargo ship's bearings on the boat's track | 0 (its own ESM location pairs with its AIS track) | 0 |
+| Tracks at the boat at the end | 1: ESM location, ELINT and video, 20 m from the truth, one track number throughout | 1, 22 m from the truth, one track number throughout |
+| ELINT areas paired with the boat's track | 101 of 102 (1 alone, none with another object) | 101 of 102 (1 alone, none with another object) |
 
 ## What is published
 
@@ -168,27 +180,77 @@ A synthetic scenario, `esm-crossfix`:
 | Ghost tracks published (no emitter within 3σ) | < 2% of published fix tracks |
 | Areas paired with the right track | ≥ 95%, and never with several |
 
-**Results** (`esm_crossfix_scenario_meets_its_gates` in `crates/ot-server/src/engine.rs`): 20 ships in a 50 km box, 10 on AIS; 4 ESM sensors at 1.5°, half the emitters with an ELNOT; an ELINT source with 3 km areas for 5 of them; 10 minutes.
+**Results** (`esm_crossfix_scenario_meets_its_gates` in `crates/ot-server/src/engine.rs`): 20 ships in a 50 km box, 10 on AIS; 4 ESM sensors at 1.5°, half the emitters with an ELNOT; an ELINT source with 3 km areas for 5 of them (ships 15 to 19, none on AIS); 10 minutes. `correlation-5` is before the limits were worked on (2026-09-28), `correlation-6` after.
 
-| Measure | Result |
-|---|---|
-| Bearings associated with the right track | 98.9% (2,271 of 2,297) |
-| Emitters without AIS that got a track | 10 of 10; 9 within 60 s |
-| Ghost fixes (no emitter within 3σ) | 0.44% (3 of 683) |
-| Fixes within 2σ of their own ellipse | 92% |
-| Ships with two tracks at the end | 3 of 20 (gate: 3 or fewer) |
-| Areas paired with the right track | 100% of those paired (38 of 38); 62 stayed alone. None paired with the wrong track |
+| Measure | `correlation-5` | `correlation-6` |
+|---|---|---|
+| Bearings associated with the right track | 98.9% (2,271 of 2,297) | 100% (2,645 of 2,645) |
+| Emitters without AIS that got a track | 10 of 10; 9 within 60 s | 10 of 10; 9 within 60 s |
+| Ghost fixes (no emitter within 3σ) | 0.44% (3 of 683) | 0 of 518 |
+| Fixes within 2σ of their own ellipse | 92% | 95% |
+| Ships with two tracks at the end | 3 of 20 | 1 of 20 |
+| Area reports with nothing but their own ship on their track | 38 of 100; 62 alone | 38 of 100; 62 alone |
+| Area reports on one track with their ship's fix | 0 | 35 |
+| Areas paired with another object | 0 | 0 |
 
-Since the ELNOT became evidence (2026-09-28), an ELNOT emitter's fixes and its ELINT areas no longer meet on identity. They pair on position plus the ELNOT, which ELINT's kilometre-wide areas make slow. Three ELINT ships now end with a fix track beside their ELINT track (before: one, with 2,769 bearings on tracks).
+**ELINT beside AIS ships** (`esm_crossfix_elint_beside_ais_ships`): the same scenario, with the ELINT source also reporting areas for five AIS ships (0 to 4: three whose ESM lines carry their ELNOT, two whose lines are anonymous), drawn from a generator of their own so the rest is unchanged.
+
+| Measure | `correlation-5` | `correlation-6` |
+|---|---|---|
+| Area reports on one track with their ship's AIS | 0 of 100 | 52 of 100: 52 of the three ELNOT ships' 60; none of the two anonymous ones' 40 |
+| Ships with two tracks at the end | 7 of 20 (all five ELINT-and-AIS ships, ships 16 and 18) | 2 of 20 (the two anonymous ones) |
+| Areas paired with another object | 0 | 0 |
+| Bearings associated with the right track | 100% (2,081) | 100% (2,535) |
+
+What changed, and why:
+- **An area beside a ship** stayed alone because a 3 km area's position is no evidence at open-water density (see *An area and a track*): each comparison with its ship counted slightly against pairing, and with a second ship in its gate the ambiguity rule set it aside altogether. It now pairs on the ELNOT found on the ship's own lines.
+- **A fix track beside an ELINT track** (ships 16 and 18): both carried the ELNOT, but pairing compared positions only, with the ELNOT's 10:1 per comparison, and an area reports every 30 s against a 30 s pairing window. The area-emitter rule pairs them on the second area report.
+- **A fix track beside its own ship** (ship 2 in the second scenario): the emitter's lines went to the ship once it carried the ELNOT, leaving their fix track to go stale over 15 minutes. It now joins the ship.
+- **Two ships in line with a sensor** (the 26 wrong bearings): one sensor's lines to two ships coincide, so a set took one ship's line from that sensor into the other's fix, and the line then went where that fix went. A fix may no longer hold two of one sensor's tracks.
 
 The hard cases that remain:
-- **An emitter only two sensors see, beside its own AIS ship.** Two lines can't bind, and its fix is too uncertain to pair by position. That leaves a duplicate for an ELNOT emitter, and unattached lines for an anonymous one. Linking an ELNOT to an MMSI on the entity would join the first kind.
-- **Two ships in line with two sensors' baseline.** Those sensors' lines to them coincide, so their sets mix and neither binds; the 26 wrong bearings are of this kind too.
-- **A ship known otherwise only by a kilometres-wide ELINT area** can end with a fix track beside it. Two of the emitters without AIS had no track at the end, having gone out of three sensors' range.
+- **An emitter whose lines carry no ELNOT, known otherwise only by a kilometres-wide ELINT area** (ship 19, and ships 1 and 3 beside AIS). Nothing but position links the area to the ship or to the lines' fix, and a 3 km area at open-water density is no positional evidence. Pairing on position here would need either a much tighter area or a denser picture of what else is near; forcing it would pair areas with whatever ship happens to sit in them. Linking the ELNOT to the ship's MMSI on its entity would join them.
+- **An emitter only two sensors see, beside its own AIS ship.** Two lines can't bind, and its fix is too uncertain to pair by position. That leaves a duplicate for an ELNOT emitter, and unattached lines for an anonymous one. (Neither scenario has one at the end now.)
+- Two of the emitters without AIS had no track at the end, having gone out of three sensors' range.
 
 The videos render from the same run: `OT_REPLAY_TRACE=<dir>` writes a frame per step, and `scripts/benchmark/replay/esm-video.py` draws them. `OT_ESM_NAIVE=1` turns the ghost rules off, for comparison.
 
-**Areas.** An ELINT area counts as paired right when everything else on its track is the same ship: other sources' tracks, the fixes its lines made, and the bearings on it. In `esm-patrol`, 101 of 102 areas paired with the boat's track and none with another object's. In `esm-crossfix` none paired wrongly, but most stayed alone. A 3 km area's position is too loose to prove which of several nearby tracks it is, so it pairs slowly. For the same reason, an ELINT area on a ship that also reports AIS was tried and stays a track of its own at open-water density. That's a known limit for the next phase: the area and the AIS ship would need to meet on something beyond position.
+**Areas.** An ELINT area counts as paired right when everything else on its track is the same ship: other sources' tracks, the fixes its lines made, and the bearings on it. An ELINT track holding its ship's bearings counts, which is why that measure did not move; the rows on one track with the ship's fix or AIS are the stricter test. In `esm-patrol`, 101 of 102 areas paired with the boat's track and none with another object's. In `esm-crossfix` none pair wrongly. An area pairs with a ship or fix when the ship carries its ELNOT, and stays alone when only position links them.
+
+## Acoustic arrays
+
+An acoustic array reports a bearing, an elevation and usually a range: a polar report. With `range_m` and `range_sigma_m` OpenTrack converts it to a point with its error ellipse (radial error from the range, cross-range from the bearing), reported under the array's own key for the object, and correlates it like any point: an array's reports of one object form a source track, and the arrays' source tracks of one object pair kinematically, as do a radar's or a camera's. A report without a range is a line of bearing, with one addition: it goes to the track its sensor track's own ranged reports are on. Arrays that only give bearings cross-fix like ESM sensors.
+
+A SAPIENT node's `object_id` names the object in that node's own numbering. It is the source track key, never an identifier: as an identifier, each array's different id for the same drone vetoes pairing their tracks (up to five tracks per drone in the scenario below). `docs/examples/sapient-acoustic-mqtt.json` maps it as the key only.
+
+Scenario `acoustic-arrays` (`acoustic_arrays_fuse_without_wrong_pairings` in `crates/ot-server/src/engine.rs`):
+- The five arrays of the SAPIENT demo (`scripts/demo-sapient-acoustic.sh`): a cross up to 280 m across, at 16-22 m.
+- Five drones for five minutes: one orbiting the field at 450 m and 12 m/s, also tracked by a radar (10 m, every 2 s); one orbiting tighter the other way, crossing its path; two in formation 80 m apart; one loitering 640 m out.
+- Each array reports each drone within 700 m every second, under its own key: bearing (2°), elevation (1°), and on 70% of reports a range (3%, at least 3 m). Seeded, so every run is the same.
+- Run again with no ranges at all, so the arrays only cross-fix.
+
+| Measure | `correlation-5` | `correlation-6` |
+|---|---|---|
+| Ranged reports on a track with only their own drone | 2,949 of 4,545 | 4,545 of 4,545 |
+| Ranged reports on a track also holding another drone | 1,596 | 0 |
+| Bearing-only reports on the right drone's track | 950 of 1,548 | 1,893 of 1,893 |
+| Tracks holding two drones at the end | 2 | 0 |
+| Tracks per drone at the end | 1 each | 1 each, 3-16 m from the truth |
+| First confirmed track | 2-3 s | 2-3 s |
+
+The 1,596 were one cause: an array's bearing-only line could be cross-fixed with other arrays' lines to the drone flying 80 m beside it, and the set's binding then sent that array's later lines to the wrong drone, though the array's own ranged reports under the same key were on the right one. Its own track now comes first.
+
+Bearings only (no ranges), the arrays cross-fixing:
+
+| Measure | `correlation-5` | `correlation-6` |
+|---|---|---|
+| Bearings on tracks of the right drone | 609 of 609 | 1,053 of 1,053 |
+| Lines in fixes of the fix's drone | 94.6% (4,502 of 4,759) | 94.7% (4,303 of 4,545) |
+| Ghost fixes (no drone within 3σ, at least 20 m) | 11 of 1,157 | 14 of 1,172 |
+| Tracks per drone at the end | 2, 1, 1, 0, 1 (one formation drone with none) | 1 each |
+
+Lines from the middle array to the formation pair, 80 m apart at 300-600 m, coincide much of the time. Its two lines went into each other's fixes early and fit them still; most of the 242 lines in another drone's fix are these. Each formation drone still keeps a track of its own, 2 and 13 m from it at the end. Arrays only 280 m apart see a target at 500 m across at most 30°, so bearings-only fixes are much weaker than ranged reports; ranges are what keep close drones apart.
+
 
 ## Build order
 

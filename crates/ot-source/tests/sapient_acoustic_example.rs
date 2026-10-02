@@ -34,6 +34,10 @@ fn acoustic_example_maps_a_sapient_bearing() {
     let observation = finalize(&source.id, 1, &mapped[0], Utc::now()).expect("valid bearing");
 
     assert_eq!(observation.source_track_key, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    // A node's object id is its own track key, not an identity: each array
+    // numbers the drones it hears itself, so as an identifier it would veto
+    // fusing one drone's reports from several arrays.
+    assert!(observation.identifiers.is_empty());
     assert_eq!(observation.position.latitude, 51.5);
     assert_eq!(observation.position.longitude, -0.102);
     assert_eq!(

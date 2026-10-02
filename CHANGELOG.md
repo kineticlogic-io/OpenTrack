@@ -27,7 +27,33 @@
   1.1) is served by OpenTrack itself as glyph ranges (`ui/public/map-fonts`, vendored by
   `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
 
+### Changed
+
+- **Non-point contacts close their known limits where an emitter identity links them** (#27),
+  correlation `correlation-6`. An ELINT area now pairs with the track its ELNOT was found on (a
+  ship whose own ESM lines carry it, or the fix those lines made) when that track fits the area
+  clearly best, 10 to 1 with the ELNOT counting 10:1, on two successive reports. Position alone
+  still never pairs a kilometres-wide area at open-water density. A fix track joins the track every
+  one of its lines now reports for, rather than lingering beside it until it goes stale. A fix
+  never holds two tracks of one sensor, which keeps apart two ships in line from that sensor. In
+  the `esm-crossfix` scenario, ships with two tracks went from 3 to 1, wrong bearings from 26 to 0
+  and ghost fixes from 3 to 0; with ELINT also on five AIS ships, from 7 to 2. No area pairs with
+  another object. An emitter whose lines carry no ELNOT, known otherwise only by an ELINT area,
+  still keeps two tracks. See `docs/non-point-contacts.md`.
+
+- **Acoustic arrays fuse.** A bearing-only report goes to the track its sensor track's own ranged
+  reports are on: an array that measures range now and then has already said which object the
+  report is. A new scenario, `acoustic-arrays`, runs the five arrays of the SAPIENT demo against
+  five drones (two in formation 80 m apart, one also on radar): every ranged and bearing-only
+  report lands on its own drone's track (before: 1,596 of 4,545 ranged reports and 598 of 1,548
+  bearings on a track also holding another drone), one track per drone.
+
 ### Fixed
+
+- **The SAPIENT acoustic example no longer maps the node's object id as an identifier.** Each array
+  numbers the objects it hears itself, so as an identifier the ids vetoed pairing one drone's
+  tracks from several arrays (up to five tracks per drone). It stays the source track key.
+
 
 - **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after
   the entity stage; it now leaves an affiliation the entity set (the entity is the authority), and

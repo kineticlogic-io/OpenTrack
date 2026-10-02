@@ -18,7 +18,7 @@ const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// publish rule. Stamped on every engine decision and published message.
 /// Bump it whenever the same inputs would give different system tracks, and
 /// record it in docs/algorithms.md with its scores.
-pub const VERSION: &str = "correlation-5";
+pub const VERSION: &str = "correlation-6";
 
 /// Keys under which an observation claims an identity: each identifier as
 /// `<scheme>:<value>` (lowercase), and `entity:<id>` when the registry

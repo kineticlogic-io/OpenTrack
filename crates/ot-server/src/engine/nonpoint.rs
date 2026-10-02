@@ -9,6 +9,10 @@
 //! emitter identity only fix with the same identity; without one, a fix
 //! needs three sensors agreeing, twice, and not all explained by other
 //! tracks.
+//!
+//! Areas of uncertainty correlate as points with a large error; one that
+//! carries an emitter identity also pairs with the track that identity was
+//! found on (`area_emitter`).
 
 use std::collections::HashMap;
 
@@ -194,6 +198,9 @@ pub(super) struct Bearings {
     history: HashMap<(String, String), std::collections::VecDeque<Lob>>,
     /// Anonymous sets seen once, waiting to fix again: where, error, when.
     combos: HashMap<String, (f64, f64, f64, DateTime<Utc>)>,
+    /// The track each area source track's last report found its emitter
+    /// on (`area_emitter`): a second report finding it there pairs them.
+    areas: HashMap<String, Uid>,
 }
 
 /// How a bearing fits a track.
@@ -516,14 +523,28 @@ impl Bearings {
     }
 
     /// Whether a set keeps together the sensor tracks whose emitters fixed
-    /// together before (those not yet in any fix may join).
+    /// together before (those not yet in any fix may join), and keeps apart
+    /// what one sensor tracks as two: a sensor track may not join a fix
+    /// that already holds another of the same sensor's tracks, since the
+    /// sensor itself said they are two objects.
     fn one_emitter(&self, set: &[&Lob]) -> bool {
         let mut keys = set.iter().filter_map(|l| {
             self.members
                 .get(&(l.obs.source_id.clone(), l.obs.source_track_key.clone()))
         });
         let first = keys.next();
-        keys.all(|k| Some(k) == first)
+        if !keys.all(|k| Some(k) == first) {
+            return false;
+        }
+        let Some(fix) = first else {
+            return true;
+        };
+        set.iter().all(|l| {
+            !self
+                .members
+                .iter()
+                .any(|(m, k)| k == fix && m.0 == l.obs.source_id && m.1 != l.obs.source_track_key)
+        })
     }
 }
 
@@ -564,6 +585,7 @@ impl Engine {
             counts.paired += 1;
             self.save(uid, false).await?;
             self.bearings.held.insert(member.clone(), (uid, now));
+            self.join_fix_track(&member, uid, counts).await?;
         }
         // One sensor's bearings over time: locate the emitter, unless the
         // track the line went to already has it better located.
@@ -796,6 +818,10 @@ impl Engine {
                     counts.paired += 1;
                 }
                 self.save(uid, false).await?;
+                if let Some(l) = used.first() {
+                    let member = (l.obs.source_id.clone(), l.obs.source_track_key.clone());
+                    self.join_fix_track(&member, uid, counts).await?;
+                }
                 continue;
             }
             let report = self.fix_report(&used, &fix);
@@ -905,13 +931,21 @@ impl Engine {
         // through a track proves little: an emitter with no track of its
         // own often lies on a line through someone else's, so it waits to be
         // fixed instead.
+        //
+        // First of all, the track the sensor track's own positioned reports
+        // are on: a sensor that measures range now and then (an acoustic
+        // array) has already said which object its bearing-only reports
+        // are, by reporting them under the same key.
         let member = (lob.obs.source_id.clone(), lob.obs.source_track_key.clone());
-        let learned = self.bearings.bound.get(&member).copied().or_else(|| {
-            self.bearings
-                .members
-                .get(&member)
-                .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied())
-        });
+        let own = self.own_track(&member);
+        let learned = own
+            .or_else(|| self.bearings.bound.get(&member).copied())
+            .or_else(|| {
+                self.bearings
+                    .members
+                    .get(&member)
+                    .and_then(|k| self.reports.get(&format!("{FIX}/{k}")).copied())
+            });
         lob.through = through;
         // A line that no longer fits the track it was bound to (a neighbour
         // that passed close by and has moved on) is bound no more.
@@ -932,6 +966,96 @@ impl Engine {
             }
         };
         self.attach(uid, lob, residual)
+    }
+
+    /// A fix track is its lines' own estimate of where their emitter is.
+    /// Once every sensor track whose lines made it (`member`'s fix key)
+    /// reports for track `into` instead (their emitter was found there, by
+    /// their lines pointing at it together or by its identity), the fix
+    /// track is the same emitter: it joins `into` rather than lingering
+    /// beside it until it goes stale.
+    async fn join_fix_track(
+        &mut self,
+        member: &(String, String),
+        into: Uid,
+        counts: &mut EngineCounts,
+    ) -> anyhow::Result<()> {
+        if self.settings.correlation.approach == crate::correlate::Approach::Identifiers {
+            return Ok(());
+        }
+        let Some(key) = self.bearings.members.get(member).cloned() else {
+            return Ok(());
+        };
+        let Some(from) = self.reports.get(&format!("{FIX}/{key}")).copied() else {
+            return Ok(());
+        };
+        if from == into || self.forbidden(from, into) {
+            return Ok(());
+        }
+        let (Some(f), Some(t)) = (self.tracks.get(&from), self.tracks.get(&into)) else {
+            return Ok(());
+        };
+        let alone = f.state != ot_core::TrackState::Lost
+            && f.contributors
+                .iter()
+                .all(|c| c.source_id == FIX && c.source_track_key == key);
+        let mut lines: Vec<&(String, String)> = self
+            .bearings
+            .members
+            .iter()
+            .filter(|(_, k)| **k == key)
+            .map(|(m, _)| m)
+            .collect();
+        lines.sort();
+        let all_there = lines.iter().all(|m| {
+            t.bearings
+                .iter()
+                .any(|b| b.source_id == m.0 && b.source_track_key == m.1)
+        });
+        if !alone || !all_there {
+            return Ok(());
+        }
+        let names: Vec<String> = lines.iter().map(|(s, k)| format!("{s}/{k}")).collect();
+        let target = into;
+        let (from, into) = self.merge_order(from, into);
+        let reason = format!(
+            "{} and {} are one emitter: every line that fixed {key} ({}) now reports for {}",
+            from.doc_id(),
+            into.doc_id(),
+            names.join(", "),
+            target.doc_id()
+        );
+        let evidence = json!({"rule": "fix-lines", "fix": key, "lines": names});
+        if self.settings.correlation.mode == crate::correlate::Mode::Suggest {
+            if self
+                .suggest("pair", into, Some(from), None, evidence, reason)
+                .await?
+            {
+                counts.suggested += 1;
+            }
+            return Ok(());
+        }
+        let decision = super::engine_decision("merge")
+            .reason(reason)
+            .evidence(evidence);
+        let c = self.common.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(c.open_db()?.merge_system_tracks(from, into, decision)?)
+        })
+        .await??;
+        self.absorb(from, into).await?;
+        counts.kinematic_merged += 1;
+        self.republish(into).await
+    }
+
+    /// The live track a sensor track's own positioned reports (bearings
+    /// with a measured range) are on.
+    fn own_track(&self, member: &(String, String)) -> Option<Uid> {
+        let uid = *self.reports.get(&format!("{}/{}", member.0, member.1))?;
+        self.tracks
+            .get(&uid)
+            .is_some_and(|t| t.state != ot_core::TrackState::Lost)
+            .then_some(uid)
     }
 
     /// Record a bearing on a track.
@@ -993,7 +1117,19 @@ impl Engine {
         // area fits loosely, so it is far less likely than a precise ship
         // the lines pass right through.
         let mut found: Vec<(&ot_core::SystemTrack, Vec<Fit>, f64)> = Vec::new();
-        for t in self.tracks.values().filter(|t| !mine(t)) {
+        // A line whose sensor track's own positioned reports are on a
+        // track points at that one, not another.
+        let owners: Vec<Uid> = used
+            .iter()
+            .filter_map(|l| {
+                self.own_track(&(l.obs.source_id.clone(), l.obs.source_track_key.clone()))
+            })
+            .collect();
+        for t in self
+            .tracks
+            .values()
+            .filter(|t| !mine(t) && owners.iter().all(|o| *o == t.uid))
+        {
             let fits: Option<Vec<Fit>> = used.iter().map(|l| self.fit_any(l, t)).collect();
             let Some(fits) = fits else {
                 continue;
@@ -1114,6 +1250,84 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// The track an area report's emitter is on, found by its emitter
+    /// identity (an ELNOT): the one track among `compared` (the tracks it
+    /// could pair with, each passing its gate or not) that carries the
+    /// same identity, on its own identifiers or on bearings reporting for
+    /// it, and that fits clearly best: its likelihood at least 10 times
+    /// any other's, the shared identity counting 10:1. Position alone can
+    /// never say this of a kilometres-wide area at open-water density
+    /// (another object is as likely inside it as the track), but the
+    /// identity found on a precise track's own lines can. Chance plays its
+    /// part once, so it pairs only when two successive reports of the area
+    /// find the same track; returns that track, its comparison and the
+    /// share of the likelihood it holds.
+    pub(super) fn area_emitter(
+        &mut self,
+        uid: Uid,
+        obs: &Observation,
+        compared: &[(Uid, crate::correlate::Kinematic)],
+    ) -> Option<(Uid, crate::correlate::Kinematic, f64)> {
+        use crate::correlate::{EVIDENCE_LN_LR, is_evidence_scheme, kinematic, share_evidence};
+        let key = format!("{}/{}", obs.source_id, obs.source_track_key);
+        let ids: Vec<String> = obs
+            .identifiers
+            .iter()
+            .filter(|i| is_evidence_scheme(&i.scheme))
+            .map(|i| format!("{}:{}", i.scheme.trim(), i.value.trim()).to_lowercase())
+            .collect();
+        if ids.is_empty() {
+            return None;
+        }
+        let carries = |t: &ot_core::SystemTrack| {
+            t.view
+                .identifiers
+                .iter()
+                .chain(t.bearings.iter().flat_map(|b| b.identifiers.iter()))
+                .any(|i| {
+                    ids.contains(&format!("{}:{}", i.scheme.trim(), i.value.trim()).to_lowercase())
+                })
+        };
+        // Every candidate against the same "another object" (the base
+        // density, not a crowd's), so their likelihoods compare.
+        let s = self.settings.correlation.kinematic;
+        let mut scored: Vec<(Uid, crate::correlate::Kinematic, f64, bool)> = compared
+            .iter()
+            .filter(|(other, k)| k.pass && *other != uid)
+            .filter_map(|(other, _)| {
+                let t = self.tracks.get(other)?;
+                let k = kinematic(obs, &t.view, &s);
+                let same = carries(t);
+                let mut ln = k.ln_lr;
+                if share_evidence(obs, &t.view) {
+                    ln -= EVIDENCE_LN_LR;
+                }
+                if same {
+                    ln += EVIDENCE_LN_LR;
+                }
+                k.pass.then_some((*other, k, ln, same))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.2.total_cmp(&a.2));
+        let found = scored.first().filter(|(_, _, best, same)| {
+            *same
+                && scored
+                    .get(1)
+                    .is_none_or(|next| best - next.2 >= AMBIGUITY.ln())
+        });
+        let Some(&(other, k, best, _)) = found else {
+            self.bearings.areas.remove(&key);
+            return None;
+        };
+        if self.bearings.areas.insert(key, other) != Some(other) {
+            return None;
+        }
+        let share = 1.0 / scored.iter().map(|x| (x.2 - best).exp()).sum::<f64>();
+        Some((other, k, share))
+    }
+}
+
 #[cfg(test)]
 impl Engine {
     /// The sensor track keys whose lines went into a fix key.
@@ -1205,6 +1419,33 @@ mod tests {
         let mut behind = lob("esm-b", 50.85, -1.45, SHIP, 1.0, None);
         behind.bearing = (behind.bearing + 180.0) % 360.0;
         assert!(cross(&[&a, &behind]).is_none());
+    }
+
+    #[test]
+    fn a_fix_never_holds_two_of_one_sensors_tracks() {
+        let keyed = |source: &str, key: &str| {
+            let mut l = lob(source, 50.60, -1.60, SHIP, 1.0, None);
+            l.obs.source_track_key = key.into();
+            l
+        };
+        let mut w = Bearings::default();
+        let m = |s: &str, k: &str| (s.to_string(), k.to_string());
+        w.members.insert(m("esm-a", "x"), "fix-1".into());
+        w.members.insert(m("esm-b", "x"), "fix-1".into());
+        // esm-a tracks "y" apart from its "x": it is another object, so it
+        // may not join the fix "x" went into, whatever its line fits.
+        let (y, bx, c) = (
+            keyed("esm-a", "y"),
+            keyed("esm-b", "x"),
+            keyed("esm-c", "z"),
+        );
+        assert!(!w.one_emitter(&[&y, &bx, &c]));
+        // A sensor's own track, and a sensor new to the fix, may.
+        let x = keyed("esm-a", "x");
+        assert!(w.one_emitter(&[&x, &bx, &c]));
+        // As before: sensor tracks that fixed apart stay apart.
+        w.members.insert(m("esm-c", "z"), "fix-2".into());
+        assert!(!w.one_emitter(&[&x, &bx, &c]));
     }
 
     #[test]

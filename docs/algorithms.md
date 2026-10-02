@@ -75,6 +75,31 @@ With gnn-2 (existence; the example's detection probability 0.5, clutter 3·10⁻
 
 ## Changelog
 
+### correlation-6 (2026-10-02)
+
+Non-point contacts: the known limits of `esm-crossfix` (#27), and acoustic arrays. Point-only feeds
+are unchanged: every change is on the bearing path, or on areas over 2 km of error carrying an
+evidence identifier (an ELNOT). The Autoferry replays score as before (0 wrong pairings).
+
+- **An area pairs on its emitter identity.** An area whose ELNOT a track carries (on its identifiers
+  or its bearings), and which fits that track at least 10 times better than any other in its gate,
+  the ELNOT counting 10:1, pairs with it on the second such report (`rule: area-emitter`).
+- **A fix track joins the track its lines went to**, once every sensor track in it reports for that
+  track (`rule: fix-lines`).
+- **A fix never holds two tracks of one sensor.**
+- **A bearing goes to the track its sensor track's own ranged reports are on**, before any other rule,
+  and a cross-fix whose line belongs to another track that way cannot bind to this one.
+
+| Scenario | `correlation-5` | `correlation-6` |
+|---|---|---|
+| esm-crossfix: ships with two tracks, wrong bearings, ghost fixes | 3, 26, 3 | 1, 0, 0 |
+| esm-crossfix with ELINT on AIS ships: ships with two tracks; areas on their AIS ship's track | 7; 0 | 2; 52 of 100 |
+| esm-patrol: ELINT joins the boat's track | 460 s | 370 s |
+| acoustic-arrays: ranged reports on a track with another drone; bearings likewise | 1,596; 598 | 0; 0 |
+| Areas paired with another object, every scenario | 0 | 0 |
+
+Details and the cases left open: [non-point-contacts.md](non-point-contacts.md).
+
 ### correlation-5 (2026-09-26)
 
 Fewer wrong pairings in crowded harbours. The benchmark's harbour gate is wrong pairings pooled
