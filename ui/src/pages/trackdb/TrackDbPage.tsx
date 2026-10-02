@@ -18,12 +18,18 @@ import { TrackMap, type TrackMapPoint } from './TrackMap'
 import type { HistoryPoint, SystemTrack } from '../../api/client'
 import { useCan } from '../../auth/context'
 import { useBasemapTiles } from '../../lib/basemap'
+import { FILL_PANEL, usePanelOpen } from '../../lib/panelOpen'
 
 // MapLibre resolves its worker relative to its own module, which a bundle breaks.
 setWorkerUrl(maplibreWorkerUrl)
 
 const OUTLINES = '/world-110m.geo.json'
 const REFRESH_MS = 5000
+
+// A closed panel in the map row keeps its title's height instead of stretching to its neighbour.
+const CLOSED_IN_ROW = { alignSelf: 'start' } as const
+// The map row shares the height left over with the track table; its panels' bodies keep a minimum.
+const FILL_ROW = { flex: '1 1 0' } as const
 
 const displayName = (t: TrackRow) => t.name ?? t.callsign ?? (t.gold_name !== 'UNKNOWN' ? t.gold_name : '')
 
@@ -166,6 +172,9 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const [grouping, setGrouping] = useState<{ id: string | null; members: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const { confirm } = useToast()
+  const [mapOpen, setMapOpen] = usePanelOpen('ot.panel.trackmap')
+  const [cardOpen, setCardOpen] = usePanelOpen('ot.panel.trackcard')
+  const [tableOpen, setTableOpen] = usePanelOpen('ot.panel.tracktable')
 
   useEffect(() => {
     let cancelled = false
@@ -378,242 +387,259 @@ export default function TrackDbPage({ selected, onSelect }: { selected: string; 
   const filtered = !!(query.trim() || state || domain || affiliation || source)
 
   return (
-    <div className="panels tight">
-      <div className="workspace">
-        <CollapsiblePanel title="Track map" badge={rows ? `${points.length.toLocaleString()} shown` : undefined} persistKey="ot.panel.trackmap">
-          <div className="workspace-body map">
-            <TrackMap
-              aria-label="Live tracks"
-              points={points}
-              sensorPoints={mapEvidence.sensors}
-              lines={lines}
-              evidenceLines={mapEvidence.evidence}
-              uncertaintyLines={mapEvidence.uncertainty}
-              selectedId={selected || null}
-              onSelect={select}
-              outlines={OUTLINES}
-              tiles={tiles}
-              fitKey="tracks"
-              fitTo={fitTo}
-              height="100%"
-            />
-          </div>
-        </CollapsiblePanel>
-        <CollapsiblePanel
-          title="Track card"
-          persistKey="ot.panel.trackcard"
-        >
-          <div className="workspace-body">
-            {selected ? (
-              <TrackCard
-                key={selected}
-                uid={selected}
-                onHistory={(points) => setTrail({ uid: selected, points })}
-                onTrack={setSelTrack}
-                historyOnMap={trailOn === selected}
-                onHistoryOnMap={(on) => setTrailOn(on ? selected : null)}
-                onZoom={() => setZoom((z) => ({ uid: selected, n: (z?.n ?? 0) + 1 }))}
-                onChanged={() => void reload()}
-                onEdit={
-                  row
-                    ? () => (row.kind === 'group' ? setGrouping({ id: row.track_id, members: [] }) : setEditing(true))
-                    : undefined
-                }
-                editLabel={row?.kind === 'group' ? 'Edit group' : row?.entity_id ? 'Edit entity' : 'Edit'}
+    <>
+      {/* The map row and the track table share the window; the log follows, a scroll below. */}
+      <div className="panels tight fill-page">
+        <div className="workspace fill" style={mapOpen || cardOpen ? FILL_ROW : undefined}>
+          <CollapsiblePanel
+            title="Track map"
+            badge={rows ? `${points.length.toLocaleString()} shown` : undefined}
+            open={mapOpen}
+            onOpenChange={setMapOpen}
+            style={mapOpen ? undefined : CLOSED_IN_ROW}
+          >
+            <div className="workspace-body map">
+              <TrackMap
+                aria-label="Live tracks"
+                points={points}
+                sensorPoints={mapEvidence.sensors}
+                lines={lines}
+                evidenceLines={mapEvidence.evidence}
+                uncertaintyLines={mapEvidence.uncertainty}
+                selectedId={selected || null}
+                onSelect={select}
+                outlines={OUTLINES}
+                tiles={tiles}
+                fitKey="tracks"
+                fitTo={fitTo}
+                height="100%"
               />
-            ) : (
-              <div className="panel-body">
-                <span className="muted">Select a track on the map or in the table to see its details.</span>
-              </div>
-            )}
+            </div>
+          </CollapsiblePanel>
+          <CollapsiblePanel
+            title="Track card"
+            open={cardOpen}
+            onOpenChange={setCardOpen}
+            style={cardOpen ? undefined : CLOSED_IN_ROW}
+          >
+            <div className="workspace-body">
+              {selected ? (
+                <TrackCard
+                  key={selected}
+                  uid={selected}
+                  onHistory={(points) => setTrail({ uid: selected, points })}
+                  onTrack={setSelTrack}
+                  historyOnMap={trailOn === selected}
+                  onHistoryOnMap={(on) => setTrailOn(on ? selected : null)}
+                  onZoom={() => setZoom((z) => ({ uid: selected, n: (z?.n ?? 0) + 1 }))}
+                  onChanged={() => void reload()}
+                  onEdit={
+                    row
+                      ? () => (row.kind === 'group' ? setGrouping({ id: row.track_id, members: [] }) : setEditing(true))
+                      : undefined
+                  }
+                  editLabel={row?.kind === 'group' ? 'Edit group' : row?.entity_id ? 'Edit entity' : 'Edit'}
+                />
+              ) : (
+                <div className="panel-body">
+                  <span className="muted">Select a track on the map or in the table to see its details.</span>
+                </div>
+              )}
+            </div>
+          </CollapsiblePanel>
+        </div>
+
+        <CollapsiblePanel
+          title="Tracks"
+          badge={rows ? (filtered ? `${shown.length.toLocaleString()} of ${all.length.toLocaleString()}` : all.length.toLocaleString()) : undefined}
+          open={tableOpen}
+          onOpenChange={setTableOpen}
+          style={tableOpen ? FILL_PANEL : undefined}
+          titleActions={
+            <>
+            <InfoTip label="Track columns">
+              Group / pair: a group track and its member count, or a track that is in a group or paired with others (hover the badge for
+              which). Force: the OTH-GOLD force code (0-39) for its domain and affiliation, e.g. 09 friendly surface, 07 hostile surface, 32
+              unknown. State: tentative until it has 3 reports (the server default); confirmed; lost when unreported for a while (60 s for air,
+              15 min surface and land, 30 min subsurface) until a report brings it back; dropped after 6 h without one (default), when it
+              leaves the table and is deleted downstream. Entity: resolves to a registry
+              entity; replaced N: the entity overrode N values its feeds report. Sources: each contributing source as source/its track
+              key.
+            </InfoTip>
+            <div className="search">
+              <TbSearch aria-hidden />
+              <Input
+                aria-label="Search tracks"
+                placeholder="Search"
+                style={{ paddingLeft: 26 }}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <InfoTip label="Search">
+              Matches any part of the track number, name, callsign, GOLD name, class, SIDC, a source/key, or an identifier as scheme:value
+              (e.g. mmsi:235009870). Case does not matter.
+            </InfoTip>
+            </>
+          }
+          actions={
+            <>
+              <Filter label="State" any="any state" values={distinct(all, (t) => [t.state])} value={state} onChange={setState} />
+              <Filter label="Domain" any="any domain" values={distinct(all, (t) => [t.domain])} value={domain} onChange={setDomain} />
+              <Filter label="Affiliation" any="any affiliation" values={distinct(all, (t) => [t.affiliation])} value={affiliation} onChange={setAffiliation} />
+              <Filter label="Source" any="any source" values={distinct(all, (t) => t.sources.map((s) => s.split('/')[0]))} value={source} onChange={setSource} />
+            </>
+          }
+        >
+          <div className="panel-fill">
+            <div className="selection-bar">
+              {ticked.length === 0 ? (
+                <>
+                  <span className="muted">Tick tracks to pair, merge, group or delete them.</span>
+                  <InfoTip label="Track management">
+                    Pair: the same object, kept as separate tracks. Merge: one track survives with the others&apos; history and sources, and
+                    correlation never splits it again. Do not pair (two tracks): different objects, which correlation never pairs or merges; undo it
+                    in the log below. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
+                    centre. Delete: the track is deleted downstream.
+                  </InfoTip>
+                  <span className="spacer" />
+                  <Button size="sm" variant="ghost" disabled={shown.length === 0} onClick={() => setChecked(shown.slice(0, 200).map((t) => t.track_id))}>
+                    Select shown
+                  </Button>
+                  <InfoTip label="Select shown">Ticks the tracks the table shows after search and filters, up to 200 of them.</InfoTip>
+                </>
+              ) : (
+                <>
+                  <strong>{ticked.length} selected</strong>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<TbLink />}
+                    disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
+                    onClick={pair}
+                  >
+                    Pair
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<TbArrowMerge />}
+                    disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
+                    onClick={() => setMerging(ticked[0])}
+                  >
+                    Merge
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<TbLinkOff />}
+                    disabled={!canManage || busy || tickedTracks.length !== 2 || tickedGroups.length > 0}
+                    onClick={doNotPair}
+                  >
+                    Do not pair
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<TbUsersGroup />}
+                    disabled={!canManage || busy || tickedGroups.length > 1}
+                    onClick={group}
+                  >
+                    {tickedGroups.length === 1 ? (tickedTracks.length ? 'Add to group' : 'Edit group') : 'Group'}
+                  </Button>
+                  <Button size="sm" variant="ghost" icon={<TbTrash />} disabled={!canManage || busy} onClick={remove}>
+                    Delete
+                  </Button>
+                  <span className="spacer" />
+                  <Button size="sm" variant="ghost" icon={<TbX />} onClick={() => setChecked([])}>
+                    Clear
+                  </Button>
+                </>
+              )}
+          </div>
+          <DataTable
+            aria-label="Tracks"
+            columns={columns}
+            rows={shown}
+            rowKey={(t) => t.uid}
+            selectedKey={selected || null}
+            onRowClick={(t) => select(t.uid)}
+            defaultSort={{ key: 'last', direction: 'desc' }}
+            maxHeight="none"
+            empty={rows === null ? 'LOADING…' : filtered ? 'No track matches.' : 'No live tracks. Enable a source to start ingesting.'}
+          />
           </div>
         </CollapsiblePanel>
       </div>
 
-      <CollapsiblePanel
-        title="Tracks"
-        badge={rows ? (filtered ? `${shown.length.toLocaleString()} of ${all.length.toLocaleString()}` : all.length.toLocaleString()) : undefined}
-        persistKey="ot.panel.tracktable"
-        titleActions={
-          <>
-          <InfoTip label="Track columns">
-            Group / pair: a group track and its member count, or a track that is in a group or paired with others (hover the badge for
-            which). Force: the OTH-GOLD force code (0-39) for its domain and affiliation, e.g. 09 friendly surface, 07 hostile surface, 32
-            unknown. State: tentative until it has 3 reports (the server default); confirmed; lost when unreported for a while (60 s for air,
-            15 min surface and land, 30 min subsurface) until a report brings it back; dropped after 6 h without one (default), when it
-            leaves the table and is deleted downstream. Entity: resolves to a registry
-            entity; replaced N: the entity overrode N values its feeds report. Sources: each contributing source as source/its track
-            key.
-          </InfoTip>
-          <div className="search">
-            <TbSearch aria-hidden />
-            <Input
-              aria-label="Search tracks"
-              placeholder="Search"
-              style={{ paddingLeft: 26 }}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
-          <InfoTip label="Search">
-            Matches any part of the track number, name, callsign, GOLD name, class, SIDC, a source/key, or an identifier as scheme:value
-            (e.g. mmsi:235009870). Case does not matter.
-          </InfoTip>
-          </>
-        }
-        actions={
-          <>
-            <Filter label="State" any="any state" values={distinct(all, (t) => [t.state])} value={state} onChange={setState} />
-            <Filter label="Domain" any="any domain" values={distinct(all, (t) => [t.domain])} value={domain} onChange={setDomain} />
-            <Filter label="Affiliation" any="any affiliation" values={distinct(all, (t) => [t.affiliation])} value={affiliation} onChange={setAffiliation} />
-            <Filter label="Source" any="any source" values={distinct(all, (t) => t.sources.map((s) => s.split('/')[0]))} value={source} onChange={setSource} />
-          </>
-        }
-      >
-        <div className="selection-bar">
-          {ticked.length === 0 ? (
-            <>
-              <span className="muted">Tick tracks to pair, merge, group or delete them.</span>
-              <InfoTip label="Track management">
-                Pair: the same object, kept as separate tracks. Merge: one track survives with the others&apos; history and sources, and
-                correlation never splits it again. Do not pair (two tracks): different objects, which correlation never pairs or merges; undo it
-                in the log below. Group: a battle group, flight or convoy published as a track of its own at its members&apos;
-                centre. Delete: the track is deleted downstream.
-              </InfoTip>
-              <span className="spacer" />
-              <Button size="sm" variant="ghost" disabled={shown.length === 0} onClick={() => setChecked(shown.slice(0, 200).map((t) => t.track_id))}>
-                Select shown
-              </Button>
-              <InfoTip label="Select shown">Ticks the tracks the table shows after search and filters, up to 200 of them.</InfoTip>
-            </>
-          ) : (
-            <>
-              <strong>{ticked.length} selected</strong>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<TbLink />}
-                disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
-                onClick={pair}
-              >
-                Pair
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<TbArrowMerge />}
-                disabled={!canManage || busy || tickedTracks.length < 2 || tickedGroups.length > 0}
-                onClick={() => setMerging(ticked[0])}
-              >
-                Merge
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<TbLinkOff />}
-                disabled={!canManage || busy || tickedTracks.length !== 2 || tickedGroups.length > 0}
-                onClick={doNotPair}
-              >
-                Do not pair
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<TbUsersGroup />}
-                disabled={!canManage || busy || tickedGroups.length > 1}
-                onClick={group}
-              >
-                {tickedGroups.length === 1 ? (tickedTracks.length ? 'Add to group' : 'Edit group') : 'Group'}
-              </Button>
-              <Button size="sm" variant="ghost" icon={<TbTrash />} disabled={!canManage || busy} onClick={remove}>
-                Delete
-              </Button>
-              <span className="spacer" />
-              <Button size="sm" variant="ghost" icon={<TbX />} onClick={() => setChecked([])}>
-                Clear
-              </Button>
-            </>
-          )}
-        </div>
-        <DataTable
-          aria-label="Tracks"
-          columns={columns}
-          rows={shown}
-          rowKey={(t) => t.uid}
-          selectedKey={selected || null}
-          onRowClick={(t) => select(t.uid)}
-          defaultSort={{ key: 'last', direction: 'desc' }}
-          maxHeight={480}
-          empty={rows === null ? 'LOADING…' : filtered ? 'No track matches.' : 'No live tracks. Enable a source to start ingesting.'}
-        />
-      </CollapsiblePanel>
+      <div className="panels tight after-fill">
+        <ManagementLog rev={logRev} onChanged={() => void reload()} />
 
-      <ManagementLog rev={logRev} onChanged={() => void reload()} />
-
-      {merging !== null && (
-        <Modal title="Merge tracks" onClose={() => setMerging(null)} width={480} resizable={false}>
-          <div className="panel-body">
-            <span className="muted">
-              The surviving track keeps its number and takes the others&apos; history, sources, groups and pairings; the others are deleted
-              downstream. Correlation never splits the merged track.
-            </span>
-            <div className="stack" style={{ gap: 6 }} role="radiogroup" aria-label="Surviving track">
-              {tickedTracks.map((t) => (
-                <label key={t.track_id} className="radio-row">
-                  <input type="radio" name="survivor" checked={merging === t.track_id} onChange={() => setMerging(t.track_id)} />
-                  <span className="mono">{t.track_id}</span>
-                  <span>{displayName(t)}</span>
-                  {t.published === false && <span className="muted">not published</span>}
-                </label>
-              ))}
+        {merging !== null && (
+          <Modal title="Merge tracks" onClose={() => setMerging(null)} width={480} resizable={false}>
+            <div className="panel-body">
+              <span className="muted">
+                The surviving track keeps its number and takes the others&apos; history, sources, groups and pairings; the others are deleted
+                downstream. Correlation never splits the merged track.
+              </span>
+              <div className="stack" style={{ gap: 6 }} role="radiogroup" aria-label="Surviving track">
+                {tickedTracks.map((t) => (
+                  <label key={t.track_id} className="radio-row">
+                    <input type="radio" name="survivor" checked={merging === t.track_id} onChange={() => setMerging(t.track_id)} />
+                    <span className="mono">{t.track_id}</span>
+                    <span>{displayName(t)}</span>
+                    {t.published === false && <span className="muted">not published</span>}
+                  </label>
+                ))}
+              </div>
+              <div className="num-row" style={{ justifyContent: 'flex-end' }}>
+                <Button size="sm" variant="ghost" onClick={() => setMerging(null)}>
+                  Cancel
+                </Button>
+                <Button size="sm" icon={<TbArrowMerge />} disabled={!canManage || busy} onClick={() => merge(merging)}>
+                  Merge into {merging}
+                </Button>
+              </div>
             </div>
-            <div className="num-row" style={{ justifyContent: 'flex-end' }}>
-              <Button size="sm" variant="ghost" onClick={() => setMerging(null)}>
-                Cancel
-              </Button>
-              <Button size="sm" icon={<TbArrowMerge />} disabled={!canManage || busy} onClick={() => merge(merging)}>
-                Merge into {merging}
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        )}
 
-      {grouping && (
-        <GroupEditor
-          groupId={grouping.id}
-          members={grouping.members}
-          rows={all}
-          open
-          onClose={() => setGrouping(null)}
-          onSaved={(id) => {
-            setChecked([])
-            void reload()
-            if (id) setGrouping({ id, members: [] })
-          }}
-        />
-      )}
+        {grouping && (
+          <GroupEditor
+            groupId={grouping.id}
+            members={grouping.members}
+            rows={all}
+            open
+            onClose={() => setGrouping(null)}
+            onSaved={(id) => {
+              setChecked([])
+              void reload()
+              if (id) setGrouping({ id, members: [] })
+            }}
+          />
+        )}
 
-      {selected && row && row.kind !== 'group' && (
-        <EntityEditor
-          entityId={row.entity_id}
-          seed={{
-            name: displayName(row) || null,
-            domain: (row.domain !== 'unknown' ? row.domain : null) as Entity['domain'],
-            affiliation: (row.affiliation !== 'unknown' ? row.affiliation : null) as Entity['affiliation'],
-            // The track's identifiers, so its later tracks find the entity (graded against the name or
-            // callsign they broadcast); saving also pins the entity to this track (pinTrack).
-            identifiers: (row.identifiers ?? []).map((i) => ({ ...i, expected_name: row.name ?? row.callsign ?? null })),
-          }}
-          pinTrack={row.track_id}
-          open={editing}
-          onClose={() => setEditing(false)}
-          onSaved={() => {}}
-        />
-      )}
-    </div>
+        {selected && row && row.kind !== 'group' && (
+          <EntityEditor
+            entityId={row.entity_id}
+            seed={{
+              name: displayName(row) || null,
+              domain: (row.domain !== 'unknown' ? row.domain : null) as Entity['domain'],
+              affiliation: (row.affiliation !== 'unknown' ? row.affiliation : null) as Entity['affiliation'],
+              // The track's identifiers, so its later tracks find the entity (graded against the name or
+              // callsign they broadcast); saving also pins the entity to this track (pinTrack).
+              identifiers: (row.identifiers ?? []).map((i) => ({ ...i, expected_name: row.name ?? row.callsign ?? null })),
+            }}
+            pinTrack={row.track_id}
+            open={editing}
+            onClose={() => setEditing(false)}
+            onSaved={() => {}}
+          />
+        )}
+      </div>
+    </>
   )
 }
 

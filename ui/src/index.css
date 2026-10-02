@@ -330,28 +330,42 @@ body {
   align-items: start;
 }
 
-/* A page whose panels take the height left over (Registry, Correlation): an open panel with
-   FILL_PANEL grows, and its body (.panel-body.fill) gives the space to its table, which scrolls.
-   A short window scrolls the page instead of squeezing the table below its minimum. */
+/* A page whose panels take the height left over (Registry, Correlation, Sources, Track
+   Database): an open panel with FILL_PANEL grows, and its body (.panel-body.fill, or .panel-fill
+   without padding) gives the space to its table, which scrolls. A short window scrolls the page
+   instead of squeezing the table below its minimum. */
 .fill-page {
   min-height: 100%;
 }
 
-.panel-body.fill {
+.panel-body.fill,
+.panel-fill {
   flex: 1 1 0;
   min-height: 0;
 }
 
+.panel-fill {
+  display: flex;
+  flex-direction: column;
+}
+
 /* The table's rows never size the panel: it takes the body's height and scrolls inside. */
-.panel-body.fill > .ui-data-table {
+.panel-body.fill > .ui-data-table,
+.panel-fill > .ui-data-table {
   flex: 1 1 0;
   min-height: 120px;
   contain: size;
 }
 
-/* Anything under the table (a note, a decision's evidence) keeps its own height. */
-.panel-body.fill > :not(.ui-data-table) {
+/* Anything beside the table (a toolbar, a note, a decision's evidence) keeps its own height. */
+.panel-body.fill > :not(.ui-data-table),
+.panel-fill > :not(.ui-data-table) {
   flex-shrink: 0;
+}
+
+/* Panels after a filled page's first screen (Track Database's log), a scroll below it. */
+.after-fill {
+  margin-top: var(--space-sm);
 }
 
 /* A denser page (Track Database, on operator direction): panels 8px apart instead of 16. */
@@ -365,6 +379,18 @@ body {
   height: 440px;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* A filling workspace row (Track Database): both panels stretch to the row, which takes its
+   share of the page; their bodies take the panel's height but never less than a usable map. */
+.workspace.fill {
+  align-items: stretch;
+}
+
+.workspace.fill .workspace-body {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 320px;
 }
 
 .workspace-body.map {
