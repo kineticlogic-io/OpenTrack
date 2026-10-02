@@ -99,6 +99,65 @@ impl std::fmt::Debug for NatsAuth {
     }
 }
 
+/// Log, on every (re)connect, the addresses the servers in `url` resolve
+/// to now (ASD STIG V-222470). async-nats keeps its socket to itself, so
+/// this is the resolved address of each configured server, not the socket's
+/// peer address; with one server per URL they are the same.
+pub fn log_destinations(
+    opts: ConnectOptions,
+    component: &'static str,
+    url: &str,
+) -> ConnectOptions {
+    let servers = server_host_ports(url);
+    opts.event_callback(move |event| {
+        let servers = servers.clone();
+        async move {
+            match event {
+                async_nats::Event::Connected => {
+                    for (host, port) in servers {
+                        let peer_addr = match tokio::net::lookup_host((host.as_str(), port)).await {
+                            Ok(addrs) => addrs.map(|a| a.to_string()).collect::<Vec<_>>().join(", "),
+                            Err(e) => format!("unresolved ({e})"),
+                        };
+                        tracing::info!(component, server = %format!("{host}:{port}"), %peer_addr, "NATS connected (resolved address)");
+                    }
+                }
+                async_nats::Event::Disconnected => tracing::info!(component, "NATS disconnected"),
+                _ => {}
+            }
+        }
+    })
+}
+
+/// The host and port of each server in a NATS URL list (`nats://a:4222,
+/// tls://b`): no credentials, IPv6 hosts without brackets, port 4222 when
+/// none is given.
+pub fn server_host_ports(url: &str) -> Vec<(String, u16)> {
+    url.split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            let rest = s.split_once("://").map_or(s, |(_, r)| r);
+            let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
+            let authority = rest.split(['/', '?']).next()?;
+            let (host, port) = match authority.strip_prefix('[') {
+                Some(v6) => {
+                    let (host, after) = v6.split_once(']')?;
+                    (host, after.strip_prefix(':'))
+                }
+                None => match authority.rsplit_once(':') {
+                    Some((h, p)) => (h, Some(p)),
+                    None => (authority, None),
+                },
+            };
+            if host.is_empty() {
+                return None;
+            }
+            let port = port.map_or(Some(4222), |p| p.parse().ok())?;
+            Some((host.to_owned(), port))
+        })
+        .collect()
+}
+
 /// Connect options carrying `auth`: the `.creds` sign-in (the nonce signed
 /// in the FIPS module), token or user and password, and TLS (through the
 /// process's rustls provider, which `opentrack` sets to the FIPS one before
@@ -246,6 +305,7 @@ impl Nats {
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(5))
             .max_reconnects(None);
+        let opts = log_destinations(opts, "nats", &settings.url);
         let client = opts
             .connect(settings.url.as_str())
             .await
@@ -472,6 +532,19 @@ mod tests {
     //! Against a real server (set `OT_TEST_NATS_URL`, e.g.
     //! `nats://127.0.0.1:14222`), in a stream and subject unique to the run.
     use super::*;
+
+    #[test]
+    fn server_host_ports_reads_url_lists_without_credentials() {
+        assert_eq!(
+            super::server_host_ports("nats://u:p@a.example:4223, tls://[::1], b.example"),
+            vec![
+                ("a.example".to_owned(), 4223),
+                ("::1".to_owned(), 4222),
+                ("b.example".to_owned(), 4222)
+            ]
+        );
+        assert!(super::server_host_ports("nats://:4222").is_empty());
+    }
 
     async fn nats() -> Option<Nats> {
         let url = std::env::var("OT_TEST_NATS_URL").ok()?;

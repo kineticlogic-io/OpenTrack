@@ -201,7 +201,16 @@ impl Health {
                 %error,
                 "OpenTelemetry export failing: records are dropped from the export until it recovers (standard output keeps the logs, the audit table the audit records)"
             ),
-            Some(None) => tracing::info!(signal = signal.name(), "OpenTelemetry export recovered"),
+            Some(None) => {
+                tracing::info!(signal = signal.name(), "OpenTelemetry export recovered");
+                if let Some(endpoint) = self.with(|s| s.get(&signal).map(|h| h.endpoint.clone())) {
+                    log_destination(
+                        signal,
+                        &endpoint,
+                        "OpenTelemetry collector reconnected (resolved address)",
+                    );
+                }
+            }
             None => {}
         }
     }
@@ -263,6 +272,25 @@ impl Health {
             })
         })
     }
+}
+
+/// Log the addresses a signal's collector resolves to (ASD STIG V-222470).
+/// The exporters keep their sockets to themselves, so this resolves the
+/// endpoint's host; on a thread of its own, since exports may call it from
+/// anywhere and resolution blocks.
+fn log_destination(signal: Signal, endpoint: &str, message: &'static str) {
+    let Some(addr) = host_port(endpoint) else {
+        return;
+    };
+    let signal = signal.name();
+    std::thread::spawn(move || {
+        use std::net::ToSocketAddrs;
+        let peer_addr = match addr.to_socket_addrs() {
+            Ok(addrs) => ot_core::netlog::addr_list(addrs),
+            Err(e) => format!("unresolved ({e})"),
+        };
+        tracing::info!(component = "otlp", signal, server = %addr, %peer_addr, "{message}");
+    });
 }
 
 /// `host:port` of an endpoint URL (the scheme's port when it has none).
@@ -618,6 +646,13 @@ pub fn init(role: &'static str, to_stderr: bool, common: &Common) -> Telemetry {
             .map(|s| format!("{} → {}", s.name(), targets[s].endpoint))
             .collect();
         tracing::info!(role, signals = %exported.join(", "), "exporting over OpenTelemetry");
+        for (s, t) in &targets {
+            log_destination(
+                *s,
+                &t.endpoint,
+                "OpenTelemetry collector (resolved address)",
+            );
+        }
     }
     Telemetry {
         health,

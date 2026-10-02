@@ -27,6 +27,16 @@
   1.1) is served by OpenTrack itself as glyph ranges (`ui/public/map-fonts`, vendored by
   `scripts/vendor-map-glyphs.sh` from the protomaps/basemaps-assets commit OpenStare pins).
 
+### Security
+
+- **Outbound connections log their destination** (ASD STIG V-222470, POA&M P-32, #64). Each
+  connect and reconnect logs, at INFO, the component and the resolved remote address in the field
+  `peer_addr`: the socket's peer address for source TCP, WebSocket and gRPC clients, the TAK Server
+  and multicast outputs and external plugins; the response's remote address, when it changes, for
+  HTTP polling, OCSP, the OpenStare sign-in check and the basemap proxy; and what the configured
+  host resolves to for NATS, the bridge, MQTT, Redis and OTLP collectors, whose libraries keep the
+  socket. Source logs carry the source id. URLs are redacted or reduced to host and port.
+
 ### Fixed
 
 - **An entity's affiliation outranks a source's country lists.** The Affiliation stage runs after

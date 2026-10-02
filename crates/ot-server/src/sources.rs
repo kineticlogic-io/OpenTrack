@@ -372,8 +372,10 @@ async fn run_source(
         let mut backoff = Duration::from_secs(2);
         loop {
             let started = tokio::time::Instant::now();
-            let res =
-                transport::run(&transport_cfg, proto.as_ref(), tx.clone(), link_t.clone()).await;
+            // The span puts the source id on the transport's connection logs.
+            let res = transport::run(&transport_cfg, proto.as_ref(), tx.clone(), link_t.clone())
+                .instrument(tracing::info_span!("source.transport", source = %tid))
+                .await;
             if let Ok(mut s) = link_t.lock() {
                 s.connected = false;
                 if let Err(e) = &res {

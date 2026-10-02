@@ -16,14 +16,5 @@
   "severity": "CAT III",
   "remediation": "Accepted by the product owner (2026-09-30): dependency advisories and the image scan run when each release is built (scripts/ato/scan, cargo deny, npm audit), not on a schedule. A site that needs scheduled scanning runs scripts/ato/scan on its own schedule.",
   "target": "accepted"
- },
- {
-  "id": "P-32",
-  "weakness": "Outbound connections (feeds, TAK Server, NATS, Redis, OTLP, OCSP) do not log the resolved destination IP address and port on connect and reconnect.",
-  "controls": "AU-3",
-  "checks": "ASD V-222470",
-  "severity": "CAT II",
-  "remediation": "Log the resolved remote address (IP:port) on every outbound connection and reconnect, in the access or transport log.",
-  "target": "0.4.x"
  }
 ]

@@ -371,8 +371,8 @@ pub async fn run(
         let client = match known {
             Some((_, _, c)) => c.clone(),
             None => {
-                let c = ot_nats::connect_options(&spec.auth)
-                    .await?
+                let opts = ot_nats::connect_options(&spec.auth).await?;
+                let c = ot_nats::log_destinations(opts, "bridge", &spec.url)
                     .name("opentrack-bridge")
                     .retry_on_initial_connect()
                     .connect(spec.url.as_str())
