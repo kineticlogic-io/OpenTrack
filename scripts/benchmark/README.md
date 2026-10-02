@@ -57,6 +57,7 @@ It writes:
 | `opensky-radar` | Stone Soup demo data: OpenSky ADS-B over England, 20 min, 83 aircraft | simulated air surveillance radars at Heathrow and Manchester (the demo's sites: 4 s, 110 km, 0.15°, Pd 0.9) | the ADS-B, interpolated |
 | `opensky-fusion` | the same | plus the ADS-B as a track feed (ICAO identifiers) | the same |
 | `synthetic-crossing` | generated | two radars, 12 targets crossing near one point (some turning), 40 false plots a scan, Pd 0.8 | the generated paths |
+| `acoustic-sparse`, `acoustic-demo`, `acoustic-dense` | generated | 3, 5 and 8 fixed acoustic arrays reporting bearing (+ often range) to 2, 6 and 14 small UAS (`docs/non-point-contacts.md`, "Acoustic arrays"; see `acoustic.py`) | the generated paths |
 | `gmti-garden-island-1013`, `-1014` | local: STANAG 4607 over Garden Island, Adelaide, 13 and 14 Oct 2015 | the GMTI through the STANAG 4607 codec and the GNN tracker | the exercise GPS logs |
 | `gmti-…-fusion` | the same | plus the GPS as a track feed | the same |
 
@@ -128,3 +129,4 @@ on the map. The benchmark does not use them.
 - `autoferry-replay.py`
 - `replay-video.py`: renders an engine trace
 - `esm-video.py`: renders the `esm-crossfix` scenario (an overview, ghost rules off against on, one ship followed) and the single-sensor `esm-patrol` scenario
+- `acoustic-video.py`: renders an `acoustic-sparse`/`acoustic-demo`/`acoustic-dense` run (arrays, bearing lines, drones and the tracks the correlator makes), with a live count of tracks fused across arrays against tracks still a single array's fragment
