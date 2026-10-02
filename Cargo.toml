@@ -7,7 +7,7 @@ exclude = ["third_party", "sdk"]
 [workspace.package]
 version = "0.4.7"
 edition = "2024"
-repository = "https://github.com/phornstein/OpenTrack"
+repository = "https://github.com/kineticlogic-io/OpenTrack"
 rust-version = "1.90"
 # Private: never published to a registry.
 publish = false

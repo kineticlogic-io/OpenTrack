@@ -8,7 +8,7 @@
 #   - GitHub's defaults for protected branches: no force-push, no deletion.
 # Run with a token that can administer the repo: scripts/github/protect-main.sh
 set -euo pipefail
-repo="${1:-phornstein/OpenTrack}"
+repo="${1:-kineticlogic-io/OpenTrack}"
 gh api --method PUT "repos/$repo/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": { "strict": true, "contexts": ["rust", "supply-chain", "ui"] },

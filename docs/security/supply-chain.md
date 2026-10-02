@@ -65,7 +65,9 @@ banned crate is ever built.
 Publishing a GitHub release runs `.github/workflows/release.yml`, which:
 
 1. Builds the image with BuildKit's SLSA provenance (`mode=max`) and SBOM attestations attached.
-2. Pushes it to the private package `ghcr.io/phornstein/opentrack:<tag>`.
+2. Pushes it to the private package `ghcr.io/kineticlogic-io/opentrack:<tag>`. Releases up to
+   v0.4.7, made before the repository moved to the `kineticlogic-io` organization (2026-10-02),
+   stay at `ghcr.io/phornstein/opentrack`, signed with the same key.
 3. Signs its digest with `scripts/release/sign-image`: cosign makes the payload, the **OpenSSL
    3.0.9 FIPS provider** (CMVP #4282, built from the Dockerfile's `openssl-fips` stage) signs it
    with the project key (ECDSA P-256, SHA-256), and cosign attaches the signature. cosign's own
@@ -77,8 +79,8 @@ Publishing a GitHub release runs `.github/workflows/release.yml`, which:
 **Verify an image:**
 
 ```sh
-cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/phornstein/opentrack@<digest>
-docker buildx imagetools inspect ghcr.io/phornstein/opentrack@<digest> --format '{{ json .Provenance }}'
+cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/kineticlogic-io/opentrack@<digest>
+docker buildx imagetools inspect ghcr.io/kineticlogic-io/opentrack@<digest> --format '{{ json .Provenance }}'
 ```
 
 **The key:**
