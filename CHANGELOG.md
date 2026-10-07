@@ -1,16 +1,5 @@
 # Changelog
 
-## 1.0.1, 2026-10-06
-
-### Changed
-
-- **The shipped tracker profiles describe sensor kinds, not named platforms.** Three
-  platform-class GMTI profiles are removed. `gmti-wide-area` and `gmti-high-clutter` cover GMTI.
-  The maritime MTI profile is now `maritime-mti` (*Maritime surface MTI (generic)*), with the same
-  settings and the track key prefix `M`. A source whose tracker stage loaded a removed profile
-  keeps its settings, which are saved in the source's own pipeline. To load a profile again, pick
-  one of the remaining profiles.
-
 ## 1.0.0, 2026-10-06
 
 The first open-source release, under the MIT License. 1.0 carries everything up to 0.4.7, plus the
@@ -24,6 +13,11 @@ changes below.
 
 ### Changed
 
+- **The shipped tracker profiles describe sensor kinds, not named platforms.** Three
+  platform-class GMTI profiles are removed. `gmti-wide-area` and `gmti-high-clutter` cover GMTI.
+  The maritime MTI profile is now `maritime-mti` (*Maritime surface MTI (generic)*), with the same
+  settings and the track key prefix `M`. A source whose tracker stage loaded a removed profile
+  keeps its settings, which are saved in the source's own pipeline.
 - **OpenTrack is open source under the MIT License** (`LICENSE`). Third-party components keep
   their own licenses, listed in `THIRD_PARTY_NOTICES.md`. The image carries the license at
   `/opt/opentrack/LICENSE`.
@@ -986,8 +980,8 @@ process does in a deployment.
   - GMTI:
     - `gmti-wide-area`: clutter density 2e-7, a balance between noise and real traffic
     - `gmti-high-clutter`: 1e-6, for very noisy data such as the Garden Island recordings
-    - three platform-class GMTI profiles, nominal starting points (removed in 1.0.1)
-  - Maritime MTI: one platform-class profile (made generic as `maritime-mti` in 1.0.1)
+    - three platform-class GMTI profiles, nominal starting points (removed in 1.0.0)
+  - Maritime MTI: one platform-class profile (made generic as `maritime-mti` in 1.0.0)
   - Radars: `marine-radar-x`, `coastal-surveillance-radar`, `air-surveillance-radar`
   - Lidar: `lidar-surface`
 - **The STANAG 4607 example** uses `gmti-wide-area`. Its old clutter density, 3e-8, made about 1,150
