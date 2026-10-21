@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TbSettings, TbTrash } from 'react-icons/tb'
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Badge, Breadcrumbs, Button, SaveButton, SegmentedControl, Toggle, useToast } from '@kineticlogic/staresdk'
+import { Badge, Breadcrumbs, Button, SaveButton, SegmentedControl, SideNav, Toggle, useToast } from '@kineticlogic/staresdk'
 import { CodeEditor } from '@kineticlogic/staresdk/code-editor'
 import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode, type FlowPaletteItem } from '@kineticlogic/staresdk/flow-canvas'
 import {
@@ -460,8 +460,25 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               height="100%"
             />
           </div>
-          {(node || feedOpen) && (
-            <aside className="source-workspace-panel">
+          {/* A step's settings (or the feed's) open over the right of the page, resizable. */}
+          <SideNav
+            open={!!node || feedOpen}
+            ariaLabel={node ? `Step ${node.id}` : 'Feed settings'}
+            width={640}
+            minWidth={420}
+            maxWidth={1200}
+            storageKey="ot.sourceStep.width"
+            dockRegister={false}
+          >
+            <div
+              className="drawer"
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSelected(null)
+                  setFeedOpen(false)
+                }
+              }}
+            >
               {node ? (
                 <NodePanel
                   key={node.id}
@@ -481,11 +498,11 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
                   onCapture={() => void capture()}
                   onClose={() => setSelected(null)}
                 />
-              ) : (
+              ) : feedOpen ? (
                 <FeedPanel spec={spec} row={row} tracked={tracked} problems={byNode.general} readOnly={readOnly} onChange={edit} onClose={() => setFeedOpen(false)} />
-              )}
-            </aside>
-          )}
+              ) : null}
+            </div>
+          </SideNav>
         </div>
       ) : (
         <div className="source-editor-json" ref={jsonBox}>
