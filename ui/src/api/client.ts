@@ -1001,7 +1001,10 @@ export interface PreviewObservation extends Observation {
 }
 
 export interface PreviewResult {
+  /** Whether the source is complete; a draft is dry-run as far as it can be. */
   valid: boolean
+  /** What stops the source running, each on its stage. */
+  problems?: SourceProblem[]
   counts?: Record<string, number>
   errors?: string[]
   observations?: PreviewObservation[]

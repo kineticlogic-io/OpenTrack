@@ -77,6 +77,7 @@ pub(crate) fn actor(headers: &HeaderMap) -> String {
 /// filled in), the published extension schema its mapping targets (if it
 /// is published) and everything that stops it running. A spec that does
 /// not parse, or is not allowed at all, is refused here.
+#[derive(Clone)]
 struct Checked {
     spec: SourceSpec,
     normalised: Value,
@@ -100,12 +101,31 @@ impl Checked {
         }
     }
 
-    /// Refuse it unless it is complete (it may run).
-    fn complete(self) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
-        match self.schema {
-            Some(schema) if self.problems.is_empty() => Ok((self.spec, self.normalised, schema)),
-            _ => Err(ApiError::source_problems(&self.problems)),
-        }
+    /// Its pipeline, to dry-run over samples: a draft runs too, as far as
+    /// its decode, map and tracker stages allow (its transport is not used,
+    /// and without a published schema its extension fields are not checked).
+    fn dry_run(&self) -> Result<Pipeline, ApiError> {
+        self.clone().savable()?;
+        let pipeline =
+            Pipeline::new(self.spec.id.clone(), self.spec.pipeline.clone()).map_err(|_| {
+                let blocking: Vec<Problem> = self
+                    .problems
+                    .iter()
+                    .filter(|p| {
+                        matches!(p.stage, Some(Stage::Decode | Stage::Map | Stage::Tracker))
+                    })
+                    .cloned()
+                    .collect();
+                ApiError::source_problems(if blocking.is_empty() {
+                    &self.problems
+                } else {
+                    &blocking
+                })
+            })?;
+        Ok(match &self.schema {
+            Some(schema) => pipeline.with_schema(schema.clone()),
+            None => pipeline,
+        })
     }
 }
 
@@ -473,13 +493,22 @@ struct ValidateBody {
     trace: Option<usize>,
 }
 
-/// Validate a source spec and optionally dry-run sample frames through its
-/// pipeline, using the live registry. Nothing is saved or published.
+/// Check a source spec and optionally dry-run sample frames through its
+/// pipeline, using the live registry. Nothing is saved or published. The
+/// answer lists the spec's `problems` (`valid` when there are none); a draft
+/// is dry-run as far as it can be.
 async fn validate_source(
     State(s): State<AppState>,
     Json(body): Json<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let (spec, normalised, schema) = check_spec(&s, body.spec).await?.complete()?;
+    let checked = check_spec(&s, body.spec).await?;
+    let mut pipeline = checked.dry_run()?;
+    let Checked {
+        normalised,
+        problems,
+        ..
+    } = checked;
+    let valid = problems.is_empty();
     let mut frames: Vec<Frame> = body
         .samples
         .iter()
@@ -498,7 +527,9 @@ async fn validate_source(
         }));
     }
     if frames.is_empty() {
-        return Ok(Json(json!({ "valid": true, "spec": normalised })));
+        return Ok(Json(
+            json!({ "valid": valid, "problems": problems, "spec": normalised }),
+        ));
     }
     let rows = s.with_db(|db| db.registry_rows()).await?;
     let registry: BTreeMap<(String, String), ot_source::registry::RegistryEntry> = rows
@@ -515,9 +546,6 @@ async fn validate_source(
             )
         })
         .collect();
-    let mut pipeline = Pipeline::new(spec.id.clone(), spec.pipeline.clone())
-        .map_err(|e| ApiError::unprocessable(e.to_string()))?
-        .with_schema(schema);
     let mut trace = body.trace.filter(|n| *n > 0).map(Trace::new);
     let mut observations = Vec::new();
     let mut errors = Vec::new();
@@ -542,7 +570,8 @@ async fn validate_source(
     observations.extend(flushed.observations);
     let counts: BTreeMap<String, u64> = pipeline.take_counts().pairs().into_iter().collect();
     let mut body = json!({
-        "valid": true,
+        "valid": valid,
+        "problems": problems,
         "counts": counts,
         "errors": errors,
         "observations": observations,
@@ -1308,6 +1337,33 @@ mod tests {
         assert_eq!(o["ext"]["registry"]["scheme"], "elnot");
         assert_eq!(o["ext"]["registry"]["grade"], "name");
         assert_eq!(o["classification"]["cot_type"], "a-f-S-C-A");
+        assert_eq!(body["valid"], true, "{body}");
+
+        // A draft runs as far as it can: its transport is not used.
+        let mut draft = spec.clone();
+        draft["transport"] = json!({"type": "udp", "bind": ""});
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/sources/validate",
+            Some(json!({"spec": draft, "samples": [frame]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["problems"][0]["field"], "bind", "{body}");
+        assert_eq!(body["observations"].as_array().unwrap().len(), 1, "{body}");
+        // One whose mapping cannot run says why, on its stage.
+        draft["pipeline"]["mapping"]["rules"] = json!([]);
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/api/v1/sources/validate",
+            Some(json!({"spec": draft, "samples": [frame]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["problems"][0]["stage"], "map", "{body}");
         redis.purge_namespace().await.unwrap();
     }
 
