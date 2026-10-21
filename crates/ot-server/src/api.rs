@@ -311,17 +311,19 @@ async fn toggle(
     s: AppState,
     id: String,
     enabled: bool,
+    problems: Option<Value>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let actor = actor(&headers);
     let row = s
-        .with_db(move |db| db.set_source_enabled(&id, enabled, &actor))
+        .with_db(move |db| db.set_source_enabled(&id, enabled, problems.as_ref(), &actor))
         .await?;
     Ok(Json(with_status(&s, row).await))
 }
 
 /// Enable a source: only a complete one, checked again now (the schema
-/// version its mapping targets, say, may have changed since it was saved).
+/// version its mapping targets, say, may have been published since it was
+/// saved). What the check finds is stored, so the list shows it too.
 async fn enable_source(
     State(s): State<AppState>,
     Path(id): Path<String>,
@@ -333,10 +335,14 @@ async fn enable_source(
         .await?
         .ok_or_else(|| ApiError::not_found("source"))?;
     let c = check_spec(&s, row.spec).await?;
-    if !c.problems.is_empty() {
-        return Err(ApiError::source_problems(&c.problems));
+    let found = serde_json::to_value(&c.problems).map_err(|e| ApiError::internal(e.to_string()))?;
+    if c.problems.is_empty() {
+        return toggle(s, id, true, Some(found), headers).await;
     }
-    toggle(s, id, true, headers).await
+    // Keep what was found, for the list; the source stays as it was.
+    s.with_db(move |db| db.set_source_problems(&id, &found))
+        .await?;
+    Err(ApiError::source_problems(&c.problems))
 }
 
 async fn disable_source(
@@ -344,7 +350,7 @@ async fn disable_source(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    toggle(s, id, false, headers).await
+    toggle(s, id, false, None, headers).await
 }
 
 #[derive(Deserialize)]
@@ -840,8 +846,7 @@ mod tests {
         for (name, text) in [("aisstream", AIS), ("adsb-lol", ADSB)] {
             let spec: ot_source::source::SourceSpec =
                 serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            spec.validate_against(Some(&schema))
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(spec.problems(Some(&schema)), [], "{name}");
         }
         // Examples that use only the core schema.
         for (name, text) in [
@@ -1072,7 +1077,17 @@ mod tests {
         );
         assert_eq!(body["problems"][0]["stage"], "map", "{body}");
 
+        // Once the schema is published, it may run as it is.
         publish_example_schema(&app).await;
+        let (st, body) = call(&app, "POST", "/api/v1/sources/adsb-lol/enable", None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            (&body["enabled"], &body["draft"]),
+            (&json!(true), &json!(false))
+        );
+        let (st, _) = call(&app, "POST", "/api/v1/sources/adsb-lol/disable", None).await;
+        assert_eq!(st, StatusCode::OK);
+
         let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(spec.clone())).await;
         assert_eq!(st, StatusCode::OK, "{body}");
         assert_eq!(

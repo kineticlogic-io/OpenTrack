@@ -680,7 +680,11 @@ impl Db {
                         revision,
                         if s.created_at_ms > 0 { s.created_at_ms } else { now },
                         now,
-                        s.problems.to_string(),
+                        if s.problems.is_array() {
+                            s.problems.to_string()
+                        } else {
+                            "[]".to_owned()
+                        },
                     ],
                 )?;
                 tx.execute(
@@ -776,7 +780,7 @@ mod tests {
             "op:test",
         )
         .unwrap();
-        db.set_source_enabled("ais", true, "op:test").unwrap();
+        db.set_source_enabled("ais", true, None, "op:test").unwrap();
         db.set_raw_output("ais", Some("opentrack.raw.ais"), "op:test")
             .unwrap();
         db.put_schema_draft(&[json!({"key": "hull", "type": "string"})], None, "op:test")

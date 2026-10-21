@@ -388,9 +388,12 @@ export interface ConfigImported {
 
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** For a source that cannot be saved or enabled: everything wrong with it, by stage. */
+  readonly problems: SourceProblem[]
+  constructor(status: number, message: string, problems: SourceProblem[] = []) {
     super(message)
     this.status = status
+    this.problems = problems
   }
 }
 
@@ -423,7 +426,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   })
   const text = await res.text()
   const parsed = text ? JSON.parse(text) : {}
-  if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText)
+  if (!res.ok) throw new ApiError(res.status, parsed.error ?? res.statusText, parsed.problems ?? [])
   return parsed as T
 }
 

@@ -303,8 +303,8 @@ fn check(common: &Common, f: &mut ConfigFile) -> Vec<String> {
             .iter()
             .filter(|q| s.enabled || q.kind == ot_source::source::ProblemKind::Invalid)
             .collect();
-        if let Some(q) = refused.first() {
-            p.push(format!("{at}: {}", q.message));
+        if !refused.is_empty() {
+            p.extend(refused.iter().map(|q| format!("{at}: {}", q.message)));
             continue;
         }
         match serde_json::to_value(&problems) {
@@ -832,7 +832,8 @@ pub(crate) mod tests {
             "op:test",
         )
         .unwrap();
-        db.set_source_enabled("aisstream", true, "op:test").unwrap();
+        db.set_source_enabled("aisstream", true, None, "op:test")
+            .unwrap();
         db.put_app_settings(&json!({"site_name": "Garden Island"}), "op:test")
             .unwrap();
         // Saved before the account policy was fixed: those settings are

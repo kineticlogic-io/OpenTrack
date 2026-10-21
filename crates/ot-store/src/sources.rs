@@ -77,8 +77,25 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String, String)> {
 fn finish((mut row, spec, problems): (SourceRow, String, String)) -> Result<SourceRow> {
     row.spec = serde_json::from_str(&spec)?;
     row.problems = serde_json::from_str(&problems)?;
-    row.draft = row.problems.as_array().is_some_and(|a| !a.is_empty());
+    row.draft = is_draft(&row.problems);
     Ok(row)
+}
+
+/// Whether a source with these problems is a draft: any problem listed.
+fn is_draft(problems: &Value) -> bool {
+    problems.as_array().is_some_and(|a| !a.is_empty())
+}
+
+/// A source's stored problems, if it exists.
+fn stored_problems(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option<(bool, Value)>> {
+    tx.query_row(
+        "SELECT enabled, problems FROM sources WHERE id = ?1",
+        [id],
+        |r| Ok((r.get::<_, bool>(0)?, r.get::<_, String>(1)?)),
+    )
+    .optional()?
+    .map(|(enabled, p)| Ok((enabled, serde_json::from_str(&p)?)))
+    .transpose()
 }
 
 impl Db {
@@ -102,10 +119,19 @@ impl Db {
             .transpose()
     }
 
-    /// Create or update a source. Returns the saved row.
+    /// Create or update a source. Returns the saved row. An enabled source
+    /// is saved only complete (an edit never stops a running source).
     pub fn put_source(&mut self, w: &SourceWrite<'_>, actor: &str) -> Result<SourceRow> {
         let before = self.get_source(w.id)?;
         self.write(|tx| {
+            if is_draft(w.problems)
+                && stored_problems(tx, w.id)?.is_some_and(|(enabled, _)| enabled)
+            {
+                return Err(StoreError::Conflict(format!(
+                    "source {} is enabled; it can be saved only complete",
+                    w.id
+                )));
+            }
             let now = now_ms();
             let (op, revision) = match &before {
                 None => ("create_source", 1),
@@ -152,14 +178,32 @@ impl Db {
             .ok_or_else(|| StoreError::NotFound(format!("source {}", w.id)))
     }
 
+    /// Enable or disable a source. `problems`, when given, is what checking
+    /// it again found now (a schema published since it was saved, say),
+    /// stored first: a draft cannot be enabled.
     pub fn set_source_enabled(
         &mut self,
         id: &str,
         enabled: bool,
+        problems: Option<&Value>,
         actor: &str,
     ) -> Result<SourceRow> {
         self.write(|tx| {
             let now = now_ms();
+            let Some((_, stored)) = stored_problems(tx, id)? else {
+                return Err(StoreError::NotFound(format!("source {id}")));
+            };
+            if let Some(p) = problems {
+                tx.execute(
+                    "UPDATE sources SET problems = ?2 WHERE id = ?1",
+                    params![id, p.to_string()],
+                )?;
+            }
+            if enabled && is_draft(problems.unwrap_or(&stored)) {
+                return Err(StoreError::Conflict(format!(
+                    "source {id} is a draft; complete it before enabling it"
+                )));
+            }
             let op = if enabled {
                 "enable_source"
             } else {
@@ -167,22 +211,6 @@ impl Db {
             };
             let d = Decision::new(actor, op).evidence(json!({ "source": id }));
             record_decision(tx, &d, now)?;
-            let draft: Option<bool> = tx
-                .query_row(
-                    "SELECT problems != '[]' FROM sources WHERE id = ?1",
-                    [id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            match draft {
-                None => return Err(StoreError::NotFound(format!("source {id}"))),
-                Some(true) if enabled => {
-                    return Err(StoreError::Conflict(format!(
-                        "source {id} is a draft; complete it before enabling it"
-                    )));
-                }
-                Some(_) => {}
-            }
             tx.execute(
                 "UPDATE sources SET enabled = ?2, updated_at_ms = ?3 WHERE id = ?1",
                 params![id, enabled, now],
@@ -191,6 +219,21 @@ impl Db {
         })?;
         self.get_source(id)?
             .ok_or_else(|| StoreError::NotFound(format!("source {id}")))
+    }
+
+    /// Store what checking a source again found, without a new revision
+    /// (nothing about the source itself changed).
+    pub fn set_source_problems(&mut self, id: &str, problems: &Value) -> Result<()> {
+        self.write(|tx| {
+            let n = tx.execute(
+                "UPDATE sources SET problems = ?2 WHERE id = ?1",
+                params![id, problems.to_string()],
+            )?;
+            if n == 0 {
+                return Err(StoreError::NotFound(format!("source {id}")));
+            }
+            Ok(())
+        })
     }
 
     /// Set or clear the raw-output subject. Setting one records the admin's
@@ -316,17 +359,18 @@ mod tests {
         assert!(row.draft);
         assert_eq!(row.problems, problems);
         assert!(matches!(
-            db.set_source_enabled("ais", true, "op:test"),
+            db.set_source_enabled("ais", true, None, "op:test"),
             Err(StoreError::Conflict(_))
         ));
         assert!(!db.get_source("ais").unwrap().unwrap().enabled);
         // Turning a draft off is fine; completing it lets it run.
-        db.set_source_enabled("ais", false, "op:test").unwrap();
+        db.set_source_enabled("ais", false, None, "op:test")
+            .unwrap();
         let row = db.put_source(&write(&spec), "op:test").unwrap();
         assert!(!row.draft);
         assert_eq!(row.problems, json!([]));
         assert!(
-            db.set_source_enabled("ais", true, "op:test")
+            db.set_source_enabled("ais", true, None, "op:test")
                 .unwrap()
                 .enabled
         );
@@ -384,7 +428,7 @@ mod tests {
         let v1 = db.sources_version().unwrap();
         assert_ne!(v0, v1);
 
-        let row = db.set_source_enabled("ais", true, "op:test").unwrap();
+        let row = db.set_source_enabled("ais", true, None, "op:test").unwrap();
         assert!(row.enabled);
         let revs = db.source_revisions("ais").unwrap();
         assert_eq!(revs.len(), 2);
@@ -417,7 +461,7 @@ mod tests {
             ]
         );
         assert!(matches!(
-            db.set_source_enabled("nope", true, "x"),
+            db.set_source_enabled("nope", true, None, "x"),
             Err(StoreError::NotFound(_))
         ));
     }

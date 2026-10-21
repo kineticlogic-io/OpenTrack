@@ -224,22 +224,10 @@ impl SourceSpec {
         }
     }
 
-    /// The first reason this source may not run, in the order the checks
-    /// have always run: see [`Self::problems`] for all of them.
+    /// The first reason this source may not run (without the extension
+    /// schema checks): see [`Self::problems`] for all of them.
     pub fn validate(&self) -> Result<(), SourceError> {
         match self.checks(None).into_iter().next() {
-            Some((_, _, e)) => Err(e),
-            None => Ok(()),
-        }
-    }
-
-    /// Validate against the extension schema version the mapping targets
-    /// (`None` if that version is not published).
-    pub fn validate_against(
-        &self,
-        schema: Option<&crate::schema::ExtensionSchema>,
-    ) -> Result<(), SourceError> {
-        match self.checks(Some(schema)).into_iter().next() {
             Some((_, _, e)) => Err(e),
             None => Ok(()),
         }
@@ -311,8 +299,20 @@ impl SourceSpec {
         {
             out.push((Some(Stage::Tracker), None, SourceError::Tracker(e)));
         }
-        if let crate::codec::CodecConfig::Plugin { .. } | crate::codec::CodecConfig::Protobuf { .. } =
-            &self.pipeline.codec
+        let grpc = matches!(
+            self.transport,
+            TransportConfig::GrpcClient { .. } | TransportConfig::GrpcServer { .. }
+        );
+        let protobuf = matches!(
+            self.pipeline.codec,
+            crate::codec::CodecConfig::Protobuf { .. }
+        );
+        let plugin = matches!(
+            self.pipeline.codec,
+            crate::codec::CodecConfig::Plugin { .. }
+        );
+        // A gRPC source's protobuf is compiled (once) by the check below.
+        if (plugin || (protobuf && !grpc))
             && let Err(e) = crate::codec::Codec::new(self.pipeline.codec.clone())
         {
             out.push((
@@ -321,8 +321,6 @@ impl SourceSpec {
                 SourceError::Tracker(e.to_string()),
             ));
         }
-        // An empty setting is reported once, not again by the checks
-        // that read it.
         let missing = self.transport.missing();
         for (field, what) in &missing {
             out.push((
@@ -331,15 +329,11 @@ impl SourceSpec {
                 SourceError::Transport(format!("{what} is not set")),
             ));
         }
-        if missing.is_empty()
-            && let Err(e) = self.transport.check()
-        {
+        if let Err(e) = self.transport.check() {
             out.push((Some(Stage::Source), None, SourceError::Transport(e)));
         }
         // gRPC carries protobuf: the method must fit the codec's message.
-        if let TransportConfig::GrpcClient { .. } | TransportConfig::GrpcServer { .. } =
-            &self.transport
-        {
+        if grpc {
             match crate::transport::ProtoContext::of(&self.pipeline.codec) {
                 Err(e) => out.push((Some(Stage::Decode), None, SourceError::Transport(e))),
                 Ok(None) => out.push((

@@ -361,47 +361,31 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    pub(crate) fn internal(m: impl Into<String>) -> Self {
+    fn new(status: StatusCode, m: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
+            status,
             message: m.into(),
             problems: None,
         }
+    }
+
+    pub(crate) fn internal(m: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, m)
     }
     pub(crate) fn not_found(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::NOT_FOUND, m)
     }
     pub(crate) fn unprocessable(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::UNPROCESSABLE_ENTITY, m)
     }
     pub(crate) fn conflict(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::CONFLICT, m)
     }
     pub(crate) fn unauthorized(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::UNAUTHORIZED, m)
     }
     pub(crate) fn forbidden(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::FORBIDDEN, m)
     }
     /// A source that cannot be saved or enabled as it is: 422, with its
     /// problems listed (the first is the `error`).
@@ -416,11 +400,7 @@ impl ApiError {
     }
 
     pub(crate) fn bad_request(m: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: m.into(),
-            problems: None,
-        }
+        Self::new(StatusCode::BAD_REQUEST, m)
     }
 }
 
