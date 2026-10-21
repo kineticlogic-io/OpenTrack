@@ -5,6 +5,7 @@ import {
   COLUMN,
   defaultConfig,
   flowOf,
+  freePlace,
   idFromName,
   laidOut,
   newSourceSpec,
@@ -96,6 +97,12 @@ describe('steps', () => {
     expect(at('nats').x).toBe(2 * COLUMN)
     expect(at('filter').y).not.toBe(at('nats').y)
     expect(at('throttle').x).toBe(4 * COLUMN) // not connected: after the rest
+  })
+
+  it('are placed clear of the others', () => {
+    const f = laidOut(branched())
+    expect(freePlace(f, { x: 0, y: 0 })).toEqual({ x: 0, y: 130 })
+    expect(freePlace(f, { x: 0.4, y: 500 })).toEqual({ x: 0, y: 500 })
   })
 
   it('are dry-run without their places', () => {

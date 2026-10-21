@@ -259,6 +259,15 @@ export function laidOut(flow: Flow): Flow {
   }
 }
 
+/** Where a new step goes: `at`, or below it as far as needed not to cover another step. */
+export function freePlace(flow: Flow, at: { x: number; y: number }): { x: number; y: number } {
+  const taken = (p: { x: number; y: number }) =>
+    flow.nodes.some((n) => n.position && Math.abs(n.position.x - p.x) < 240 && Math.abs(n.position.y - p.y) < 110)
+  let p = { x: Math.round(at.x), y: Math.round(at.y) }
+  for (let i = 0; i < 50 && taken(p); i++) p = { ...p, y: p.y + ROW }
+  return p
+}
+
 export interface NodeProblems {
   byNode: Record<string, string[]>
   /** Problems with the source as a whole (its feed settings), or with a step it no longer has. */

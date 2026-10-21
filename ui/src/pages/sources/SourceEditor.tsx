@@ -29,6 +29,7 @@ import {
   canConnect,
   defaultConfig,
   flowOf,
+  freePlace,
   INPUT,
   laidOut,
   nextNodeId,
@@ -304,7 +305,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
         flow.nodes.map((n) => n.id),
       ),
       type: t,
-      position: { x: Math.round(position.x), y: Math.round(position.y) },
+      position: freePlace(flow, position),
     }
     const config = defaultConfig(t)
     if (config !== undefined) node.config = config
