@@ -14,7 +14,7 @@ const REVISION_COLUMNS: DataTableColumn<Revision>[] = [
   { key: 'decision', header: 'Decision', width: 90, align: 'right', render: (r) => (r.decision_id ? `#${r.decision_id}` : '—') },
 ]
 
-/** A saved source's live status: its link, revision, raw output and the last hour's counts. */
+/** A saved source's live status: its link, revision and the last hour's counts. */
 export function SourceStatus({ source }: { source: SourceRow }) {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   useEffect(() => {
@@ -52,8 +52,6 @@ export function SourceStatus({ source }: { source: SourceRow }) {
             </dd>
           </>
         )}
-        <dt>Raw output</dt>
-        <dd className="mono">{source.raw_subject ?? 'off'}</dd>
       </dl>
       {(link?.last_error || source.status?.last_error) && (
         <div className="error-text">{source.status?.last_error ?? link?.last_error}</div>

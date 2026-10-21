@@ -906,7 +906,7 @@ body {
 }
 
 /* Source editor (#104): a workspace of the source's steps, the step list on its left; a step's
-   settings (or the feed's) open over its right. It fills the page below the tabs. */
+   settings (or the feed's) open beside it, on the right. It fills the page below the tabs. */
 .source-editor {
   display: flex;
   flex-direction: column;
@@ -932,23 +932,24 @@ body {
 }
 
 .source-workspace {
-  position: relative;
   flex: 1;
   min-height: 0;
+  display: flex;
+  gap: var(--space-md);
+}
+
+.source-workspace-canvas {
+  flex: 1;
+  min-width: 0;
 }
 
 .source-workspace-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(760px, 58%);
+  width: min(680px, 46%);
   min-width: 360px;
-  z-index: 5;
   display: flex;
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-md);
   background: var(--color-bg-primary);
-  border-left: 1px solid var(--color-glass-border);
-  box-shadow: var(--shadow-deep);
 }
 
 .source-editor-json {

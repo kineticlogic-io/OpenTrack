@@ -443,20 +443,22 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
       </div>
       {view === 'flow' ? (
         <div className="source-workspace">
-          <FlowCanvas
-            aria-label={`Steps of ${spec.name || id}`}
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={NODE_TYPES}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            isValidConnection={isValidConnection}
-            palette={palette}
-            onDropNode={onDropNode}
-            readOnly={readOnly}
-            height="100%"
-          />
+          <div className="source-workspace-canvas">
+            <FlowCanvas
+              aria-label={`Steps of ${spec.name || id}`}
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={NODE_TYPES}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              isValidConnection={isValidConnection}
+              palette={palette}
+              onDropNode={onDropNode}
+              readOnly={readOnly}
+              height="100%"
+            />
+          </div>
           {(node || feedOpen) && (
             <aside className="source-workspace-panel">
               {node ? (
