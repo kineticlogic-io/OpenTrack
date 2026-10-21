@@ -283,14 +283,14 @@ impl PipelineSpec {
             if !ok {
                 out.push(invalid(
                     Some(&n.id),
-                    format!(
-                        "step id {:?}: 1-64 of letters, digits, - and _",
-                        n.id
-                    ),
+                    format!("step id {:?}: 1-64 of letters, digits, - and _", n.id),
                 ));
             }
             if !ids.insert(n.id.as_str()) {
-                out.push(invalid(Some(&n.id), format!("two steps are called {:?}", n.id)));
+                out.push(invalid(
+                    Some(&n.id),
+                    format!("two steps are called {:?}", n.id),
+                ));
             }
             if (n.id == INPUT) != matches!(n.step, Step::Input) {
                 out.push(invalid(
@@ -317,27 +317,45 @@ impl PipelineSpec {
         for e in &self.edges {
             let (from, to) = (self.node(&e.source), self.node(&e.target));
             if from.is_none() && e.source != INPUT {
-                out.push(invalid(None, format!("a connection from {:?}, which is not a step", e.source)));
+                out.push(invalid(
+                    None,
+                    format!("a connection from {:?}, which is not a step", e.source),
+                ));
                 continue;
             }
             let Some(to) = to else {
-                out.push(invalid(None, format!("a connection to {:?}, which is not a step", e.target)));
+                out.push(invalid(
+                    None,
+                    format!("a connection to {:?}, which is not a step", e.target),
+                ));
                 continue;
             };
             if !pairs.insert((e.source.as_str(), e.target.as_str())) {
-                out.push(invalid(Some(&to.id), "it is connected twice from one step".into()));
+                out.push(invalid(
+                    Some(&to.id),
+                    "it is connected twice from one step".into(),
+                ));
                 continue;
             }
             *incoming.entry(e.target.as_str()).or_default() += 1;
             match (gives(&e.source), to.step.takes()) {
-                (_, None) => out.push(invalid(Some(&to.id), "nothing connects into the input".into())),
+                (_, None) => out.push(invalid(
+                    Some(&to.id),
+                    "nothing connects into the input".into(),
+                )),
                 (None, _) => out.push(invalid(
                     Some(&e.source),
-                    format!("a {} passes nothing on", from.map_or("step", |f| f.step.name())),
+                    format!(
+                        "a {} passes nothing on",
+                        from.map_or("step", |f| f.step.name())
+                    ),
                 )),
                 (Some(Data::Records), Some(Data::Observations)) => out.push(invalid(
                     Some(&to.id),
-                    format!("a {} takes observations: put a Map before it", to.step.name()),
+                    format!(
+                        "a {} takes observations: put a Map before it",
+                        to.step.name()
+                    ),
                 )),
                 (Some(Data::Observations), Some(Data::Records)) => out.push(invalid(
                     Some(&to.id),
@@ -563,6 +581,34 @@ impl PipelineSpec {
     }
 }
 
+impl PipelineSpec {
+    /// Add a NATS topic step publishing on `subject` what the Output takes
+    /// (fed by the Output's step before it), as the raw output of a source
+    /// from before flows did. Returns its id; `None` if there is no Output
+    /// fed by a step.
+    pub fn add_output_topic(&mut self, subject: &str) -> Option<String> {
+        let out = self.output()?.id.clone();
+        let parent = self.edges.iter().find(|e| e.target == out)?.source.clone();
+        let mut id = "raw".to_owned();
+        let mut n = 1;
+        while self.node(&id).is_some() {
+            n += 1;
+            id = format!("raw-{n}");
+        }
+        self.nodes.push(node(
+            &id,
+            Step::Nats(NatsStep {
+                subject: subject.to_owned(),
+            }),
+        ));
+        self.edges.push(FlowEdge {
+            source: parent,
+            target: id.clone(),
+        });
+        Some(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,13 +632,24 @@ mod tests {
             "throttle": {"min_interval_secs": 5}
         }));
         let ids: Vec<&str> = p.nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(ids, ["input", "reject", "map", "registry", "filter", "throttle", "output"]);
+        assert_eq!(
+            ids,
+            [
+                "input", "reject", "map", "registry", "filter", "throttle", "output"
+            ]
+        );
         assert_eq!(p.edges.len(), 6);
         assert!(p.shape_problems().is_empty(), "{:?}", p.shape_problems());
-        let Step::Map(m) = &p.node("map").unwrap().step else { panic!() };
-        assert!(m.mapping.reject.is_empty(), "the rejects moved to their own step");
+        let Step::Map(m) = &p.node("map").unwrap().step else {
+            panic!()
+        };
+        assert!(
+            m.mapping.reject.is_empty(),
+            "the rejects moved to their own step"
+        );
         // Saved, it reads back the same.
-        let again: PipelineSpec = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        let again: PipelineSpec =
+            serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
         assert_eq!(again, p);
         assert!(p.output_registry() == RegistryStage::default() && !p.output_tracked());
     }
@@ -622,36 +679,66 @@ mod tests {
 
     #[test]
     fn shape_problems_name_their_step() {
-        let base = || json!({"codec": {"type": "json"}, "nodes": [
+        let base = || {
+            json!({"codec": {"type": "json"}, "nodes": [
             {"id": "m", "type": "map", "config": {"mapping": map()}},
             {"id": "f", "type": "filter", "config": {}},
             {"id": "out", "type": "output"}
-        ], "edges": [{"source": "input", "target": "m"}, {"source": "m", "target": "f"}, {"source": "f", "target": "out"}]});
+        ], "edges": [{"source": "input", "target": "m"}, {"source": "m", "target": "f"}, {"source": "f", "target": "out"}]})
+        };
         let problems = |v: Value| -> Vec<(bool, Option<String>)> {
-            spec(v).shape_problems().into_iter().map(|p| (p.invalid, p.node)).collect()
+            spec(v)
+                .shape_problems()
+                .into_iter()
+                .map(|p| (p.invalid, p.node))
+                .collect()
         };
         // A filter before the map.
         let mut v = base();
         v["edges"] = json!([{"source": "input", "target": "f"}, {"source": "f", "target": "m"}, {"source": "m", "target": "out"}]);
-        assert_eq!(problems(v), [(true, Some("f".into())), (true, Some("m".into()))]);
+        assert_eq!(
+            problems(v),
+            [(true, Some("f".into())), (true, Some("m".into()))]
+        );
         // Two inputs into one step.
         let mut v = base();
-        v["edges"].as_array_mut().unwrap().push(json!({"source": "input", "target": "f"}));
+        v["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"source": "input", "target": "f"}));
         assert!(problems(v).contains(&(true, Some("f".into()))));
         // A loop.
         let mut v = base();
-        v["nodes"].as_array_mut().unwrap().push(json!({"id": "g", "type": "filter", "config": {}}));
-        v["nodes"].as_array_mut().unwrap().push(json!({"id": "h", "type": "filter", "config": {}}));
-        v["edges"].as_array_mut().unwrap().extend([json!({"source": "g", "target": "h"}), json!({"source": "h", "target": "g"})]);
+        v["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "g", "type": "filter", "config": {}}));
+        v["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "h", "type": "filter", "config": {}}));
+        v["edges"].as_array_mut().unwrap().extend([
+            json!({"source": "g", "target": "h"}),
+            json!({"source": "h", "target": "g"}),
+        ]);
         assert!(problems(v).contains(&(true, Some("g".into()))));
         // Two outputs.
         let mut v = base();
-        v["nodes"].as_array_mut().unwrap().push(json!({"id": "out2", "type": "output"}));
+        v["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "out2", "type": "output"}));
         assert!(problems(v).contains(&(true, None)));
         // Loose ends are only incomplete: a draft.
         let mut v = base();
-        v["nodes"].as_array_mut().unwrap().push(json!({"id": "t", "type": "throttle", "config": {}}));
-        v["edges"].as_array_mut().unwrap().push(json!({"source": "f", "target": "t"}));
+        v["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "t", "type": "throttle", "config": {}}));
+        v["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"source": "f", "target": "t"}));
         assert_eq!(problems(v), [(false, Some("t".into()))]);
         let mut v = base();
         v["edges"] = json!([{"source": "input", "target": "m"}]);

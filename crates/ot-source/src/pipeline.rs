@@ -421,7 +421,9 @@ impl Pipeline {
                 Step::Filter(f) => Run::Filter(f.clone()),
                 Step::Registry(r) => Run::Registry(r.clone()),
                 Step::Affiliation(a) => Run::Affiliation(a.clone()),
-                Step::Tracker(t) => Run::Tracker(Stage::new(t.clone()).map_err(PipelineError::Tracker)?),
+                Step::Tracker(t) => {
+                    Run::Tracker(Stage::new(t.clone()).map_err(PipelineError::Tracker)?)
+                }
                 Step::Throttle(t) => Run::Throttle {
                     spec: t.clone(),
                     last: HashMap::new(),
@@ -433,7 +435,9 @@ impl Pipeline {
         }
         let mut children = vec![Vec::new(); spec.nodes.len()];
         for e in &spec.edges {
-            if let (Some(&from), Some(&to)) = (index.get(e.source.as_str()), index.get(e.target.as_str())) {
+            if let (Some(&from), Some(&to)) =
+                (index.get(e.source.as_str()), index.get(e.target.as_str()))
+            {
                 children[from].push(to);
             }
         }
@@ -462,7 +466,8 @@ impl Pipeline {
             .or_else(|| steps.iter().position(|s| matches!(s, Run::Map { .. })));
         Ok(Self {
             source_id: source_id.into(),
-            codec: Codec::new(spec.codec.clone()).map_err(|e| PipelineError::Codec(e.to_string()))?,
+            codec: Codec::new(spec.codec.clone())
+                .map_err(|e| PipelineError::Codec(e.to_string()))?,
             spec,
             steps,
             children,
@@ -551,13 +556,16 @@ impl Pipeline {
     pub fn prune(&mut self, now: DateTime<Utc>) {
         for s in &mut self.steps {
             match s {
-                Run::Map { ttl_secs, statics, .. } => {
+                Run::Map {
+                    ttl_secs, statics, ..
+                } => {
                     let ttl = chrono::Duration::from_std(Duration::from_secs(*ttl_secs))
                         .unwrap_or(chrono::Duration::MAX);
                     statics.retain(|_, e| now - e.updated_at < ttl);
                 }
                 Run::Throttle { spec, last, .. } => {
-                    let keep = chrono::Duration::milliseconds((spec.heartbeat_secs * 1000.0) as i64 * 2);
+                    let keep =
+                        chrono::Duration::milliseconds((spec.heartbeat_secs * 1000.0) as i64 * 2);
                     last.retain(|_, w| now - w.at < keep);
                 }
                 _ => {}
@@ -615,7 +623,9 @@ impl Pipeline {
         }
         for record in records {
             self.counts.records += 1;
-            let sample = trace.as_deref_mut().and_then(|t| t.begin(frame, &self.order));
+            let sample = trace
+                .as_deref_mut()
+                .and_then(|t| t.begin(frame, &self.order));
             if let (Some(t), Some(at)) = (trace.as_deref_mut(), sample) {
                 t.samples[at].item(INPUT, || record.clone());
             }
@@ -633,10 +643,17 @@ impl Pipeline {
         // Plots still waiting for the rest of their scan.
         if let Some(tr) = trace {
             for (i, s) in self.steps.iter().enumerate() {
-                let Run::Tracker(Stage::Builtin(t)) = s else { continue };
+                let Run::Tracker(Stage::Builtin(t)) = s else {
+                    continue;
+                };
                 let id = &self.spec.nodes[i].id;
                 for f in &mut tr.samples {
-                    let mine: Vec<&Observation> = f.plots.iter().filter(|(n, _)| n == id).map(|(_, o)| o).collect();
+                    let mine: Vec<&Observation> = f
+                        .plots
+                        .iter()
+                        .filter(|(n, _)| n == id)
+                        .map(|(_, o)| o)
+                        .collect();
                     if !mine.is_empty()
                         && t.waiting().any(|w| mine.contains(&w))
                         && let Some(st) = f.stage(id)
@@ -730,7 +747,9 @@ impl Pipeline {
                 }
             }
             Run::Tracker(_) => {
-                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else { return };
+                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else {
+                    return;
+                };
                 if item.kind == RuleKind::Observation {
                     self.counts.plots += 1;
                     if self.keep_plots {
@@ -750,8 +769,17 @@ impl Pipeline {
                 }
             }
             Run::Throttle { .. } => {
-                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else { return };
-                let Run::Throttle { spec, last, pending } = &mut self.steps[at] else { unreachable!() };
+                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else {
+                    return;
+                };
+                let Run::Throttle {
+                    spec,
+                    last,
+                    pending,
+                } = &mut self.steps[at]
+                else {
+                    unreachable!()
+                };
                 let key = obs.source_track_key.clone();
                 if obs.state == Some(ot_core::TrackState::Dropped) {
                     // A source track's end always passes.
@@ -789,7 +817,9 @@ impl Pipeline {
                     let stage = self.default_registry.clone();
                     self.link(&stage, &mut item, registry, out);
                 }
-                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else { return };
+                let Some(obs) = self.typed(&id, &item, out, sample.as_deref_mut()) else {
+                    return;
+                };
                 self.counts.emitted += 1;
                 if let Some(f) = sample {
                     f.obs(&id, &obs);
@@ -833,7 +863,13 @@ impl Pipeline {
 
     /// Look up the item's entity with these Entity links: grades it, passes
     /// fields between entity and track, and queues the entity's updates.
-    fn link(&mut self, stage: &RegistryStage, item: &mut Item, registry: &dyn RegistryLookup, out: &mut Output) {
+    fn link(
+        &mut self,
+        stage: &RegistryStage,
+        item: &mut Item,
+        registry: &dyn RegistryLookup,
+        out: &mut Output,
+    ) {
         let matched = stage.run(&mut item.value, registry);
         // Values mapped to the entity go no further than here.
         if let Some(ext) = item.value.get_mut("ext").and_then(Value::as_object_mut) {
@@ -849,14 +885,17 @@ impl Pipeline {
             let fresh: Vec<(String, Value)> = m
                 .updates
                 .into_iter()
-                .filter(|(field, v)| self.entity_sent.get(&(m.entity_id.clone(), field.clone())) != Some(v))
+                .filter(|(field, v)| {
+                    self.entity_sent.get(&(m.entity_id.clone(), field.clone())) != Some(v)
+                })
                 .collect();
             if !fresh.is_empty() {
                 if self.entity_sent.len() > 100_000 {
                     self.entity_sent.clear();
                 }
                 for (field, v) in &fresh {
-                    self.entity_sent.insert((m.entity_id.clone(), field.clone()), v.clone());
+                    self.entity_sent
+                        .insert((m.entity_id.clone(), field.clone()), v.clone());
                 }
                 out.entity_updates.push((m.entity_id, fresh));
             }
@@ -875,7 +914,9 @@ impl Pipeline {
         out: &mut Output,
         trace: &mut Option<&mut Trace>,
     ) {
-        let Run::Map { spec, .. } = &self.steps[at] else { return };
+        let Run::Map { spec, .. } = &self.steps[at] else {
+            return;
+        };
         let schema_version = spec.schema_version;
         let outcome = spec.apply(&item.value);
         let mut sample = match (trace.as_deref_mut(), item.sample) {
@@ -892,7 +933,10 @@ impl Pipeline {
             }
             MapOutcome::Unmatched => {
                 if let Some(f) = sample {
-                    f.dropped(id, "no mapping rule matched it (or the rule's key was empty)");
+                    f.dropped(
+                        id,
+                        "no mapping rule matched it (or the rule's key was empty)",
+                    );
                 }
                 self.counts.unmatched += 1;
                 return;
@@ -905,10 +949,21 @@ impl Pipeline {
             self.counts.statics += 1;
             if let Some(f) = sample.as_deref_mut() {
                 f.item(id, || mapped_json(m));
-                f.note(id, format!("kept the static identity of {}, to fill its later reports", m.key));
+                f.note(
+                    id,
+                    format!(
+                        "kept the static identity of {}, to fill its later reports",
+                        m.key
+                    ),
+                );
             }
             let stored = self.static_key(at, &m.key);
-            let Run::Map { statics, changed, .. } = &mut self.steps[at] else { return };
+            let Run::Map {
+                statics, changed, ..
+            } = &mut self.steps[at]
+            else {
+                return;
+            };
             let entry = statics.entry(m.key.clone()).or_insert_with(|| StaticEntry {
                 fields: Value::Object(Default::default()),
                 identifiers: Vec::new(),
@@ -929,7 +984,12 @@ impl Pipeline {
             out.statics.push((stored, entry.clone()));
         }
         for mut m in mapped.into_iter().filter(|m| m.kind.reports()) {
-            let Run::Map { statics, changed, .. } = &mut self.steps[at] else { return };
+            let Run::Map {
+                statics, changed, ..
+            } = &mut self.steps[at]
+            else {
+                return;
+            };
             if let Some(s) = statics.get(&m.key) {
                 mapping::fill_missing(&mut m.fields, &s.fields);
                 for i in &s.identifiers {
@@ -958,9 +1018,11 @@ impl Pipeline {
                 }
             }
             // Later steps work on the observation's JSON form.
-            let obs = match mapping::finalize(&self.source_id, schema_version, &m, item.received_at).and_then(|o| {
-                serde_json::to_value(&o).map_err(|e| mapping::FinalizeError::Invalid(e.to_string()))
-            }) {
+            let obs = match mapping::finalize(&self.source_id, schema_version, &m, item.received_at)
+                .and_then(|o| {
+                    serde_json::to_value(&o)
+                        .map_err(|e| mapping::FinalizeError::Invalid(e.to_string()))
+                }) {
                 Ok(v) => v,
                 Err(e) => {
                     self.counts.invalid += 1;
@@ -1003,7 +1065,12 @@ impl Pipeline {
     /// wait `scan_hold_secs` for more; `force` runs them regardless). The
     /// worker calls this on a timer; a dry run calls it with `force` at the
     /// end.
-    pub fn flush(&mut self, now: DateTime<Utc>, force: bool, registry: &dyn RegistryLookup) -> Output {
+    pub fn flush(
+        &mut self,
+        now: DateTime<Utc>,
+        force: bool,
+        registry: &dyn RegistryLookup,
+    ) -> Output {
         let mut out = Output::default();
         self.run_trackers(now, force, registry, &mut out, &mut None);
         out
@@ -1026,7 +1093,9 @@ impl Pipeline {
             for (i, s) in self.steps.iter().enumerate() {
                 let Run::Tracker(stage) = s else { continue };
                 let why = match stage {
-                    Stage::Plugin { .. } => "a tracker plugin's reports are not traced back to the records behind them",
+                    Stage::Plugin { .. } => {
+                        "a tracker plugin's reports are not traced back to the records behind them"
+                    }
                     Stage::Builtin(_) => {
                         "no track report: the tracker has not confirmed a track from these plots (or merged them into a nearby plot, or they came too late for their scan)"
                     }
@@ -1092,9 +1161,11 @@ impl Pipeline {
             for (i, obs) in reports.into_iter().enumerate() {
                 let mut sample = None;
                 if let Some(t) = trace.as_deref_mut() {
-                    sample = dets
-                        .get(i)
-                        .and_then(|d| t.samples.iter().position(|f| f.plots.iter().any(|(n, p)| n == &id && p == d)));
+                    sample = dets.get(i).and_then(|d| {
+                        t.samples
+                            .iter()
+                            .position(|f| f.plots.iter().any(|(n, p)| n == &id && p == d))
+                    });
                     if let Some(f) = sample.and_then(|s| t.samples.get_mut(s)) {
                         f.obs(&id, &obs);
                     }
@@ -1199,7 +1270,8 @@ mod tests {
 
     /// A flow from steps and connections, after the input.
     fn flow(nodes: Value, edges: Value) -> PipelineSpec {
-        serde_json::from_value(json!({"codec": {"type": "json"}, "nodes": nodes, "edges": edges})).unwrap()
+        serde_json::from_value(json!({"codec": {"type": "json"}, "nodes": nodes, "edges": edges}))
+            .unwrap()
     }
 
     fn pos_map() -> Value {
@@ -1241,15 +1313,33 @@ mod tests {
         };
         let a = feed(&mut p, &reg, rec(1, 32.0, Some("ALPHA")));
         assert_eq!(a.observations.len(), 1, "named and south: to correlation");
-        assert_eq!(a.published.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), ["feed.all"]);
+        assert_eq!(
+            a.published
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>(),
+            ["feed.all"]
+        );
         // The Output looks the entity up, with no Entity links step before it.
         assert_eq!(a.observations[0].ext["registry"]["entity_id"], "e1");
-        assert!(a.published[0].1["ext"].get("registry").is_none(), "a topic gets the mapped data");
+        assert!(
+            a.published[0].1["ext"].get("registry").is_none(),
+            "a topic gets the mapped data"
+        );
         let b = feed(&mut p, &reg, rec(2, 34.0, None));
         assert!(b.observations.is_empty(), "unnamed, and north");
-        assert_eq!(b.published.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), ["feed.all", "feed.north"]);
+        assert_eq!(
+            b.published
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>(),
+            ["feed.all", "feed.north"]
+        );
         assert_eq!(b.published[1].1["position"]["latitude"], 34.0);
-        assert_eq!((p.counts.emitted, p.counts.published, p.counts.filtered), (1, 3, 2));
+        assert_eq!(
+            (p.counts.emitted, p.counts.published, p.counts.filtered),
+            (1, 3, 2)
+        );
     }
 
     #[test]
@@ -1270,14 +1360,29 @@ mod tests {
         let mut trace = Trace::new(5);
         let body = json!([{"id": 1, "lat": 32.0, "lon": 1.0, "ts": "2026-09-24T12:00:00Z"},
                           {"id": 2, "lat": 40.0, "lon": 1.0, "ts": "2026-09-24T12:00:00Z"}]);
-        p.process_traced(&Frame::new(body.to_string().into_bytes()), &Reg::new(), &mut trace);
-        let ids: Vec<&str> = trace.samples[0].stages.iter().map(|s| s.id.as_str()).collect();
+        p.process_traced(
+            &Frame::new(body.to_string().into_bytes()),
+            &Reg::new(),
+            &mut trace,
+        );
+        let ids: Vec<&str> = trace.samples[0]
+            .stages
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ids, ["input", "m", "f", "raw", "out"]);
         let (a, b) = (&trace.samples[0], &trace.samples[1]);
-        assert_eq!((stage(a, "out").items.len(), stage(a, "raw").items.len()), (1, 1));
+        assert_eq!(
+            (stage(a, "out").items.len(), stage(a, "raw").items.len()),
+            (1, 1)
+        );
         assert_eq!(stage(b, "f").dropped, ["drop_if matched"]);
         assert!(stage(b, "out").items.is_empty());
-        assert_eq!(stage(b, "raw").items.len(), 1, "the other branch still has it");
+        assert_eq!(
+            stage(b, "raw").items.len(),
+            1,
+            "the other branch still has it"
+        );
     }
 
     #[test]
@@ -1286,7 +1391,9 @@ mod tests {
             json!([{"id": "f", "type": "filter", "config": {}}, {"id": "out", "type": "output"}]),
             json!([{"source": "input", "target": "f"}, {"source": "f", "target": "out"}]),
         );
-        assert!(matches!(Pipeline::new("x", spec), Err(PipelineError::Flow(m)) if m.contains("put a Map before it")));
+        assert!(
+            matches!(Pipeline::new("x", spec), Err(PipelineError::Flow(m)) if m.contains("put a Map before it"))
+        );
     }
 
     #[test]
@@ -1526,7 +1633,11 @@ mod tests {
         assert_eq!(p.counts.plots, 8);
         assert_eq!(p.counts.emitted, 6);
         // Nothing waits: frames are scans.
-        assert!(p.flush(Utc::now(), true, &Reg::new()).observations.is_empty());
+        assert!(
+            p.flush(Utc::now(), true, &Reg::new())
+                .observations
+                .is_empty()
+        );
     }
 
     fn stage<'a>(f: &'a crate::trace::SampleTrace, id: &str) -> &'a crate::trace::StageTrace {
@@ -1574,14 +1685,24 @@ mod tests {
         let ids: Vec<&str> = f[0].stages.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["input", "map", "registry", "affiliation", "filter", "output"],
+            [
+                "input",
+                "map",
+                "registry",
+                "affiliation",
+                "filter",
+                "output"
+            ],
             "the flow's steps, in the order they are met"
         );
         assert_eq!(trace.frames[0].format, "json");
         // A static report is kept by the map, to join later reports.
         let map = stage(&f[0], "map");
         assert_eq!(map.items[0]["kind"], "static");
-        assert!(map.dropped.is_empty(), "keeping a static identity is not a drop");
+        assert!(
+            map.dropped.is_empty(),
+            "keeping a static identity is not a drop"
+        );
         assert!(map.notes[0].starts_with("kept the static identity of 1"));
         // A position report: joined, graded, published.
         assert_eq!(stage(&f[1], "map").items[0]["name"], "EXAMPLE");

@@ -264,7 +264,10 @@ impl SourceSpec {
     fn checks(&self, schema: Option<Option<&crate::schema::ExtensionSchema>>) -> Vec<Check> {
         let mut out = Vec::new();
         let input = || Some(crate::flow::INPUT.to_owned());
-        let push = |out: &mut Vec<Check>, node: Option<String>, field: Option<&'static str>, error: SourceError| {
+        let push = |out: &mut Vec<Check>,
+                    node: Option<String>,
+                    field: Option<&'static str>,
+                    error: SourceError| {
             let invalid = matches!(error, SourceError::BadId(_) | SourceError::NoName);
             out.push(Check {
                 node,
@@ -281,7 +284,12 @@ impl SourceSpec {
         if let Some(m) = &self.emitter_motion
             && let Err(e) = m.check()
         {
-            push(&mut out, None, Some("emitter_motion"), SourceError::Tracker(e));
+            push(
+                &mut out,
+                None,
+                Some("emitter_motion"),
+                SourceError::Tracker(e),
+            );
         }
         let id_ok = !self.id.is_empty()
             && self.id.len() <= 64
@@ -290,7 +298,12 @@ impl SourceSpec {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
         if !id_ok {
-            push(&mut out, None, Some("id"), SourceError::BadId(self.id.clone()));
+            push(
+                &mut out,
+                None,
+                Some("id"),
+                SourceError::BadId(self.id.clone()),
+            );
         }
         if self.name.trim().is_empty() {
             push(&mut out, None, Some("name"), SourceError::NoName);
@@ -329,17 +342,33 @@ impl SourceSpec {
             self.transport,
             TransportConfig::GrpcClient { .. } | TransportConfig::GrpcServer { .. }
         );
-        let protobuf = matches!(self.pipeline.codec, crate::codec::CodecConfig::Protobuf { .. });
-        let plugin = matches!(self.pipeline.codec, crate::codec::CodecConfig::Plugin { .. });
+        let protobuf = matches!(
+            self.pipeline.codec,
+            crate::codec::CodecConfig::Protobuf { .. }
+        );
+        let plugin = matches!(
+            self.pipeline.codec,
+            crate::codec::CodecConfig::Plugin { .. }
+        );
         // A gRPC source's protobuf is compiled (once) by the check below.
         if (plugin || (protobuf && !grpc))
             && let Err(e) = crate::codec::Codec::new(self.pipeline.codec.clone())
         {
-            push(&mut out, input(), Some("codec"), SourceError::Tracker(e.to_string()));
+            push(
+                &mut out,
+                input(),
+                Some("codec"),
+                SourceError::Tracker(e.to_string()),
+            );
         }
         let missing = self.transport.missing();
         for (field, what) in &missing {
-            push(&mut out, input(), Some(*field), SourceError::Transport(format!("{what} is not set")));
+            push(
+                &mut out,
+                input(),
+                Some(*field),
+                SourceError::Transport(format!("{what} is not set")),
+            );
         }
         if let Err(e) = self.transport.check() {
             push(&mut out, input(), None, SourceError::Transport(e));
@@ -357,10 +386,12 @@ impl SourceSpec {
                 Ok(Some(_)) if !missing.is_empty() => {}
                 Ok(Some(proto)) => {
                     let fit = match &self.transport {
-                        TransportConfig::GrpcClient { method, request, .. } => {
-                            proto.client_request(method, request).map(drop)
+                        TransportConfig::GrpcClient {
+                            method, request, ..
+                        } => proto.client_request(method, request).map(drop),
+                        TransportConfig::GrpcServer { methods, .. } => {
+                            proto.server_methods(methods).map(drop)
                         }
-                        TransportConfig::GrpcServer { methods, .. } => proto.server_methods(methods).map(drop),
                         _ => Ok(()),
                     };
                     if let Err(e) = fit {
@@ -369,15 +400,20 @@ impl SourceSpec {
                 }
             }
         }
-        if let TransportConfig::TcpClient { framing, .. } | TransportConfig::TcpServer { framing, .. } =
-            &self.transport
+        if let TransportConfig::TcpClient { framing, .. }
+        | TransportConfig::TcpServer { framing, .. } = &self.transport
             && let Err(e) = crate::frame::Framer::new(framing.clone())
         {
             push(&mut out, input(), Some("framing"), e.into());
         }
         // Last, so that a broken setting is reported before its security.
         if let Some(e) = self.authentication_problem() {
-            push(&mut out, input(), Some("unauthenticated"), SourceError::Unauthenticated(e));
+            push(
+                &mut out,
+                input(),
+                Some("unauthenticated"),
+                SourceError::Unauthenticated(e),
+            );
         }
         if let Some(schema) = schema {
             let wanted = self.pipeline.schema_version();
@@ -563,7 +599,11 @@ mod tests {
                 (incomplete, Some("map".into()), None),
                 (incomplete, Some("input".into()), Some("host".into())),
                 (incomplete, Some("input".into()), Some("port".into())),
-                (incomplete, Some("map".into()), Some("schema_version".into())),
+                (
+                    incomplete,
+                    Some("map".into()),
+                    Some("schema_version".into())
+                ),
             ]
         );
         assert!(matches!(draft.validate(), Err(SourceError::Mapping(_))));
@@ -590,7 +630,10 @@ mod tests {
             )
         );
         assert_eq!(
-            found.iter().filter(|p| p.1.as_deref() == Some("map")).count(),
+            found
+                .iter()
+                .filter(|p| p.1.as_deref() == Some("map"))
+                .count(),
             5,
             "unknown field, no position (twice), duplicate rule, schema: {found:?}"
         );

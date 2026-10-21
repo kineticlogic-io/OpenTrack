@@ -276,7 +276,9 @@ fn gmti_plots_carry_ground_error_ellipses() {
             continue;
         }
         located += usize::from(r.get("lat").is_some());
-        let ot_source::mapping::MapOutcome::Mapped(mapped) = spec.pipeline.mappings().next().unwrap().apply(r) else {
+        let ot_source::mapping::MapOutcome::Mapped(mapped) =
+            spec.pipeline.mappings().next().unwrap().apply(r)
+        else {
             continue;
         };
         for m in mapped.iter().filter(|m| m.rule == "target") {
