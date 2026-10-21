@@ -94,6 +94,25 @@ function SourcePanel({ spec, row, readOnly, onChange }: { spec: SourceSpec; row:
   )
 }
 
+/** The height of the element the ref is on, as it resizes: the JSON view fills the page with it. */
+function useBoxHeight(): [(el: HTMLElement | null) => void, number] {
+  const [height, setHeight] = useState(400)
+  const observer = useRef<ResizeObserver | null>(null)
+  const ref = useCallback((el: HTMLElement | null) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const h = Math.floor(el.getBoundingClientRect().height)
+      if (h > 0) setHeight((old) => (old === h ? old : h))
+    })
+    ro.observe(el)
+    observer.current = ro
+  }, [])
+  useEffect(() => () => observer.current?.disconnect(), [])
+  return [ref, height]
+}
+
 /**
  * A dry run of the source as edited over its stored samples, re-run shortly after it stops changing:
  * what stops it running (each problem on its stage) and its samples stage by stage. A draft runs as
@@ -145,6 +164,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const [selected, setSelected] = useState<StepId | null>(null)
   const [view, setView] = useState<'flow' | 'json'>('flow')
   const [jsonText, setJsonText] = useState('')
+  const [jsonBox, jsonHeight] = useBoxHeight()
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -405,9 +425,11 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
           </aside>
         </div>
       ) : (
-        <div className="source-editor-json">
+        <div className="source-editor-json" ref={jsonBox}>
           <CodeEditor
             aria-label="Source settings as JSON"
+            minHeight={jsonHeight}
+            maxHeight={jsonHeight}
             value={jsonText}
             readOnly={readOnly}
             onChange={(t) => {
