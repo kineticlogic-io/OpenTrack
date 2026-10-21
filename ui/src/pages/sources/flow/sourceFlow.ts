@@ -283,7 +283,7 @@ export function removeStep(spec: SourceSpec, step: StepId): SourceSpec {
 }
 
 /** Where each step sits: one column, top to bottom. */
-export const STEP_GAP = 96
+export const STEP_GAP = 112
 export const positionOf = (index: number) => ({ x: 0, y: index * STEP_GAP })
 
 /** A new source: its transport, an empty JSON decode and mapping, reporting tracks. */

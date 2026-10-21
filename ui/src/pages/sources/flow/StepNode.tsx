@@ -13,7 +13,8 @@ export interface StepView extends Record<string, unknown> {
 
 /**
  * One step of a source on the canvas: its icon, heading and one line of its settings, joined to the
- * step before and after it, with what stops it running in red.
+ * step before and after it, with the first thing that stops it running in red (all of them are in
+ * its settings).
  */
 export function StepNode({ data, selected }: NodeProps) {
   const step = data as StepView
@@ -36,11 +37,12 @@ export function StepNode({ data, selected }: NodeProps) {
         <span className="flow-step-kind">{KIND_WORD[step.kind]}</span>
       </div>
       {step.summary && <span className="flow-step-summary">{step.summary}</span>}
-      {step.problems.map((message) => (
-        <span key={message} role="alert" className="flow-step-problem">
-          {message}
+      {failing && (
+        <span role="alert" className="flow-step-problem" title={step.problems.join('\n')}>
+          {step.problems[0]}
         </span>
-      ))}
+      )}
+      {step.problems.length > 1 && <span className="flow-step-problem-more">+{step.problems.length - 1} more</span>}
       {step.kind !== 'output' && <Handle type="source" position={Position.Bottom} isConnectable={false} />}
     </div>
   )

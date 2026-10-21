@@ -1036,8 +1036,18 @@ body {
   white-space: nowrap;
 }
 
+/* The first problem, in two lines at most; the step's settings list them all. */
 .flow-step-problem {
   font-size: 10px;
   color: var(--color-destructive);
   line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.flow-step-problem-more {
+  font-size: 10px;
+  color: var(--color-destructive);
 }
