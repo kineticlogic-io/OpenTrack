@@ -78,11 +78,13 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
     )
   }, [])
 
+  // The list refreshes while it is shown; the editor keeps its own source fresh.
   useEffect(() => {
+    if (selected) return
     load()
     const t = setInterval(load, REFRESH_MS)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, selected])
 
   if (selected) {
     return (
@@ -90,14 +92,8 @@ export default function SourcesPage({ selected, onSelect }: { selected: string; 
         <SourceEditor
           key={selected}
           id={selected}
-          onClose={() => {
-            onSelect('')
-            load()
-          }}
-          onDeleted={() => {
-            onSelect('')
-            load()
-          }}
+          onClose={() => onSelect('')}
+          onDeleted={() => onSelect('')}
         />
       </Suspense>
     )

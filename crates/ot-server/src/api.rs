@@ -107,8 +107,8 @@ impl Checked {
     fn dry_run(&self) -> Result<Pipeline, ApiError> {
         self.clone().savable()?;
         let pipeline =
-            Pipeline::new(self.spec.id.clone(), self.spec.pipeline.clone()).map_err(|_| {
-                let blocking: Vec<Problem> = self
+            Pipeline::new(self.spec.id.clone(), self.spec.pipeline.clone()).map_err(|e| {
+                let mut blocking: Vec<Problem> = self
                     .problems
                     .iter()
                     .filter(|p| {
@@ -116,11 +116,20 @@ impl Checked {
                     })
                     .cloned()
                     .collect();
-                ApiError::source_problems(if blocking.is_empty() {
-                    &self.problems
-                } else {
-                    &blocking
-                })
+                // What the checks did not see (a tracker plugin not loaded, say), on its stage.
+                if blocking.is_empty() {
+                    blocking.push(Problem {
+                        kind: ProblemKind::Incomplete,
+                        stage: Some(match e {
+                            ot_source::pipeline::PipelineError::Mapping(_) => Stage::Map,
+                            ot_source::pipeline::PipelineError::Tracker(_) => Stage::Tracker,
+                            ot_source::pipeline::PipelineError::Codec(_) => Stage::Decode,
+                        }),
+                        field: None,
+                        message: e.to_string(),
+                    });
+                }
+                ApiError::source_problems(&blocking)
             })?;
         Ok(match &self.schema {
             Some(schema) => pipeline.with_schema(schema.clone()),

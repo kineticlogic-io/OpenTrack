@@ -197,10 +197,21 @@ export function stepOfEntry(type: string): StepId | null {
 
 const streamed = (t: Transport) => t.type === 'tcp_client' || t.type === 'tcp_server'
 
+const LINES = { type: 'lines' }
+const COT_FRAMING = { type: 'end_tag', tag: '</event>' }
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
 /** CoT arrives as back-to-back XML events, framed by `</event>` rather than by lines on a stream. */
 function cotFraming(t: Transport, codec: Codec): Transport {
   const framing = t.framing as { type?: string } | undefined
-  return codec.type === 'cot_xml' && streamed(t) && framing?.type === 'lines' ? { ...t, framing: { type: 'end_tag', tag: '</event>' } } : t
+  return codec.type === 'cot_xml' && streamed(t) && framing?.type === 'lines' ? { ...t, framing: COT_FRAMING } : t
+}
+
+/** The framing a codec sets on a stream when chosen (CoT's end tag, a plugin's own), if any. */
+function framingOf(codec: Codec, plugins: PluginInfo[]): unknown {
+  if (codec.type === 'cot_xml') return COT_FRAMING
+  if (codec.type === 'plugin') return plugins.find((p) => p.name === codec.plugin)?.framing ?? null
+  return null
 }
 
 /**
@@ -230,6 +241,11 @@ export function addEntry(spec: SourceSpec, type: string, plugins: PluginInfo[]):
       return next
     }
     case 'decode': {
+      // The framing the old codec set goes with it.
+      const before = framingOf(spec.pipeline.codec, plugins)
+      if (before && streamed(spec.transport) && same(spec.transport.framing, before)) {
+        spec = { ...spec, transport: { ...spec.transport, framing: LINES } }
+      }
       let codec: Codec | null = null
       if (sub === 'plugin') {
         const p = plugins.find((x) => x.name === name)

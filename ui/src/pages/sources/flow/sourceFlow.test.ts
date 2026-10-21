@@ -85,6 +85,10 @@ describe('palette entries', () => {
     expect(cot.transport.framing).toEqual({ type: 'end_tag', tag: '</event>' })
     const server = addEntry(cot, 'source:tcp_server', [])
     expect(server.transport.framing).toEqual({ type: 'end_tag', tag: '</event>' })
+    // Off CoT, the end tag goes; framing set by hand stays.
+    expect(addEntry(server, 'decode:json', []).transport.framing).toEqual({ type: 'lines' })
+    const custom = { ...server, transport: { ...server.transport, framing: { type: 'delimiter', delimiter: '\\x03' } } }
+    expect(addEntry(custom, 'decode:json', []).transport.framing).toEqual(custom.transport.framing)
   })
 
   it('take a codec plugin with its options and framing', () => {
@@ -96,6 +100,7 @@ describe('palette entries', () => {
     expect(stepTitle(s, 'decode')).toBe('stanag4607')
     expect(replaces(s, 'decode:plugin:stanag4607')).toBe(false)
     expect(replaces(s, 'decode:json')).toBe(true)
+    expect(addEntry(s, 'decode:json', [p]).transport.framing).toEqual({ type: 'lines' })
   })
 
   it('set what the output reports', () => {

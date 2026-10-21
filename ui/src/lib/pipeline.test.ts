@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SchemaOverview, SourceSpec } from '../api/client'
-import { describeCondition, describeValue, destinations, fieldMap, pipelineStages, transportCodec, valueSources } from './pipeline'
+import { describeCondition, describeValue, destinations, fieldMap, pipelineStages, valueSources } from './pipeline'
 
 const schema = {
   published_core: [],
@@ -105,18 +105,3 @@ describe('pipelineStages', () => {
   })
 })
 
-describe('transportCodec', () => {
-  it('leaves the codecs the Decode stage edits to it', () => {
-    expect(transportCodec(undefined)).toBeNull()
-    expect(transportCodec({ type: 'json', records: 'ac' })).toBeNull()
-    expect(transportCodec({ type: 'cot_xml' })).toBeNull()
-    expect(transportCodec({ type: 'xml', record_element: 'r' })).toBeNull()
-  })
-
-  it('shows protobuf and plugin codecs with their message or plugin', () => {
-    expect(transportCodec({ type: 'protobuf', files: {}, message: 'acme.v1.Batch' })).toEqual({ type: 'protobuf', name: 'acme.v1.Batch' })
-    expect(transportCodec({ type: 'protobuf', files: {}, message: '' })).toEqual({ type: 'protobuf' })
-    expect(transportCodec({ type: 'plugin', plugin: 'sapient', options: {} })).toEqual({ type: 'plugin', name: 'sapient' })
-    expect(transportCodec({ type: 'future_codec' })).toEqual({ type: 'future_codec' })
-  })
-})

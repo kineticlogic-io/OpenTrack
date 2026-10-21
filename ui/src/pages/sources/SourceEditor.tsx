@@ -43,6 +43,15 @@ import {
 } from './flow/sourceFlow'
 
 const REFRESH_MS = 5000
+
+/** Whether parsed JSON has a source's shape, enough to show as steps (the server checks the rest). */
+function isSpecShaped(v: unknown): v is SourceSpec {
+  const o = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+  if (!o(v) || typeof v.id !== 'string' || typeof v.name !== 'string' || !o(v.transport) || typeof v.transport.type !== 'string') return false
+  const p = v.pipeline
+  if (!o(p) || !o(p.codec) || typeof p.codec.type !== 'string' || !o(p.mapping) || !Array.isArray(p.mapping.rules)) return false
+  return p.mapping.reject === undefined || Array.isArray(p.mapping.reject)
+}
 const PREVIEW_DELAY_MS = 600
 const NODE_TYPES = { step: StepNode }
 
@@ -180,6 +189,8 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const problems = useMemo(() => live.problems ?? row?.problems ?? [], [live.problems, row?.problems])
   const steps = useMemo(() => (spec ? stepsOf(spec) : []), [spec])
   const byStep = useMemo(() => problemsByStep(problems, steps), [problems, steps])
+  // A step taken out another way (the JSON view, emptying the Reject rules) is no longer selected.
+  const current = selected && steps.includes(selected) ? selected : null
 
   const edit = (next: SourceSpec) => {
     setSpec(next)
@@ -194,7 +205,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
       id: step,
       type: 'step',
       position: positionOf(i),
-      selected: step === selected,
+      selected: step === current,
       draggable: false,
       deletable: !REQUIRED.has(step),
       data: {
@@ -205,7 +216,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
         problems: byStep.byStep[step] ?? [],
       } satisfies StepView,
     }))
-  }, [spec, steps, selected, byStep])
+  }, [spec, steps, current, byStep])
 
   const edges: FlowCanvasEdge[] = useMemo(
     () => steps.slice(1).map((step, i) => ({ id: `${steps[i]}->${step}`, source: steps[i], target: step, deletable: false })),
@@ -319,7 +330,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
     )
   }
 
-  const state = row.draft ? { label: 'draft', color: 'grey' as const } : sourceState(row)
+  const state = sourceState(row)
   const general = [...(notice ? [notice] : []), ...byStep.general]
 
   return (
@@ -374,11 +385,11 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
             style={{ minHeight: 0 }}
           />
           <aside className="source-editor-aside">
-            {selected ? (
+            {current ? (
               <StepPanel
                 spec={spec}
-                step={selected}
-                problems={byStep.byStep[selected] ?? []}
+                step={current}
+                problems={byStep.byStep[current] ?? []}
                 schema={schema}
                 preview={live.preview}
                 previewError={live.error}
@@ -403,7 +414,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               setJsonText(t)
               try {
                 const next = JSON.parse(t) as SourceSpec
-                if (next && typeof next === 'object' && next.id === id) edit(next)
+                if (isSpecShaped(next) && next.id === id) edit(next)
               } catch {
                 // Keep the last valid settings; the editor marks the parse error.
               }
