@@ -2,7 +2,8 @@
  * A source as a flow of steps (#104): the canvas is a view of the source's spec. Its steps follow the
  * pipeline's fixed order (crates/ot-source/src/pipeline.rs), so they connect themselves: adding a
  * stage puts it in its place, and removing one closes the gap. Source, Decode, Map and Output are
- * always there; the other stages are added from the palette and may be removed.
+ * always there; Static join is there while the Map has a static rule; the other stages are added
+ * from the palette and may be removed.
  */
 import type { PluginInfo, SourceProblem, SourceSpec, SourceStage } from '../../../api/client'
 import { DEFAULT_LINKS } from '../../../lib/pipeline'
@@ -17,6 +18,9 @@ export type StepId = (typeof STEP_ORDER)[number]
 
 /** Steps every source has: they cannot be removed. */
 export const REQUIRED: ReadonlySet<StepId> = new Set(['source', 'decode', 'map', 'output'])
+
+/** Whether a step can be taken out on the canvas: an added stage. Static join follows the Map's static rules. */
+export const removable = (step: StepId) => !REQUIRED.has(step) && step !== 'join'
 
 export type StepKind = 'source' | 'decode' | 'stage' | 'output'
 
@@ -44,16 +48,11 @@ export const CODECS: Record<string, { label: string; initial: Codec }> = {
 }
 
 /** The stages added from the palette, with what a new one starts as. */
-const STAGES: Record<Exclude<StepId, 'source' | 'decode' | 'map' | 'output'>, { label: string; add: (s: SourceSpec) => SourceSpec; remove: (s: SourceSpec) => SourceSpec }> = {
+const STAGES: Record<Exclude<StepId, 'source' | 'decode' | 'map' | 'join' | 'output'>, { label: string; add: (s: SourceSpec) => SourceSpec; remove: (s: SourceSpec) => SourceSpec }> = {
   reject: {
     label: 'Reject',
     add: (s) => withPipeline(s, { mapping: { ...s.pipeline.mapping, reject: [{ reason: 'no_position', when: { path: 'lat', exists: false } }] } }),
     remove: (s) => withPipeline(s, { mapping: { ...s.pipeline.mapping, reject: undefined } }),
-  },
-  join: {
-    label: 'Static join',
-    add: (s) => withPipeline(s, { static_join: {} }),
-    remove: (s) => withPipeline(s, { static_join: undefined }),
   },
   registry: {
     label: 'Entity links',
@@ -103,7 +102,7 @@ export function stepsOf(spec: SourceSpec): StepId[] {
     decode: true,
     reject: rejects(spec),
     map: true,
-    join: p.static_join !== undefined,
+    join: (spec.pipeline.mapping.rules as { kind?: string }[]).some((r) => r?.kind === 'static'),
     registry: p.registry !== undefined,
     affiliation: p.affiliation !== undefined,
     filter: p.filter !== undefined,
@@ -128,6 +127,8 @@ export function stepTitle(spec: SourceSpec, step: StepId): string {
       return 'Map'
     case 'output':
       return OUTPUTS[spec.reports ?? 'tracks']
+    case 'join':
+      return 'Static join'
     default:
       return STAGES[step].label
   }
@@ -275,9 +276,9 @@ export function addEntry(spec: SourceSpec, type: string, plugins: PluginInfo[]):
   return spec
 }
 
-/** The source without this stage. Source, Decode, Map and Output stay. */
+/** The source without this stage. Source, Decode, Map, Static join and Output stay. */
 export function removeStep(spec: SourceSpec, step: StepId): SourceSpec {
-  if (REQUIRED.has(step)) return spec
+  if (!removable(step)) return spec
   return STAGES[step as keyof typeof STAGES].remove(spec)
 }
 

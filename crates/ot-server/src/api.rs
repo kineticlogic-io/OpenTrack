@@ -129,7 +129,14 @@ impl Checked {
                         message: e.to_string(),
                     });
                 }
-                ApiError::source_problems(&blocking)
+                // Then the rest, so every step shows what it needs.
+                let rest = self
+                    .problems
+                    .iter()
+                    .filter(|p| !blocking.contains(p))
+                    .cloned();
+                let all: Vec<Problem> = blocking.iter().cloned().chain(rest).collect();
+                ApiError::source_problems(&all)
             })?;
         Ok(match &self.schema {
             Some(schema) => pipeline.with_schema(schema.clone()),
@@ -1373,6 +1380,15 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert_eq!(body["problems"][0]["stage"], "map", "{body}");
+        // The others follow, so each step shows what it needs.
+        assert!(
+            body["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["field"] == "bind"),
+            "{body}"
+        );
         redis.purge_namespace().await.unwrap();
     }
 

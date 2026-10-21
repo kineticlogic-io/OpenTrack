@@ -113,6 +113,14 @@ describe('palette entries', () => {
   it('never remove a required step', () => {
     for (const r of REQUIRED) expect(removeStep(base, r)).toBe(base)
   })
+
+  it('show Static join while the Map has a static rule, and never remove it', () => {
+    expect(stepsOf(base)).not.toContain('join')
+    const statics: SourceSpec = { ...base, pipeline: { ...base.pipeline, mapping: { rules: [{ name: 'ids', kind: 'static', key: 'mmsi' }] } } }
+    expect(stepsOf(statics)).toEqual(['source', 'decode', 'map', 'join', 'output'])
+    expect(removeStep(statics, 'join')).toBe(statics)
+    expect(paletteEntries([]).map((e) => e.type)).not.toContain('stage:join')
+  })
 })
 
 describe('problemsByStep', () => {

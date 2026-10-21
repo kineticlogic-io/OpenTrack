@@ -32,7 +32,7 @@ import {
   paletteEntries,
   positionOf,
   problemsByStep,
-  REQUIRED,
+  removable,
   removeStep,
   replaces,
   stepOfEntry,
@@ -207,7 +207,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
       position: positionOf(i),
       selected: step === current,
       draggable: false,
-      deletable: !REQUIRED.has(step),
+      deletable: removable(step),
       data: {
         kind: kindOf(step),
         icon: stepIcon(spec, step),
