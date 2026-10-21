@@ -13,7 +13,7 @@ use axum::{Extension, Json, Router};
 use ot_source::frame::Frame;
 use ot_source::pipeline::Pipeline;
 use ot_source::schema::{ExtensionField, ExtensionSchema};
-use ot_source::source::SourceSpec;
+use ot_source::source::{Problem, ProblemKind, SourceSpec, Stage};
 use ot_source::trace::Trace;
 use ot_store::{Entity, SourceRow, SourceWrite};
 use serde::Deserialize;
@@ -73,25 +73,72 @@ pub(crate) fn actor(headers: &HeaderMap) -> String {
         .map_or_else(|| "op:api".to_owned(), str::to_owned)
 }
 
-/// Parse and validate a source spec, including against the published
-/// extension schema version its mapping targets. Returns the spec, its
-/// normalised JSON (defaults filled in) and that schema.
-async fn parse_spec(
-    s: &AppState,
-    body: Value,
-) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
-    let spec: SourceSpec = serde_json::from_value(body)
-        .map_err(|e| ApiError::unprocessable(format!("invalid source spec: {e}")))?;
-    crate::probe::file_allowed(&s.common, &spec.transport).map_err(ApiError::unprocessable)?;
+/// A source spec as sent, checked: the spec, its normalised JSON (defaults
+/// filled in), the published extension schema its mapping targets (if it
+/// is published) and everything that stops it running. A spec that does
+/// not parse, or is not allowed at all, is refused here.
+struct Checked {
+    spec: SourceSpec,
+    normalised: Value,
+    schema: Option<ExtensionSchema>,
+    problems: Vec<Problem>,
+}
+
+impl Checked {
+    /// Refuse it if it cannot be saved (an invalid id or name).
+    fn savable(self) -> Result<Self, ApiError> {
+        let invalid: Vec<Problem> = self
+            .problems
+            .iter()
+            .filter(|p| p.kind == ProblemKind::Invalid)
+            .cloned()
+            .collect();
+        if invalid.is_empty() {
+            Ok(self)
+        } else {
+            Err(ApiError::source_problems(&invalid))
+        }
+    }
+
+    /// Refuse it unless it is complete (it may run).
+    fn complete(self) -> Result<(SourceSpec, Value, ExtensionSchema), ApiError> {
+        match self.schema {
+            Some(schema) if self.problems.is_empty() => Ok((self.spec, self.normalised, schema)),
+            _ => Err(ApiError::source_problems(&self.problems)),
+        }
+    }
+}
+
+/// One problem with a spec as a whole, for a refusal.
+fn invalid(message: String) -> ApiError {
+    ApiError::source_problems(&[Problem {
+        kind: ProblemKind::Invalid,
+        stage: None,
+        field: None,
+        message,
+    }])
+}
+
+async fn check_spec(s: &AppState, body: Value) -> Result<Checked, ApiError> {
+    let spec: SourceSpec =
+        serde_json::from_value(body).map_err(|e| invalid(format!("invalid source spec: {e}")))?;
+    crate::probe::file_allowed(&s.common, &spec.transport).map_err(|e| {
+        ApiError::source_problems(&[Problem {
+            kind: ProblemKind::Invalid,
+            stage: Some(Stage::Source),
+            field: Some("path".into()),
+            message: e,
+        }])
+    })?;
     let schema = published_schema(s, spec.pipeline.mapping.schema_version).await?;
-    spec.validate_against(schema.as_ref())
-        .map_err(|e| ApiError::unprocessable(e.to_string()))?;
+    let problems = spec.problems(schema.as_ref());
     let normalised = serde_json::to_value(&spec).map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok((
+    Ok(Checked {
         spec,
         normalised,
-        schema.expect("validated against a published schema"),
-    ))
+        schema,
+        problems,
+    })
 }
 
 /// A published extension schema version, typed.
@@ -175,17 +222,20 @@ async fn get_source(
     )))
 }
 
-async fn save(
-    s: &AppState,
-    spec: SourceSpec,
-    normalised: Value,
-    actor: String,
-) -> Result<SourceRow, ApiError> {
+async fn save(s: &AppState, c: Checked, actor: String) -> Result<SourceRow, ApiError> {
+    let Checked {
+        spec,
+        normalised,
+        problems,
+        ..
+    } = c;
     if spec.unauthenticated.is_some() {
         // The decision records the acceptance; the log says it plainly.
         tracing::warn!(source = %spec.id, transport = spec.transport.kind(), %actor,
             "listening source saved with unauthenticated senders accepted");
     }
+    let problems =
+        serde_json::to_value(&problems).map_err(|e| ApiError::internal(e.to_string()))?;
     s.with_db(move |db| {
         db.put_source(
             &SourceWrite {
@@ -195,6 +245,7 @@ async fn save(
                 codec: spec.pipeline.codec.name(),
                 priority: spec.priority,
                 spec: &normalised,
+                problems: &problems,
             },
             &actor,
         )
@@ -202,37 +253,47 @@ async fn save(
     .await
 }
 
+/// A new source. One that is not complete yet is saved as a draft.
 async fn create_source(
     State(s): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let (spec, normalised, _) = parse_spec(&s, body).await?;
-    let id = spec.id.clone();
+    let c = check_spec(&s, body).await?.savable()?;
+    let id = c.spec.id.clone();
     if s.with_db(move |db| db.get_source(&id)).await?.is_some() {
         return Err(ApiError::conflict(format!(
             "source {} already exists; use PUT to update",
-            spec.id
+            c.spec.id
         )));
     }
-    let row = save(&s, spec, normalised, actor(&headers)).await?;
+    let row = save(&s, c, actor(&headers)).await?;
     Ok((StatusCode::CREATED, Json(with_status(&s, row).await)))
 }
 
+/// Save a source. A disabled one may be saved as a draft; an enabled one
+/// only complete, so that an edit never stops a running source.
 async fn put_source(
     State(s): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let (spec, normalised, _) = parse_spec(&s, body).await?;
-    if spec.id != id {
+    let c = check_spec(&s, body).await?.savable()?;
+    if c.spec.id != id {
         return Err(ApiError::unprocessable(format!(
             "body id {:?} does not match path id {id:?} (source ids never change)",
-            spec.id
+            c.spec.id
         )));
     }
-    let row = save(&s, spec, normalised, actor(&headers)).await?;
+    let enabled = s
+        .with_db(move |db| db.get_source(&id))
+        .await?
+        .is_some_and(|r| r.enabled);
+    if enabled && !c.problems.is_empty() {
+        return Err(ApiError::source_problems(&c.problems));
+    }
+    let row = save(&s, c, actor(&headers)).await?;
     Ok(Json(with_status(&s, row).await))
 }
 
@@ -259,11 +320,22 @@ async fn toggle(
     Ok(Json(with_status(&s, row).await))
 }
 
+/// Enable a source: only a complete one, checked again now (the schema
+/// version its mapping targets, say, may have changed since it was saved).
 async fn enable_source(
     State(s): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
+    let key = id.clone();
+    let row = s
+        .with_db(move |db| db.get_source(&key))
+        .await?
+        .ok_or_else(|| ApiError::not_found("source"))?;
+    let c = check_spec(&s, row.spec).await?;
+    if !c.problems.is_empty() {
+        return Err(ApiError::source_problems(&c.problems));
+    }
     toggle(s, id, true, headers).await
 }
 
@@ -401,7 +473,7 @@ async fn validate_source(
     State(s): State<AppState>,
     Json(body): Json<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let (spec, normalised, schema) = parse_spec(&s, body.spec).await?;
+    let (spec, normalised, schema) = check_spec(&s, body.spec).await?.complete()?;
     let mut frames: Vec<Frame> = body
         .samples
         .iter()
@@ -917,17 +989,30 @@ mod tests {
         spec["id"] = json!("udp-auth");
         let accepted = spec.clone();
         spec.as_object_mut().unwrap().remove("unauthenticated");
+        // Without the acceptance it is a draft, and cannot be enabled.
         let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(st, StatusCode::CREATED, "{body}");
+        let problem = &body["problems"][0];
+        assert_eq!(
+            (&problem["stage"], &problem["field"]),
+            (&json!("source"), &json!("unauthenticated")),
+            "{body}"
+        );
         assert!(
-            body["error"]
+            problem["message"]
                 .as_str()
                 .unwrap()
                 .contains("UDP cannot carry TLS"),
             "{body}"
         );
-        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(accepted)).await;
-        assert_eq!(st, StatusCode::CREATED, "{body}");
+        let (st, body) = call(&app, "POST", "/api/v1/sources/udp-auth/enable", None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/udp-auth", Some(accepted)).await;
+        assert_eq!(
+            (st, &body["draft"]),
+            (StatusCode::OK, &json!(false)),
+            "{body}"
+        );
         // Moved to mutual TLS, the acceptance goes: a decision whose before
         // and after (the two revisions) show the change.
         spec["transport"] = json!({"type": "tcp_server", "bind": "127.0.0.1:0",
@@ -944,9 +1029,10 @@ mod tests {
                 .cloned()
                 .unwrap()
         };
-        assert_eq!(rev(1)["spec"]["unauthenticated"], "accepted", "{revs}");
-        assert!(rev(2)["spec"].get("unauthenticated").is_none(), "{revs}");
-        assert!(rev(2)["decision_id"].is_i64(), "{revs}");
+        assert!(rev(1)["spec"].get("unauthenticated").is_none(), "{revs}");
+        assert_eq!(rev(2)["spec"]["unauthenticated"], "accepted", "{revs}");
+        assert!(rev(3)["spec"].get("unauthenticated").is_none(), "{revs}");
+        assert!(rev(3)["decision_id"].is_i64(), "{revs}");
         let (_, d) = call(&app, "GET", "/api/v1/decisions?op=update_source", None).await;
         assert_eq!(d["decisions"][0]["evidence"]["source"], "udp-auth", "{d}");
     }
@@ -959,15 +1045,8 @@ mod tests {
         };
         let spec: Value = serde_json::from_str(ADSB).unwrap();
 
-        // Its extension schema is not published yet.
-        let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(
-            body["error"].as_str().unwrap().contains("schema version 2"),
-            "{body}"
-        );
-        publish_example_schema(&app).await;
-
+        // Its extension schema is not published yet: it saves, as a draft
+        // that cannot be enabled.
         let (st, body) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
         assert_eq!(st, StatusCode::CREATED, "{body}");
         assert_eq!(
@@ -975,6 +1054,32 @@ mod tests {
             (Some(1), Some(false))
         );
         assert_eq!(body["transport"], "http_poll");
+        assert_eq!(body["draft"], true, "{body}");
+        assert_eq!(body["problems"][0]["kind"], "incomplete", "{body}");
+        assert_eq!(body["problems"][0]["stage"], "map", "{body}");
+        assert!(
+            body["problems"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("schema version 2"),
+            "{body}"
+        );
+        let (st, body) = call(&app, "POST", "/api/v1/sources/adsb-lol/enable", None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("schema version 2"),
+            "{body}"
+        );
+        assert_eq!(body["problems"][0]["stage"], "map", "{body}");
+
+        publish_example_schema(&app).await;
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(spec.clone())).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            (body["revision"].as_i64(), body["draft"].as_bool()),
+            (Some(2), Some(false))
+        );
+        assert_eq!(body["problems"], json!([]));
 
         let (st, _) = call(&app, "POST", "/api/v1/sources", Some(spec.clone())).await;
         assert_eq!(st, StatusCode::CONFLICT);
@@ -982,38 +1087,53 @@ mod tests {
         let (st, body) = call(&app, "PUT", "/api/v1/sources/other-id", Some(spec.clone())).await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
+        // A source with no name is not saved at all.
+        let mut nameless = spec.clone();
+        nameless["name"] = json!(" ");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(nameless)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["problems"][0]["kind"], "invalid", "{body}");
+
+        // Off, a mistake leaves a draft, with every problem on its stage.
         let mut typo = spec.clone();
         typo["pipeline"]["mapping"]["rules"][1]["fields"]["kinematic.speed_mps"] = json!("gs");
-        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(typo)).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        typo["pipeline"]["mapping"]["rules"][1]["fields"]["ext.tail_art"] = json!("r");
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(typo.clone())).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["draft"], true, "{body}");
+        let messages: Vec<&str> = body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .inspect(|p| assert_eq!(p["stage"], "map", "{body}"))
+            .map(|p| p["message"].as_str().unwrap())
+            .collect();
         assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("kinematic.speed_mps"),
+            messages.iter().any(|m| m.contains("kinematic.speed_mps")),
             "{body}"
         );
-
-        let mut undeclared = spec.clone();
-        undeclared["pipeline"]["mapping"]["rules"][1]["fields"]["ext.tail_art"] = json!("r");
-        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(undeclared)).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(
-            body["error"].as_str().unwrap().contains("ext.tail_art"),
+            messages.iter().any(|m| m.contains("ext.tail_art")),
             "{body}"
         );
 
         let mut edited = spec.clone();
         edited["name"] = json!("adsb.lol (edited)");
         let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(edited)).await;
-        assert_eq!((st, body["revision"].as_i64()), (StatusCode::OK, Some(2)));
+        assert_eq!((st, body["revision"].as_i64()), (StatusCode::OK, Some(4)));
+        assert_eq!(body["draft"], false, "{body}");
 
         let (_, body) = call(&app, "POST", "/api/v1/sources/adsb-lol/enable", None).await;
         assert_eq!(body["enabled"], true);
+        // On, the same mistake is refused, and the running source is kept.
+        let (st, body) = call(&app, "PUT", "/api/v1/sources/adsb-lol", Some(typo)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["problems"].as_array().unwrap().len(), 2, "{body}");
         let (_, body) = call(&app, "GET", "/api/v1/sources/adsb-lol/revisions", None).await;
-        assert_eq!(body["revisions"].as_array().unwrap().len(), 2);
+        assert_eq!(body["revisions"].as_array().unwrap().len(), 4);
         let (_, body) = call(&app, "GET", "/api/v1/sources", None).await;
         assert_eq!(body["sources"][0]["name"], "adsb.lol (edited)");
+        assert_eq!(body["sources"][0]["draft"], false);
 
         // Raw output needs explicit consent and a subject outside `tracks.>`.
         for bad in [

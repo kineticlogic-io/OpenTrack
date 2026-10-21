@@ -902,8 +902,36 @@ export interface SourceRow {
   raw_subject: string | null
   created_at_ms: number
   updated_at_ms: number
+  /** Why it may not run yet, as found when it was saved; empty when complete. */
+  problems: SourceProblem[]
+  /** Whether it has problems: a draft cannot be enabled. */
+  draft: boolean
   /** Live worker status; null when no worker runs it (disabled or stopped). */
   status: SourceStatus | null
+}
+
+/** A pipeline stage, in the order a frame meets them. */
+export type SourceStage =
+  | 'source'
+  | 'decode'
+  | 'map'
+  | 'static_join'
+  | 'registry'
+  | 'affiliation'
+  | 'filter'
+  | 'tracker'
+  | 'throttle'
+  | 'output'
+
+/** One reason a source may not run. */
+export interface SourceProblem {
+  /** `invalid`: the source cannot be saved. `incomplete`: it saves as a draft. */
+  kind: 'invalid' | 'incomplete'
+  /** The stage it belongs to; null for the source as a whole (its id and name). */
+  stage: SourceStage | null
+  /** The setting, where there is one (for example `host`). */
+  field?: string
+  message: string
 }
 
 export interface MetricsResponse {

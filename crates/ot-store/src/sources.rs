@@ -21,6 +21,11 @@ pub struct SourceRow {
     pub raw_subject: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Why the source may not run yet, as the server found when it was
+    /// saved: a JSON array, empty when it is complete.
+    pub problems: Value,
+    /// Whether it has problems: a draft cannot be enabled.
+    pub draft: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -40,11 +45,13 @@ pub struct SourceWrite<'a> {
     pub codec: &'a str,
     pub priority: i64,
     pub spec: &'a Value,
+    /// Its problems (a JSON array; empty: complete).
+    pub problems: &'a Value,
 }
 
-const COLUMNS: &str = "id, name, transport, codec, enabled, priority, revision, settings, raw_subject, created_at_ms, updated_at_ms";
+const COLUMNS: &str = "id, name, transport, codec, enabled, priority, revision, settings, raw_subject, created_at_ms, updated_at_ms, problems";
 
-fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String)> {
+fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String, String)> {
     let spec: String = r.get(7)?;
     Ok((
         SourceRow {
@@ -59,13 +66,18 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(SourceRow, String)> {
             raw_subject: r.get(8)?,
             created_at_ms: r.get(9)?,
             updated_at_ms: r.get(10)?,
+            problems: Value::Null,
+            draft: false,
         },
         spec,
+        r.get(11)?,
     ))
 }
 
-fn finish((mut row, spec): (SourceRow, String)) -> Result<SourceRow> {
+fn finish((mut row, spec, problems): (SourceRow, String, String)) -> Result<SourceRow> {
     row.spec = serde_json::from_str(&spec)?;
+    row.problems = serde_json::from_str(&problems)?;
+    row.draft = row.problems.as_array().is_some_and(|a| !a.is_empty());
     Ok(row)
 }
 
@@ -110,19 +122,23 @@ impl Db {
             };
             let decision_id = record_decision(tx, &decision, now)?;
             let spec = w.spec.to_string();
+            let problems = w.problems.to_string();
             if before.is_none() {
                 tx.execute(
                     "INSERT INTO sources (id, name, transport, codec, settings, priority, revision,
-                                          created_at_ms, updated_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
-                    params![w.id, w.name, w.transport, w.codec, spec, w.priority, now],
+                                          created_at_ms, updated_at_ms, problems)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7, ?8)",
+                    params![w.id, w.name, w.transport, w.codec, spec, w.priority, now, problems],
                 )?;
             } else {
                 tx.execute(
                     "UPDATE sources SET name = ?2, transport = ?3, codec = ?4, settings = ?5,
-                            priority = ?6, revision = ?7, updated_at_ms = ?8
+                            priority = ?6, revision = ?7, updated_at_ms = ?8, problems = ?9
                      WHERE id = ?1",
-                    params![w.id, w.name, w.transport, w.codec, spec, w.priority, revision, now],
+                    params![
+                        w.id, w.name, w.transport, w.codec, spec, w.priority, revision, now,
+                        problems
+                    ],
                 )?;
             }
             tx.execute(
@@ -151,13 +167,26 @@ impl Db {
             };
             let d = Decision::new(actor, op).evidence(json!({ "source": id }));
             record_decision(tx, &d, now)?;
-            let n = tx.execute(
+            let draft: Option<bool> = tx
+                .query_row(
+                    "SELECT problems != '[]' FROM sources WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match draft {
+                None => return Err(StoreError::NotFound(format!("source {id}"))),
+                Some(true) if enabled => {
+                    return Err(StoreError::Conflict(format!(
+                        "source {id} is a draft; complete it before enabling it"
+                    )));
+                }
+                Some(_) => {}
+            }
+            tx.execute(
                 "UPDATE sources SET enabled = ?2, updated_at_ms = ?3 WHERE id = ?1",
                 params![id, enabled, now],
             )?;
-            if n == 0 {
-                return Err(StoreError::NotFound(format!("source {id}")));
-            }
             Ok(())
         })?;
         self.get_source(id)?
@@ -255,6 +284,8 @@ fn masked(spec: &Value) -> Value {
 mod tests {
     use super::*;
 
+    const COMPLETE: &Value = &Value::Array(Vec::new());
+
     fn write<'a>(spec: &'a Value) -> SourceWrite<'a> {
         SourceWrite {
             id: "ais",
@@ -263,7 +294,42 @@ mod tests {
             codec: "json",
             priority: 100,
             spec,
+            problems: COMPLETE,
         }
+    }
+
+    #[test]
+    fn a_draft_keeps_its_problems_and_cannot_be_enabled() {
+        let mut db = Db::open_in_memory().unwrap();
+        let spec = json!({"v": 1});
+        let problems = json!([{"kind": "incomplete", "stage": "source", "field": "url",
+                               "message": "the URL is not set"}]);
+        let row = db
+            .put_source(
+                &SourceWrite {
+                    problems: &problems,
+                    ..write(&spec)
+                },
+                "op:test",
+            )
+            .unwrap();
+        assert!(row.draft);
+        assert_eq!(row.problems, problems);
+        assert!(matches!(
+            db.set_source_enabled("ais", true, "op:test"),
+            Err(StoreError::Conflict(_))
+        ));
+        assert!(!db.get_source("ais").unwrap().unwrap().enabled);
+        // Turning a draft off is fine; completing it lets it run.
+        db.set_source_enabled("ais", false, "op:test").unwrap();
+        let row = db.put_source(&write(&spec), "op:test").unwrap();
+        assert!(!row.draft);
+        assert_eq!(row.problems, json!([]));
+        assert!(
+            db.set_source_enabled("ais", true, "op:test")
+                .unwrap()
+                .enabled
+        );
     }
 
     #[test]
