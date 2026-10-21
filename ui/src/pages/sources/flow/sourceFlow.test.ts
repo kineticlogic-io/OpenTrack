@@ -1,141 +1,150 @@
 import { describe, expect, it } from 'vitest'
 import type { PluginInfo, SourceSpec } from '../../../api/client'
 import {
-  addEntry,
+  canConnect,
+  COLUMN,
+  defaultConfig,
+  flowOf,
   idFromName,
+  laidOut,
   newSourceSpec,
-  paletteEntries,
-  problemsByStep,
-  REQUIRED,
-  removeStep,
-  replaces,
-  STEP_ORDER,
-  stepOfEntry,
-  stepsOf,
-  stepTitle,
+  nextNodeId,
+  nodeTitle,
+  problemsByNode,
   validId,
+  withCodec,
+  withFlow,
+  withoutPositions,
+  withTransport,
+  type Flow,
 } from './sourceFlow'
-
-/** Every source spec the docs ship (docs/examples). */
-const files = import.meta.glob<SourceSpec>('../../../../../docs/examples/**/*.json', { import: 'default', eager: true })
-const examples = Object.entries(files).filter(([, v]) => typeof v === 'object' && v !== null && 'transport' in v && 'pipeline' in v)
 
 const plugin = (name: string, framing: Record<string, unknown> | null = null): PluginInfo =>
   ({ name, kinds: ['codec'], enabled: true, default_options: { a: 1 }, framing }) as unknown as PluginInfo
 
-describe('stepsOf', () => {
-  it('finds examples to check', () => {
-    expect(examples.length).toBeGreaterThan(5)
-  })
-
-  it.each(examples)('%s: every required step, in pipeline order', (_, spec) => {
-    const steps = stepsOf(spec)
-    for (const r of REQUIRED) expect(steps).toContain(r)
-    expect(steps).toEqual(STEP_ORDER.filter((s) => steps.includes(s)))
-  })
-
-  it.each(examples)('%s: each added stage removes back to the source as it was', (_, spec) => {
-    for (const entry of paletteEntries([]).filter((e) => e.group === 'Stages')) {
-      const step = stepOfEntry(entry.type)!
-      const had = stepsOf(spec).includes(step)
-      const added = addEntry(spec, entry.type, [])
-      expect(stepsOf(added)).toContain(step)
-      if (had) expect(added).toBe(spec)
-      else expect(removeStep(added, step)).toEqual(spec)
-    }
-  })
+/** input → map → { filter → output, nats }, and a throttle on its own. */
+const branched = (): Flow => ({
+  nodes: [
+    { id: 'input', type: 'input' },
+    { id: 'map', type: 'map', config: defaultConfig('map') },
+    { id: 'filter', type: 'filter', config: {} },
+    { id: 'output', type: 'output' },
+    { id: 'nats', type: 'nats', config: { subject: 'raw' } },
+    { id: 'throttle', type: 'throttle', config: defaultConfig('throttle') },
+  ],
+  edges: [
+    { source: 'input', target: 'map' },
+    { source: 'map', target: 'filter' },
+    { source: 'filter', target: 'output' },
+    { source: 'map', target: 'nats' },
+  ],
 })
 
 describe('a new source', () => {
-  it('has its Source, Decode, Map and Output steps', () => {
+  it('has its input, an empty Map and the Output, connected and placed', () => {
     const s = newSourceSpec('ais', 'AIS', 'websocket')
-    expect(stepsOf(s)).toEqual(['source', 'decode', 'map', 'output'])
+    const f = flowOf(s)
+    expect(f.nodes.map((n) => n.type)).toEqual(['input', 'map', 'output'])
+    expect(f.edges).toEqual([
+      { source: 'input', target: 'map' },
+      { source: 'map', target: 'output' },
+    ])
+    expect(f.nodes.every((n) => n.position)).toBe(true)
     expect(s.transport).toEqual({ type: 'websocket', url: '' })
-    expect(stepTitle(s, 'source')).toBe('WebSocket')
-    expect(stepTitle(s, 'decode')).toBe('JSON')
-    expect(stepTitle(s, 'output')).toBe('Tracks')
+    expect(nodeTitle(s, f.nodes[0])).toBe('WebSocket')
   })
 
   it('takes its id from its name', () => {
     expect(idFromName('adsb.lol feed (EU)')).toBe('adsb-lol-feed-eu')
     expect(validId(idFromName('adsb.lol feed (EU)'))).toBe(true)
     expect(validId('Bad Id')).toBe(false)
-    expect(validId('')).toBe(false)
   })
 })
 
-describe('palette entries', () => {
+describe('canConnect', () => {
+  const f = branched()
+
+  it('lets a step that passes observations on feed one that takes them', () => {
+    expect(canConnect(f, 'filter', 'throttle')).toBe(true)
+    expect(canConnect(f, 'map', 'throttle')).toBe(true)
+  })
+
+  it('refuses the wrong data, a second input, a loop, and anything out of an output', () => {
+    expect(canConnect(f, 'input', 'throttle')).toBe(false) // records into an observation step
+    expect(canConnect(f, 'filter', 'map')).toBe(false) // observations into a Map
+    expect(canConnect(f, 'map', 'output')).toBe(false) // the Output has its input
+    expect(canConnect(f, 'output', 'throttle')).toBe(false) // an output passes nothing on
+    expect(canConnect(f, 'throttle', 'throttle')).toBe(false)
+    const chain: Flow = { ...f, edges: f.edges.filter((e) => e.target !== 'filter').concat({ source: 'throttle', target: 'filter' }) }
+    // filter feeds output; throttle feeds filter: output → … → throttle would loop, filter → throttle too.
+    expect(canConnect(chain, 'filter', 'throttle')).toBe(false)
+  })
+})
+
+describe('steps', () => {
+  it('are numbered by type when taken', () => {
+    expect(nextNodeId('filter', ['input', 'map'])).toBe('filter')
+    expect(nextNodeId('filter', ['filter', 'filter-2'])).toBe('filter-3')
+  })
+
+  it('without places are laid out in columns from the input', () => {
+    const f = laidOut(branched())
+    const at = (id: string) => f.nodes.find((n) => n.id === id)!.position!
+    expect(at('input')).toEqual({ x: 0, y: 0 })
+    expect(at('map').x).toBe(COLUMN)
+    expect(at('filter').x).toBe(2 * COLUMN)
+    expect(at('nats').x).toBe(2 * COLUMN)
+    expect(at('filter').y).not.toBe(at('nats').y)
+    expect(at('throttle').x).toBe(4 * COLUMN) // not connected: after the rest
+  })
+
+  it('are dry-run without their places', () => {
+    const s = withFlow(newSourceSpec('x', 'X', 'udp'), laidOut(branched()))
+    expect(flowOf(withoutPositions(s)).nodes.some((n) => n.position)).toBe(false)
+  })
+})
+
+describe('the input', () => {
   const base = newSourceSpec('x', 'X', 'tcp_client')
 
-  it('swap the transport, and the acceptance that belonged to the old one goes', () => {
-    const udp = addEntry(base, 'source:udp', [])
-    expect(udp.transport.type).toBe('udp')
-    const accepted: SourceSpec = { ...udp, unauthenticated: 'accepted' }
-    expect(replaces(accepted, 'source:mqtt')).toBe(true)
-    expect(replaces(accepted, 'source:udp')).toBe(false)
-    const mqtt = addEntry(accepted, 'source:mqtt', [])
+  it('swaps its transport, and the acceptance that belonged to the old one goes', () => {
+    const accepted: SourceSpec = { ...withTransport(base, 'udp'), unauthenticated: 'accepted' }
+    const mqtt = withTransport(accepted, 'mqtt')
     expect(mqtt.transport).toEqual({ type: 'mqtt', url: '', topics: [] })
     expect(mqtt.unauthenticated).toBeUndefined()
-    expect(addEntry(accepted, 'source:udp', [])).toBe(accepted)
+    expect(withTransport(accepted, 'udp')).toBe(accepted)
   })
 
-  it('frame CoT on a stream by its end tag', () => {
-    const cot = addEntry(base, 'decode:cot_xml', [])
+  it('frames CoT on a stream by its end tag, and takes it away again', () => {
+    const cot = withCodec(base, 'cot_xml', [])
     expect(cot.pipeline.codec).toEqual({ type: 'cot_xml' })
     expect(cot.transport.framing).toEqual({ type: 'end_tag', tag: '</event>' })
-    const server = addEntry(cot, 'source:tcp_server', [])
-    expect(server.transport.framing).toEqual({ type: 'end_tag', tag: '</event>' })
-    // Off CoT, the end tag goes; framing set by hand stays.
-    expect(addEntry(server, 'decode:json', []).transport.framing).toEqual({ type: 'lines' })
-    const custom = { ...server, transport: { ...server.transport, framing: { type: 'delimiter', delimiter: '\\x03' } } }
-    expect(addEntry(custom, 'decode:json', []).transport.framing).toEqual(custom.transport.framing)
+    expect(withCodec(cot, 'json', []).transport.framing).toEqual({ type: 'lines' })
+    const custom = { ...cot, transport: { ...cot.transport, framing: { type: 'delimiter', delimiter: '\\x03' } } }
+    expect(withCodec(custom, 'json', []).transport.framing).toEqual(custom.transport.framing)
   })
 
-  it('take a codec plugin with its options and framing', () => {
+  it('takes a codec plugin with its options and framing', () => {
     const p = plugin('stanag4607', { type: 'length_field', offset: 2, width: 'u32' })
-    expect(paletteEntries([p]).map((e) => e.type)).toContain('decode:plugin:stanag4607')
-    const s = addEntry(base, 'decode:plugin:stanag4607', [p])
+    const s = withCodec(base, 'plugin:stanag4607', [p])
     expect(s.pipeline.codec).toEqual({ type: 'plugin', plugin: 'stanag4607', options: { a: 1 } })
     expect(s.transport.framing).toEqual({ type: 'length_field', offset: 2, width: 'u32' })
-    expect(stepTitle(s, 'decode')).toBe('stanag4607')
-    expect(replaces(s, 'decode:plugin:stanag4607')).toBe(false)
-    expect(replaces(s, 'decode:json')).toBe(true)
-    expect(addEntry(s, 'decode:json', [p]).transport.framing).toEqual({ type: 'lines' })
-  })
-
-  it('set what the output reports', () => {
-    const plots = addEntry(base, 'output:detections', [])
-    expect(plots.reports).toBe('detections')
-    expect(stepTitle(plots, 'output')).toBe('Detections')
-    expect('reports' in addEntry(plots, 'output:tracks', [])).toBe(false)
-  })
-
-  it('never remove a required step', () => {
-    for (const r of REQUIRED) expect(removeStep(base, r)).toBe(base)
-  })
-
-  it('show Static join while the Map has a static rule, and never remove it', () => {
-    expect(stepsOf(base)).not.toContain('join')
-    const statics: SourceSpec = { ...base, pipeline: { ...base.pipeline, mapping: { rules: [{ name: 'ids', kind: 'static', key: 'mmsi' }] } } }
-    expect(stepsOf(statics)).toEqual(['source', 'decode', 'map', 'join', 'output'])
-    expect(removeStep(statics, 'join')).toBe(statics)
-    expect(paletteEntries([]).map((e) => e.type)).not.toContain('stage:join')
+    expect(withCodec(s, 'json', [p]).transport.framing).toEqual({ type: 'lines' })
   })
 })
 
-describe('problemsByStep', () => {
-  it('puts each problem on its step, the rest with the source', () => {
-    const steps = stepsOf(newSourceSpec('x', 'X', 'tcp_client'))
-    const p = problemsByStep(
+describe('problemsByNode', () => {
+  it('puts each problem on its step, the rest with the feed', () => {
+    const p = problemsByNode(
       [
-        { kind: 'incomplete', stage: 'source', field: 'host', message: 'the host is not set' },
-        { kind: 'incomplete', stage: 'map', message: 'mapping has no rules' },
-        { kind: 'incomplete', stage: 'static_join', message: 'not shown' },
-        { kind: 'invalid', stage: null, field: 'name', message: 'source name must not be empty' },
+        { kind: 'incomplete', node: 'input', field: 'host', message: 'the host is not set' },
+        { kind: 'incomplete', node: 'map', message: 'mapping has no rules' },
+        { kind: 'incomplete', node: 'gone', message: 'not shown' },
+        { kind: 'invalid', node: null, field: 'name', message: 'source name must not be empty' },
       ],
-      steps,
+      branched(),
     )
-    expect(p.byStep).toEqual({ source: ['the host is not set'], map: ['mapping has no rules'] })
+    expect(p.byNode).toEqual({ input: ['the host is not set'], map: ['mapping has no rules'] })
     expect(p.general).toEqual(['not shown', 'source name must not be empty'])
   })
 })

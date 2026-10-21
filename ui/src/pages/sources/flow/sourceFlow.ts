@@ -1,32 +1,113 @@
 /**
- * A source as a flow of steps (#104): the canvas is a view of the source's spec. Its steps follow the
- * pipeline's fixed order (crates/ot-source/src/pipeline.rs), so they connect themselves: adding a
- * stage puts it in its place, and removing one closes the gap. Source, Decode, Map and Output are
- * always there; Static join is there while the Map has a static rule; the other stages are added
- * from the palette and may be removed.
+ * A source as a flow of steps (#104), as the server keeps it (crates/ot-source/src/flow.rs): one
+ * input (the transport and its codec), then steps the user places and connects, each taking one
+ * input and feeding any number of others, ending at the source's one Output (system tracks, to
+ * correlation) and any NATS topics (its mapped data, without correlation).
+ *
+ * Records flow from the input through Reject steps to a Map, which makes observations; Filter,
+ * Entity links, Affiliation, Tracker and Throttle steps take observations; Output and NATS topics
+ * take them and pass nothing on.
  */
-import type { PluginInfo, SourceProblem, SourceSpec, SourceStage } from '../../../api/client'
+import type { PluginInfo, SourceProblem, SourceSpec } from '../../../api/client'
 import { DEFAULT_LINKS } from '../../../lib/pipeline'
 
 type Obj = Record<string, unknown>
 type Transport = SourceSpec['transport']
 type Codec = SourceSpec['pipeline']['codec']
 
-/** The steps a source can have, in the order a frame meets them. */
-export const STEP_ORDER = ['source', 'decode', 'reject', 'map', 'join', 'registry', 'affiliation', 'filter', 'tracker', 'throttle', 'output'] as const
-export type StepId = (typeof STEP_ORDER)[number]
+export const INPUT = 'input'
 
-/** Steps every source has: they cannot be removed. */
-export const REQUIRED: ReadonlySet<StepId> = new Set(['source', 'decode', 'map', 'output'])
+export type StepType = 'input' | 'reject' | 'map' | 'filter' | 'registry' | 'affiliation' | 'tracker' | 'throttle' | 'output' | 'nats'
 
-/** Whether a step can be taken out on the canvas: an added stage. Static join follows the Map's static rules. */
-export const removable = (step: StepId) => !REQUIRED.has(step) && step !== 'join'
+export interface FlowNode {
+  id: string
+  type: StepType
+  config?: unknown
+  position?: { x: number; y: number }
+}
 
-export type StepKind = 'source' | 'decode' | 'stage' | 'output'
+export interface FlowEdge {
+  source: string
+  target: string
+}
 
-export const kindOf = (step: StepId): StepKind => (step === 'source' || step === 'decode' || step === 'output' ? step : 'stage')
+/** A flow's steps and connections, as the spec's `pipeline` holds them. */
+export interface Flow {
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+}
 
-/** Transports, as the palette and the step heading name them, with what a new one starts as. */
+type Data = 'records' | 'observations'
+
+/** What each step takes and passes on (`null`: nothing). */
+const DATA: Record<StepType, { takes: Data | null; gives: Data | null }> = {
+  input: { takes: null, gives: 'records' },
+  reject: { takes: 'records', gives: 'records' },
+  map: { takes: 'records', gives: 'observations' },
+  filter: { takes: 'observations', gives: 'observations' },
+  registry: { takes: 'observations', gives: 'observations' },
+  affiliation: { takes: 'observations', gives: 'observations' },
+  tracker: { takes: 'observations', gives: 'observations' },
+  throttle: { takes: 'observations', gives: 'observations' },
+  output: { takes: 'observations', gives: null },
+  nats: { takes: 'observations', gives: null },
+}
+
+export const takes = (t: StepType) => DATA[t].takes
+export const gives = (t: StepType) => DATA[t].gives
+
+/** Each step's name, and the group the palette lists it under. */
+export const STEPS: Record<Exclude<StepType, 'input'>, { label: string; group: 'Records' | 'Observations' | 'Outputs' }> = {
+  reject: { label: 'Reject', group: 'Records' },
+  map: { label: 'Map', group: 'Records' },
+  filter: { label: 'Filter', group: 'Observations' },
+  registry: { label: 'Entity links', group: 'Observations' },
+  affiliation: { label: 'Affiliation', group: 'Observations' },
+  tracker: { label: 'Tracker', group: 'Observations' },
+  throttle: { label: 'Throttle', group: 'Observations' },
+  output: { label: 'Output', group: 'Outputs' },
+  nats: { label: 'NATS topic', group: 'Outputs' },
+}
+
+/** The word under a step's heading. */
+export const KIND_WORD: Record<StepType, string> = {
+  input: 'Input',
+  reject: 'Records',
+  map: 'Map',
+  filter: 'Observations',
+  registry: 'Observations',
+  affiliation: 'Observations',
+  tracker: 'Observations',
+  throttle: 'Observations',
+  output: 'Correlation',
+  nats: 'NATS',
+}
+
+/** What a new step starts as. */
+export function defaultConfig(type: StepType): unknown {
+  switch (type) {
+    case 'reject':
+      return [{ reason: 'no_position', when: { path: 'lat', exists: false } }]
+    case 'map':
+      return { mapping: { rules: [] } }
+    case 'filter':
+      return {}
+    case 'registry':
+      return { links: DEFAULT_LINKS }
+    case 'affiliation':
+      return { country: 'platform.flag', friendly: [], hostile: [], neutral: [] }
+    case 'tracker':
+      return { algorithm: 'gnn' }
+    case 'throttle':
+      return { min_interval_secs: 5, min_move_m: 0, heartbeat_secs: 600 }
+    case 'nats':
+      return { subject: '' }
+    default:
+      return undefined
+  }
+}
+
+/** Transports, as the input's settings name them, with what a new one starts as. */
 export const TRANSPORTS: Record<string, { label: string; initial: Transport }> = {
   tcp_client: { label: 'TCP client', initial: { type: 'tcp_client', host: '', port: 0, framing: { type: 'lines' } } },
   tcp_server: { label: 'TCP server', initial: { type: 'tcp_server', bind: '0.0.0.0:8087', framing: { type: 'lines' } } },
@@ -39,7 +120,7 @@ export const TRANSPORTS: Record<string, { label: string; initial: Transport }> =
   file: { label: 'File', initial: { type: 'file', path: '' } },
 }
 
-/** Codecs, likewise. A plugin codec is named by its plugin. */
+/** Codecs, likewise. A plugin codec is offered by its plugin's name. */
 export const CODECS: Record<string, { label: string; initial: Codec }> = {
   json: { label: 'JSON', initial: { type: 'json' } },
   cot_xml: { label: 'CoT XML', initial: { type: 'cot_xml' } },
@@ -47,157 +128,17 @@ export const CODECS: Record<string, { label: string; initial: Codec }> = {
   protobuf: { label: 'Protobuf', initial: { type: 'protobuf', files: {}, message: '' } },
 }
 
-/** The stages added from the palette, with what a new one starts as. */
-const STAGES: Record<Exclude<StepId, 'source' | 'decode' | 'map' | 'join' | 'output'>, { label: string; add: (s: SourceSpec) => SourceSpec; remove: (s: SourceSpec) => SourceSpec }> = {
-  reject: {
-    label: 'Reject',
-    add: (s) => withPipeline(s, { mapping: { ...s.pipeline.mapping, reject: [{ reason: 'no_position', when: { path: 'lat', exists: false } }] } }),
-    remove: (s) => withPipeline(s, { mapping: { ...s.pipeline.mapping, reject: undefined } }),
-  },
-  registry: {
-    label: 'Entity links',
-    add: (s) => withPipeline(s, { registry: { links: DEFAULT_LINKS } }),
-    remove: (s) => withPipeline(s, { registry: undefined }),
-  },
-  affiliation: {
-    label: 'Affiliation',
-    add: (s) => withPipeline(s, { affiliation: { country: 'platform.flag', friendly: [], hostile: [], neutral: [] } }),
-    remove: (s) => withPipeline(s, { affiliation: undefined }),
-  },
-  filter: {
-    label: 'Filter',
-    add: (s) => withPipeline(s, { filter: {} }),
-    remove: (s) => withPipeline(s, { filter: undefined }),
-  },
-  tracker: {
-    label: 'Tracker',
-    add: (s) => withPipeline(s, { tracker: { algorithm: 'gnn' } }),
-    remove: (s) => withPipeline(s, { tracker: undefined }),
-  },
-  throttle: {
-    label: 'Throttle',
-    add: (s) => withPipeline(s, { throttle: { min_interval_secs: 5, min_move_m: 0, heartbeat_secs: 600 } }),
-    remove: (s) => withPipeline(s, { throttle: undefined }),
-  },
-}
-
-const OUTPUTS: Record<'tracks' | 'detections', string> = { tracks: 'Tracks', detections: 'Detections' }
-
-/** Set pipeline keys; one set to undefined is dropped, so the spec carries only what is configured. */
-function withPipeline(spec: SourceSpec, patch: Obj): SourceSpec {
-  const pipeline: Obj = { ...spec.pipeline, ...patch }
-  for (const [k, v] of Object.entries(patch)) if (v === undefined) delete pipeline[k]
-  const mapping = pipeline.mapping as Obj
-  if (mapping && mapping.reject === undefined) delete mapping.reject
-  return { ...spec, pipeline: pipeline as SourceSpec['pipeline'] }
-}
-
-const rejects = (spec: SourceSpec) => ((spec.pipeline.mapping.reject as unknown[] | undefined) ?? []).length > 0
-
-/** The steps this source has, in order. */
-export function stepsOf(spec: SourceSpec): StepId[] {
-  const p = spec.pipeline as Obj
-  const has: Record<StepId, boolean> = {
-    source: true,
-    decode: true,
-    reject: rejects(spec),
-    map: true,
-    join: (spec.pipeline.mapping.rules as { kind?: string }[]).some((r) => r?.kind === 'static'),
-    registry: p.registry !== undefined,
-    affiliation: p.affiliation !== undefined,
-    filter: p.filter !== undefined,
-    tracker: p.tracker !== undefined,
-    throttle: p.throttle !== undefined,
-    output: true,
-  }
-  return STEP_ORDER.filter((s) => has[s])
-}
-
-/** A step's heading: what it is for this source (its transport, codec, or output). */
-export function stepTitle(spec: SourceSpec, step: StepId): string {
-  switch (step) {
-    case 'source':
-      return TRANSPORTS[spec.transport.type]?.label ?? spec.transport.type
-    case 'decode': {
-      const c = spec.pipeline.codec
-      if (c.type === 'plugin') return String(c.plugin || 'Plugin')
-      return CODECS[c.type]?.label ?? c.type
-    }
-    case 'map':
-      return 'Map'
-    case 'output':
-      return OUTPUTS[spec.reports ?? 'tracks']
-    case 'join':
-      return 'Static join'
-    default:
-      return STAGES[step].label
-  }
-}
-
-/** The word under a step's heading. */
-export const KIND_WORD: Record<StepKind, string> = { source: 'Source', decode: 'Decode', stage: 'Stage', output: 'Output' }
-
-/** The trace's name for a step (crates/ot-source/src/trace.rs; `samplesAt`). */
-export const traceStage = (step: StepId): string => (step === 'source' ? 'transport' : step === 'output' ? 'publish' : step)
-
-/** The step a problem belongs to, from the server's pipeline stage; `null`: the source as a whole. */
-const STEP_OF_STAGE: Record<SourceStage, StepId> = {
-  source: 'source',
-  decode: 'decode',
-  map: 'map',
-  static_join: 'join',
-  registry: 'registry',
-  affiliation: 'affiliation',
-  filter: 'filter',
-  tracker: 'tracker',
-  throttle: 'throttle',
-  output: 'output',
-}
-
-export interface StepProblems {
-  byStep: Partial<Record<StepId, string[]>>
-  /** Problems with the source as a whole, or with a stage it does not show. */
-  general: string[]
-}
-
-/** The server's problems, each on its step. */
-export function problemsByStep(problems: SourceProblem[], steps: StepId[]): StepProblems {
-  const out: StepProblems = { byStep: {}, general: [] }
-  for (const p of problems) {
-    const step = p.stage ? STEP_OF_STAGE[p.stage] : null
-    if (step && steps.includes(step)) (out.byStep[step] ??= []).push(p.message)
-    else out.general.push(p.message)
-  }
-  return out
-}
-
-/** A palette item's type: `source:<transport>`, `decode:<codec>` (`decode:plugin:<name>`), `stage:<step>` or `output:<reports>`. */
-export interface PaletteEntry {
-  type: string
-  label: string
-  group: 'Source' | 'Decode' | 'Stages' | 'Output'
-}
-
-export function paletteEntries(plugins: PluginInfo[]): PaletteEntry[] {
+/** The codecs the input can use: the built-in ones and each enabled codec plugin, as `plugin:<name>`. */
+export function codecChoices(plugins: PluginInfo[]): { value: string; label: string }[] {
   return [
-    ...Object.entries(TRANSPORTS).map(([t, d]) => ({ type: `source:${t}`, label: d.label, group: 'Source' as const })),
-    ...Object.entries(CODECS).map(([c, d]) => ({ type: `decode:${c}`, label: d.label, group: 'Decode' as const })),
-    ...plugins.filter((p) => p.kinds.includes('codec') && p.enabled).map((p) => ({ type: `decode:plugin:${p.name}`, label: p.name, group: 'Decode' as const })),
-    ...(Object.keys(STAGES) as (keyof typeof STAGES)[]).map((s) => ({ type: `stage:${s}`, label: STAGES[s].label, group: 'Stages' as const })),
-    ...(Object.keys(OUTPUTS) as (keyof typeof OUTPUTS)[]).map((r) => ({ type: `output:${r}`, label: OUTPUTS[r], group: 'Output' as const })),
+    ...Object.entries(CODECS).map(([value, c]) => ({ value, label: c.label })),
+    ...plugins.filter((p) => p.kinds.includes('codec') && p.enabled).map((p) => ({ value: `plugin:${p.name}`, label: p.name })),
   ]
 }
 
-/** The step a palette item makes or replaces. */
-export function stepOfEntry(type: string): StepId | null {
-  const [kind, sub] = type.split(':')
-  if (kind === 'source' || kind === 'decode' || kind === 'output') return kind
-  if (kind === 'stage' && sub in STAGES) return sub as StepId
-  return null
-}
+export const codecChoice = (c: Codec) => (c.type === 'plugin' ? `plugin:${String(c.plugin ?? '')}` : c.type)
 
 const streamed = (t: Transport) => t.type === 'tcp_client' || t.type === 'tcp_server'
-
 const LINES = { type: 'lines' }
 const COT_FRAMING = { type: 'end_tag', tag: '</event>' }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -215,84 +156,181 @@ function framingOf(codec: Codec, plugins: PluginInfo[]): unknown {
   return null
 }
 
-/**
- * Whether adding this palette item would replace settings the source has: a different transport,
- * codec or output in place of the one it has. A stage it already has is not added again.
- */
-export function replaces(spec: SourceSpec, type: string): boolean {
-  const [kind, sub, name] = type.split(':')
-  if (kind === 'source') return sub !== spec.transport.type
-  if (kind === 'decode') {
-    const c = spec.pipeline.codec
-    return sub === 'plugin' ? c.type !== 'plugin' || c.plugin !== name : sub !== c.type
+/** The source with another transport: its defaults, framed for the codec; the risk acceptance goes with the old one. */
+export function withTransport(spec: SourceSpec, type: string): SourceSpec {
+  const d = TRANSPORTS[type]
+  if (!d || type === spec.transport.type) return spec
+  const next: SourceSpec = { ...spec, transport: cotFraming(structuredClone(d.initial), spec.pipeline.codec) }
+  delete next.unauthenticated
+  return next
+}
+
+/** The source with another codec (`plugin:<name>` for a plugin's): the framing the old one set goes, the new one's comes. */
+export function withCodec(spec: SourceSpec, choice: string, plugins: PluginInfo[]): SourceSpec {
+  if (choice === codecChoice(spec.pipeline.codec)) return spec
+  let codec: Codec | null = null
+  let transport = spec.transport
+  const before = framingOf(spec.pipeline.codec, plugins)
+  if (before && streamed(transport) && same(transport.framing, before)) transport = { ...transport, framing: LINES }
+  if (choice.startsWith('plugin:')) {
+    const p = plugins.find((x) => x.name === choice.slice('plugin:'.length))
+    if (p) {
+      codec = { type: 'plugin', plugin: p.name, options: structuredClone(p.default_options) }
+      if (p.framing && streamed(transport)) transport = { ...transport, framing: structuredClone(p.framing) }
+    }
+  } else if (CODECS[choice]) {
+    codec = structuredClone(CODECS[choice].initial)
   }
-  return false
+  if (!codec) return spec
+  return { ...spec, transport: cotFraming(transport, codec), pipeline: { ...spec.pipeline, codec } }
 }
 
-/** The source with this palette item added: a stage put in its place, or a transport, codec or output swapped in. */
-export function addEntry(spec: SourceSpec, type: string, plugins: PluginInfo[]): SourceSpec {
-  const [kind, sub, name] = type.split(':')
-  switch (kind) {
-    case 'source': {
-      const d = TRANSPORTS[sub]
-      if (!d || sub === spec.transport.type) return spec
-      const next: SourceSpec = { ...spec, transport: cotFraming(structuredClone(d.initial), spec.pipeline.codec) }
-      // The acceptance belongs to the listener it was given for.
-      delete next.unauthenticated
-      return next
-    }
-    case 'decode': {
-      // The framing the old codec set goes with it.
-      const before = framingOf(spec.pipeline.codec, plugins)
-      if (before && streamed(spec.transport) && same(spec.transport.framing, before)) {
-        spec = { ...spec, transport: { ...spec.transport, framing: LINES } }
+/** The source's flow. */
+export const flowOf = (spec: SourceSpec): Flow => ({
+  nodes: (spec.pipeline.nodes as FlowNode[] | undefined) ?? [],
+  edges: (spec.pipeline.edges as FlowEdge[] | undefined) ?? [],
+})
+
+/** The source with this flow. */
+export const withFlow = (spec: SourceSpec, flow: Flow): SourceSpec => ({ ...spec, pipeline: { ...spec.pipeline, nodes: flow.nodes, edges: flow.edges } })
+
+/** A new step's id: its type, numbered when taken (`filter`, `filter-2`…). */
+export function nextNodeId(type: StepType, ids: string[]): string {
+  if (!ids.includes(type)) return type
+  let n = 2
+  while (ids.includes(`${type}-${n}`)) n++
+  return `${type}-${n}`
+}
+
+/** Whether `source` may feed `target`: one input each, no loops, and the right data. */
+export function canConnect(flow: Flow, source: string, target: string): boolean {
+  if (source === target) return false
+  const from = flow.nodes.find((n) => n.id === source)
+  const to = flow.nodes.find((n) => n.id === target)
+  if (!from || !to) return false
+  const out = gives(from.type)
+  if (!out || takes(to.type) !== out) return false
+  if (flow.edges.some((e) => e.target === target)) return false
+  // No loop: `target` must not already lead to `source`.
+  const children = new Map<string, string[]>()
+  for (const e of flow.edges) children.set(e.source, [...(children.get(e.source) ?? []), e.target])
+  const stack = [target]
+  const seen = new Set<string>()
+  while (stack.length) {
+    const at = stack.pop()!
+    if (at === source) return false
+    if (seen.has(at)) continue
+    seen.add(at)
+    stack.push(...(children.get(at) ?? []))
+  }
+  return true
+}
+
+/** Where steps go that have no place yet (a source from before flows): columns by distance from the input. */
+export const COLUMN = 300
+export const ROW = 130
+
+export function laidOut(flow: Flow): Flow {
+  if (flow.nodes.every((n) => n.position)) return flow
+  const children = new Map<string, string[]>()
+  for (const e of flow.edges) children.set(e.source, [...(children.get(e.source) ?? []), e.target])
+  const depth = new Map<string, number>([[INPUT, 0]])
+  const queue = [INPUT]
+  while (queue.length) {
+    const at = queue.shift()!
+    for (const c of children.get(at) ?? []) {
+      if (!depth.has(c)) {
+        depth.set(c, depth.get(at)! + 1)
+        queue.push(c)
       }
-      let codec: Codec | null = null
-      if (sub === 'plugin') {
-        const p = plugins.find((x) => x.name === name)
-        if (p && !(spec.pipeline.codec.type === 'plugin' && spec.pipeline.codec.plugin === p.name)) {
-          codec = { type: 'plugin', plugin: p.name, options: structuredClone(p.default_options) }
-          // A stream of the plugin's format is framed its way.
-          if (p.framing && streamed(spec.transport)) spec = { ...spec, transport: { ...spec.transport, framing: structuredClone(p.framing) } }
-        }
-      } else if (CODECS[sub] && sub !== spec.pipeline.codec.type) {
-        codec = structuredClone(CODECS[sub].initial)
-      }
-      if (!codec) return spec
-      return { ...withPipeline(spec, { codec }), transport: cotFraming(spec.transport, codec) }
-    }
-    case 'stage': {
-      const s = STAGES[sub as keyof typeof STAGES]
-      if (!s || stepsOf(spec).includes(sub as StepId)) return spec
-      return s.add(spec)
-    }
-    case 'output': {
-      if (sub !== 'tracks' && sub !== 'detections') return spec
-      const next: SourceSpec = { ...spec, reports: sub }
-      if (sub === 'tracks') delete next.reports
-      return next
     }
   }
-  return spec
+  const rows = new Map<number, number>()
+  const loose = Math.max(0, ...depth.values()) + 1
+  return {
+    ...flow,
+    nodes: flow.nodes.map((n) => {
+      if (n.position) return n
+      const col = depth.get(n.id) ?? loose
+      const row = rows.get(col) ?? 0
+      rows.set(col, row + 1)
+      return { ...n, position: { x: col * COLUMN, y: row * ROW } }
+    }),
+  }
 }
 
-/** The source without this stage. Source, Decode, Map, Static join and Output stay. */
-export function removeStep(spec: SourceSpec, step: StepId): SourceSpec {
-  if (!removable(step)) return spec
-  return STAGES[step as keyof typeof STAGES].remove(spec)
+export interface NodeProblems {
+  byNode: Record<string, string[]>
+  /** Problems with the source as a whole (its feed settings), or with a step it no longer has. */
+  general: string[]
 }
 
-/** Where each step sits: one column, top to bottom. */
-export const STEP_GAP = 112
-export const positionOf = (index: number) => ({ x: 0, y: index * STEP_GAP })
+/** The server's problems, each on its step. */
+export function problemsByNode(problems: SourceProblem[], flow: Flow): NodeProblems {
+  const ids = new Set(flow.nodes.map((n) => n.id))
+  const out: NodeProblems = { byNode: {}, general: [] }
+  for (const p of problems) {
+    if (p.node && ids.has(p.node)) (out.byNode[p.node] ??= []).push(p.message)
+    else out.general.push(p.message)
+  }
+  return out
+}
 
-/** A new source: its transport, an empty JSON decode and mapping, reporting tracks. */
+/** A step's heading. */
+export function nodeTitle(spec: SourceSpec, n: FlowNode): string {
+  if (n.type === 'input') return TRANSPORTS[spec.transport.type]?.label ?? spec.transport.type
+  if (n.type === 'nats') return String((n.config as Obj | undefined)?.subject || 'NATS topic')
+  return STEPS[n.type].label
+}
+
+/** One line of a step's settings. */
+export function nodeSummary(spec: SourceSpec, n: FlowNode): string {
+  const c = (n.config ?? {}) as Obj
+  switch (n.type) {
+    case 'input': {
+      const codec = spec.pipeline.codec
+      const t = spec.transport
+      const where = String(t.url ?? t.bind ?? t.path ?? (t.host ? `${t.host}:${t.port}` : ''))
+      const decode = codec.type === 'plugin' ? String(codec.plugin ?? 'plugin') : (CODECS[codec.type]?.label ?? codec.type)
+      return [where, decode].filter(Boolean).join(' · ')
+    }
+    case 'reject':
+      return plural(((n.config as unknown[]) ?? []).length, 'rule')
+    case 'map':
+      return plural((((c.mapping as Obj | undefined)?.rules as unknown[]) ?? []).length, 'rule')
+    case 'filter':
+      return c.keep_if ? 'keep only matching' : c.drop_if ? 'drop matching' : 'keeps everything'
+    case 'tracker':
+      return String(c.algorithm ?? 'gnn').toUpperCase()
+    case 'throttle':
+      return `at most every ${String(c.min_interval_secs ?? 0)} s`
+    case 'output':
+      return spec.reports === 'detections' ? 'detections' : 'tracks'
+    default:
+      return ''
+  }
+}
+
+const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`
+
+/** A new source: its transport, a JSON input, an empty Map and the Output, connected. */
 export function newSourceSpec(id: string, name: string, transport: string): SourceSpec {
+  const flow: Flow = {
+    nodes: [
+      { id: INPUT, type: 'input', position: { x: 0, y: 0 } },
+      { id: 'map', type: 'map', config: { mapping: { rules: [] } }, position: { x: COLUMN, y: 0 } },
+      { id: 'output', type: 'output', position: { x: 2 * COLUMN, y: 0 } },
+    ],
+    edges: [
+      { source: INPUT, target: 'map' },
+      { source: 'map', target: 'output' },
+    ],
+  }
   return {
     id,
     name,
     transport: structuredClone(TRANSPORTS[transport]?.initial ?? TRANSPORTS.http_poll.initial),
-    pipeline: { codec: { type: 'json' }, mapping: { rules: [] } },
+    pipeline: { codec: { type: 'json' }, nodes: flow.nodes, edges: flow.edges },
   }
 }
 
@@ -307,3 +345,16 @@ export function idFromName(name: string): string {
 }
 
 export const validId = (id: string) => /^[a-z0-9_-]{1,64}$/.test(id)
+
+/** The spec without where its steps are drawn: what a dry run depends on. */
+export function withoutPositions(spec: SourceSpec): SourceSpec {
+  const flow = flowOf(spec)
+  return withFlow(spec, {
+    ...flow,
+    nodes: flow.nodes.map((n) => {
+      const copy = { ...n }
+      delete copy.position
+      return copy
+    }),
+  })
+}

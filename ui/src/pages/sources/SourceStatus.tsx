@@ -42,7 +42,7 @@ export function SourceStatus({ source }: { source: SourceRow }) {
         <dd>
           {source.revision} · saved {fmtTime(source.updated_at_ms)}
         </dd>
-        {(source.spec.pipeline as { tracker?: { auto_timing?: unknown } }).tracker?.auto_timing != null && (
+        {((source.spec.pipeline.nodes as { type?: string; config?: { auto_timing?: unknown } }[] | undefined) ?? []).some((n) => n.type === 'tracker' && n.config?.auto_timing != null) && (
           <>
             <dt>Tracker timing</dt>
             <dd>

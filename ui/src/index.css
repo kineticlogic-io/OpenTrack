@@ -905,8 +905,8 @@ body {
   gap: var(--space-md);
 }
 
-/* Source editor (#104): the steps on the left, the selected step's settings and samples (or the
-   source's own settings, status and history) on the right. It fills the page below the tabs. */
+/* Source editor (#104): a workspace of the source's steps, the step list on its left; a step's
+   settings (or the feed's) open over its right. It fills the page below the tabs. */
 .source-editor {
   display: flex;
   flex-direction: column;
@@ -928,21 +928,27 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 50vw;
+  max-width: 40vw;
 }
 
-.source-editor-body {
+.source-workspace {
+  position: relative;
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(380px, 440px) minmax(0, 1fr);
-  gap: var(--space-md);
 }
 
-.source-editor-aside {
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: var(--space-xs);
+.source-workspace-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(760px, 58%);
+  min-width: 360px;
+  z-index: 5;
+  display: flex;
+  background: var(--color-bg-primary);
+  border-left: 1px solid var(--color-glass-border);
+  box-shadow: var(--shadow-deep);
 }
 
 .source-editor-json {
@@ -951,19 +957,29 @@ body {
   overflow: hidden;
 }
 
-/* Settings beside their samples; stacked on narrower screens. */
-.step-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
-  gap: var(--space-lg);
-  align-items: start;
+.node-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
-.step-samples {
-  position: sticky;
-  top: 0;
-  max-height: calc(100vh - 180px);
+.node-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-glass-border);
+}
+
+.node-panel-body {
+  flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
 }
 
 .step-settings {
@@ -973,19 +989,9 @@ body {
   min-width: 0;
 }
 
-@media (max-width: 1400px) {
-  .step-panel {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .step-samples {
-    position: static;
-    max-height: 60vh;
-  }
-}
-
-/* A step on the canvas. */
+/* A step on the workspace. */
 .flow-step {
-  width: 240px;
+  width: 220px;
   padding: 8px 10px;
   border-radius: var(--radius-md);
   background: var(--color-bg-secondary);
@@ -1023,7 +1029,7 @@ body {
   letter-spacing: 0.08em;
 }
 
-.step-panel .flow-step-kind {
+.node-panel-head .flow-step-kind {
   margin-left: 0;
 }
 
