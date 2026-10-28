@@ -318,24 +318,10 @@ export function joinDropped(flow: Flow, id: string): Flow {
   return near ? { ...flow, edges: [...flow.edges, { source: near.n.id, target: id }] } : flow
 }
 
-/** Usual names for a field, by where a Map sends it (crates/ot-source/src/mapping.rs `TARGETS`). */
-const BY_NAME: [RegExp, string][] = [
-  [/^(lat|latitude)$/, 'position.latitude'],
-  [/^(lon|lng|long|longitude)$/, 'position.longitude'],
-  [/^(alt|altitude|alt_hae|altitude_m)$/, 'position.altitude_hae_m'],
-  [/^(course|cog|course_deg|track)$/, 'kinematics.course_deg'],
-  [/^(speed|sog|speed_mps|gs)$/, 'kinematics.speed_mps'],
-  [/^(heading|hdg|true_heading|trueheading|heading_deg)$/, 'kinematics.heading_deg'],
-  [/^(time|timestamp|ts|time_utc|observed_at|datetime)$/, 'observed_at'],
-  [/^(name|shipname|ship_name|vessel_name)$/, 'name'],
-  [/^(callsign|call_sign|flight)$/, 'callsign'],
-  [/^(flag|country)$/, 'platform.flag'],
-  [/^(id|uid|mmsi|icao|icao24|hex|track_id|userid|user_id)$/, 'key'],
-]
-
 /**
- * Where a field dropped on a Map should go: what the capture suggested for it, else what its name
- * usually means, else an extension field of its own (`ext.<name>`). `key` means the rule's track key.
+ * Where a field dropped on a Map goes: where the server's analysis of the captured samples proposed
+ * (the probe's suggestion, from the values themselves), else an extension field named after it
+ * (`ext.<name>`) for the user to place. Nothing here knows any particular feed's field names.
  */
 export function guessTarget(path: string, proposals: Proposal[] = []): string {
   const reads = (spec: unknown): boolean =>
@@ -343,15 +329,17 @@ export function guessTarget(path: string, proposals: Proposal[] = []): string {
   const proposed = proposals.filter((p) => reads(p.spec)).sort((a, b) => b.confidence - a.confidence)[0]
   if (proposed) return proposed.target
   const leaf = (path.split('.').pop() ?? path).replace(/^@/, '')
-  const norm = leaf.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()
-  const known = BY_NAME.find(([re]) => re.test(norm))
-  if (known) return known[1]
-  return `ext.${norm.replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'field'}`
+  const name = leaf
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return `ext.${name || 'field'}`
 }
 
 /**
  * A Map's settings with `path` mapped to `target` in its first reporting rule (a rule is started if
- * it has none). `key` sets that rule's track key.
+ * it has none). `key` (a capture can propose a field as the track key) sets that rule's key.
  */
 export function mapField(config: unknown, path: string, target: string): unknown {
   const c = (config ?? {}) as { mapping?: { rules?: Record<string, unknown>[] } & Record<string, unknown> } & Record<string, unknown>

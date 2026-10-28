@@ -201,15 +201,19 @@ describe('joinDropped', () => {
 })
 
 describe('a field dropped on a Map', () => {
-  it('goes where the capture suggested, else where its name usually goes, else to an extension field', () => {
-    const proposals = [{ target: 'kinematics.speed_mps', spec: { path: 'Message.Sog', transforms: ['knots'] }, confidence: 0.9, reason: '' }]
-    expect(guessTarget('Message.Sog', proposals)).toBe('kinematics.speed_mps')
-    expect(guessTarget('MetaData.latitude')).toBe('position.latitude')
-    expect(guessTarget('ac.lon')).toBe('position.longitude')
-    expect(guessTarget('MetaData.ShipName')).toBe('name')
-    expect(guessTarget('MetaData.MMSI')).toBe('key')
-    expect(guessTarget('event.@uid')).toBe('key')
-    expect(guessTarget('Message.NavigationalStatus')).toBe('ext.navigational_status')
+  it('goes where the capture proposed, else to an extension field named after it', () => {
+    const proposals = [
+      { target: 'kinematics.speed_mps', spec: { path: 'body.velocity', transforms: ['knots'] }, confidence: 0.9, reason: '' },
+      { target: 'position.latitude', spec: 'body.y', confidence: 0.8, reason: '' },
+      { target: 'key', spec: 'body.ref', confidence: 0.7, reason: '' },
+    ]
+    expect(guessTarget('body.velocity', proposals)).toBe('kinematics.speed_mps')
+    expect(guessTarget('body.y', proposals)).toBe('position.latitude')
+    expect(guessTarget('body.ref', proposals)).toBe('key')
+    // No proposal: never guessed from a name.
+    expect(guessTarget('body.latitude')).toBe('ext.latitude')
+    expect(guessTarget('record.StatusCode')).toBe('ext.status_code')
+    expect(guessTarget('event.@ref')).toBe('ext.ref')
   })
 
   it("lands in the Map's first reporting rule, which is started if it has none", () => {
