@@ -1,4 +1,9 @@
-# OpenTrack
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/opentrack-lockup-tagline-on-dark.svg">
+    <img alt="OpenTrack: many feeds, one track picture" src="docs/brand/opentrack-lockup-tagline-on-light.svg" width="420">
+  </picture>
+</h1>
 
 **An open, explainable track management server.** OpenTrack takes in any number of track and sensor
 feeds (AIS, ADS-B, TAK/CoT, SAPIENT, STANAG 4607 GMTI, radar and LiDAR plots, ESM bearings and
