@@ -329,13 +329,19 @@ pub fn suggest(fields: &[FieldStat]) -> Suggestion {
     let mut used: HashSet<&str> = HashSet::new();
     let mut missing = Vec::new();
 
-    // A field named like an OpenTrack field whose values fit it.
+    // A field named like an OpenTrack field whose values fit it. A name two
+    // OpenTrack fields share (`name`, `platform.name`) goes to the first only.
+    let mut taken_names: HashSet<String> = HashSet::new();
     for (target, t) in targets() {
         if target.starts_with("geometry.") {
             // A line of bearing or an area changes what the track is: never guessed.
             continue;
         }
         let (names, unit) = target_names(target);
+        let names: Vec<String> = names
+            .into_iter()
+            .filter(|n| taken_names.insert(n.clone()))
+            .collect();
         let best = usable
             .iter()
             .filter(|f| {
@@ -573,7 +579,7 @@ mod tests {
         let recs: Vec<Value> = (0..10)
             .map(|i| json!({"ref": format!("k{i:03}"), "latitude": 30.5 + i as f64, "longitude": -117.25,
                             "speed": 3.5, "course": 90.5, "callsign": " R 1 ", "observed_at": now(i),
-                            "heading": "north"}))
+                            "heading": "north", "name": "UNIT", "extra": {"name": "OTHER"}}))
             .collect();
         let s = suggest(&infer(&recs));
         let f = &s.mapping["rules"][0]["fields"];
@@ -583,6 +589,8 @@ mod tests {
         assert_eq!(f["kinematics.course_deg"], "course");
         assert_eq!(f["callsign"]["transforms"][0], "trim");
         assert_eq!(f["observed_at"]["transforms"][0], "time");
+        // One `name`; the other is not taken for `platform.name`, which only ends like it.
+        assert!(f.get("platform.name").is_none());
         // Named like it, but its values are not a number of degrees.
         assert!(f.get("kinematics.heading_deg").is_none());
         let speed = s
