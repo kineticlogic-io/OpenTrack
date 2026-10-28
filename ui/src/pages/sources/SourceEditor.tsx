@@ -23,6 +23,7 @@ import { SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
 import { MAX_TRACED_SAMPLES, TRACED_SAMPLES } from '../../lib/trace'
 import { FeedPanel } from './flow/FeedPanel'
 import { NodePanel } from './flow/NodePanel'
+import { SamplesTray } from './flow/SamplesTray'
 import { StepNode, type StepView } from './flow/StepNode'
 import { stepIcon } from './flow/stepIcons'
 import {
@@ -155,6 +156,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [nonce, setNonce] = useState(0)
+  const [trayOpen, setTrayOpen] = useState(true)
 
   // A source from before flows has no places for its steps: they are laid out once, as loaded.
   const adopt = useCallback((r: SourceRow) => {
@@ -219,17 +221,20 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
         title: nodeTitle(spec, n),
         summary: nodeSummary(spec, n),
         problems: byNode.byNode[n.id] ?? [],
+        counts: live.preview?.steps?.[n.id],
       } satisfies StepView,
     }))
-  }, [spec, flow, current, byNode])
+  }, [spec, flow, current, byNode, live.preview])
 
   const edges: FlowCanvasEdge[] = useMemo(
     () =>
       flow.edges.map((e) => {
         const eid = `${e.source}->${e.target}`
-        return { id: eid, source: e.source, target: e.target, selected: selectedEdges.has(eid) }
+        // What crossed it in the dry run: what its target took in.
+        const crossed = live.preview?.steps?.[e.target]?.in
+        return { id: eid, source: e.source, target: e.target, selected: selectedEdges.has(eid), label: crossed === undefined ? undefined : String(crossed) }
       }),
-    [flow, selectedEdges],
+    [flow, selectedEdges, live.preview],
   )
 
   const transportType = spec?.transport.type
@@ -460,6 +465,15 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               height="100%"
             />
           </div>
+          <SamplesTray
+            node={node ?? null}
+            title={node ? nodeTitle(spec, node) : ''}
+            path={node ? pathTo(flow, node.id) : []}
+            preview={live.preview}
+            error={live.error}
+            open={trayOpen}
+            onOpenChange={setTrayOpen}
+          />
           {/* A step's settings (or the feed's) open over the right of the page, resizable. */}
           <SideNav
             open={!!node || feedOpen}
@@ -489,7 +503,6 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
                   schema={schema}
                   plugins={plugins}
                   preview={live.preview}
-                  previewError={live.error}
                   probe={probe}
                   capturing={capturing}
                   readOnly={readOnly}
