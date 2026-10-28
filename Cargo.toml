@@ -78,7 +78,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 opentelemetry-appender-tracing = { version = "0.33", default-features = false }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 # Plugins: WebAssembly components (wit/plugin.wit), sandboxed with WASI.
-wasmtime = { version = "49", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std", "parallel-compilation", "cache"] }
+wasmtime = { version = "49", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std", "parallel-compilation"] }
 wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }
 base64 = "0.22"
 # Sign-in: password hashes, session tokens, account ids.
