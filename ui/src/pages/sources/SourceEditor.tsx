@@ -145,6 +145,8 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set())
   const [feedOpen, setFeedOpen] = useState(false)
+  // A step's settings can be closed and the step stay selected, its samples in the tray.
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<'flow' | 'json'>('flow')
   const [jsonText, setJsonText] = useState('')
   const [jsonBox, jsonHeight] = useBoxHeight()
@@ -256,6 +258,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
       const on = picks.find((c) => c.selected)
       if (on) {
         setSelected(on.id)
+        setSettingsOpen(true)
         setFeedOpen(false)
       } else if (picks.some((c) => c.id === selected)) setSelected(null)
     }
@@ -316,6 +319,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
     if (config !== undefined) node.config = config
     editFlow({ ...flow, nodes: [...flow.nodes, node] })
     setSelected(node.id)
+    setSettingsOpen(true)
     setFeedOpen(false)
   }
 
@@ -435,7 +439,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
           icon={<TbSettings />}
           onClick={() => {
             setFeedOpen((o) => !o)
-            setSelected(null)
+            setSettingsOpen(false)
           }}
         >
           Feed
@@ -476,7 +480,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
           />
           {/* A step's settings (or the feed's) open over the right of the page, resizable. */}
           <SideNav
-            open={!!node || feedOpen}
+            open={(!!node && settingsOpen) || feedOpen}
             ariaLabel={node ? `Step ${node.id}` : 'Feed settings'}
             width={640}
             minWidth={420}
@@ -488,12 +492,12 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               className="drawer"
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
-                  setSelected(null)
+                  setSettingsOpen(false)
                   setFeedOpen(false)
                 }
               }}
             >
-              {node ? (
+              {node && settingsOpen ? (
                 <NodePanel
                   key={node.id}
                   spec={spec}
@@ -509,7 +513,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
                   onSpec={edit}
                   onConfig={(c) => setConfig(node.id, c)}
                   onCapture={() => void capture()}
-                  onClose={() => setSelected(null)}
+                  onClose={() => setSettingsOpen(false)}
                 />
               ) : feedOpen ? (
                 <FeedPanel spec={spec} row={row} tracked={tracked} problems={byNode.general} readOnly={readOnly} onChange={edit} onClose={() => setFeedOpen(false)} />
