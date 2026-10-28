@@ -57,8 +57,8 @@ impl Default for StaticJoinSpec {
     }
 }
 
-/// Derive affiliation from a country code, e.g. a registry flag or the
-/// ICAO address block. Country lists are configuration, not code.
+/// Derive affiliation from a country code, e.g. a registry flag or one
+/// derived from an identifier. Country lists are configuration, not code.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AffiliationStage {
