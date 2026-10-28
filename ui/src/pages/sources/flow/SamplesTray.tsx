@@ -86,7 +86,8 @@ export function SamplesTray({
             aria-label={`Samples after ${title}`}
             rows={rows}
             pinned={PINNED}
-            showChanges={node.type !== 'input'}
+            // A Map makes observations out of records: everything would differ.
+            showChanges={node.type !== 'input' && node.type !== 'map'}
             selectedId={selected}
             onRowClick={setSelected}
             empty="No stored samples. Capture some on the input."
