@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { TbMoon, TbSun } from 'react-icons/tb'
 import { Badge, Button, DockProvider, PageHeader, Tabs, useTheme } from '@kineticlogic/staresdk'
 import { api, type Banner, type ServerStatus } from './api/client'
-import { BasemapCtx } from './lib/basemap'
+import { BasemapCtx, type BasemapTilesFormat } from './lib/basemap'
 import { useHashView } from './lib/hashView'
 import { OverviewPage } from './pages/OverviewPage'
 import { UserChip } from './auth/UserChip'
@@ -52,7 +52,7 @@ export default function App() {
   }, [])
   // Site name, classification banner and whether the maps have basemap tiles (Settings), this instance's own.
   const [siteName, setSiteName] = useState('')
-  const [basemapTiles, setBasemapTiles] = useState(false)
+  const [basemapTiles, setBasemapTiles] = useState<BasemapTilesFormat | null>(null)
   const [banner, setBanner] = useState<Banner | null>(null)
   const [settingsRev, setSettingsRev] = useState(0)
   useEffect(() => {
@@ -60,7 +60,7 @@ export default function App() {
       api.appSettings().then(
         (r) => {
           setSiteName(r.settings.site_name)
-          setBasemapTiles(r.basemap_tiles === true)
+          setBasemapTiles(r.basemap_tiles === true ? (r.settings.basemap_tiles_format ?? 'raster') : null)
         },
         () => {},
       )

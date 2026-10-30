@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { TbDownload, TbTrash, TbUpload } from 'react-icons/tb'
-import { Badge, Button, CollapsiblePanel, FileDropZone, Input, Label, Modal, SaveButton, Toggle, useToast } from '@kineticlogic/staresdk'
+import { Badge, Button, CollapsiblePanel, FileDropZone, Input, Label, Modal, SaveButton, Select, Toggle, useToast } from '@kineticlogic/staresdk'
 import { api, type AppSettings, type AppSettingsResponse, type ConfigImportStatus } from '../../api/client'
 import { InfoTip } from '../../components/InfoTip'
 import { NodesPanel } from './NodesPanel'
@@ -39,7 +39,12 @@ const CONFIG_IMPORT_INFO =
   'imported accounts replace the first admin, so you sign in again with one of them.'
 
 const BASEMAP_HINT =
-  'An XYZ tile URL, such as https://tiles.example/{z}/{x}/{y}.png. OpenTrack fetches the tiles for the browser. Empty: the built-in country outlines.'
+  'An XYZ raster image or Mapbox vector tile URL. OpenTrack fetches the tiles for the browser. Empty: the built-in country outlines.'
+
+const BASEMAP_FORMATS = [
+  { value: 'raster', label: 'Raster image' },
+  { value: 'vector', label: 'Vector (MVT/PBF)' },
+]
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -194,17 +199,32 @@ export default function SettingsPage({ onSaved }: { onSaved: () => void }) {
           </Row>
           <Row label="Basemap tiles" hint={BASEMAP_HINT}>
             {admin ? (
-              <Input
-                style={{ ...INPUT, width: 420 }}
-                aria-label="Basemap tiles URL"
-                placeholder="https://tiles.example/{z}/{x}/{y}.png"
-                value={draft.basemap_tiles_url ?? ''}
-                maxLength={2048}
-                onChange={(e) => setDraft({ ...draft, basemap_tiles_url: e.target.value })}
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Select
+                  ariaLabel="Basemap tile format"
+                  options={BASEMAP_FORMATS}
+                  value={draft.basemap_tiles_format ?? 'raster'}
+                  onChange={(format) =>
+                    format && setDraft({ ...draft, basemap_tiles_format: format as 'raster' | 'vector' })
+                  }
+                  style={{ width: 150 }}
+                />
+                <Input
+                  style={{ ...INPUT, width: 420 }}
+                  aria-label="Basemap tiles URL"
+                  placeholder={
+                    draft.basemap_tiles_format === 'vector'
+                      ? 'http://tiles:8080/map/{z}/{x}/{y}.mvt'
+                      : 'https://tiles.example/{z}/{x}/{y}.png'
+                  }
+                  value={draft.basemap_tiles_url ?? ''}
+                  maxLength={2048}
+                  onChange={(e) => setDraft({ ...draft, basemap_tiles_url: e.target.value })}
+                />
+              </div>
             ) : (
               <Badge color={loaded.basemap_tiles ? 'success' : 'grey'} size="sm">
-                {loaded.basemap_tiles ? 'on' : 'off'}
+                {loaded.basemap_tiles ? `${loaded.settings.basemap_tiles_format ?? 'raster'} tiles` : 'off'}
               </Badge>
             )}
           </Row>

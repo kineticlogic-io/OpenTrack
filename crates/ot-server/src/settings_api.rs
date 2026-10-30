@@ -43,12 +43,23 @@ pub struct AppSettings {
     pub history_interval_secs: Option<f64>,
     /// Sharing the picture with other OpenTrack nodes.
     pub sync: SyncSettings,
-    /// An XYZ raster tile URL template (`{z}`, `{x}`, `{y}`) for the maps'
-    /// basemap, fetched through this server (`crate::basemap`); empty: the
-    /// built-in country outlines. It may carry a key: only admins read it.
+    /// An XYZ tile URL template (`{z}`, `{x}`, `{y}`) for the maps' basemap,
+    /// fetched through this server (`crate::basemap`); empty: the built-in
+    /// country outlines. It may carry a key: only admins read it.
     pub basemap_tiles_url: String,
+    /// Whether the XYZ endpoint returns raster images or Mapbox vector tiles.
+    pub basemap_tiles_format: BasemapTilesFormat,
     /// Cursor-on-Target outputs to TAK (the `cot` role).
     pub tak: crate::cot::settings::TakSettings,
+}
+
+/// The representation returned by the configured XYZ basemap endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BasemapTilesFormat {
+    #[default]
+    Raster,
+    Vector,
 }
 
 /// Sharing the picture with other nodes (see `docs/multi-node.md`).
@@ -599,6 +610,11 @@ mod tests {
         // Checked as part of the settings, and an old document loads.
         let old: AppSettings = serde_json::from_value(json!({"site_name": "x"})).unwrap();
         assert_eq!(old.basemap_tiles_url, "");
+        assert_eq!(old.basemap_tiles_format, BasemapTilesFormat::Raster);
+        assert_eq!(
+            serde_json::to_value(BasemapTilesFormat::Vector).unwrap(),
+            json!("vector")
+        );
         let bad = AppSettings {
             basemap_tiles_url: "https://t.example/{z}".into(),
             ..AppSettings::default()

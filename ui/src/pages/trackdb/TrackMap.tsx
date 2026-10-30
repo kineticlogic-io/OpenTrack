@@ -1,8 +1,9 @@
 import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from 'react'
 import { TbAdjustmentsHorizontal, TbMap, TbMapOff } from 'react-icons/tb'
-import { AttributionControl, Map as MapLibreMap, Popup, type GeoJSONSource } from 'maplibre-gl'
+import { AttributionControl, Map as MapLibreMap, Popup, type ExpressionSpecification, type GeoJSONSource, type LayerSpecification, type SymbolLayerSpecification } from 'maplibre-gl'
 import { Button, ButtonPalette, Label, Select, Slider, themeFor, Toggle, useTheme } from '@kineticlogic/staresdk'
 import { EVIDENCE_COLOR, UNCERTAINTY_COLOR } from '../../lib/palette'
+import type { BasemapTiles } from '../../lib/basemap'
 import {
   coordinateBounds,
   linesToGeoJSON,
@@ -11,7 +12,6 @@ import {
   type MapFitTo,
   type MapLine,
   type MapPoint,
-  type MapTiles,
 } from '@kineticlogic/staresdk/map-view'
 
 type MarkerSize = 'compact' | 'standard' | 'large'
@@ -40,7 +40,7 @@ interface TrackMapProps {
   selectedId?: string | null
   onSelect?: (id: string | null) => void
   outlines?: Parameters<GeoJSONSource['setData']>[0]
-  tiles?: MapTiles
+  tiles?: BasemapTiles
   fitKey?: string | number
   fitTo?: MapFitTo
   height?: number | string
@@ -85,6 +85,57 @@ const MARKER_SIZES = [
 ]
 
 const pointRadius = (size: MarkerSize) => ({ compact: 4, standard: 6, large: 8 })[size]
+
+const VECTOR_BASEMAP_LAYER_IDS = [
+  'basemap-landcover',
+  'basemap-landuse',
+  'basemap-park',
+  'basemap-water',
+  'basemap-waterway',
+  'basemap-aeroway',
+  'basemap-building',
+  'basemap-boundary',
+  'basemap-transportation',
+  'basemap-water-name',
+  'basemap-transportation-name',
+  'basemap-place',
+  'basemap-mountain-peak',
+]
+
+/** A compact OpenMapTiles style suitable for an offline operational basemap. */
+function vectorBasemapLayers(palette: ReturnType<typeof themeFor>): LayerSpecification[] {
+  const b = palette.offlineBasemap
+  const name = ['coalesce', ['get', 'name'], ['get', 'name:latin'], ['get', 'ref'], ''] as ExpressionSpecification
+  const labelLayout: SymbolLayerSpecification['layout'] = {
+    'text-field': name,
+    'text-font': [LABEL_FONT],
+    'text-size': 11,
+    'text-variable-anchor': ['center', 'top', 'bottom', 'left', 'right'],
+    'text-radial-offset': 0.4,
+    'text-justify': 'auto' as const,
+    'text-optional': true,
+  }
+  const labelPaint: SymbolLayerSpecification['paint'] = {
+    'text-color': palette.colorTextPrimary,
+    'text-halo-color': palette.colorBgPrimary,
+    'text-halo-width': 1.5,
+  }
+  return [
+    { id: 'basemap-landcover', type: 'fill', source: 'basemap', 'source-layer': 'landcover', paint: { 'fill-color': b.landFill, 'fill-opacity': 0.65 } },
+    { id: 'basemap-landuse', type: 'fill', source: 'basemap', 'source-layer': 'landuse', paint: { 'fill-color': b.landFill, 'fill-opacity': 0.45 } },
+    { id: 'basemap-park', type: 'fill', source: 'basemap', 'source-layer': 'park', paint: { 'fill-color': '#6f9a68', 'fill-opacity': 0.5 } },
+    { id: 'basemap-water', type: 'fill', source: 'basemap', 'source-layer': 'water', paint: { 'fill-color': b.ocean, 'fill-opacity': 1 } },
+    { id: 'basemap-waterway', type: 'line', source: 'basemap', 'source-layer': 'waterway', paint: { 'line-color': b.ocean, 'line-width': 1.2 } },
+    { id: 'basemap-aeroway', type: 'fill', source: 'basemap', 'source-layer': 'aeroway', paint: { 'fill-color': palette.colorTextPrimary, 'fill-opacity': 0.12 } },
+    { id: 'basemap-building', type: 'fill', source: 'basemap', 'source-layer': 'building', minzoom: 12, paint: { 'fill-color': palette.colorTextPrimary, 'fill-opacity': 0.18 } },
+    { id: 'basemap-boundary', type: 'line', source: 'basemap', 'source-layer': 'boundary', paint: { 'line-color': b.countryBorder, 'line-width': 0.8, 'line-dasharray': [3, 2] } },
+    { id: 'basemap-transportation', type: 'line', source: 'basemap', 'source-layer': 'transportation', paint: { 'line-color': palette.colorTextPrimary, 'line-opacity': 0.45, 'line-width': 1.2 } },
+    { id: 'basemap-water-name', type: 'symbol', source: 'basemap', 'source-layer': 'water_name', minzoom: 8, layout: labelLayout, paint: { ...labelPaint, 'text-color': b.ocean } },
+    { id: 'basemap-transportation-name', type: 'symbol', source: 'basemap', 'source-layer': 'transportation_name', minzoom: 10, layout: labelLayout, paint: labelPaint },
+    { id: 'basemap-place', type: 'symbol', source: 'basemap', 'source-layer': 'place', layout: { ...labelLayout, 'text-size': 12 }, paint: labelPaint },
+    { id: 'basemap-mountain-peak', type: 'symbol', source: 'basemap', 'source-layer': 'mountain_peak', minzoom: 10, layout: labelLayout, paint: labelPaint },
+  ]
+}
 
 export function TrackMap({
   points,
@@ -292,20 +343,40 @@ export function TrackMap({
   const tileAttribution = tiles?.attribution?.trim() || ''
   const tileSize = tiles?.tileSize ?? 256
   const tileMaxZoom = tiles?.maxZoom ?? 19
+  const tileFormat = tiles?.format ?? 'raster'
   useEffect(() => {
     const m = map.current
     if (!m || !ready || !tileUrl) return
-    m.addSource('basemap', { type: 'raster', tiles: [tileUrl], tileSize, maxzoom: tileMaxZoom, attribution: tileAttribution || undefined })
-    m.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'land')
+    const layerIds: string[] = []
+    if (tileFormat === 'vector') {
+      m.addSource('basemap', { type: 'vector', tiles: [tileUrl], maxzoom: tileMaxZoom, attribution: tileAttribution || undefined })
+      for (const layer of vectorBasemapLayers(palette)) {
+        m.addLayer(layer, 'land')
+        layerIds.push(layer.id)
+      }
+      m.addLayer(
+        {
+          id: 'basemap-vector-dim',
+          type: 'background',
+          paint: { 'background-color': palette.colorBgPrimary, 'background-opacity': 0 },
+        },
+        'land',
+      )
+      layerIds.push('basemap-vector-dim')
+    } else {
+      m.addSource('basemap', { type: 'raster', tiles: [tileUrl], tileSize, maxzoom: tileMaxZoom, attribution: tileAttribution || undefined })
+      m.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'land')
+      layerIds.push('basemap')
+    }
     const credit = tileAttribution ? new AttributionControl({ compact: true }) : null
     if (credit) m.addControl(credit, 'bottom-right')
     return () => {
       if (map.current !== m) return
       if (credit) m.removeControl(credit)
-      m.removeLayer('basemap')
+      for (const id of layerIds.reverse()) if (m.getLayer(id)) m.removeLayer(id)
       m.removeSource('basemap')
     }
-  }, [ready, tileUrl, tileAttribution, tileSize, tileMaxZoom])
+  }, [ready, tileUrl, tileAttribution, tileSize, tileMaxZoom, tileFormat, palette])
 
   useEffect(() => {
     const m = map.current
@@ -317,6 +388,13 @@ export function TrackMap({
       m.setLayoutProperty('basemap', 'visibility', display.basemap ? 'visible' : 'none')
       m.setPaintProperty('basemap', 'raster-brightness-max', 1 - display.dim / 100)
       m.setPaintProperty('basemap', 'raster-saturation', -display.dim / 100)
+    }
+    for (const id of VECTOR_BASEMAP_LAYER_IDS) {
+      if (m.getLayer(id)) m.setLayoutProperty(id, 'visibility', display.basemap ? 'visible' : 'none')
+    }
+    if (m.getLayer('basemap-vector-dim')) {
+      m.setLayoutProperty('basemap-vector-dim', 'visibility', display.basemap ? 'visible' : 'none')
+      m.setPaintProperty('basemap-vector-dim', 'background-opacity', display.dim / 100)
     }
   }, [ready, tileUrl, display.basemap, display.dim])
 
