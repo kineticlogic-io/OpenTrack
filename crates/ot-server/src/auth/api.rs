@@ -2320,8 +2320,8 @@ mod tests {
     }
 
     /// A stand-in tile server on 127.0.0.1: `/t/{z}/{x}/{y}` answers by
-    /// zoom (5: HTML, 6: 404, 7: 500, 8: too big, 9: a redirect), else a
-    /// "PNG" naming what it was asked for.
+    /// zoom (4: gzipped MVT, 5: HTML, 6: 404, 7: 500, 8: too big, 9: a
+    /// redirect), else a "PNG" naming what it was asked for.
     async fn tile_server() -> std::net::SocketAddr {
         use axum::extract::RawQuery;
         async fn t(
@@ -2331,6 +2331,14 @@ mod tests {
         ) -> Response {
             let png = [(axum::http::header::CONTENT_TYPE, "image/png")];
             match z {
+                4 => (
+                    [
+                        (axum::http::header::CONTENT_TYPE, "application/x-protobuf"),
+                        (axum::http::header::CONTENT_ENCODING, "gzip"),
+                    ],
+                    vec![0x1f, 0x8b, 0x08, 0x00],
+                )
+                    .into_response(),
                 5 => ([(axum::http::header::CONTENT_TYPE, "text/html")], "<html>").into_response(),
                 6 => StatusCode::NOT_FOUND.into_response(),
                 7 => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2495,6 +2503,43 @@ mod tests {
         assert_eq!(h["cache-control"], "private, max-age=86400");
         assert_eq!(h["x-content-type-options"], "nosniff");
         assert!(!h.contains_key("pragma"));
+
+        // Vector tiles use the same authenticated proxy. Their protobuf media
+        // type and gzip encoding reach MapLibre intact, while an image is
+        // rejected when the saved representation says vector.
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({
+                "basemap_tiles_url": url,
+                "basemap_tiles_format": "vector"
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(body["settings"]["basemap_tiles_format"], "vector");
+        let (st, h, body) = get_raw(&app, "/api/v1/basemap/4/0/0", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::OK, "{body:?}");
+        assert_eq!(h["content-type"], "application/x-protobuf");
+        assert_eq!(h["content-encoding"], "gzip");
+        assert_eq!(body.as_ref(), &[0x1f, 0x8b, 0x08, 0x00]);
+        let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", Some(&viewer)).await;
+        assert_eq!(st, StatusCode::BAD_GATEWAY);
+
+        let (st, body, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings",
+            Some(&admin),
+            Some(json!({
+                "basemap_tiles_url": url,
+                "basemap_tiles_format": "raster"
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
         // Signed in only.
         let (st, ..) = get_raw(&app, "/api/v1/basemap/3/2/1", None).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
