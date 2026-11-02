@@ -1,5 +1,5 @@
-//! The maps' basemap: raster tiles from the XYZ tile server the settings
-//! name (`basemap_tiles_url`), fetched by this server for the browser. The
+//! The maps' basemap: raster or vector tiles from the XYZ tile server the
+//! settings name (`basemap_tiles_url`), fetched by this server for the browser. The
 //! page's content security policy stays `'self'`, browsers need no route to
 //! the tile server, and a key in its URL never leaves this server. Nothing
 //! is cached here: the browser keeps each tile for a day.
@@ -8,13 +8,14 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
 use crate::control::{ApiError, AppState};
-use crate::settings_api::fill_tile_url;
+use crate::settings_api::{BasemapTilesFormat, fill_tile_url};
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/basemap/{z}/{x}/{y}", get(tile))
@@ -28,6 +29,11 @@ pub const MAX_TILE_BYTES: usize = 4 * 1024 * 1024;
 pub const CACHE_CONTROL: &str = "private, max-age=86400";
 const TIMEOUT: Duration = Duration::from_secs(10);
 const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/avif"];
+const VECTOR_TYPES: &[&str] = &[
+    "application/x-protobuf",
+    "application/vnd.mapbox-vector-tile",
+    "application/protobuf",
+];
 
 /// One client for every tile: no redirects (a tile server that moves is
 /// set anew), a 10 s limit, and this build's name.
@@ -68,16 +74,21 @@ fn coordinates(z: &str, x: &str, y: &str) -> Result<(u32, u64, u64), ApiError> {
     Ok((z, at(x, "x")?, at(y, "y")?))
 }
 
-/// The tile's media type, when it is an image type a map draws.
-fn image_type(v: Option<&HeaderValue>) -> Option<&'static str> {
+/// The tile's supported media type for the configured representation.
+fn tile_type(v: Option<&HeaderValue>, format: BasemapTilesFormat) -> Option<&'static str> {
     let t = v?.to_str().ok()?;
     let t = t.split(';').next()?.trim().to_ascii_lowercase();
-    IMAGE_TYPES.iter().copied().find(|i| *i == t)
+    let supported = match format {
+        BasemapTilesFormat::Raster => IMAGE_TYPES,
+        BasemapTilesFormat::Vector => VECTOR_TYPES,
+    };
+    supported.iter().copied().find(|i| *i == t)
 }
 
 /// `GET /basemap/{z}/{x}/{y}`: the tile, from the tile server. 404 when no
 /// tile URL is set or the tile server has no such tile (open ocean, say);
-/// 502 when it fails or answers with anything but an image.
+/// 502 when it fails or answers with a media type that does not match the
+/// configured raster or vector representation.
 async fn tile(
     State(s): State<AppState>,
     Path((z, x, y)): Path<(String, String, String)>,
@@ -88,6 +99,13 @@ async fn tile(
     if template.is_empty() {
         return Err(ApiError::not_found("no basemap tiles are set"));
     }
+    let format = serde_json::from_value(
+        saved
+            .get("basemap_tiles_format")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!("raster")),
+    )
+    .unwrap_or_default();
     let url = fill_tile_url(template, z, x, y);
     // Logged by host only: the URL may carry a key.
     let host = reqwest::Url::parse(&url)
@@ -129,9 +147,21 @@ async fn tile(
     if !status.is_success() {
         return Ok(fail(&format!("answered {}", status.as_u16()), Some(status)));
     }
-    let Some(kind) = image_type(res.headers().get(header::CONTENT_TYPE)) else {
-        return Ok(fail("not a PNG, JPEG, WebP or AVIF image", Some(status)));
+    let Some(kind) = tile_type(res.headers().get(header::CONTENT_TYPE), format) else {
+        let wanted = match format {
+            BasemapTilesFormat::Raster => "not a PNG, JPEG, WebP or AVIF image",
+            BasemapTilesFormat::Vector => "not a Mapbox vector tile",
+        };
+        return Ok(fail(wanted, Some(status)));
     };
+    // PMTiles and most vector tile servers store MVT payloads gzipped. reqwest
+    // does not decompress them in this build, so preserve the encoding for
+    // MapLibre rather than handing it compressed bytes without the header.
+    let content_encoding = res
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .filter(|v| v.as_bytes().eq_ignore_ascii_case(b"gzip"))
+        .cloned();
     if res
         .content_length()
         .is_some_and(|n| n > MAX_TILE_BYTES as u64)
@@ -158,22 +188,20 @@ async fn tile(
             }
         }
     }
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, HeaderValue::from_static(kind)),
-            (
-                header::CACHE_CONTROL,
-                HeaderValue::from_static(CACHE_CONTROL),
-            ),
-            (
-                header::X_CONTENT_TYPE_OPTIONS,
-                HeaderValue::from_static("nosniff"),
-            ),
-        ],
-        body,
-    )
-        .into_response())
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(CACHE_CONTROL),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if let Some(encoding) = content_encoding {
+        headers.insert(header::CONTENT_ENCODING, encoding);
+    }
+    Ok((StatusCode::OK, headers, Body::from(body)).into_response())
 }
 
 #[cfg(test)]
@@ -201,14 +229,33 @@ mod tests {
     }
 
     #[test]
-    fn only_image_types_pass() {
-        let t = |s: &str| image_type(Some(&HeaderValue::from_str(s).unwrap()));
-        assert_eq!(t("image/png"), Some("image/png"));
-        assert_eq!(t("Image/JPEG; charset=binary"), Some("image/jpeg"));
-        assert_eq!(t("image/webp"), Some("image/webp"));
-        assert_eq!(t("image/avif"), Some("image/avif"));
-        assert_eq!(t("image/svg+xml"), None);
-        assert_eq!(t("text/html"), None);
-        assert_eq!(image_type(None), None);
+    fn only_configured_tile_types_pass() {
+        let t = |s: &str, format| tile_type(Some(&HeaderValue::from_str(s).unwrap()), format);
+        assert_eq!(
+            t("image/png", BasemapTilesFormat::Raster),
+            Some("image/png")
+        );
+        assert_eq!(
+            t("Image/JPEG; charset=binary", BasemapTilesFormat::Raster),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            t("application/x-protobuf", BasemapTilesFormat::Vector),
+            Some("application/x-protobuf")
+        );
+        assert_eq!(
+            t(
+                "application/vnd.mapbox-vector-tile",
+                BasemapTilesFormat::Vector
+            ),
+            Some("application/vnd.mapbox-vector-tile")
+        );
+        assert_eq!(t("image/png", BasemapTilesFormat::Vector), None);
+        assert_eq!(
+            t("application/x-protobuf", BasemapTilesFormat::Raster),
+            None
+        );
+        assert_eq!(t("text/html", BasemapTilesFormat::Raster), None);
+        assert_eq!(tile_type(None, BasemapTilesFormat::Raster), None);
     }
 }

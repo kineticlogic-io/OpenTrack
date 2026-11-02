@@ -909,12 +909,16 @@ them all.
 ### Basemap tiles
 
 The maps (Track Management and the source preview) draw the built-in country outlines, which need
-nothing from outside. For a full map instead, give **Settings → General → Basemap tiles** the URL
-of an XYZ raster tile server, such as `https://tiles.example/{z}/{x}/{y}.png`:
+nothing from outside. For a full map instead, choose **Raster image** or **Vector (MVT/PBF)** in
+**Settings → General → Basemap tiles** and give the URL of an XYZ tile server, such as
+`https://tiles.example/{z}/{x}/{y}.png` or
+`http://tiles.internal/map/{z}/{x}/{y}.mvt`:
 - An absolute `http` or `https` URL of up to 2048 characters with `{z}`, `{x}` and `{y}` in it.
   No other placeholders: `{s}` (a choice of subdomains) is refused, so give one host. No
   `user:pass@`; a key the tile server takes can go in the query, e.g. `?key=...`.
-- The tiles are PNG, JPEG, WebP or AVIF, up to 4 MiB each. Empty turns tiles off.
+- Raster tiles are PNG, JPEG, WebP or AVIF. Vector tiles use the Mapbox vector tile protobuf media
+  type and may be gzip encoded. Each tile may be up to 4 MiB. Empty turns tiles off. The built-in
+  vector style targets the OpenMapTiles layer schema.
 
 **OpenTrack fetches the tiles for the browser** (`GET /api/v1/basemap/{z}/{x}/{y}`, any signed-in
 account), so:
@@ -924,8 +928,8 @@ account), so:
   else sees whether tiles are on, and the decision log records only that it was set.
 
 A tile the server doesn't have (open ocean, say) is left empty; a tile server that fails, is slow
-(10 s), redirects or sends anything but an image gives that tile a 502, logged with the server's
-host and status.
+(10 s), redirects or sends a media type that does not match the chosen format gives that tile a
+502, logged with the server's host and status.
 
 **Tiles are not cached on the OpenTrack server.** Each browser keeps a tile for a day, so a room
 of operators still makes one request per tile per browser.

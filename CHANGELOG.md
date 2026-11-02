@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Vector basemap tiles.** Settings → General → **Basemap tiles** accepts either raster XYZ
+  images or Mapbox vector tiles (MVT/PBF). Vector tiles are proxied through OpenTrack like raster
+  tiles and drawn with the built-in OpenMapTiles-compatible style.
 - **Sources are flows.** A source's editor is a workspace: the step list on the left, the source's
   steps placed and connected by hand, each clicked open for its settings and samples. After the
   input (transport and codec) come Reject, Map, Filter, Entity links, Affiliation, Tracker and

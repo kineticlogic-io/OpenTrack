@@ -473,8 +473,10 @@ export interface AppSettings {
   history_interval_secs?: number | null
   /** Sharing the picture with other OpenTrack nodes. */
   sync?: SyncSettings
-  /** XYZ raster tile URL template for the maps' basemap (empty: the country outlines). Admins only: empty for anyone else. */
+  /** XYZ tile URL template for the maps' basemap (empty: the country outlines). Admins only: empty for anyone else. */
   basemap_tiles_url?: string
+  /** Representation returned by the XYZ endpoint (old settings default to raster). */
+  basemap_tiles_format?: 'raster' | 'vector'
   /** Cursor-on-Target outputs to TAK (the cot role). */
   tak?: TakSettings
 }
