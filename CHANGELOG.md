@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Lost tracks can be hidden on the map.** Map display → **Lost tracks** (on by default, kept
+  per browser); off, the map shows no lost track but the selected one. The options panel scrolls
+  when the map is shorter than it.
+
 - **Sources are flows.** A source's editor is a workspace: the step list on the left, the source's
   steps placed and connected by hand, each clicked open for its settings and samples. After the
   input (transport and codec) come Reject, Map, Filter, Entity links, Affiliation, Tracker and
@@ -20,6 +24,10 @@
 
 ### Changed
 
+- **Capture's suggested mapping knows no feed's field names.** It reads the values (coordinates,
+  times, a track key of fixed-length ids, CoT types) and fields named like an OpenTrack field whose
+  values fit. It no longer guesses from names of particular feeds, and no longer suggests
+  identifiers or unit conversions: add those on the Map.
 - **Raw output is a NATS topic step.** Its consent and the `/sources/{id}/raw-output` endpoints are
   gone. A source saved with a raw-output subject gets a NATS topic step beside its Output, once, on
   start (recorded as a revision by `op:migration`); a configuration file's raw output is read the
