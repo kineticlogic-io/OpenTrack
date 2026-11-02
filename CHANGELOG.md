@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Lost tracks can be hidden on the map.** Map display → **Lost tracks** (on by default, kept
+  per browser); off, the map shows no lost track but the selected one. The options panel scrolls
+  when the map is shorter than it.
 - **One-way sync.** Settings → Nodes has a **Direction**: Send and receive, **Receive only** (take
   in trusted nodes' tracks and decisions and send nothing at all) or **Send only** (share this
   node's picture and take nothing in). The link holds a node to it, whatever the transport does.
@@ -35,10 +38,13 @@
 
 ### Changed
 
+- **Capture's suggested mapping knows no feed's field names.** It reads the values (coordinates,
+  times, a track key of fixed-length ids, CoT types) and fields named like an OpenTrack field whose
+  values fit. It no longer guesses from names of particular feeds, and no longer suggests
+  identifiers or unit conversions: add those on the Map.
 - **Receive only is now Accept no track management here** (`sync.no_local_management`). It always
   meant that the node's own users may not manage tracks, never that it sends nothing; Receive only
   is now a direction. Saved settings and configuration exports that use `receive_only` still load.
-
 - **Raw output is a NATS topic step.** Its consent and the `/sources/{id}/raw-output` endpoints are
   gone. A source saved with a raw-output subject gets a NATS topic step beside its Output, once, on
   start (recorded as a revision by `op:migration`); a configuration file's raw output is read the

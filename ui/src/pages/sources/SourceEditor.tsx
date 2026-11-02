@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TbSettings, TbTrash } from 'react-icons/tb'
+import { TbDownload, TbLayoutDistributeVertical, TbSettings, TbTrash, TbWand } from 'react-icons/tb'
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Badge, Breadcrumbs, Button, SaveButton, SegmentedControl, SideNav, Toggle, useToast } from '@kineticlogic/staresdk'
@@ -20,18 +20,23 @@ import { useCan } from '../../auth/context'
 import { InfoTip } from '../../components/InfoTip'
 import { errorMessage } from '../../lib/format'
 import { SOURCE_STATES_INFO, sourceState } from '../../lib/sourceState'
-import { MAX_TRACED_SAMPLES, TRACED_SAMPLES } from '../../lib/trace'
+import { MAX_TRACED_SAMPLES, sampleTrail, TRACED_SAMPLES } from '../../lib/trace'
 import { FeedPanel } from './flow/FeedPanel'
 import { NodePanel } from './flow/NodePanel'
+import { SamplesTray } from './flow/SamplesTray'
 import { StepNode, type StepView } from './flow/StepNode'
 import { stepIcon } from './flow/stepIcons'
+import { tidy } from './flow/tidy'
 import {
   canConnect,
   defaultConfig,
   flowOf,
   freePlace,
+  guessTarget,
+  joinDropped,
   INPUT,
   laidOut,
+  mapField,
   nextNodeId,
   nodeSummary,
   nodeTitle,
@@ -144,6 +149,8 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set())
   const [feedOpen, setFeedOpen] = useState(false)
+  // A step's settings can be closed and the step stay selected, its samples in the tray.
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<'flow' | 'json'>('flow')
   const [jsonText, setJsonText] = useState('')
   const [jsonBox, jsonHeight] = useBoxHeight()
@@ -155,6 +162,9 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [nonce, setNonce] = useState(0)
+  const [trayOpen, setTrayOpen] = useState(true)
+  // A traced sample followed through the flow (from 0).
+  const [followed, setFollowed] = useState<number | null>(null)
 
   // A source from before flows has no places for its steps: they are laid out once, as loaded.
   const adopt = useCallback((r: SourceRow) => {
@@ -205,6 +215,35 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
     if (spec) edit(withFlow(spec, f))
   }
 
+  /** The one thing to do next on a step's card: capture samples while there are none, use a suggested mapping on an empty Map. */
+  const actionFor = (n: FlowNode): StepView['action'] => {
+    if (readOnly) return undefined
+    if (n.type === 'input' && live.preview && !(live.preview.steps?.input?.in ?? 0)) {
+      return { label: capturing ? 'Capturing…' : 'Capture samples', icon: <TbDownload />, busy: capturing, onClick: () => void capture() }
+    }
+    const suggested = probe?.suggestion.mapping
+    const rules = ((n.config as { mapping?: { rules?: unknown[] } } | undefined)?.mapping?.rules ?? []).length
+    if (n.type === 'map' && suggested && suggested.rules.length > 0 && rules === 0) {
+      return {
+        label: 'Use suggested mapping',
+        icon: <TbWand />,
+        onClick: () => setConfig(n.id, { ...(n.config as object), mapping: { ...suggested, reject: undefined } }),
+      }
+    }
+    return undefined
+  }
+
+  /** A field dragged from the samples onto a Map: mapped where it most likely goes, and the Map opened to check. */
+  const dropField = (n: FlowNode, path: string) => {
+    if (!path) return
+    setConfig(n.id, mapField(n.config, path, guessTarget(path, probe?.suggestion.proposals)))
+    setSelected(n.id)
+    setSettingsOpen(true)
+    setFeedOpen(false)
+  }
+
+  const trail = useMemo(() => (followed === null ? null : sampleTrail(live.preview?.trace, followed)), [followed, live.preview])
+
   const nodes: FlowCanvasNode[] = useMemo(() => {
     if (!spec) return []
     return flow.nodes.map((n) => ({
@@ -219,17 +258,34 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
         title: nodeTitle(spec, n),
         summary: nodeSummary(spec, n),
         problems: byNode.byNode[n.id] ?? [],
+        counts: live.preview?.steps?.[n.id],
+        trail: trail ? (trail[n.id] ?? 'absent') : undefined,
+        action: actionFor(n),
+        onFieldDrop: n.type === 'map' && !readOnly ? (path) => dropField(n, path) : undefined,
       } satisfies StepView,
     }))
-  }, [spec, flow, current, byNode])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, flow, current, byNode, live.preview, trail, probe, capturing, readOnly])
 
   const edges: FlowCanvasEdge[] = useMemo(
     () =>
       flow.edges.map((e) => {
         const eid = `${e.source}->${e.target}`
-        return { id: eid, source: e.source, target: e.target, selected: selectedEdges.has(eid) }
+        // What crossed it in the dry run: what its target took in.
+        const crossed = live.preview?.steps?.[e.target]?.in
+        // A followed sample's way through: from a step it passed to one it reached.
+        const taken = trail ? trail[e.source]?.state === 'passed' && !!trail[e.target] : undefined
+        return {
+          id: eid,
+          source: e.source,
+          target: e.target,
+          selected: selectedEdges.has(eid),
+          label: crossed === undefined ? undefined : String(crossed),
+          animated: taken,
+          className: taken === undefined ? undefined : taken ? 'flow-edge-taken' : 'flow-edge-faded',
+        }
       }),
-    [flow, selectedEdges],
+    [flow, selectedEdges, live.preview, trail],
   )
 
   const transportType = spec?.transport.type
@@ -251,6 +307,7 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
       const on = picks.find((c) => c.selected)
       if (on) {
         setSelected(on.id)
+        setSettingsOpen(true)
         setFeedOpen(false)
       } else if (picks.some((c) => c.id === selected)) setSelected(null)
     }
@@ -309,8 +366,9 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
     }
     const config = defaultConfig(t)
     if (config !== undefined) node.config = config
-    editFlow({ ...flow, nodes: [...flow.nodes, node] })
+    editFlow(joinDropped({ ...flow, nodes: [...flow.nodes, node] }, node.id))
     setSelected(node.id)
+    setSettingsOpen(true)
     setFeedOpen(false)
   }
 
@@ -424,13 +482,18 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
             { value: 'json', label: 'JSON' },
           ]}
         />
+        {view === 'flow' && (
+          <Button size="sm" variant="secondary" icon={<TbLayoutDistributeVertical />} disabled={readOnly} onClick={() => editFlow(tidy(flow))}>
+            Tidy
+          </Button>
+        )}
         <Button
           size="sm"
           variant={feedOpen ? 'primary' : 'secondary'}
           icon={<TbSettings />}
           onClick={() => {
             setFeedOpen((o) => !o)
-            setSelected(null)
+            setSettingsOpen(false)
           }}
         >
           Feed
@@ -460,9 +523,20 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               height="100%"
             />
           </div>
+          <SamplesTray
+            node={node ?? null}
+            title={node ? nodeTitle(spec, node) : ''}
+            path={node ? pathTo(flow, node.id) : []}
+            preview={live.preview}
+            error={live.error}
+            open={trayOpen}
+            onOpenChange={setTrayOpen}
+            followed={followed}
+            onFollow={setFollowed}
+          />
           {/* A step's settings (or the feed's) open over the right of the page, resizable. */}
           <SideNav
-            open={!!node || feedOpen}
+            open={(!!node && settingsOpen) || feedOpen}
             ariaLabel={node ? `Step ${node.id}` : 'Feed settings'}
             width={640}
             minWidth={420}
@@ -474,12 +548,12 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
               className="drawer"
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
-                  setSelected(null)
+                  setSettingsOpen(false)
                   setFeedOpen(false)
                 }
               }}
             >
-              {node ? (
+              {node && settingsOpen ? (
                 <NodePanel
                   key={node.id}
                   spec={spec}
@@ -489,14 +563,13 @@ export default function SourceEditor({ id, onClose, onDeleted }: { id: string; o
                   schema={schema}
                   plugins={plugins}
                   preview={live.preview}
-                  previewError={live.error}
                   probe={probe}
                   capturing={capturing}
                   readOnly={readOnly}
                   onSpec={edit}
                   onConfig={(c) => setConfig(node.id, c)}
                   onCapture={() => void capture()}
-                  onClose={() => setSelected(null)}
+                  onClose={() => setSettingsOpen(false)}
                 />
               ) : feedOpen ? (
                 <FeedPanel spec={spec} row={row} tracked={tracked} problems={byNode.general} readOnly={readOnly} onChange={edit} onClose={() => setFeedOpen(false)} />
