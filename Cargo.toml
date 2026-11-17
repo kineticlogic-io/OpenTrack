@@ -28,6 +28,7 @@ async-nats = { version = "0.50", default-features = false, features = ["fips", "
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 quick-xml = "0.42"
+misb = "0.1.1"
 # Registry spreadsheets: xlsx out, xlsx/ods in, CSV both ways.
 calamine = "0.37"
 csv = "1"

@@ -9,7 +9,7 @@
 //! - scorer: evidence for the engine's pairing test (correlation settings'
 //!   `scorer`)
 //!
-//! Some are built in ([`stanag4607`]); the rest are loaded while running
+//! Some are built in ([`stanag4607`], [`misb0601`]); the rest are loaded while running
 //! (WebAssembly components, or external programs over a socket: the
 //! `ot-plugin` crate) and [`install`]ed here. Either way a source's
 //! configuration names a plugin the same way. The interface is `wit/plugin.wit`.
@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use crate::frame::Framing;
 
+pub mod misb0601;
 pub mod sapient;
 pub mod stanag4607;
 
@@ -254,6 +255,7 @@ static BUILTIN: LazyLock<Vec<Arc<dyn Plugin>>> = LazyLock::new(|| {
     vec![
         Arc::new(stanag4607::Stanag4607::new()) as Arc<dyn Plugin>,
         Arc::new(sapient::Sapient::new()) as Arc<dyn Plugin>,
+        Arc::new(misb0601::Misb0601::new()) as Arc<dyn Plugin>,
     ]
 });
 
