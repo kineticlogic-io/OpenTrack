@@ -241,7 +241,11 @@ ground tracks with the GNN tracker timed by the measured revisit rate, and publi
 platform itself as a friendly track. **SAPIENT** (BSI Flex 335 v2.0) is the built-in `sapient` codec
 plugin: each `SapientMessage` (over TCP with a 4-byte little-endian length prefix, or one per MQTT
 message) becomes a JSON record for the mapping; [docs/examples/sapient.json](examples/sapient.json)
-maps detection reports.
+maps detection reports. **MISB ST 0601** (the KLV metadata of STANAG 4609 drone video) is the
+built-in `misb0601` codec plugin: each UAS Datalink packet in a datagram (checksum verified) becomes
+a `platform` record with the aircraft's position, course, speed and camera pointing, and with
+`emit: "all"` a `frame_center` record too; [docs/examples/misb0601-udp.json](examples/misb0601-udp.json)
+publishes the aircraft as a friendly air track.
 
 Per source (its Feed settings):
 

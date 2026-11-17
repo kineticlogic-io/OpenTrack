@@ -887,6 +887,10 @@ mod tests {
                 include_str!("../../../docs/examples/gps-udp.json"),
             ),
             (
+                "misb0601-udp",
+                include_str!("../../../docs/examples/misb0601-udp.json"),
+            ),
+            (
                 "autoferry track",
                 include_str!("../../../docs/examples/autoferry/demo-autoferry-track.json"),
             ),
