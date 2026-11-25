@@ -1,0 +1,62 @@
+{
+  "id": "misb0601-udp",
+  "name": "Drone video metadata (MISB ST 0601)",
+  "description": "STANAG 4609 full motion video metadata: the KLV stream of a drone's video (MPEG-TS demuxed, for example ffmpeg -i udp://@:5000 -map 0:d -c copy -f data udp://127.0.0.1:47020) with one or more MISB ST 0601 UAS Datalink packets per datagram. The aircraft is a friendly air track named by its tail number, call sign, designation or mission ID.",
+  "transport": {
+    "type": "udp",
+    "bind": "127.0.0.1:47020"
+  },
+  "unauthenticated": "accepted",
+  "pipeline": {
+    "codec": {
+      "type": "plugin",
+      "plugin": "misb0601",
+      "options": {
+        "emit": "platform",
+        "verify_checksum": true
+      }
+    },
+    "mapping": {
+      "schema_version": 2,
+      "rules": [
+        {
+          "name": "platform",
+          "kind": "track",
+          "when": {
+            "path": "record",
+            "eq": "platform"
+          },
+          "key": "platform_id",
+          "fields": {
+            "callsign": "platform_id",
+            "name": "platform_id",
+            "position.latitude": "lat",
+            "position.longitude": "lon",
+            "position.altitude_hae_m": "alt_hae_m",
+            "observed_at": {
+              "path": "time",
+              "transforms": [
+                "time"
+              ]
+            },
+            "kinematics.course_deg": "track_deg",
+            "kinematics.speed_mps": "speed_mps",
+            "kinematics.heading_deg": "heading_deg",
+            "uncertainty.circular_error_m": {
+              "const": 10.0
+            },
+            "classification.domain": {
+              "const": "air"
+            },
+            "classification.affiliation": {
+              "const": "friend"
+            },
+            "classification.cot_type": {
+              "const": "a-f-A-M-F-Q"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

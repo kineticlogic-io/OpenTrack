@@ -16,6 +16,7 @@ bytes.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
+misb.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
