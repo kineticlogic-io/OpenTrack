@@ -994,7 +994,7 @@ mod tests {
     /// The router and its state (to reach the database).
     async fn app_and_state() -> Option<(axum::Router, AppState)> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
-        let ns = format!("ot-auth-test-{}", chrono::Utc::now().timestamp_micros());
+        let ns = crate::test_namespace("ot-auth-test");
         let common = Common {
             sqlite: ":memory:".into(),
             data_dir: None,

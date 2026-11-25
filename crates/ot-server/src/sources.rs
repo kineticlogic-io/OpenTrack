@@ -648,11 +648,7 @@ mod tests {
             return None;
         };
         let dir = tempfile::tempdir().unwrap();
-        let ns = format!(
-            "ot-sources-test-{}-{}",
-            std::process::id(),
-            Utc::now().timestamp_micros()
-        );
+        let ns = crate::test_namespace("ot-sources-test");
         let common = Common {
             sqlite: dir.path().join("ot.db"),
             data_dir: None,

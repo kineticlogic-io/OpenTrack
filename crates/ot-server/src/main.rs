@@ -769,6 +769,21 @@ fn health(bind: SocketAddr, tls: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A Redis namespace no other test in this run shares. The tests run in
+/// parallel against one server, and two can start in the same microsecond,
+/// so the clock alone is not enough: a counter tells them apart.
+#[cfg(test)]
+pub(crate) fn test_namespace(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{prefix}-{}-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_micros(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

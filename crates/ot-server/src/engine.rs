@@ -3254,11 +3254,7 @@ mod tests {
             redis_password_file: None,
             redis_cert: None,
             redis_key: None,
-            redis_namespace: format!(
-                "ot-engine-test-{site}-{}-{}",
-                std::process::id(),
-                Utc::now().timestamp_micros()
-            ),
+            redis_namespace: crate::test_namespace(&format!("ot-engine-test-{site}")),
             site: ot_core::SiteCode::new(site).unwrap(),
             nats: crate::config::NatsArgs {
                 url: "nats://127.0.0.1:9".into(),

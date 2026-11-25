@@ -494,8 +494,7 @@ mod tests {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
         let mut common = crate::config_backup::tests::common(dir);
         common.redis = url.clone();
-        common.redis_namespace =
-            format!("ot-plugins-test-{}", chrono::Utc::now().timestamp_micros());
+        common.redis_namespace = crate::test_namespace("ot-plugins-test");
         let db = common.open_new_db().unwrap();
         let state = AppState {
             db: Arc::new(Mutex::new(db)),

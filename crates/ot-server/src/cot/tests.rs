@@ -638,11 +638,7 @@ mod redis_e2e {
 
     async fn store() -> Option<RedisStore> {
         let url = std::env::var("OT_TEST_REDIS_URL").ok()?;
-        let ns = format!(
-            "ot-test-cot-{}-{}",
-            std::process::id(),
-            chrono::Utc::now().timestamp_micros()
-        );
+        let ns = crate::test_namespace("ot-test-cot");
         Some(
             RedisStore::connect(&url, ot_store::Keys::new(ns))
                 .await
