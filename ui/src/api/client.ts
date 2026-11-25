@@ -13,7 +13,8 @@ export interface ServerStatus {
   algorithms?: { correlation: string; trackers: Record<string, string> }
   site: string
   node_id: string
-  sqlite: DependencyStatus & { schema_version?: number; path?: string }
+  sqlite?: DependencyStatus & { schema_version?: number; path?: string }
+  postgres?: DependencyStatus & { schema_version?: number }
   redis: DependencyStatus & { namespace?: string }
   nats: DependencyStatus & {
     url?: string
@@ -372,6 +373,7 @@ export interface SystemMetrics {
 /** `GET /import/config`: whether a configuration may be imported here. */
 export interface ConfigImportStatus {
   empty: boolean
+  supported?: boolean
   /** What makes the node non-empty, one line each. */
   present: string[]
   format: string
@@ -935,6 +937,9 @@ export interface SourceRow {
   draft: boolean
   /** Live worker status; null when no worker runs it (disabled or stopped). */
   status: SourceStatus | null
+  /** Access controller decision; null when the controller is not deployed or has stopped. */
+  access: { state: string; revision: number; reason?: string | null } | null
+  connection_test: { transport: string; frames: number; seconds: number; valid: boolean } | null
 }
 
 /** One reason a source may not run. */
@@ -1002,6 +1007,13 @@ export interface ProbeResult {
     text: string
     truncated: boolean
   }[]
+}
+
+export interface DecodedSamples {
+  frames: number
+  records: unknown[]
+  decode_errors: number
+  last_decode_error: string | null
 }
 
 export interface PreviewObservation extends Observation {
@@ -1177,7 +1189,7 @@ export interface EntityView {
 }
 
 export const api = {
-  // 503 while SQLite, Redis or NATS is down: the body still says which.
+  // 503 while the control database, Redis or NATS is down: the body still says which.
   status: async (): Promise<ServerStatus> => {
     const res = await fetch('/api/v1/status', { headers: { 'x-opentrack-actor': ACTOR } })
     const text = await res.text()
@@ -1267,6 +1279,8 @@ export const api = {
     max_secs?: number
     save_as?: string
   }) => request<ProbeResult>('POST', '/probe', body),
+  decodeSamples: (id: string, codec: SourceSpec['pipeline']['codec']) =>
+    request<DecodedSamples>('POST', `/sources/${enc(id)}/samples/decode`, { codec }),
   /** A dry run; `trace` > 0 also follows that many decoded records stage by stage (at most 10). */
   preview: (spec: SourceSpec, storedSamplesOf?: string, samples: string[] = [], trace = 0) =>
     request<PreviewResult>('POST', '/sources/validate', { spec, samples, stored_samples_of: storedSamplesOf, ...(trace > 0 ? { trace } : {}) }),
