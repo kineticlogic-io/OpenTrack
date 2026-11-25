@@ -1,4 +1,9 @@
-# OpenTrack
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/opentrack-lockup-tagline-on-dark.svg">
+    <img alt="OpenTrack: many feeds, one track picture" src="docs/brand/opentrack-lockup-tagline-on-light.svg" width="420">
+  </picture>
+</h1>
 
 **An open, explainable track management server.** OpenTrack takes in any number of track and sensor
 feeds (AIS, ADS-B, TAK/CoT, SAPIENT, STANAG 4607 GMTI, radar and LiDAR plots, ESM bearings and
@@ -36,10 +41,17 @@ undo it.
 
 ## Quick start
 
+Prebuilt Linux images for AMD64 and ARM64 are published by this repository to
+`ghcr.io/defenseunicorns-labs/opentrack`. Use a digest for reproducible deployment.
+Each pushed branch gets a matching image tag (normalized when needed).
+These branch channels are development builds, not signed versioned
+releases; see [container delivery](docs/container-images.md) for references,
+registry access, and release verification.
+
 With Docker:
 
 ```sh
-git clone https://github.com/kineticlogic-io/OpenTrack.git && cd OpenTrack
+git clone https://github.com/defenseunicorns-labs/OpenTrack.git && cd OpenTrack
 cat > .env <<'EOF'
 OT_ADMIN_EMAIL=you@example.com
 OT_ADMIN_PASSWORD=Choose-A-Long-Passw0rd!

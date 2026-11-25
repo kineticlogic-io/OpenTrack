@@ -8,6 +8,7 @@ import { OverviewPage } from './pages/OverviewPage'
 import { UserChip } from './auth/UserChip'
 import { useCan } from './auth/context'
 import { usePendingSuggestions } from './lib/pendingSuggestions'
+import { directionBadge } from './lib/syncDirection'
 
 // Code editor and map (CodeMirror, MapLibre) load only with the pages that use them.
 const SourcesPage = lazy(() => import('./pages/sources/SourcesPage'))
@@ -52,6 +53,7 @@ export default function App() {
   }, [])
   // Site name, classification banner and whether the maps have basemap tiles (Settings), this instance's own.
   const [siteName, setSiteName] = useState('')
+  const [oneWay, setOneWay] = useState<string | null>(null)
   const [basemapTiles, setBasemapTiles] = useState<BasemapTilesFormat | null>(null)
   const [banner, setBanner] = useState<Banner | null>(null)
   const [settingsRev, setSettingsRev] = useState(0)
@@ -60,6 +62,7 @@ export default function App() {
       api.appSettings().then(
         (r) => {
           setSiteName(r.settings.site_name)
+          setOneWay(directionBadge(r.settings.sync))
           setBasemapTiles(r.basemap_tiles === true ? (r.settings.basemap_tiles_format ?? 'raster') : null)
         },
         () => {},
@@ -106,13 +109,18 @@ export default function App() {
           }
         >
           {status && (
-            <Badge color="grey" size="sm" title="GOLD site code">
+            <Badge
+              color="grey"
+              size="sm"
+              title={oneWay ? `GOLD site code; this node ${oneWay === 'receive only' ? 'sends nothing to other nodes' : 'takes nothing in from other nodes'} (Settings → Nodes)` : 'GOLD site code'}
+            >
               site {status.site}
+              {oneWay ? ` · ${oneWay}` : ''}
             </Badge>
           )}
         </PageHeader>
         <Tabs variant="bar" aria-label="Workspaces" value={active} onChange={(id) => go(id)} tabs={tabs} />
-        <main className="content">
+        <main className={active === 'tracks' ? 'content content--tracks' : 'content'}>
           {active === 'overview' && <OverviewPage onStatus={onStatus} />}
           <Suspense fallback={<span className="muted">LOADING…</span>}>
             {active === 'sources' && <SourcesPage selected={sub} onSelect={(id) => go('sources', id)} />}

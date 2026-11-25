@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Lost tracks can be hidden on the map.** Map display → **Lost tracks** (on by default, kept
+  per browser); off, the map shows no lost track but the selected one. The options panel scrolls
+  when the map is shorter than it.
+- **One-way sync.** Settings → Nodes has a **Direction**: Send and receive, **Receive only** (take
+  in trusted nodes' tracks and decisions and send nothing at all) or **Send only** (share this
+  node's picture and take nothing in). The link holds a node to it, whatever the transport does.
+  A node that receives only never takes over reporting a track, and track management done on it
+  stays on it. **Ask peers to fill gaps** lets it send only summaries and requests for what it
+  missed (`sync.direction`, `sync.repair`).
+- **What a node does, in one line.** Settings → Nodes opens with a sentence such as "OTK receives
+  tracks and decisions from DUG and sends nothing", notes on settings that combine unexpectedly,
+  and a **Taken in** column for each trusted node. The header shows a one-way node's direction
+  beside its site code.
+- **Add a node** in Settings → Nodes: its site code and public key in one dialog, with the
+  fingerprint shown to compare before it is added.
+- **`opentrack bridge --node '<url>;send=off'`** carries nothing that node sends, and
+  `;send=repair` only its summaries and requests for what it missed.
 - **Vector basemap tiles.** Settings → General → **Basemap tiles** accepts either raster XYZ
   images or Mapbox vector tiles (MVT/PBF). Vector tiles are proxied through OpenTrack like raster
   tiles and drawn with the built-in OpenMapTiles-compatible style.
@@ -23,12 +40,34 @@
 
 ### Changed
 
+- **Repository-owned container delivery.** Native AMD64 and ARM64 CI images publish
+  to `ghcr.io/defenseunicorns-labs/opentrack`. Versioned releases reuse the exact
+  tested CI index and keep mandatory FIPS-provider signing before version-tag
+  promotion; downstream deployment repositories can consume an image digest.
+
+- **Capture's suggested mapping knows no feed's field names.** It reads the values (coordinates,
+  times, a track key of fixed-length ids, CoT types) and fields named like an OpenTrack field whose
+  values fit. It no longer guesses from names of particular feeds, and no longer suggests
+  identifiers or unit conversions: add those on the Map.
+- **Receive only is now Accept no track management here** (`sync.no_local_management`). It always
+  meant that the node's own users may not manage tracks, never that it sends nothing; Receive only
+  is now a direction. Saved settings and configuration exports that use `receive_only` still load.
 - **Raw output is a NATS topic step.** Its consent and the `/sources/{id}/raw-output` endpoints are
   gone. A source saved with a raw-output subject gets a NATS topic step beside its Output, once, on
   start (recorded as a revision by `op:migration`); a configuration file's raw output is read the
   same way. A NATS topic's subject must lie outside the system tracks' subjects.
 - **The add-source wizard, the source drawer and the pipeline designer** are replaced by the
   source editor.
+
+### Fixed
+
+- **Copy public key works on plain HTTP.** Settings → Nodes copied with the Clipboard API, which
+  browsers offer only on HTTPS or localhost: on a node reached by its address the button did
+  nothing, and the page showed only the fingerprint, so the fingerprint got pasted as the key. The
+  page now shows the whole public key to select, the copy falls back to selecting it (as the API
+  token's does), and the pin dialog says so when a fingerprint is pasted.
+- **A refused change says why in the audit record.** `change_refused` carries the `reason` the
+  caller was given (up to 300 characters).
 
 ## 1.0.0, 2026-10-06
 

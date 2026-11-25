@@ -205,7 +205,7 @@ site code and the rest of [Core settings](#core-settings)) come before the comma
 | `writer` | The writer. Several may run; give each its own `OT_WRITER_CONSUMER`. |
 | `cot` | The TAK output: the published tracks as Cursor-on-Target to the outputs Settings → TAK output configures ([TAK output](#tak-output)). Idle until one is on. Run one per Redis namespace. |
 | `link` | This node's side of the link to other nodes ([Multi-node](#multi-node)). |
-| `bridge` | Carries sync messages between nodes' NATS servers, for server sites with no networking package of their own: `opentrack bridge --node nats://a:4222 --node nats://b:4222`. It can also drop, delay, duplicate, cap and partition messages, for tests (`--loss`, `--delay-ms`, `--jitter-ms`, `--duplicate`, `--rate-kbps`, `--partition`). TLS and credentials: `--nats-*` / `OT_BRIDGE_NATS_*` ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)). |
+| `bridge` | Carries sync messages between nodes' NATS servers, for server sites with no networking package of their own: `opentrack bridge --node nats://a:4222 --node nats://b:4222`. A node's `;send=off` (or `;send=repair`) after its URL carries nothing it sends (or only its requests for what it missed), for [one-way links](#one-way-links). It can also drop, delay, duplicate, cap and partition messages, for tests (`--loss`, `--delay-ms`, `--jitter-ms`, `--duplicate`, `--rate-kbps`, `--partition`). TLS and credentials: `--nats-*` / `OT_BRIDGE_NATS_*` ([The bridge's NATS credentials and TLS](#the-bridges-nats-credentials-and-tls)). |
 | `all` | `serve`, `sources`, `engine`, `writer`, `cot` and `link` in one process. It migrates the database once before they start. |
 
 ### Other commands
@@ -976,7 +976,13 @@ pipelines", and `docs/examples/`.
 
 **Capturing samples.** **Capture samples** (on the input's settings) connects with the transport
 as set and captures what arrives; the codec it detects and a mapping it suggests are offered on
-the input and the Map, applied only when chosen. Choosing Cursor-on-Target XML on a TCP transport frames by the end tag `</event>` (CoT
+the input and the Map, applied only when chosen. The suggestion knows no feed's field names: it
+reads the values (two fractional coordinates side by side, the one past ±90 the longitude; times;
+the track key, fixed-length ids distinct per track; CoT types) and fields named like an OpenTrack
+field whose values fit (a `course` of degrees, a `callsign`), assuming OpenTrack's unit. It never
+suggests identifiers, unit conversions or a line of bearing; add those on the Map. Dragging a
+column of the input's samples onto a Map maps that field where the suggestion put it, or to an
+extension field named after it. Choosing Cursor-on-Target XML on a TCP transport frames by the end tag `</event>` (CoT
 events arrive back to back, often over several lines). A probe that connects but captures nothing
 says why it may be: **no bytes arrived** (the feed is idle; the port needs TLS, since a TLS server
 waits silently for a handshake; or the port only takes data in, as a TAK Server input does), or
@@ -1115,8 +1121,10 @@ To turn it on:
 2. Carry `<OT_SYNC_PREFIX>.out.*` to the other nodes' `<OT_SYNC_PREFIX>.in.*`.
 3. In **Settings → Nodes**:
    - **Share the picture:** on.
+   - **Direction:** **Send and receive** (the default), **Receive only** or **Send only**. See
+     [One-way links](#one-way-links).
    - **Trusted nodes:** the other nodes' site codes, comma separated. Messages from any other node
-     are dropped.
+     are dropped. **Add a node**, under the table, does this and pins the key in one step.
    - **This node's key:** copy this node's public key and give it to each other node's admin.
      Read the fingerprint out to them over another channel (a phone call, the deployment plan).
    - In the table, **Pin key** for each trusted node: paste that node's public key and compare the
@@ -1124,14 +1132,60 @@ To turn it on:
      refused**: its messages are refused until you pin one.
    - **Sending budget:** this node's share of the link in kbit/s (0: no cap). Past it, new tracks,
      state changes and the largest drifts go first.
-   - **Receive only:** apply other nodes' track management here but accept none from this node's
-     users (a node with no operator, such as a drone).
+   - **Accept no track management here:** apply other nodes' track management here but accept none
+     from this node's users (a node with no operator, such as a drone). It does not change what the
+     node sends. Earlier releases called this setting **Receive only** (`sync.receive_only`); saved
+     settings and configuration exports that use the old name still load.
    - **Share the profile:** publishing an output schema or saving correlation settings on any node
      applies on every node that shares the profile; the later change wins.
-4. Save. The table shows each trusted node: heard, silent (not heard for 30 s) or never heard, how
-   many of its decisions this node holds, and its key's fingerprint. Below it: how many tracks this
+4. Save. The line at the top of the panel says what the node does, for example "OTK receives
+   tracks and decisions from DUG and sends nothing", with a note under it for any combination of
+   settings that may surprise. The table shows each trusted node: whether this node takes it in,
+   heard, silent (not heard for 30 s) or never heard, how many of its decisions this node holds,
+   and its key's fingerprint. Below it: how many tracks this
    node reports and holds only from others, and the decisions applied, waiting for their tracks,
    superseded or failed; and, if any, the messages refused.
+
+#### One-way links
+
+A node can share its picture without taking any in, or take one in while sending nothing.
+
+| Direction | Sends | Takes in |
+|---|---|---|
+| **Send and receive** | its tracks, decisions, summaries; answers requests | trusted nodes' tracks and decisions |
+| **Receive only** | nothing (with **Ask peers to fill gaps**: only summaries and requests for what it missed) | trusted nodes' tracks and decisions |
+| **Send only** | its tracks, decisions, summaries; answers trusted nodes' requests for what they missed | nothing |
+
+OpenTrack enforces the direction itself, whatever the transport carries. A node that receives
+only:
+- never reports a track, even one its own sensors see best: the other node keeps reporting it,
+  and its reports keep applying here;
+- keeps the track management done on it to itself: it is not logged for other nodes, so it never
+  leaves, even if the node sends later;
+- keeps its output schema and correlation changes to itself, but applies other nodes' when
+  **Share the profile** is on.
+
+Without **Ask peers to fill gaps**, a decision lost on the link is not asked for again. Tracks
+recover on their own: the next report replaces a lost one. Turn it on when decisions matter and
+the node may send small, track-free messages.
+
+A node that sends only needs no trusted nodes. Trust a node and pin its key only to answer that
+node's requests for what it missed.
+
+The header shows a one-way node's direction beside its site code (`site OTK · receive only`).
+
+Example: OTK takes in DUG's tracks and sends nothing back.
+
+| | OTK | DUG |
+|---|---|---|
+| Share the picture | on | on |
+| Direction | Receive only | Send only |
+| Trusted nodes | DUG, with DUG's key pinned | none |
+| Share the profile | off | off |
+
+Between server sites, hold the link to it as well: `opentrack bridge --node 'nats://dug:4222'
+--node 'nats://otk:4222;send=off'` carries nothing OTK sends (`;send=repair`: only its summaries
+and requests for what it missed).
 
 #### Signed sync messages
 
@@ -1822,11 +1876,11 @@ Redis in the compose file runs the same way: its own user, read-only, no capabil
 
 ### Signed images
 
-Release images (`ghcr.io/kineticlogic-io/opentrack:<version>`) are signed with the project's cosign
+Release images (`ghcr.io/defenseunicorns-labs/opentrack:<version>`) are signed with the project's cosign
 key and carry SLSA provenance and an SBOM. Check one before you run it:
 
 ```sh
-cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/kineticlogic-io/opentrack@<digest>
+cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/defenseunicorns-labs/opentrack@<digest>
 ```
 
 `cosign.pub` is in the repository; the release notes list each image's digest.
